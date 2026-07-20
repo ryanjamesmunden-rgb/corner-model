@@ -1,53 +1,51 @@
-import { useEffect } from "react";
 import "@/App.css";
-import { BrowserRouter, Routes, Route } from "react-router-dom";
-import axios from "axios";
-import { HOME } from "@/constants/testIds";
+import { BrowserRouter, Routes, Route, useLocation, Navigate } from "react-router-dom";
+import { Toaster } from "sonner";
+import { AuthProvider, useAuth } from "@/context/AuthContext";
+import AuthCallback from "@/pages/AuthCallback";
+import Login from "@/pages/Login";
+import Dashboard from "@/pages/Dashboard";
+import Scanner from "@/pages/Scanner";
+import FixtureDetail from "@/pages/FixtureDetail";
+import Layout from "@/components/Layout";
 
-const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
-const API = `${BACKEND_URL}/api`;
+function ProtectedRoute({ children }) {
+  const { user, loading } = useAuth();
+  if (loading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-background text-muted-foreground">
+        <span className="font-mono text-sm animate-pulse">Loading…</span>
+      </div>
+    );
+  }
+  if (!user) return <Navigate to="/login" replace />;
+  return <Layout>{children}</Layout>;
+}
 
-const Home = () => {
-  const helloWorldApi = async () => {
-    try {
-      const response = await axios.get(`${API}/`);
-      console.log(response.data.message);
-    } catch (e) {
-      console.error(e, `errored out requesting / api`);
-    }
-  };
-
-  useEffect(() => {
-    helloWorldApi();
-  }, []);
-
+function AppRouter() {
+  const location = useLocation();
+  if (location.hash?.includes("session_id=")) {
+    return <AuthCallback />;
+  }
   return (
-    <div>
-      <header className="App-header">
-        <a
-          data-testid={HOME.emergentLink}
-          className="App-link"
-          href="https://emergent.sh"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <img src="https://avatars.githubusercontent.com/in/1201222?s=120&u=2686cf91179bbafbc7a71bfbc43004cf9ae1acea&v=4" />
-        </a>
-        <p className="mt-5">Building something incredible ~!</p>
-      </header>
-    </div>
+    <Routes>
+      <Route path="/login" element={<Login />} />
+      <Route path="/dashboard" element={<ProtectedRoute><Dashboard /></ProtectedRoute>} />
+      <Route path="/scanner" element={<ProtectedRoute><Scanner /></ProtectedRoute>} />
+      <Route path="/fixture/:id" element={<ProtectedRoute><FixtureDetail /></ProtectedRoute>} />
+      <Route path="*" element={<Navigate to="/dashboard" replace />} />
+    </Routes>
   );
-};
+}
 
 function App() {
   return (
     <div className="App">
       <BrowserRouter>
-        <Routes>
-          <Route path="/" element={<Home />}>
-            <Route index element={<Home />} />
-          </Route>
-        </Routes>
+        <AuthProvider>
+          <AppRouter />
+          <Toaster theme="dark" position="top-right" richColors />
+        </AuthProvider>
       </BrowserRouter>
     </div>
   );

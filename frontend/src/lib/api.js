@@ -1,0 +1,25 @@
+import axios from "axios";
+
+export const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
+axios.defaults.withCredentials = true;
+
+export const api = {
+  leagues: () => axios.get(`${API}/leagues`).then((r) => r.data),
+  teams: (id, split, window) => axios.get(`${API}/leagues/${id}/teams`, { params: { split, window } }).then((r) => r.data),
+  fixtures: (id) => axios.get(`${API}/leagues/${id}/fixtures`).then((r) => r.data),
+  fixture: (id) => axios.get(`${API}/fixtures/${id}`).then((r) => r.data),
+  setOdds: (id, odds) => axios.post(`${API}/fixtures/${id}/odds`, { odds }).then((r) => r.data),
+  scanner: (params) => axios.get(`${API}/scanner`, { params }).then((r) => r.data),
+};
+
+export const tierMeta = {
+  strong: { label: "Strong Value", dot: "bg-emerald-500", text: "text-emerald-400", chip: "bg-emerald-500/15 text-emerald-400 border-emerald-500/30" },
+  small: { label: "Small Edge", dot: "bg-amber-500", text: "text-amber-400", chip: "bg-amber-500/15 text-amber-400 border-amber-500/30" },
+  none: { label: "No Edge", dot: "bg-red-500", text: "text-red-400", chip: "bg-red-500/15 text-red-400 border-red-500/30" },
+};
+
+export const confMeta = {
+  High: "bg-emerald-500/15 text-emerald-400 border-emerald-500/30",
+  Medium: "bg-amber-500/15 text-amber-400 border-amber-500/30",
+  Low: "bg-zinc-500/15 text-zinc-400 border-zinc-500/30",
+};

@@ -1,0 +1,124 @@
+{
+  "theme": "Dark Mode Only (The Performance Pro Archetype)",
+  "typography": {
+    "headings": {
+      "family": "Outfit, sans-serif",
+      "weights": ["600", "700"],
+      "rules": "Tracking-tight for H1-H2. Use for page titles, league switchers, and section headers.",
+      "scales": {
+        "h1": "text-3xl sm:text-4xl",
+        "h2": "text-2xl sm:text-3xl",
+        "h3": "text-xl",
+        "h4": "text-lg"
+      }
+    },
+    "body": {
+      "family": "Manrope, sans-serif",
+      "weights": ["400", "500"],
+      "rules": "Used for standard UI text, labels, and navigation.",
+      "sizes": {
+        "base": "text-sm",
+        "large": "text-base",
+        "small": "text-xs"
+      }
+    },
+    "data_and_numbers": {
+      "family": "IBM Plex Mono, monospace",
+      "weights": ["400", "500", "600"],
+      "rules": "CRITICAL: Must be used for ALL odds, probabilities, EV percentages, and data tables. Monospace ensures decimal points align perfectly vertically."
+    }
+  },
+  "colors": {
+    "background": {
+      "default": "#0A0A0A",
+      "surface": "#121212",
+      "surface_elevated": "#1A1A1A"
+    },
+    "primary": {
+      "default": "#00E5FF",
+      "hover": "#33EEFF",
+      "text_contrast": "#000000",
+      "description": "Electric Cyan. Used strictly for primary CTAs and active states."
+    },
+    "status": {
+      "strong_value_green": "#10B981",
+      "small_edge_yellow": "#F59E0B",
+      "no_edge_red": "#EF4444"
+    },
+    "text": {
+      "primary": "#F4F4F5",
+      "secondary": "#A1A1AA",
+      "muted": "#71717A"
+    },
+    "border": {
+      "default": "#27272A",
+      "focus": "#00E5FF"
+    },
+    "rules": "Dark mode is treated as a system. Use layered elevation via background lightness (0A0A0A -> 121212 -> 1A1A1A). Keep surfaces neutral and use color exclusively for data status (Green/Yellow/Red) and the single saturated primary accent."
+  },
+  "grids_and_layouts": {
+    "strategy": "High Density Grid (MODE B) for Dashboards",
+    "spacing": "Tight padding (p-4 or p-6) within cards. Use gap-4 for grids.",
+    "patterns": {
+      "dashboard": "grid-cols-1 md:grid-cols-3 lg:grid-cols-4 or 12-column grid for precise spanning.",
+      "tables": "w-full text-left. Use standard Shadcn table structures but strip vertical borders. Horizontal borders only.",
+      "cards": "Borderless or 1px subtle border (border-border). No heavy drop shadows. Use background lightness for elevation."
+    }
+  },
+  "visual_enhancers": {
+    "surfaces": "Solid flat backgrounds. Minimal border-radius (max rounded-md / 6px) to maintain a sharp, technical 'terminal/analytical' look.",
+    "borders": "Use 1px border-border/40 to separate grid items and table rows.",
+    "glassmorphism": "Used ONLY for sticky headers or dropdown menus: bg-[#0A0A0A]/80 backdrop-blur-xl border-b border-white/10.",
+    "active_states": "For selected tabs or rows, use a 2px left border of the primary color (Electric Cyan) or Strong Value Green to guide the eye."
+  },
+  "component_rules": {
+    "tables": "Must use Shadcn Table. Hover states should slightly lighten the row background (hover:bg-white/5). Cell text must be IBM Plex Mono. Align numeric columns to the right.",
+    "tabs": "Use Shadcn Tabs for switching between (Home/Away/Overall) and windows (3/5/10). Style them minimally: transparent background with bottom border for active state.",
+    "badges": "Use for confidence ratings. Solid background with 20% opacity of the status color and 100% text color (e.g., bg-green-500/20 text-green-400).",
+    "inputs": "Quick-paste odds entry needs a highly visible focus state: focus:ring-2 focus:ring-[#00E5FF] focus:border-transparent. Background should be #000000.",
+    "league_switcher": "Shadcn Select/Dropdown. Must NOT have a transparent background. Must use bg-[#121212]."
+  },
+  "motion": {
+    "hover": "Subtle and rapid. transition-colors duration-150 ease-in-out.",
+    "data_update": "When new odds or EV% are pasted, the cell should briefly flash with the status color (green/red) before settling to its default state to indicate data mutation.",
+    "page_transition": "Simple fade in. opacity-0 to opacity-100."
+  },
+  "accessibility": {
+    "contrast": "Ensure IBM Plex Mono text has at least 4.5:1 ratio against #121212. Use text-shadow if overlaying text on any gradient.",
+    "focus": "All interactive elements (inputs, rows, dropdowns) must have explicit focus-visible states.",
+    "testing": "All interactive and key informational elements MUST include a data-testid attribute (e.g., data-testid='value-scanner-row', data-testid='league-switcher')."
+  },
+  "media": {
+    "image_urls": [
+      {
+        "url": "https://images.pexels.com/photos/1657324/pexels-photo-1657324.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940",
+        "description": "Wide-angle view of a soccer match at sunset. Dark moody atmosphere.",
+        "category": "Login Page Background / Hero Area Overlay"
+      }
+    ],
+    "rules": "Since it's a data-dense app, use images very sparingly. The soccer stadium image should ONLY be used as a full-bleed background for the Google Login screen with a heavy black overlay (bg-black/70)."
+  },
+  "3d_libraries": {
+    "recommendation": "Not strictly required for this table-heavy app.",
+    "charts": "Use Shadcn Charts (Recharts) for any line charts tracking Team Form or EV% history. Style charts with thin lines and no fill gradients to maintain high density clarity."
+  },
+  "instructions_to_main_agent": [
+    "Prioritize data density. The Value Scanner and Form tables are the core product.",
+    "Implement the league switcher prominently in the header.",
+    "Ensure 'Correct Odds' and 'Bookmaker Line' columns are visually distinct. Highlight EV% based on the Strong/Small/No Edge status colors.",
+    "For the quick-paste odds entry, use a text area or dedicated input above the fixture that automatically parses and maps the data to the grid (mock the parsing logic if necessary, but build the UI).",
+    "Use Phosphor icons or Lucide icons for table headers (e.g., corner flag icon, trend arrows)."
+  ],
+  "UNIVERSAL_GUIDELINES_FOR_MAIN_AGENT": [
+    "Do not use generic centered layouts. Left-align dense data.",
+    "DO NOT use dark colors as gradients. Use solid dark hex values.",
+    "You MUST NOT apply universal transition (transition: all). Use specific transitions.",
+    "You MUST NOT center align the app container (.App { text-align: center; }).",
+    "Use modern button styles (sharp or max 6px radius) with interaction animations.",
+    "NEVER use AI assistant Emoji characters (🤖🧠💭💡) for icons.",
+    "Every interaction needs micro-animations (hover states, focus rings).",
+    "Use sonner for toast notifications (e.g., 'Odds pasted successfully').",
+    "Prioritize using pre-existing components from src/components/ui.",
+    "Missing images or logos must NOT be replaced with text placeholders. Use the provided image URLs or standard icons."
+  ]
+}

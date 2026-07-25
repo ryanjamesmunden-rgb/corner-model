@@ -13,6 +13,8 @@ export const api = {
   streaks: (params) => axios.get(`${API}/streaks`, { params }).then((r) => r.data),
   matchups: (id, side) => axios.get(`${API}/leagues/${id}/matchups`, { params: { side } }).then((r) => r.data),
   trends: (params) => axios.get(`${API}/trends`, { params }).then((r) => r.data),
+  bestBets: () => axios.get(`${API}/best-bets`).then((r) => r.data),
+  topMismatches: (params) => axios.get(`${API}/top-mismatches`, { params }).then((r) => r.data),
   refresh: (id) => axios.post(`${API}/leagues/${id}/refresh`).then((r) => r.data),
 };
 

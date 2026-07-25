@@ -3,6 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { Radar, TrendingUp, Filter, ArrowRight } from "lucide-react";
 import { api, tierMeta, confMeta } from "@/lib/api";
 import { useLeague } from "@/context/LeagueContext";
+import HomeInsights from "@/components/HomeInsights";
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from "@/components/ui/select";
@@ -56,6 +57,8 @@ export default function Scanner() {
           <StatChip label="Total" value={rows.length} className="text-foreground" dot="bg-primary" />
         </div>
       </div>
+
+      <HomeInsights />
 
       <div className="flex flex-wrap items-center gap-3 p-4 bg-card border border-border rounded-lg">
         <div className="flex items-center gap-2 text-muted-foreground text-xs font-medium mr-1">

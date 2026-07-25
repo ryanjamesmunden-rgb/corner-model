@@ -64,6 +64,11 @@ Multi-league corner value betting web app. Rebuilds a spreadsheet corner model i
 - **Leagues** page: new **Top Corner Teams & Next Matchup** table (`MatchupTable`) with a **Home/Away/Overall** toggle; ranks teams by corners-won on the chosen venue, shows next fixture + opponent-conceded + proj λ + model line/odds, and highlights rows GREEN ("Mismatch") when a strong corner team meets a leaky defence, amber ("Lean") otherwise. Team Corner Form table kept below. Backend `GET /api/leagues/{id}/matchups?side=`.
 - **Streaks** page: **Hot Form** tab (`TrendFinder`, teams averaging more corners than their season baseline; Home/Away/Overall, Last 3/5/10, Total vs Won metric, league scope) + **Consistency** tab (existing StreakFinder). Backend `GET /api/trends?side=&window=&metric=`.
 - **Away form** supported across matchups, trends, streaks and per-game breakdown (some teams win corners regardless of venue).
+
+## Value Finder Home Insights (2026-07-25)
+- **Best Bets Today** strip (3 cards): top value bet, top mismatch, top streak — the standout from each signal, each clickable to its fixture. Backend `GET /api/best-bets`.
+- **Top Mismatches This Week**: cross-league table (all leagues, next 7 days) of strong corner-team vs leaky-defence matchups, ranked by projected λ, with team/g, opp-conceded, proj λ, and model line@odds. Backend `GET /api/top-mismatches?within_days=&limit=` (per-league averages used for the mismatch threshold).
+- Both rendered at the top of the Value Finder (`HomeInsights` component) above the ranked value table.
 - (2026-07-25) **Model now uses REAL matches everywhere** via `_src()` helper (form tables, fixture splits, Poisson λ, confidence) — synthetic data is fallback only for teams with zero real games. A **real-sample badge** ("N real" / "0 real · est.") on each fixture-detail team shows how much real data backs the figures.
 - P1: (done 2026-07-25) "Refresh data" button on dashboard → triggers live re-sync.
 - P1: (done 2026-07-25) APScheduler auto-refresh of all leagues every 12h.

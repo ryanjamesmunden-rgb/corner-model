@@ -643,6 +643,71 @@ async def trends(league_id: Optional[str] = None, window: int = 5, metric: str =
     return out
 
 
+async def _all_mismatches(within_days: Optional[int] = None, limit: int = 20):
+    teams = await db.teams.find({}, {"_id": 0}).to_list(2000)
+    teams_by_id = {t["team_id"]: t for t in teams}
+    leagues = {l["league_id"]: l["name"] for l in await db.leagues.find({}, {"_id": 0}).to_list(100)}
+    next_fx = await _next_fixtures({})
+    # per-league average corners won
+    league_avgs = {}
+    for t in teams:
+        vals = [m["corners_for"] for m in _src(t)]
+        league_avgs.setdefault(t["league_id"], []).extend(vals)
+    league_avgs = {k: (sum(v) / len(v) if v else 5.0) for k, v in league_avgs.items()}
+    now = datetime.now(timezone.utc)
+    out = []
+    for t in teams:
+        nf = next_fx.get(t["team_id"])
+        if not nf:
+            continue
+        if within_days is not None:
+            try:
+                dt = datetime.fromisoformat(nf["date"].replace("Z", "+00:00"))
+            except Exception:
+                continue
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            if dt < now or dt > now + timedelta(days=within_days):
+                continue
+        venue = "home" if nf["is_home"] else "away"
+        opp_venue = "away" if nf["is_home"] else "home"
+        team_for = _real_avg(t, venue, "corners_for")
+        opp = teams_by_id.get(nf["opponent_team_id"])
+        opp_conc = (_real_avg(opp, opp_venue, "corners_against") if opp else None)
+        if team_for is None or opp_conc is None:
+            continue
+        avg = league_avgs.get(t["league_id"], 5.0)
+        if not (team_for >= avg * 1.1 and opp_conc >= avg * 1.1):
+            continue
+        lam = round((team_for + opp_conc) / 2, 2)
+        line = max(3, round(lam) - 1)
+        p = poisson_ge(line, lam)
+        out.append({"team_id": t["team_id"], "name": t["name"], "league_id": t["league_id"],
+                    "league_name": leagues.get(t["league_id"], ""), "team_for": round(team_for, 2),
+                    "opp_conceded": round(opp_conc, 2), "lambda": lam, "line": line,
+                    "prob": round(p * 100, 1), "fair_odds": fair_odds(p),
+                    "next_fixture": nf, "real_samples": t.get("real_samples", 0)})
+    out.sort(key=lambda x: x["lambda"], reverse=True)
+    return out[:limit]
+
+
+@api_router.get("/top-mismatches")
+async def top_mismatches(within_days: Optional[int] = None, limit: int = 20,
+                         user: dict = Depends(get_current_user)):
+    return await _all_mismatches(within_days, limit)
+
+
+@api_router.get("/best-bets")
+async def best_bets(user: dict = Depends(get_current_user)):
+    val = await scanner(league_id="all", market="all", min_edge=0.0, user=user)
+    strk = await streaks(league_id="all", side="overall", window=5, min_hits=5,
+                         threshold=None, min_line=3, within_days=None, user=user)
+    mism = await _all_mismatches(within_days=None, limit=1)
+    return {"value": val[0] if val else None,
+            "streak": strk[0] if strk else None,
+            "mismatch": mism[0] if mism else None}
+
+
 # ----------------------------- Bet Tracking + Kelly -----------------------------
 
 def kelly_fraction(prob: float, book_odds: float) -> float:

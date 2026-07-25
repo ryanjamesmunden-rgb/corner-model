@@ -1,8 +1,10 @@
 import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
-import { Radar, TrendingUp, Filter, ArrowRight } from "lucide-react";
+import { Radar, TrendingUp, Filter, ArrowRight, Flame } from "lucide-react";
 import { api, tierMeta, confMeta } from "@/lib/api";
 import { useLeague } from "@/context/LeagueContext";
+import StreakFinder from "@/components/StreakFinder";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from "@/components/ui/select";
@@ -27,6 +29,7 @@ export default function Scanner() {
   const [minEdge, setMinEdge] = useState("0");
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [view, setView] = useState("value");
 
   useEffect(() => {
     setLoading(true);
@@ -57,6 +60,17 @@ export default function Scanner() {
         </div>
       </div>
 
+      <Tabs value={view} onValueChange={setView}>
+        <TabsList className="bg-secondary h-10">
+          <TabsTrigger value="value" data-testid="view-value" className="text-sm px-4 h-8 gap-2"><Radar className="h-4 w-4" /> Total &amp; Team Value</TabsTrigger>
+          <TabsTrigger value="streaks" data-testid="view-streaks" className="text-sm px-4 h-8 gap-2"><Flame className="h-4 w-4" /> Streak Picks</TabsTrigger>
+        </TabsList>
+      </Tabs>
+
+      {view === "streaks" ? (
+        <StreakFinder leagueId={leagueId} />
+      ) : (
+      <>
       <div className="flex flex-wrap items-center gap-3 p-4 bg-card border border-border rounded-lg">
         <div className="flex items-center gap-2 text-muted-foreground text-xs font-medium mr-1">
           <Filter className="h-3.5 w-3.5" /> Filters
@@ -127,6 +141,8 @@ export default function Scanner() {
           </table>
         </div>
       </div>
+      </>
+      )}
     </div>
   );
 }

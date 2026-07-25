@@ -56,6 +56,7 @@ Multi-league corner value betting web app. Rebuilds a spreadsheet corner model i
 - Streaks and form use `real_matches`; teams need ≥window real games on the chosen side to appear (honest sampling).
 - Streak rows now include the **next opponent's corners-conceded** rate (real, venue-specific) and a **model fair-odds** for the team to hit its line next game: λ = (team corners-won on venue + opponent corners-conceded on their venue)/2 → Poisson P(≥line) → fair odds. Surfaces corner mismatches to price up before the bookies move.
 - (2026-07-25) Streak finder gained a live **Edge %** column (EV vs pasted team-corner odds, market key `{venue}_over_{line-0.5}`) and a **timeframe filter** (`within_days`: next 3/7/14 days) to focus on imminent fixtures.
+- (2026-07-25) **Value Scanner** now has a view toggle: "Total & Team Value" (existing scanner) and "Streak Picks" (reuses StreakFinder) — both edge signals on the home scan view.
 - P1: (done 2026-07-25) "Refresh data" button on dashboard → triggers live re-sync.
 - P1: (done 2026-07-25) APScheduler auto-refresh of all leagues every 12h.
 - P2: Backtesting per league; bet tracking + Kelly staking (backend endpoints built, frontend page pending — user deferred); email alerts; automated corner-odds feed.

@@ -34,9 +34,18 @@ Multi-league corner value betting web app. Rebuilds a spreadsheet corner model i
 - Fixture detail (lambdas, confidence, quick-paste + inline odds, 3 market tables, team breakdowns).
 - Tested: 100% backend (14 pytest), 100% frontend flows.
 
+## Real Data Integration (2026-07-25)
+- Integrated **API-Football (Pro plan)** — key in backend/.env (API_FOOTBALL_KEY).
+- `sync_real.py` pulls REAL teams, REAL upcoming fixtures (current season 2026), and REAL corner stats (season 2026 + prior season fallback) into the app's schema. All 7 leagues synced (`data_source: real`).
+- Corner form built from real per-fixture "Corner Kicks" statistics; teams with sparse samples topped up synthetically around real league averages.
+- POST /api/leagues/{id}/refresh now launches a real re-sync (background subprocess) for that league.
+- League IDs: ned-ed=89, nor-el=103, aus-al=188, bra-sa=71, fin-vk=244, swe-al=113, eng-pl=39.
+- NOTE: seeded bookmaker odds are PLACEHOLDER (model-derived) so the scanner isn't empty — user pastes REAL corner odds per fixture for true EV.
+
 ## Backlog / Remaining
-- P1: Wire real football stats API (Sportmonks/API-Football) + scheduled sync job to replace mock data.
-- P2: Backtesting module per league; bet tracking + Kelly staking; line-movement & morning email alerts; automated corner-odds feed.
+- P1: Background scheduler (cron) to auto-refresh all leagues each round instead of manual refresh.
+- P1: "Refresh data" button on dashboard wired to the refresh endpoint.
+- P2: Backtesting per league; bet tracking + Kelly staking (backend endpoints built, frontend page pending); email alerts; automated corner-odds feed.
 
 ## Next Tasks
 - Integrate live data API when key is available; add background scheduler for auto-refresh.

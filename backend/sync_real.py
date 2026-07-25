@@ -72,12 +72,23 @@ async def sync_league(hc, my_lid):
     fixtures = await af_get(hc, "/fixtures", {"league": api_id, "season": season})
     ft = [f for f in fixtures if f["fixture"]["status"]["short"] == "FT"]
     ns = [f for f in fixtures if f["fixture"]["status"]["short"] in ("NS", "TBD")]
+    # if the current season has too few finished matches, pull last season for corner form
+    if len(ft) < 40:
+        try:
+            prev = await af_get(hc, "/fixtures", {"league": api_id, "season": season - 1})
+            ft += [f for f in prev if f["fixture"]["status"]["short"] == "FT"]
+        except Exception as e:
+            print(f"[{my_lid}] prev season fetch skipped: {e}")
     ft.sort(key=lambda f: f["fixture"]["date"])
     ns.sort(key=lambda f: f["fixture"]["date"])
-    print(f"[{my_lid}] teams={len(team_names)} FT={len(ft)} upcoming={len(ns)}")
+    print(f"[{my_lid}] teams={len(team_names)} FT(pool)={len(ft)} upcoming={len(ns)}")
 
-    # gather real corner samples from most recent FT fixtures
-    samples = {tid: [] for tid in team_names}
+    # gather real corner samples from most recent FT fixtures (include prev-season team ids)
+    all_team_ids = set(team_names.keys())
+    for f in ft:
+        all_team_ids.add(f["teams"]["home"]["id"])
+        all_team_ids.add(f["teams"]["away"]["id"])
+    samples = {tid: [] for tid in all_team_ids}
     league_corners = []
     recent = ft[-STATS_CAP:] if len(ft) > STATS_CAP else ft
     for f in reversed(recent):

@@ -316,22 +316,11 @@ async def get_leagues(user: dict = Depends(get_current_user)):
 
 @api_router.post("/leagues/{league_id}/refresh")
 async def refresh_league(league_id: str, user: dict = Depends(get_current_user)):
-    teams = await db.teams.find({"league_id": league_id}, {"_id": 0}).to_list(100)
-    if not teams:
+    if not await db.leagues.find_one({"league_id": league_id}):
         raise HTTPException(status_code=404, detail="League not found")
-    rng = random.Random()
-    for t in teams:
-        matches = t["matches"]
-        is_home = len(matches) % 2 == 0
-        pool = [m for m in matches if m["home"] == is_home] or matches
-        cf_mean = sum(m["corners_for"] for m in pool) / len(pool)
-        ca_mean = sum(m["corners_against"] for m in pool) / len(pool)
-        cf = max(0, int(round(rng.gauss(cf_mean, 1.7))))
-        ca = max(0, int(round(rng.gauss(ca_mean, 1.7))))
-        matches.append({"home": is_home, "corners_for": cf, "corners_against": ca})
-        matches = matches[-16:]
-        await db.teams.update_one({"team_id": t["team_id"]}, {"$set": {"matches": matches}})
-    return {"updated": len(teams), "league_id": league_id, "synced_at": datetime.now(timezone.utc).isoformat()}
+    import subprocess, sys
+    subprocess.Popen([sys.executable, str(ROOT_DIR / "sync_real.py"), league_id], cwd=str(ROOT_DIR))
+    return {"status": "syncing", "league_id": league_id, "started_at": datetime.now(timezone.utc).isoformat()}
 
 
 @api_router.get("/leagues/{league_id}/teams")

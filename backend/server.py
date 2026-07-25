@@ -107,9 +107,19 @@ def team_split(matches: List[dict], split: str, window: int) -> dict:
     return {"played": n, "for_avg": round(cf / n, 2), "against_avg": round(ca / n, 2), "total_avg": round((cf + ca) / n, 2)}
 
 
+def _src(team: dict) -> list:
+    """Prefer real match data; fall back to (synthetic) matches only if no real games."""
+    return team.get("real_matches") or team.get("matches") or []
+
+
 def expected_lambdas(home: dict, away: dict) -> dict:
-    h_home = team_split(home["matches"], "home", 0)
-    a_away = team_split(away["matches"], "away", 0)
+    h_home = team_split(_src(home), "home", 0)
+    a_away = team_split(_src(away), "away", 0)
+    # fall back to overall if a team has no games on that venue
+    if h_home["played"] == 0:
+        h_home = team_split(_src(home), "overall", 0)
+    if a_away["played"] == 0:
+        a_away = team_split(_src(away), "overall", 0)
     lam_home = round((h_home["for_avg"] + a_away["against_avg"]) / 2, 2)
     lam_away = round((a_away["for_avg"] + h_home["against_avg"]) / 2, 2)
     return {"home": lam_home, "away": lam_away, "total": round(lam_home + lam_away, 2)}
@@ -193,15 +203,16 @@ def _std(vals: List[float]) -> float:
 
 
 def confidence_for(home: dict, away: dict) -> dict:
-    played = min(len(home["matches"]), len(away["matches"]))
+    hs, as_ = _src(home), _src(away)
+    played = min(len(hs), len(as_))
     sample_score = min(played / 10.0, 1.0)
-    h_vals = [m["corners_for"] + m["corners_against"] for m in home["matches"]]
-    a_vals = [m["corners_for"] + m["corners_against"] for m in away["matches"]]
+    h_vals = [m["corners_for"] + m["corners_against"] for m in hs] or [0]
+    a_vals = [m["corners_for"] + m["corners_against"] for m in as_] or [0]
     avg_total = (sum(h_vals) / len(h_vals) + sum(a_vals) / len(a_vals)) / 2 or 1
     stability = max(0.0, 1.0 - ((_std(h_vals) + _std(a_vals)) / 2) / avg_total)
-    hf = team_split(home["matches"], "home", 0)["total_avg"]
-    af = team_split(away["matches"], "away", 0)["total_avg"]
-    overall = (team_split(home["matches"], "overall", 0)["total_avg"] + team_split(away["matches"], "overall", 0)["total_avg"]) / 2 or 1
+    hf = team_split(hs, "home", 0)["total_avg"]
+    af = team_split(as_, "away", 0)["total_avg"]
+    overall = (team_split(hs, "overall", 0)["total_avg"] + team_split(as_, "overall", 0)["total_avg"]) / 2 or 1
     consistency = max(0.0, 1.0 - abs(hf - af) / overall)
     score = 0.45 * sample_score + 0.35 * stability + 0.2 * consistency
     label = "High" if score >= 0.7 else ("Medium" if score >= 0.5 else "Low")
@@ -328,8 +339,9 @@ async def get_teams(league_id: str, split: str = "overall", window: int = 5, use
     teams = await db.teams.find({"league_id": league_id}, {"_id": 0}).to_list(100)
     out = []
     for t in teams:
-        s = team_split(t["matches"], split, window)
-        overall = team_split(t["matches"], "overall", 0)
+        src = _src(t)
+        s = team_split(src, split, window)
+        overall = team_split(src, "overall", 0)
         out.append({"team_id": t["team_id"], "name": t["name"], "played": s["played"],
                     "for_avg": s["for_avg"], "against_avg": s["against_avg"],
                     "total_avg": s["total_avg"], "season_total_avg": overall["total_avg"]})
@@ -370,11 +382,20 @@ async def fixture_detail(fixture_id: str, user: dict = Depends(get_current_user)
     away = await db.teams.find_one({"team_id": fx["away_team_id"]}, {"_id": 0})
 
     def splits(team):
-        return {sp: {str(w): team_split(team["matches"], sp, w) for w in [3, 5, 10, 0]} for sp in ["home", "away", "overall"]}
+        return {sp: {str(w): team_split(_src(team), sp, w) for w in [3, 5, 10, 0]} for sp in ["home", "away", "overall"]}
+
+    def recent(team):
+        rms = team.get("real_matches") or []
+        return [{"date": m["date"], "opponent": m["opponent"], "home": m["home"],
+                 "won": m["corners_for"], "conceded": m["corners_against"],
+                 "total": m["corners_for"] + m["corners_against"]}
+                for m in reversed(rms)]
 
     return {"fixture": fx, "model": model,
-            "home_team": {"name": home["name"], "splits": splits(home)},
-            "away_team": {"name": away["name"], "splits": splits(away)}}
+            "home_team": {"name": home["name"], "splits": splits(home),
+                          "recent": recent(home), "real_samples": home.get("real_samples", 0)},
+            "away_team": {"name": away["name"], "splits": splits(away),
+                          "recent": recent(away), "real_samples": away.get("real_samples", 0)}}
 
 
 class OddsBody(BaseModel):

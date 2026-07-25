@@ -57,6 +57,8 @@ Multi-league corner value betting web app. Rebuilds a spreadsheet corner model i
 - Streak rows now include the **next opponent's corners-conceded** rate (real, venue-specific) and a **model fair-odds** for the team to hit its line next game: λ = (team corners-won on venue + opponent corners-conceded on their venue)/2 → Poisson P(≥line) → fair odds. Surfaces corner mismatches to price up before the bookies move.
 - (2026-07-25) Streak finder gained a live **Edge %** column (EV vs pasted team-corner odds, market key `{venue}_over_{line-0.5}`) and a **timeframe filter** (`within_days`: next 3/7/14 days) to focus on imminent fixtures.
 - (2026-07-25) **Value Scanner** now has a view toggle: "Total & Team Value" (existing scanner) and "Streak Picks" (reuses StreakFinder) — both edge signals on the home scan view.
+- (2026-07-25) Fixture drill-down now shows a **per-game breakdown** of each team's recent real games (date, opponent, H/A, corners won/conceded/total) with a Last 5/10 toggle that respects the Home/Away/Overall split. Backend `/api/fixtures/{id}` returns `recent` + `real_samples` per team.
+- (2026-07-25) **Model now uses REAL matches everywhere** via `_src()` helper (form tables, fixture splits, Poisson λ, confidence) — synthetic data is fallback only for teams with zero real games. A **real-sample badge** ("N real" / "0 real · est.") on each fixture-detail team shows how much real data backs the figures.
 - P1: (done 2026-07-25) "Refresh data" button on dashboard → triggers live re-sync.
 - P1: (done 2026-07-25) APScheduler auto-refresh of all leagues every 12h.
 - P2: Backtesting per league; bet tracking + Kelly staking (backend endpoints built, frontend page pending — user deferred); email alerts; automated corner-odds feed.

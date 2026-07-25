@@ -183,11 +183,23 @@ const Metric = ({ label, value, accent }) => (
 
 function TeamBreakdown({ team, title, highlight }) {
   const [split, setSplit] = useState(highlight);
+  const [count, setCount] = useState("5");
   const rows = [["3", "Last 3"], ["5", "Last 5"], ["10", "Last 10"], ["0", "Season"]];
+  const recentAll = team.recent || [];
+  const filtered = recentAll.filter((m) => split === "overall" || (split === "home" ? m.home : !m.home));
+  const games = filtered.slice(0, parseInt(count, 10));
+  const fmtDate = (d) => new Date(d).toLocaleDateString(undefined, { month: "short", day: "numeric" });
   return (
     <div className="bg-card border border-border rounded-lg overflow-hidden">
       <div className="px-4 py-3 border-b border-border flex items-center gap-3">
         <h3 className="font-head font-semibold text-sm flex-1">{title}</h3>
+        <span
+          data-testid={`bd-samples-${highlight}`}
+          className={`text-[10px] px-2 py-0.5 rounded border font-mono-data ${team.real_samples >= 5 ? "bg-emerald-500/15 text-emerald-400 border-emerald-500/30" : "bg-amber-500/15 text-amber-400 border-amber-500/30"}`}
+          title="Number of real matches with corner data backing these figures"
+        >
+          {team.real_samples || 0} real{team.real_samples < 5 ? " · est." : ""}
+        </span>
         <Tabs value={split} onValueChange={setSplit}>
           <TabsList className="bg-secondary h-8">
             {["home", "away", "overall"].map((s) => (
@@ -219,6 +231,46 @@ function TeamBreakdown({ team, title, highlight }) {
               </tr>
             );
           })}
+        </tbody>
+      </table>
+
+      {/* Per-game breakdown */}
+      <div className="px-4 py-2.5 border-t border-border flex items-center gap-3">
+        <span className="text-[10px] uppercase tracking-wider text-muted-foreground flex-1">Recent games ({split})</span>
+        <Tabs value={count} onValueChange={setCount}>
+          <TabsList className="bg-secondary h-7">
+            {["5", "10"].map((c) => (
+              <TabsTrigger key={c} value={c} data-testid={`bd-count-${highlight}-${c}`} className="text-xs px-2.5 h-5">Last {c}</TabsTrigger>
+            ))}
+          </TabsList>
+        </Tabs>
+      </div>
+      <table className="w-full">
+        <thead>
+          <tr className="border-b border-border text-muted-foreground text-[10px] uppercase tracking-wider">
+            <th className="text-left font-medium px-4 py-1.5">Date</th>
+            <th className="text-left font-medium px-4 py-1.5">Opponent</th>
+            <th className="text-center font-medium px-2 py-1.5">V</th>
+            <th className="text-right font-medium px-4 py-1.5">Won</th>
+            <th className="text-right font-medium px-4 py-1.5">Conc</th>
+            <th className="text-right font-medium px-4 py-1.5">Total</th>
+          </tr>
+        </thead>
+        <tbody className="font-mono-data text-sm" data-testid={`bd-recent-${highlight}`}>
+          {games.length === 0 ? (
+            <tr><td colSpan={6} className="px-4 py-4 text-center text-muted-foreground text-xs">No real games on this split</td></tr>
+          ) : games.map((m, i) => (
+            <tr key={i} className="border-b border-border/50 hover:bg-white/5 transition-colors duration-150">
+              <td className="px-4 py-1.5 text-muted-foreground text-xs">{fmtDate(m.date)}</td>
+              <td className="px-4 py-1.5 text-foreground font-sans text-xs whitespace-nowrap truncate max-w-[140px]">{m.opponent}</td>
+              <td className="px-2 py-1.5 text-center">
+                <span className={`text-[9px] px-1 py-0.5 rounded ${m.home ? "bg-primary/15 text-primary" : "bg-zinc-500/15 text-zinc-400"}`}>{m.home ? "H" : "A"}</span>
+              </td>
+              <td className="px-4 py-1.5 text-right text-emerald-400 font-semibold">{m.won}</td>
+              <td className="px-4 py-1.5 text-right text-red-400">{m.conceded}</td>
+              <td className="px-4 py-1.5 text-right text-foreground">{m.total}</td>
+            </tr>
+          ))}
         </tbody>
       </table>
     </div>

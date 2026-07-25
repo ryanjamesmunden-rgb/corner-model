@@ -1,0 +1,42 @@
+{
+  "summary": "Full pre-launch regression of The Corner Model 2.0. Backend: rewrote /app/backend/tests/backend_test.py into 54 pytest cases covering auth gating (12 protected routes + invalid/expired token), /api/leagues (14 leagues w/ data_source+season), teams (splits/windows), matchups (side re-rank, projection, tiers), fixtures + fixture detail (splits/recent/real_samples), odds merge + EV formula + tier, scanner (sort/filters/EV formula), streaks (threshold, min_hits, side, window, within_days), trends (metric/side/scope, delta>0 + sort), best-bets, top-mismatches, refresh (returns in <5s), bankroll and bet lifecycle. 54/54 pass. Frontend: verified login gating, cookie auth, root->/scanner redirect, Value Finder (3 best-bet cards, 7 mismatch rows, 489 scanner rows, filters, row->fixture nav), Leagues (league switcher, matchup side toggle re-rank, Mismatch/Lean badges, split/window tabs, refresh toast), Streaks (Hot Form side/window/metric/scope; Consistency side/preset/threshold/timeframe/scope + Edge column + empty state), Fixture detail (inline odds EV recalc, quick-paste parse, persistence after reload, split tabs, Last 5/10 toggle, real-sample badge), nav tabs, back button, logout. Only 2 minor cosmetic issues found; no functional breakage.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "POST /api/leagues/{id}/refresh", "issue": "No concurrency guard - each click spawns a new sync_real.py subprocess. Repeated clicks (or a user spamming Refresh data) can launch many parallel API-Football syncs and burn quota. Suggest an in-progress flag per league."},
+      {"endpoint": "GET /api/scanner, /api/leagues/{id}/fixtures", "issue": "N+1 sequential Mongo query pattern (_odds_for called once per fixture inside the loop). Works today (~140 fixtures, ~1.5s) but will degrade as fixtures grow; batch with a single $in query."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Login (/login)", "issues": ["Copy says 'Auto-updating Poisson model across 7 leagues' but the app now serves 14 leagues (src/pages/Login.jsx:32). Visible on the public landing page - should be fixed before launch."]},
+      {"screen": "All pages @ 390px mobile", "issues": ["Horizontal overflow: document.scrollWidth = 440 on a 390px viewport. The header (logo + 3 nav icons + league switcher + avatar/logout) does not fit; the league switcher and logout are pushed off-screen and the whole page scrolls sideways."]},
+      {"screen": "Fixture detail - Quick-Paste Bookmaker Odds", "issues": ["Parser only accepts TOTAL corner lines (label says so). Pasting 'Home Over 4.5 2.05' is silently ignored with no feedback - consider supporting team lines or showing 'x of y lines parsed'."]}
+    ]
+  },
+  "test_report_links": ["/app/backend/tests/backend_test.py", "/app/test_reports/pytest/pytest_results.xml"],
+  "action_items": [
+    "Update Login.jsx copy from '7 leagues' to '14 leagues' before public launch.",
+    "Fix mobile (<=390px) header horizontal overflow (scrollWidth 440 vs 390).",
+    "Add an in-progress guard to POST /api/leagues/{id}/refresh so repeated clicks don't spawn parallel API-Football syncs.",
+    "Optional: batch odds lookups in /api/scanner and /api/leagues/{id}/fixtures to remove the N+1 query loop."
+  ],
+  "critical_code_review_comments": [
+    "server.py is 869 lines (>700 threshold) - split into modules (poisson/model, auth, routes: leagues, fixtures, scanner, streaks, bets).",
+    "seed_data() still seeds the legacy 7 synthetic leagues/teams when the DB is empty; on a fresh deploy (e.g. production) the app would start with mock data and mock team names until sync_real.py runs. Ensure the real sync runs on first boot or gate the synthetic seed behind an env flag.",
+    "_real_avg() silently falls back to the full (overall) match pool when a team has no games at the requested venue, so a column labelled 'AWAY CORNERS /G' can actually be showing overall form with no indication to the user.",
+    "matchups league_avg_won and _all_mismatches league_avgs are computed with _src(), which includes synthetic matches for the ~60/280 teams that still have zero real games - this mixes synthetic numbers into the 'real data' league baseline used for strong/decent tiering.",
+    "POST /api/auth/logout only deletes the session when the cookie is present; a Bearer-token client cannot log out (token stays valid for 7 days).",
+    "Duplicated 'earliest upcoming fixture per team' logic exists both in _next_fixtures() and inline in /api/streaks (~12 lines) - DRY violation."
+  ],
+  "updated_files": ["/app/backend/tests/backend_test.py"],
+  "success_rate": {"backend": "100% (54/54)", "frontend": "100% of flows functional; 2 cosmetic issues"},
+  "seed_data_creation": "Inserted 2 test users + sessions in test_database (users/user_sessions) per /app/auth_testing.md. Bet/bankroll tests create and delete their own records. Odds tests wrote book odds onto a few eng-pl/ned-ed fixtures (pre-seeded placeholder odds were already mocked); the one inflated value on Portsmouth v QPR total_over_9.5 was reset to 1.62. One /api/leagues/aus-al/refresh was triggered (single call).",
+  "should_call_test_agent_after_fix": false,
+  "should_main_agent_self_test": true,
+  "test_credentials": "Emergent Google OAuth only - no passwords. Active test session token: test_session_t1b_1784987568398 (valid 7 days; use as Bearer header or httpOnly/secure/sameSite=None cookie on corner-value-scan.preview.emergentagent.com).",
+  "context_for_next_testing_agent": "Backend suite at /app/backend/tests/backend_test.py (54 tests, pytest-xdist parallel, ~5s). It self-provisions a session via pymongo. Do NOT click logout in a Playwright run before other tests - it deletes the session row and invalidates the shared token for the rest of the run (run logout last). Note that Playwright inner_text() does not include <input> values on fixture-detail market rows; use page.input_value('[data-testid=\"odds-input-<key>\"]'). Avoid triggering more than one /refresh (real API-Football calls).",
+  "rca_of_the_issue": "Login copy '7 leagues' is a leftover from the original 7-league MVP (same origin as the legacy LEAGUES constant in seed_data). Mobile overflow is caused by the fixed-width league switcher (w-[180px]) plus nav items in a single non-wrapping header row in Layout.jsx."
+}

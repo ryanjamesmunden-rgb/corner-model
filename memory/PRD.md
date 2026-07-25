@@ -42,6 +42,14 @@ Multi-league corner value betting web app. Rebuilds a spreadsheet corner model i
 - League IDs: ned-ed=89, nor-el=103, aus-al=188, bra-sa=71, fin-vk=244, swe-al=113, eng-pl=39.
 - NOTE: seeded bookmaker odds are PLACEHOLDER (model-derived) so the scanner isn't empty — user pastes REAL corner odds per fixture for true EV.
 
+## League Set Update (2026-07-25)
+- Reconfigured to 14 leagues (dropped Finland/Sweden; kept Norway). API-Football IDs in `sync_real.py` LEAGUE_META:
+  England: Premier League 39, Championship 40, League One 41, League Two 42, National League 43;
+  Netherlands: Eredivisie 88, Eerste Divisie 89; Brazil: Série A 71, Série B 72;
+  Italy Serie A 135, France Ligue 1 61, Spain La Liga 140, Norway Eliteserien 103, Australia A-League 188.
+- `sync_real.py` now upserts league docs (name/country) and has 429 rate-limit backoff (15s retry + 0.25s pacing).
+- All 14 leagues synced with real data (data_source: real, season 2026).
+
 ## Backlog / Remaining
 - P1: (done 2026-07-25) "Refresh data" button on dashboard → triggers live re-sync.
 - P1: (done 2026-07-25) APScheduler auto-refresh of all leagues every 12h.

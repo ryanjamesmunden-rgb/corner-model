@@ -25,21 +25,43 @@ HEADERS = {"x-apisports-key": KEY}
 client = AsyncIOMotorClient(os.environ["MONGO_URL"])
 db = client[os.environ["DB_NAME"]]
 
-# my league_id -> API-Football league id
-LEAGUE_MAP = {
-    "ned-ed": 89, "nor-el": 103, "aus-al": 188, "bra-sa": 71,
-    "fin-vk": 244, "swe-al": 113, "eng-pl": 39,
+# my league_id -> API-Football metadata
+LEAGUE_META = {
+    "eng-pl":  {"api": 39,  "name": "Premier League",  "country": "England"},
+    "eng-ch":  {"api": 40,  "name": "Championship",     "country": "England"},
+    "eng-l1":  {"api": 41,  "name": "League One",       "country": "England"},
+    "eng-l2":  {"api": 42,  "name": "League Two",       "country": "England"},
+    "eng-nl":  {"api": 43,  "name": "National League",  "country": "England"},
+    "aus-al":  {"api": 188, "name": "A-League",         "country": "Australia"},
+    "nor-el":  {"api": 103, "name": "Eliteserien",      "country": "Norway"},
+    "ned-ere": {"api": 88,  "name": "Eredivisie",       "country": "Netherlands"},
+    "ned-ed":  {"api": 89,  "name": "Eerste Divisie",   "country": "Netherlands"},
+    "bra-sa":  {"api": 71,  "name": "Série A",          "country": "Brazil"},
+    "bra-sb":  {"api": 72,  "name": "Série B",          "country": "Brazil"},
+    "ita-sa":  {"api": 135, "name": "Serie A",          "country": "Italy"},
+    "fra-l1":  {"api": 61,  "name": "Ligue 1",          "country": "France"},
+    "esp-ll":  {"api": 140, "name": "La Liga",          "country": "Spain"},
 }
 STATS_CAP = 60  # max per-fixture statistics calls per league
 
 
-async def af_get(hc, path, params=None):
-    r = await hc.get(f"{BASE}{path}", params=params or {}, headers=HEADERS, timeout=30.0)
-    r.raise_for_status()
-    data = r.json()
-    if data.get("errors"):
-        raise RuntimeError(f"{path} -> {data['errors']}")
-    return data["response"]
+async def af_get(hc, path, params=None, retries=6):
+    for attempt in range(retries):
+        r = await hc.get(f"{BASE}{path}", params=params or {}, headers=HEADERS, timeout=30.0)
+        if r.status_code == 429:
+            await asyncio.sleep(15)
+            continue
+        r.raise_for_status()
+        data = r.json()
+        errs = data.get("errors")
+        if isinstance(errs, dict) and errs.get("rateLimit"):
+            await asyncio.sleep(15)
+            continue
+        if errs:
+            raise RuntimeError(f"{path} -> {errs}")
+        await asyncio.sleep(0.25)
+        return data["response"]
+    raise RuntimeError(f"{path} -> rate limited after {retries} retries")
 
 
 async def current_season(hc, api_id):
@@ -62,7 +84,8 @@ def _synth_matches(mean_for, mean_ag, n, rng):
 
 
 async def sync_league(hc, my_lid):
-    api_id = LEAGUE_MAP[my_lid]
+    meta = LEAGUE_META[my_lid]
+    api_id = meta["api"]
     season = await current_season(hc, api_id)
     print(f"[{my_lid}] api={api_id} season={season}")
 
@@ -180,13 +203,16 @@ async def sync_league(hc, my_lid):
         await db.odds.insert_many(odds_docs)
 
     await db.leagues.update_one({"league_id": my_lid},
-                                {"$set": {"data_source": "real", "season": season,
-                                          "synced_at": datetime.now(timezone.utc).isoformat()}})
+                                {"$set": {"league_id": my_lid, "name": meta["name"],
+                                          "country": meta["country"], "data_source": "real",
+                                          "season": season,
+                                          "synced_at": datetime.now(timezone.utc).isoformat()}},
+                                upsert=True)
     print(f"[{my_lid}] DONE teams={len(team_docs)} fixtures={len(fixture_docs)} odds={len(odds_docs)}")
 
 
 async def main():
-    targets = [sys.argv[1]] if len(sys.argv) > 1 else list(LEAGUE_MAP.keys())
+    targets = sys.argv[1:] if len(sys.argv) > 1 else list(LEAGUE_META.keys())
     async with httpx.AsyncClient() as hc:
         for lid in targets:
             try:

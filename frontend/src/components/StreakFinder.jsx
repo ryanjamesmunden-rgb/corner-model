@@ -86,14 +86,16 @@ export default function StreakFinder({ leagueId }) {
               <th className="text-right font-medium px-4 py-2.5">Avg</th>
               <th className="text-left font-medium px-4 py-2.5 hidden md:table-cell">Recent ({side})</th>
               <th className="text-left font-medium px-4 py-2.5">Next</th>
+              <th className="text-right font-medium px-4 py-2.5">Opp conc</th>
+              <th className="text-right font-medium px-4 py-2.5">Model odds</th>
               <th className="px-4 py-2.5"></th>
             </tr>
           </thead>
           <tbody className="font-mono-data text-sm">
             {loading ? (
-              <tr><td colSpan={7} className="px-4 py-12 text-center text-muted-foreground animate-pulse">Scanning corner streaks…</td></tr>
+              <tr><td colSpan={9} className="px-4 py-12 text-center text-muted-foreground animate-pulse">Scanning corner streaks…</td></tr>
             ) : rows.length === 0 ? (
-              <tr><td colSpan={7} className="px-4 py-12 text-center text-muted-foreground">No teams match this streak. Try a lower threshold or a wider window.</td></tr>
+              <tr><td colSpan={9} className="px-4 py-12 text-center text-muted-foreground">No teams match this streak. Try a lower threshold or a wider window.</td></tr>
             ) : rows.map((r) => (
               <tr
                 key={r.team_id}
@@ -125,6 +127,20 @@ export default function StreakFinder({ leagueId }) {
                 </td>
                 <td className="px-4 py-2.5 text-xs text-muted-foreground whitespace-nowrap">
                   {r.next_fixture ? `${r.next_fixture.is_home ? "vs" : "@"} ${r.next_fixture.opponent} · ${fmt(r.next_fixture.date)}` : "—"}
+                </td>
+                <td className="px-4 py-2.5 text-right">
+                  {r.projection ? (
+                    <span className={r.projection.opp_conceded >= r.line ? "text-emerald-400" : "text-muted-foreground"}>
+                      {r.projection.opp_conceded.toFixed(1)}
+                    </span>
+                  ) : <span className="text-muted-foreground">—</span>}
+                </td>
+                <td className="px-4 py-2.5 text-right whitespace-nowrap">
+                  {r.projection ? (
+                    <span className="text-foreground font-semibold" title={`Model: ${r.projection.prob.toFixed(1)}% to win ${r.line}+ corners (λ ${r.projection.lambda})`}>
+                      {r.projection.fair_odds?.toFixed(2)}
+                    </span>
+                  ) : <span className="text-muted-foreground">—</span>}
                 </td>
                 <td className="px-4 py-2.5 text-right">{r.next_fixture && <ArrowRight className="h-4 w-4 text-muted-foreground inline" />}</td>
               </tr>

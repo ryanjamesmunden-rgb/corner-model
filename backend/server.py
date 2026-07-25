@@ -422,6 +422,21 @@ async def scanner(league_id: Optional[str] = None, market: Optional[str] = None,
     return results
 
 
+def _real_avg(team, side, field):
+    rms = (team or {}).get("real_matches") or []
+    if side == "home":
+        pool = [m for m in rms if m["home"]]
+    elif side == "away":
+        pool = [m for m in rms if not m["home"]]
+    else:
+        pool = rms
+    if not pool:
+        pool = rms
+    if not pool:
+        return None
+    return sum(m[field] for m in pool) / len(pool)
+
+
 @api_router.get("/streaks")
 async def streaks(league_id: Optional[str] = None, side: str = "overall", window: int = 5,
                   min_hits: int = 5, threshold: Optional[int] = None, min_line: int = 3,
@@ -430,6 +445,7 @@ async def streaks(league_id: Optional[str] = None, side: str = "overall", window
     (e.g. 4+ corners in 5/5 home games, or 8/10 last 10)."""
     q = {} if not league_id or league_id == "all" else {"league_id": league_id}
     teams = await db.teams.find(q, {"_id": 0}).to_list(1000)
+    teams_by_id = {t["team_id"]: t for t in teams}
     leagues = {l["league_id"]: l["name"] for l in await db.leagues.find({}, {"_id": 0}).to_list(100)}
 
     # earliest upcoming fixture per team
@@ -437,11 +453,11 @@ async def streaks(league_id: Optional[str] = None, side: str = "overall", window
     fixtures.sort(key=lambda f: f["date"])
     next_fx = {}
     for fx in fixtures:
-        for tid, opp, is_home in ((fx["home_team_id"], fx["away_name"], True),
-                                  (fx["away_team_id"], fx["home_name"], False)):
+        for tid, opp, opp_id, is_home in ((fx["home_team_id"], fx["away_name"], fx["away_team_id"], True),
+                                          (fx["away_team_id"], fx["home_name"], fx["home_team_id"], False)):
             if tid not in next_fx:
                 next_fx[tid] = {"fixture_id": fx["fixture_id"], "date": fx["date"],
-                                "opponent": opp, "is_home": is_home}
+                                "opponent": opp, "opponent_team_id": opp_id, "is_home": is_home}
 
     results = []
     for t in teams:
@@ -466,13 +482,26 @@ async def streaks(league_id: Optional[str] = None, side: str = "overall", window
             continue
         recent = [{"corners": m["corners_for"], "opponent": m["opponent"], "home": m["home"], "date": m["date"]}
                   for m in reversed(pool)]
+        nf = next_fx.get(t["team_id"])
+        projection = None
+        if nf:
+            opp = teams_by_id.get(nf["opponent_team_id"])
+            team_venue = "home" if nf["is_home"] else "away"
+            opp_venue = "away" if nf["is_home"] else "home"
+            t_for = _real_avg(t, team_venue, "corners_for")
+            o_against = _real_avg(opp, opp_venue, "corners_against")
+            if t_for is not None and o_against is not None:
+                lam = round((t_for + o_against) / 2, 2)
+                p = poisson_ge(line, lam)
+                projection = {"team_for": round(t_for, 2), "opp_conceded": round(o_against, 2),
+                              "lambda": lam, "prob": round(p * 100, 1), "fair_odds": fair_odds(p)}
         results.append({
             "team_id": t["team_id"], "name": t["name"], "league_id": t["league_id"],
             "league_name": leagues.get(t["league_id"], ""), "side": side, "window": window,
             "min_hits": min_hits, "hits": hits, "line": line,
             "avg": round(sum(wons) / len(wons), 2), "min_won": min(wons), "max_won": max(wons),
             "real_samples": t.get("real_samples", 0), "recent": recent,
-            "next_fixture": next_fx.get(t["team_id"]),
+            "next_fixture": nf, "projection": projection,
         })
     results.sort(key=lambda x: (x["line"], x["hits"], x["avg"]), reverse=True)
     return results

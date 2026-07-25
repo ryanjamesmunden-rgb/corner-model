@@ -561,9 +561,21 @@ app.add_middleware(
 )
 
 
+def run_sync_all():
+    import subprocess, sys
+    logger.info("Scheduled sync: launching sync_real.py for all leagues")
+    subprocess.Popen([sys.executable, str(ROOT_DIR / "sync_real.py")], cwd=str(ROOT_DIR))
+
+
 @app.on_event("startup")
 async def on_startup():
     await seed_data()
+    from apscheduler.schedulers.asyncio import AsyncIOScheduler
+    scheduler = AsyncIOScheduler(timezone="UTC")
+    scheduler.add_job(run_sync_all, "interval", hours=12, id="sync_all", replace_existing=True)
+    scheduler.start()
+    app.state.scheduler = scheduler
+    logger.info("Auto-refresh scheduler started (every 12h)")
 
 
 @app.on_event("shutdown")

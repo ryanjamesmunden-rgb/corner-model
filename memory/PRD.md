@@ -43,9 +43,9 @@ Multi-league corner value betting web app. Rebuilds a spreadsheet corner model i
 - NOTE: seeded bookmaker odds are PLACEHOLDER (model-derived) so the scanner isn't empty — user pastes REAL corner odds per fixture for true EV.
 
 ## Backlog / Remaining
-- P1: Background scheduler (cron) to auto-refresh all leagues each round instead of manual refresh.
-- P1: "Refresh data" button on dashboard wired to the refresh endpoint.
-- P2: Backtesting per league; bet tracking + Kelly staking (backend endpoints built, frontend page pending); email alerts; automated corner-odds feed.
+- P1: (done 2026-07-25) "Refresh data" button on dashboard → triggers live re-sync.
+- P1: (done 2026-07-25) APScheduler auto-refresh of all leagues every 12h.
+- P2: Backtesting per league; bet tracking + Kelly staking (backend endpoints built, frontend page pending — user deferred); email alerts; automated corner-odds feed.
 
 ## Next Tasks
 - Integrate live data API when key is available; add background scheduler for auto-refresh.

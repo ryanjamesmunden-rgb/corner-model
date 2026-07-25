@@ -10,6 +10,7 @@ export const api = {
   fixture: (id) => axios.get(`${API}/fixtures/${id}`).then((r) => r.data),
   setOdds: (id, odds) => axios.post(`${API}/fixtures/${id}/odds`, { odds }).then((r) => r.data),
   scanner: (params) => axios.get(`${API}/scanner`, { params }).then((r) => r.data),
+  refresh: (id) => axios.post(`${API}/leagues/${id}/refresh`).then((r) => r.data),
 };
 
 export const tierMeta = {

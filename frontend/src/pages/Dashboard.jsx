@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
-import { CalendarClock, ArrowRight, Flag } from "lucide-react";
+import { toast } from "sonner";
+import { CalendarClock, ArrowRight, Flag, RefreshCw } from "lucide-react";
 import { api, confMeta, tierMeta } from "@/lib/api";
 import { useLeague } from "@/context/LeagueContext";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -15,21 +16,57 @@ export default function Dashboard() {
   const [teams, setTeams] = useState([]);
   const [split, setSplit] = useState("overall");
   const [window, setWindow] = useState("5");
+  const [syncing, setSyncing] = useState(false);
   const league = leagues.find((l) => l.league_id === leagueId);
+
+  const loadData = () => {
+    api.fixtures(leagueId).then(setFixtures).catch(() => setFixtures([]));
+    api.teams(leagueId, split, window).then(setTeams).catch(() => setTeams([]));
+  };
 
   useEffect(() => { api.fixtures(leagueId).then(setFixtures).catch(() => setFixtures([])); }, [leagueId]);
   useEffect(() => { api.teams(leagueId, split, window).then(setTeams).catch(() => setTeams([])); }, [leagueId, split, window]);
+
+  const handleRefresh = async () => {
+    setSyncing(true);
+    try {
+      await api.refresh(leagueId);
+      toast.success("Live sync started — pulling latest fixtures & corner stats. Refreshing in ~90s…");
+      setTimeout(() => { loadData(); setSyncing(false); toast.success(`${league?.name} data updated`); }, 90000);
+    } catch {
+      toast.error("Could not start sync");
+      setSyncing(false);
+    }
+  };
 
   const fmtDate = (d) => new Date(d).toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
 
   return (
     <div className="space-y-6" data-testid="dashboard-page">
-      <div>
-        <div className="flex items-center gap-2 text-primary mb-1">
-          <Flag className="h-4 w-4" />
-          <span className="font-mono-data text-xs tracking-widest uppercase">{league?.country} · {league?.name}</span>
+      <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-3">
+        <div>
+          <div className="flex items-center gap-2 text-primary mb-1">
+            <Flag className="h-4 w-4" />
+            <span className="font-mono-data text-xs tracking-widest uppercase">{league?.country} · {league?.name}</span>
+          </div>
+          <h1 className="font-head text-3xl sm:text-4xl font-bold tracking-tight">League Dashboard</h1>
         </div>
-        <h1 className="font-head text-3xl sm:text-4xl font-bold tracking-tight">League Dashboard</h1>
+        <div className="flex items-center gap-3">
+          {league?.synced_at && (
+            <span className="font-mono-data text-[11px] text-muted-foreground hidden sm:inline">
+              Synced {new Date(league.synced_at).toLocaleDateString()} · {league.data_source === "real" ? "LIVE" : "demo"}
+            </span>
+          )}
+          <button
+            data-testid="refresh-data-btn"
+            onClick={handleRefresh}
+            disabled={syncing}
+            className="flex items-center gap-2 bg-secondary hover:bg-white/10 border border-border text-sm font-medium rounded-md px-3 py-2 transition-colors duration-150 disabled:opacity-60"
+          >
+            <RefreshCw className={`h-4 w-4 ${syncing ? "animate-spin" : ""}`} />
+            {syncing ? "Syncing…" : "Refresh data"}
+          </button>
+        </div>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-5 gap-6">

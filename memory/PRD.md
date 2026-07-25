@@ -50,7 +50,10 @@ Multi-league corner value betting web app. Rebuilds a spreadsheet corner model i
 - `sync_real.py` now upserts league docs (name/country) and has 429 rate-limit backoff (15s retry + 0.25s pacing).
 - All 14 leagues synced with real data (data_source: real, season 2026).
 
-## Backlog / Remaining
+## Corner Streak Finder + Real-Data Model (2026-07-25)
+- New **Corner Streak Finder** on the dashboard home: finds teams that hit a team-corner threshold consistently over recent REAL games (presets 5/5, 8/10, 9/10, 10/10; Home/Away/Overall; auto-best-line or fixed 3+..7+; per-league or all-leagues). Shows hit rate, avg, color-coded recent games, and the team's next fixture (click → fixture detail to paste odds). Backend: GET /api/streaks.
+- **Accuracy fix**: `sync_real.py` now stores `real_matches` per team and the Poisson model uses REAL games only (synthetic padding only as fallback for teams with <5 real games). STATS_CAP raised to 120 for deeper real coverage. Probabilities/confidence now reflect actual corner data.
+- Streaks and form use `real_matches`; teams need ≥window real games on the chosen side to appear (honest sampling).
 - P1: (done 2026-07-25) "Refresh data" button on dashboard → triggers live re-sync.
 - P1: (done 2026-07-25) APScheduler auto-refresh of all leagues every 12h.
 - P2: Backtesting per league; bet tracking + Kelly staking (backend endpoints built, frontend page pending — user deferred); email alerts; automated corner-odds feed.

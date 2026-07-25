@@ -5,6 +5,7 @@ import { CalendarClock, ArrowRight, Flag, RefreshCw } from "lucide-react";
 import { api, confMeta, tierMeta } from "@/lib/api";
 import { useLeague } from "@/context/LeagueContext";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import StreakFinder from "@/components/StreakFinder";
 
 const SPLITS = [{ v: "overall", l: "Overall" }, { v: "home", l: "Home" }, { v: "away", l: "Away" }];
 const WINDOWS = [{ v: "3", l: "Last 3" }, { v: "5", l: "Last 5" }, { v: "10", l: "Last 10" }];
@@ -68,6 +69,8 @@ export default function Dashboard() {
           </button>
         </div>
       </div>
+
+      <StreakFinder leagueId={leagueId} />
 
       <div className="grid grid-cols-1 lg:grid-cols-5 gap-6">
         {/* Fixtures */}

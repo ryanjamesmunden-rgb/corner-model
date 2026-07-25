@@ -422,6 +422,62 @@ async def scanner(league_id: Optional[str] = None, market: Optional[str] = None,
     return results
 
 
+@api_router.get("/streaks")
+async def streaks(league_id: Optional[str] = None, side: str = "overall", window: int = 5,
+                  min_hits: int = 5, threshold: Optional[int] = None, min_line: int = 3,
+                  user: dict = Depends(get_current_user)):
+    """Teams that hit a team-corner threshold consistently over recent REAL games
+    (e.g. 4+ corners in 5/5 home games, or 8/10 last 10)."""
+    q = {} if not league_id or league_id == "all" else {"league_id": league_id}
+    teams = await db.teams.find(q, {"_id": 0}).to_list(1000)
+    leagues = {l["league_id"]: l["name"] for l in await db.leagues.find({}, {"_id": 0}).to_list(100)}
+
+    # earliest upcoming fixture per team
+    fixtures = await db.fixtures.find(q, {"_id": 0}).to_list(1000)
+    fixtures.sort(key=lambda f: f["date"])
+    next_fx = {}
+    for fx in fixtures:
+        for tid, opp, is_home in ((fx["home_team_id"], fx["away_name"], True),
+                                  (fx["away_team_id"], fx["home_name"], False)):
+            if tid not in next_fx:
+                next_fx[tid] = {"fixture_id": fx["fixture_id"], "date": fx["date"],
+                                "opponent": opp, "is_home": is_home}
+
+    results = []
+    for t in teams:
+        rms = t.get("real_matches") or []
+        if side == "home":
+            pool = [m for m in rms if m["home"]]
+        elif side == "away":
+            pool = [m for m in rms if not m["home"]]
+        else:
+            pool = list(rms)
+        pool = pool[-window:]
+        if len(pool) < window:
+            continue
+        wons = [m["corners_for"] for m in pool]
+        if threshold is not None:
+            line = int(threshold)
+            hits = sum(1 for w in wons if w >= line)
+        else:
+            line = max((x for x in range(1, 16) if sum(1 for w in wons if w >= x) >= min_hits), default=0)
+            hits = sum(1 for w in wons if w >= line)
+        if line < min_line or hits < min_hits:
+            continue
+        recent = [{"corners": m["corners_for"], "opponent": m["opponent"], "home": m["home"], "date": m["date"]}
+                  for m in reversed(pool)]
+        results.append({
+            "team_id": t["team_id"], "name": t["name"], "league_id": t["league_id"],
+            "league_name": leagues.get(t["league_id"], ""), "side": side, "window": window,
+            "min_hits": min_hits, "hits": hits, "line": line,
+            "avg": round(sum(wons) / len(wons), 2), "min_won": min(wons), "max_won": max(wons),
+            "real_samples": t.get("real_samples", 0), "recent": recent,
+            "next_fixture": next_fx.get(t["team_id"]),
+        })
+    results.sort(key=lambda x: (x["line"], x["hits"], x["avg"]), reverse=True)
+    return results
+
+
 # ----------------------------- Bet Tracking + Kelly -----------------------------
 
 def kelly_fraction(prob: float, book_odds: float) -> float:

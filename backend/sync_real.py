@@ -42,7 +42,7 @@ LEAGUE_META = {
     "fra-l1":  {"api": 61,  "name": "Ligue 1",          "country": "France"},
     "esp-ll":  {"api": 140, "name": "La Liga",          "country": "Spain"},
 }
-STATS_CAP = 60  # max per-fixture statistics calls per league
+STATS_CAP = 120  # max per-fixture statistics calls per league
 
 
 async def af_get(hc, path, params=None, retries=6):
@@ -114,10 +114,13 @@ async def sync_league(hc, my_lid):
     samples = {tid: [] for tid in all_team_ids}
     league_corners = []
     recent = ft[-STATS_CAP:] if len(ft) > STATS_CAP else ft
-    for f in reversed(recent):
+    for f in recent:
         fid = f["fixture"]["id"]
         hid = f["teams"]["home"]["id"]
         aid = f["teams"]["away"]["id"]
+        hname = f["teams"]["home"]["name"]
+        aname = f["teams"]["away"]["name"]
+        fdate = f["fixture"]["date"]
         try:
             st = await af_get(hc, "/fixtures/statistics", {"fixture": fid})
         except Exception as e:
@@ -126,32 +129,33 @@ async def sync_league(hc, my_lid):
         for t in st:
             c = next((s["value"] for s in t["statistics"] if s["type"] == "Corner Kicks"), None)
             corners[t["team"]["id"]] = c if isinstance(c, int) else 0
+        if hid not in corners or aid not in corners:
+            continue
         hc_, ac_ = corners.get(hid, 0), corners.get(aid, 0)
         league_corners += [hc_, ac_]
-        if hid in samples and len(samples[hid]) < 12:
-            samples[hid].append({"home": True, "corners_for": hc_, "corners_against": ac_})
-        if aid in samples and len(samples[aid]) < 12:
-            samples[aid].append({"home": False, "corners_for": ac_, "corners_against": hc_})
-        if all(len(v) >= 10 for v in samples.values() if v):
-            pass
+        if hid in samples:
+            samples[hid].append({"home": True, "corners_for": hc_, "corners_against": ac_, "date": fdate, "opponent": aname})
+        if aid in samples:
+            samples[aid].append({"home": False, "corners_for": ac_, "corners_against": hc_, "date": fdate, "opponent": hname})
 
     league_avg = (sum(league_corners) / len(league_corners)) if league_corners else 5.0
     print(f"[{my_lid}] league avg corners/team/game = {league_avg:.2f}")
 
-    # build & upsert teams (real samples + synthetic top-up to 12)
+    # build & upsert teams: model uses REAL matches (synthetic only as fallback for sparse teams)
     await db.teams.delete_many({"league_id": my_lid})
     team_docs = []
     for tid, name in team_names.items():
         rng = random.Random(f"{my_lid}-{tid}")
-        real = samples.get(tid, [])
+        real = sorted(samples.get(tid, []), key=lambda m: m["date"])[-20:]  # chronological, newest last
         m_for = (sum(x["corners_for"] for x in real) / len(real)) if real else league_avg
         m_ag = (sum(x["corners_against"] for x in real) / len(real)) if real else league_avg
-        matches = list(real)
-        if len(matches) < 12:
-            matches = _synth_matches(m_for, m_ag, 12 - len(matches), rng) + matches
+        if len(real) >= 5:
+            matches = list(real)  # real data only -> accurate probabilities
+        else:
+            matches = _synth_matches(m_for, m_ag, max(0, 8 - len(real)), rng) + list(real)
         team_docs.append({
             "team_id": f"{my_lid}-{tid}", "api_team_id": tid, "league_id": my_lid,
-            "name": name, "matches": matches, "real_samples": len(real),
+            "name": name, "matches": matches, "real_matches": real, "real_samples": len(real),
         })
     if team_docs:
         await db.teams.insert_many(team_docs)

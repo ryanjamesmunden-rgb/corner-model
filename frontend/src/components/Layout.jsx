@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
-import { CornerDownRight, LayoutDashboard, Radar, LogOut } from "lucide-react";
+import { CornerDownRight, LayoutDashboard, Radar, Flame, LogOut } from "lucide-react";
 import { useAuth } from "@/context/AuthContext";
 import { LeagueContext } from "@/context/LeagueContext";
 import { api } from "@/lib/api";
@@ -25,8 +25,9 @@ export default function Layout({ children }) {
   };
 
   const nav = [
-    { to: "/scanner", label: "Value Scanner", icon: Radar },
-    { to: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
+    { to: "/scanner", label: "Value Finder", icon: Radar },
+    { to: "/dashboard", label: "Leagues", icon: LayoutDashboard },
+    { to: "/streaks", label: "Streaks", icon: Flame },
   ];
 
   return (

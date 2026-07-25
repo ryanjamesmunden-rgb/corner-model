@@ -11,6 +11,8 @@ export const api = {
   setOdds: (id, odds) => axios.post(`${API}/fixtures/${id}/odds`, { odds }).then((r) => r.data),
   scanner: (params) => axios.get(`${API}/scanner`, { params }).then((r) => r.data),
   streaks: (params) => axios.get(`${API}/streaks`, { params }).then((r) => r.data),
+  matchups: (id, side) => axios.get(`${API}/leagues/${id}/matchups`, { params: { side } }).then((r) => r.data),
+  trends: (params) => axios.get(`${API}/trends`, { params }).then((r) => r.data),
   refresh: (id) => axios.post(`${API}/leagues/${id}/refresh`).then((r) => r.data),
 };
 

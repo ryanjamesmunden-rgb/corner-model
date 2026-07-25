@@ -22,8 +22,8 @@ export default function AuthCallback() {
       try {
         const res = await axios.post(`${API}/auth/session`, { session_id: sessionId });
         setUser(res.data);
-        window.history.replaceState(null, "", "/dashboard");
-        navigate("/dashboard", { replace: true, state: { user: res.data } });
+        window.history.replaceState(null, "", "/scanner");
+        navigate("/scanner", { replace: true, state: { user: res.data } });
       } catch {
         navigate("/login", { replace: true });
       }

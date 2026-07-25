@@ -58,6 +58,12 @@ Multi-league corner value betting web app. Rebuilds a spreadsheet corner model i
 - (2026-07-25) Streak finder gained a live **Edge %** column (EV vs pasted team-corner odds, market key `{venue}_over_{line-0.5}`) and a **timeframe filter** (`within_days`: next 3/7/14 days) to focus on imminent fixtures.
 - (2026-07-25) **Value Scanner** now has a view toggle: "Total & Team Value" (existing scanner) and "Streak Picks" (reuses StreakFinder) — both edge signals on the home scan view.
 - (2026-07-25) Fixture drill-down now shows a **per-game breakdown** of each team's recent real games (date, opponent, H/A, corners won/conceded/total) with a Last 5/10 toggle that respects the Home/Away/Overall split. Backend `/api/fixtures/{id}` returns `recent` + `real_samples` per team.
+
+## App Restructure — 3 Tabs (2026-07-25)
+- Nav is now **Value Finder** (home `/scanner`, root redirects here), **Leagues** (`/dashboard`), **Streaks** (`/streaks`). Login/AuthCallback land on `/scanner`. Removed the in-Scanner streak toggle.
+- **Leagues** page: new **Top Corner Teams & Next Matchup** table (`MatchupTable`) with a **Home/Away/Overall** toggle; ranks teams by corners-won on the chosen venue, shows next fixture + opponent-conceded + proj λ + model line/odds, and highlights rows GREEN ("Mismatch") when a strong corner team meets a leaky defence, amber ("Lean") otherwise. Team Corner Form table kept below. Backend `GET /api/leagues/{id}/matchups?side=`.
+- **Streaks** page: **Hot Form** tab (`TrendFinder`, teams averaging more corners than their season baseline; Home/Away/Overall, Last 3/5/10, Total vs Won metric, league scope) + **Consistency** tab (existing StreakFinder). Backend `GET /api/trends?side=&window=&metric=`.
+- **Away form** supported across matchups, trends, streaks and per-game breakdown (some teams win corners regardless of venue).
 - (2026-07-25) **Model now uses REAL matches everywhere** via `_src()` helper (form tables, fixture splits, Poisson λ, confidence) — synthetic data is fallback only for teams with zero real games. A **real-sample badge** ("N real" / "0 real · est.") on each fixture-detail team shows how much real data backs the figures.
 - P1: (done 2026-07-25) "Refresh data" button on dashboard → triggers live re-sync.
 - P1: (done 2026-07-25) APScheduler auto-refresh of all leagues every 12h.

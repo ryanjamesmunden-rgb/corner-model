@@ -6,6 +6,7 @@ import AuthCallback from "@/pages/AuthCallback";
 import Login from "@/pages/Login";
 import Dashboard from "@/pages/Dashboard";
 import Scanner from "@/pages/Scanner";
+import Streaks from "@/pages/Streaks";
 import FixtureDetail from "@/pages/FixtureDetail";
 import Layout from "@/components/Layout";
 
@@ -32,8 +33,9 @@ function AppRouter() {
       <Route path="/login" element={<Login />} />
       <Route path="/dashboard" element={<ProtectedRoute><Dashboard /></ProtectedRoute>} />
       <Route path="/scanner" element={<ProtectedRoute><Scanner /></ProtectedRoute>} />
+      <Route path="/streaks" element={<ProtectedRoute><Streaks /></ProtectedRoute>} />
       <Route path="/fixture/:id" element={<ProtectedRoute><FixtureDetail /></ProtectedRoute>} />
-      <Route path="*" element={<Navigate to="/dashboard" replace />} />
+      <Route path="*" element={<Navigate to="/scanner" replace />} />
     </Routes>
   );
 }

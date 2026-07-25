@@ -458,6 +458,19 @@ def _real_avg(team, side, field):
     return sum(m[field] for m in pool) / len(pool)
 
 
+async def _next_fixtures(q):
+    fixtures = await db.fixtures.find(q, {"_id": 0}).to_list(2000)
+    fixtures.sort(key=lambda f: f["date"])
+    nf = {}
+    for fx in fixtures:
+        for tid, opp, opp_id, is_home in ((fx["home_team_id"], fx["away_name"], fx["away_team_id"], True),
+                                          (fx["away_team_id"], fx["home_name"], fx["home_team_id"], False)):
+            if tid not in nf:
+                nf[tid] = {"fixture_id": fx["fixture_id"], "date": fx["date"],
+                           "opponent": opp, "opponent_team_id": opp_id, "is_home": is_home}
+    return nf
+
+
 @api_router.get("/streaks")
 async def streaks(league_id: Optional[str] = None, side: str = "overall", window: int = 5,
                   min_hits: int = 5, threshold: Optional[int] = None, min_line: int = 3,
@@ -548,6 +561,86 @@ async def streaks(league_id: Optional[str] = None, side: str = "overall", window
         })
     results.sort(key=lambda x: (x["line"], x["hits"], x["avg"]), reverse=True)
     return results
+
+
+@api_router.get("/leagues/{league_id}/matchups")
+async def matchups(league_id: str, side: str = "overall", user: dict = Depends(get_current_user)):
+    """Top corner-winning teams in a league (by venue) with their next fixture + opponent-concede mismatch."""
+    teams = await db.teams.find({"league_id": league_id}, {"_id": 0}).to_list(200)
+    teams_by_id = {t["team_id"]: t for t in teams}
+    next_fx = await _next_fixtures({"league_id": league_id})
+    all_won = [m["corners_for"] for t in teams for m in (_src(t))]
+    avg = (sum(all_won) / len(all_won)) if all_won else 5.0
+    out = []
+    for t in teams:
+        side_for = _real_avg(t, side, "corners_for") or 0
+        overall_for = _real_avg(t, "overall", "corners_for") or 0
+        overall_ag = _real_avg(t, "overall", "corners_against") or 0
+        nf = next_fx.get(t["team_id"])
+        projection, tier = None, "none"
+        if nf:
+            venue = "home" if nf["is_home"] else "away"
+            opp_venue = "away" if nf["is_home"] else "home"
+            team_for = _real_avg(t, venue, "corners_for") or overall_for
+            opp = teams_by_id.get(nf["opponent_team_id"])
+            opp_conc = (_real_avg(opp, opp_venue, "corners_against") if opp else None)
+            if opp_conc is not None:
+                lam = round((team_for + opp_conc) / 2, 2)
+                line = max(3, round(lam) - 1)
+                p = poisson_ge(line, lam)
+                projection = {"team_for": round(team_for, 2), "opp_conceded": round(opp_conc, 2),
+                              "lambda": lam, "line": line, "prob": round(p * 100, 1), "fair_odds": fair_odds(p)}
+                if team_for >= avg * 1.1 and opp_conc >= avg * 1.1:
+                    tier = "strong"
+                elif lam >= avg * 1.08:
+                    tier = "decent"
+        out.append({"team_id": t["team_id"], "name": t["name"], "side": side,
+                    "side_for": round(side_for, 2), "overall_for": round(overall_for, 2),
+                    "overall_against": round(overall_ag, 2), "real_samples": t.get("real_samples", 0),
+                    "next_fixture": nf, "projection": projection, "tier": tier})
+    out.sort(key=lambda x: x["side_for"], reverse=True)
+    return {"league_avg_won": round(avg, 2), "teams": out}
+
+
+@api_router.get("/trends")
+async def trends(league_id: Optional[str] = None, window: int = 5, metric: str = "total",
+                 side: str = "overall", user: dict = Depends(get_current_user)):
+    """Teams currently averaging MORE corners than their season baseline (hot form), by venue."""
+    q = {} if not league_id or league_id == "all" else {"league_id": league_id}
+    teams = await db.teams.find(q, {"_id": 0}).to_list(1000)
+    leagues = {l["league_id"]: l["name"] for l in await db.leagues.find({}, {"_id": 0}).to_list(100)}
+    next_fx = await _next_fixtures(q)
+    out = []
+    for t in teams:
+        src = _src(t)
+        if side == "home":
+            pool = [m for m in src if m["home"]]
+        elif side == "away":
+            pool = [m for m in src if not m["home"]]
+        else:
+            pool = src
+        if len(pool) < window + 1:
+            continue
+        recent = pool[-window:]
+
+        def mean(rows, fn):
+            return round(sum(fn(m) for m in rows) / len(rows), 2)
+
+        rec_total = mean(recent, lambda m: m["corners_for"] + m["corners_against"])
+        season_total = mean(pool, lambda m: m["corners_for"] + m["corners_against"])
+        rec_won = mean(recent, lambda m: m["corners_for"])
+        season_won = mean(pool, lambda m: m["corners_for"])
+        delta = round((rec_total - season_total) if metric == "total" else (rec_won - season_won), 2)
+        if delta <= 0:
+            continue
+        out.append({"team_id": t["team_id"], "name": t["name"], "league_id": t["league_id"],
+                    "league_name": leagues.get(t["league_id"], ""), "window": window, "side": side,
+                    "recent_total": rec_total, "season_total": season_total,
+                    "recent_won": rec_won, "season_won": season_won,
+                    "delta": delta, "real_samples": t.get("real_samples", 0),
+                    "next_fixture": next_fx.get(t["team_id"])})
+    out.sort(key=lambda x: x["delta"], reverse=True)
+    return out
 
 
 # ----------------------------- Bet Tracking + Kelly -----------------------------

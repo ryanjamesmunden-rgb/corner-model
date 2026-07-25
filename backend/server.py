@@ -314,6 +314,26 @@ async def get_leagues(user: dict = Depends(get_current_user)):
     return await db.leagues.find({}, {"_id": 0}).to_list(100)
 
 
+@api_router.post("/leagues/{league_id}/refresh")
+async def refresh_league(league_id: str, user: dict = Depends(get_current_user)):
+    teams = await db.teams.find({"league_id": league_id}, {"_id": 0}).to_list(100)
+    if not teams:
+        raise HTTPException(status_code=404, detail="League not found")
+    rng = random.Random()
+    for t in teams:
+        matches = t["matches"]
+        is_home = len(matches) % 2 == 0
+        pool = [m for m in matches if m["home"] == is_home] or matches
+        cf_mean = sum(m["corners_for"] for m in pool) / len(pool)
+        ca_mean = sum(m["corners_against"] for m in pool) / len(pool)
+        cf = max(0, int(round(rng.gauss(cf_mean, 1.7))))
+        ca = max(0, int(round(rng.gauss(ca_mean, 1.7))))
+        matches.append({"home": is_home, "corners_for": cf, "corners_against": ca})
+        matches = matches[-16:]
+        await db.teams.update_one({"team_id": t["team_id"]}, {"$set": {"matches": matches}})
+    return {"updated": len(teams), "league_id": league_id, "synced_at": datetime.now(timezone.utc).isoformat()}
+
+
 @api_router.get("/leagues/{league_id}/teams")
 async def get_teams(league_id: str, split: str = "overall", window: int = 5, user: dict = Depends(get_current_user)):
     teams = await db.teams.find({"league_id": league_id}, {"_id": 0}).to_list(100)
@@ -411,6 +431,134 @@ async def scanner(league_id: Optional[str] = None, market: Optional[str] = None,
                             "ev": m["ev"], "tier": m["tier"], "confidence": model["confidence"]})
     results.sort(key=lambda x: x["ev"], reverse=True)
     return results
+
+
+# ----------------------------- Bet Tracking + Kelly -----------------------------
+
+def kelly_fraction(prob: float, book_odds: float) -> float:
+    b = book_odds - 1.0
+    if b <= 0:
+        return 0.0
+    q = 1.0 - prob
+    f = (b * prob - q) / b
+    return max(0.0, round(f, 4))
+
+
+def bet_profit(bet: dict) -> float:
+    if bet["status"] == "won":
+        return round(bet["stake"] * (bet["book_odds"] - 1.0), 2)
+    if bet["status"] == "lost":
+        return round(-bet["stake"], 2)
+    return 0.0
+
+
+class BankrollBody(BaseModel):
+    bankroll: float
+
+
+@api_router.get("/bankroll")
+async def get_bankroll(user: dict = Depends(get_current_user)):
+    return {"bankroll": user.get("bankroll", 1000.0)}
+
+
+@api_router.put("/bankroll")
+async def set_bankroll(body: BankrollBody, user: dict = Depends(get_current_user)):
+    await db.users.update_one({"user_id": user["user_id"]}, {"$set": {"bankroll": round(body.bankroll, 2)}})
+    return {"bankroll": round(body.bankroll, 2)}
+
+
+class BetBody(BaseModel):
+    fixture_id: str
+    market_key: str
+    stake: float
+
+
+@api_router.post("/bets")
+async def create_bet(body: BetBody, user: dict = Depends(get_current_user)):
+    fx = await db.fixtures.find_one({"fixture_id": body.fixture_id}, {"_id": 0})
+    if not fx:
+        raise HTTPException(status_code=404, detail="Fixture not found")
+    odds = await _odds_for(body.fixture_id)
+    model = await get_fixture_model(fx, odds)
+    market = next((m for m in model["markets"] if m["key"] == body.market_key), None)
+    if not market or market["book_odds"] is None:
+        raise HTTPException(status_code=400, detail="No book odds entered for this market")
+    prob = market["prob"] / 100.0
+    bet = {
+        "bet_id": f"bet_{uuid.uuid4().hex[:12]}", "user_id": user["user_id"],
+        "fixture_id": fx["fixture_id"], "league_id": fx["league_id"],
+        "home_name": fx["home_name"], "away_name": fx["away_name"],
+        "market_key": market["key"], "market_label": f"{market['group_label']} {market['label']}",
+        "book_odds": market["book_odds"], "fair_odds": market["fair_odds"], "prob": market["prob"],
+        "ev": market["ev"], "tier": market["tier"], "kelly_fraction": kelly_fraction(prob, market["book_odds"]),
+        "stake": round(body.stake, 2), "status": "pending",
+        "placed_at": datetime.now(timezone.utc).isoformat(), "settled_at": None,
+    }
+    await db.bets.insert_one(dict(bet))
+    return {**bet, "profit": 0.0}
+
+
+@api_router.get("/bets")
+async def list_bets(user: dict = Depends(get_current_user)):
+    bets = await db.bets.find({"user_id": user["user_id"]}, {"_id": 0}).to_list(500)
+    bets.sort(key=lambda b: b["placed_at"], reverse=True)
+    return [{**b, "profit": bet_profit(b)} for b in bets]
+
+
+class BetStatusBody(BaseModel):
+    status: str
+
+
+@api_router.patch("/bets/{bet_id}")
+async def update_bet(bet_id: str, body: BetStatusBody, user: dict = Depends(get_current_user)):
+    if body.status not in ["pending", "won", "lost", "void"]:
+        raise HTTPException(status_code=400, detail="Invalid status")
+    bet = await db.bets.find_one({"bet_id": bet_id, "user_id": user["user_id"]}, {"_id": 0})
+    if not bet:
+        raise HTTPException(status_code=404, detail="Bet not found")
+    settled = None if body.status == "pending" else datetime.now(timezone.utc).isoformat()
+    await db.bets.update_one({"bet_id": bet_id, "user_id": user["user_id"]},
+                             {"$set": {"status": body.status, "settled_at": settled}})
+    bet["status"] = body.status
+    bet["settled_at"] = settled
+    return {**bet, "profit": bet_profit(bet)}
+
+
+@api_router.delete("/bets/{bet_id}")
+async def delete_bet(bet_id: str, user: dict = Depends(get_current_user)):
+    res = await db.bets.delete_one({"bet_id": bet_id, "user_id": user["user_id"]})
+    if res.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Bet not found")
+    return {"ok": True}
+
+
+@api_router.get("/bets/stats")
+async def bet_stats(user: dict = Depends(get_current_user)):
+    bets = await db.bets.find({"user_id": user["user_id"]}, {"_id": 0}).to_list(500)
+    leagues = {l["league_id"]: l["name"] for l in await db.leagues.find({}, {"_id": 0}).to_list(100)}
+    settled = [b for b in bets if b["status"] in ("won", "lost")]
+    staked = round(sum(b["stake"] for b in settled), 2)
+    profit = round(sum(bet_profit(b) for b in settled), 2)
+    wins = len([b for b in settled if b["status"] == "won"])
+    pending = [b for b in bets if b["status"] == "pending"]
+    by_league = {}
+    for b in settled:
+        key = leagues.get(b["league_id"], b["league_id"])
+        d = by_league.setdefault(key, {"league": key, "staked": 0.0, "profit": 0.0, "count": 0})
+        d["staked"] = round(d["staked"] + b["stake"], 2)
+        d["profit"] = round(d["profit"] + bet_profit(b), 2)
+        d["count"] += 1
+    for d in by_league.values():
+        d["roi"] = round(d["profit"] / d["staked"] * 100, 1) if d["staked"] else 0.0
+    return {
+        "bankroll": user.get("bankroll", 1000.0),
+        "total_bets": len(bets), "settled": len(settled), "pending": len(pending),
+        "pending_stake": round(sum(b["stake"] for b in pending), 2),
+        "staked": staked, "profit": profit,
+        "roi": round(profit / staked * 100, 1) if staked else 0.0,
+        "win_rate": round(wins / len(settled) * 100, 1) if settled else 0.0,
+        "by_league": sorted(by_league.values(), key=lambda x: x["profit"], reverse=True),
+    }
 
 
 app.include_router(api_router)

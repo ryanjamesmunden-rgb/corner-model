@@ -20,6 +20,12 @@ const THRESHOLDS = [
   { v: "6", l: "6+ corners" },
   { v: "7", l: "7+ corners" },
 ];
+const TIMEFRAMES = [
+  { v: "all", l: "Any upcoming" },
+  { v: "3", l: "Next 3 days" },
+  { v: "7", l: "Next 7 days" },
+  { v: "14", l: "Next 14 days" },
+];
 
 // Global cross-league corner consistency finder for the home page.
 export default function StreakFinder({ leagueId }) {
@@ -28,6 +34,7 @@ export default function StreakFinder({ leagueId }) {
   const [side, setSide] = useState("home");
   const [preset, setPreset] = useState("5-5");
   const [threshold, setThreshold] = useState("auto");
+  const [days, setDays] = useState("all");
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(true);
 
@@ -35,9 +42,10 @@ export default function StreakFinder({ leagueId }) {
     const p = PRESETS.find((x) => x.v === preset);
     const params = { league_id: scope === "current" ? leagueId : "all", side, window: p.window, min_hits: p.min_hits, min_line: 3 };
     if (threshold !== "auto") params.threshold = threshold;
+    if (days !== "all") params.within_days = days;
     setLoading(true);
     api.streaks(params).then(setRows).catch(() => setRows([])).finally(() => setLoading(false));
-  }, [scope, side, preset, threshold, leagueId]);
+  }, [scope, side, preset, threshold, days, leagueId]);
 
   const fmt = (d) => new Date(d).toLocaleDateString(undefined, { month: "short", day: "numeric" });
 
@@ -66,6 +74,12 @@ export default function StreakFinder({ leagueId }) {
               {THRESHOLDS.map((o) => <SelectItem key={o.v} value={o.v} className="text-xs">{o.l}</SelectItem>)}
             </SelectContent>
           </Select>
+          <Select value={days} onValueChange={setDays}>
+            <SelectTrigger data-testid="streak-timeframe" className="w-[140px] bg-[#121212] border-border text-xs h-8"><SelectValue /></SelectTrigger>
+            <SelectContent className="bg-[#121212] border-border">
+              {TIMEFRAMES.map((o) => <SelectItem key={o.v} value={o.v} className="text-xs">{o.l}</SelectItem>)}
+            </SelectContent>
+          </Select>
           <Select value={scope} onValueChange={setScope}>
             <SelectTrigger data-testid="streak-scope" className="w-[130px] bg-[#121212] border-border text-xs h-8"><SelectValue /></SelectTrigger>
             <SelectContent className="bg-[#121212] border-border">
@@ -88,14 +102,15 @@ export default function StreakFinder({ leagueId }) {
               <th className="text-left font-medium px-4 py-2.5">Next</th>
               <th className="text-right font-medium px-4 py-2.5">Opp conc</th>
               <th className="text-right font-medium px-4 py-2.5">Model odds</th>
+              <th className="text-right font-medium px-4 py-2.5">Edge</th>
               <th className="px-4 py-2.5"></th>
             </tr>
           </thead>
           <tbody className="font-mono-data text-sm">
             {loading ? (
-              <tr><td colSpan={9} className="px-4 py-12 text-center text-muted-foreground animate-pulse">Scanning corner streaks…</td></tr>
+              <tr><td colSpan={10} className="px-4 py-12 text-center text-muted-foreground animate-pulse">Scanning corner streaks…</td></tr>
             ) : rows.length === 0 ? (
-              <tr><td colSpan={9} className="px-4 py-12 text-center text-muted-foreground">No teams match this streak. Try a lower threshold or a wider window.</td></tr>
+              <tr><td colSpan={10} className="px-4 py-12 text-center text-muted-foreground">No teams match this streak. Try a lower threshold or a wider window.</td></tr>
             ) : rows.map((r) => (
               <tr
                 key={r.team_id}
@@ -141,6 +156,14 @@ export default function StreakFinder({ leagueId }) {
                       {r.projection.fair_odds?.toFixed(2)}
                     </span>
                   ) : <span className="text-muted-foreground">—</span>}
+                </td>
+                <td className="px-4 py-2.5 text-right whitespace-nowrap">
+                  {r.projection && r.projection.ev != null ? (
+                    <span className={`font-semibold ${r.projection.ev >= 5 ? "text-emerald-400" : r.projection.ev >= 0 ? "text-amber-400" : "text-red-400"}`}
+                      title={`Book ${r.projection.book_odds} vs model ${r.projection.fair_odds}`}>
+                      {r.projection.ev > 0 ? "+" : ""}{r.projection.ev.toFixed(1)}%
+                    </span>
+                  ) : <span className="text-muted-foreground" title="Paste this team's corner odds on the fixture page">—</span>}
                 </td>
                 <td className="px-4 py-2.5 text-right">{r.next_fixture && <ArrowRight className="h-4 w-4 text-muted-foreground inline" />}</td>
               </tr>

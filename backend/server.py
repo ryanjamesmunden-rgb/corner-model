@@ -440,6 +440,7 @@ def _real_avg(team, side, field):
 @api_router.get("/streaks")
 async def streaks(league_id: Optional[str] = None, side: str = "overall", window: int = 5,
                   min_hits: int = 5, threshold: Optional[int] = None, min_line: int = 3,
+                  within_days: Optional[int] = None,
                   user: dict = Depends(get_current_user)):
     """Teams that hit a team-corner threshold consistently over recent REAL games
     (e.g. 4+ corners in 5/5 home games, or 8/10 last 10)."""
@@ -458,6 +459,11 @@ async def streaks(league_id: Optional[str] = None, side: str = "overall", window
             if tid not in next_fx:
                 next_fx[tid] = {"fixture_id": fx["fixture_id"], "date": fx["date"],
                                 "opponent": opp, "opponent_team_id": opp_id, "is_home": is_home}
+    # odds entered for the relevant upcoming fixtures (for live edge %)
+    fx_ids = list({v["fixture_id"] for v in next_fx.values()})
+    odds_docs = await db.odds.find({"fixture_id": {"$in": fx_ids}}, {"_id": 0}).to_list(2000)
+    odds_map = {o["fixture_id"]: o.get("odds", {}) for o in odds_docs}
+    now = datetime.now(timezone.utc)
 
     results = []
     for t in teams:
@@ -483,6 +489,17 @@ async def streaks(league_id: Optional[str] = None, side: str = "overall", window
         recent = [{"corners": m["corners_for"], "opponent": m["opponent"], "home": m["home"], "date": m["date"]}
                   for m in reversed(pool)]
         nf = next_fx.get(t["team_id"])
+        if within_days is not None:
+            if not nf:
+                continue
+            try:
+                dt = datetime.fromisoformat(nf["date"].replace("Z", "+00:00"))
+            except Exception:
+                continue
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            if dt < now or dt > now + timedelta(days=within_days):
+                continue
         projection = None
         if nf:
             opp = teams_by_id.get(nf["opponent_team_id"])
@@ -493,8 +510,13 @@ async def streaks(league_id: Optional[str] = None, side: str = "overall", window
             if t_for is not None and o_against is not None:
                 lam = round((t_for + o_against) / 2, 2)
                 p = poisson_ge(line, lam)
+                mkey = f"{team_venue}_over_{line - 0.5}"
+                book = odds_map.get(nf["fixture_id"], {}).get(mkey)
+                ev = round((book * p - 1) * 100, 2) if book else None
                 projection = {"team_for": round(t_for, 2), "opp_conceded": round(o_against, 2),
-                              "lambda": lam, "prob": round(p * 100, 1), "fair_odds": fair_odds(p)}
+                              "lambda": lam, "prob": round(p * 100, 1), "fair_odds": fair_odds(p),
+                              "market_key": mkey, "book_odds": book, "ev": ev,
+                              "tier": tier_for_ev(ev) if ev is not None else None}
         results.append({
             "team_id": t["team_id"], "name": t["name"], "league_id": t["league_id"],
             "league_name": leagues.get(t["league_id"], ""), "side": side, "window": window,

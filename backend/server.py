@@ -325,13 +325,22 @@ async def get_leagues(user: dict = Depends(get_current_user)):
     return await db.leagues.find({}, {"_id": 0}).to_list(100)
 
 
+_last_refresh = {}
+
+
 @api_router.post("/leagues/{league_id}/refresh")
 async def refresh_league(league_id: str, user: dict = Depends(get_current_user)):
     if not await db.leagues.find_one({"league_id": league_id}):
         raise HTTPException(status_code=404, detail="League not found")
+    now = datetime.now(timezone.utc)
+    last = _last_refresh.get(league_id)
+    if last and (now - last).total_seconds() < 120:
+        return {"status": "already_syncing", "league_id": league_id,
+                "started_at": last.isoformat()}
+    _last_refresh[league_id] = now
     import subprocess, sys
     subprocess.Popen([sys.executable, str(ROOT_DIR / "sync_real.py"), league_id], cwd=str(ROOT_DIR))
-    return {"status": "syncing", "league_id": league_id, "started_at": datetime.now(timezone.utc).isoformat()}
+    return {"status": "syncing", "league_id": league_id, "started_at": now.isoformat()}
 
 
 @api_router.get("/leagues/{league_id}/teams")
@@ -847,6 +856,10 @@ app.add_middleware(
 )
 
 
+MANAGED_LEAGUE_IDS = {"eng-pl", "eng-ch", "eng-l1", "eng-l2", "eng-nl", "aus-al", "nor-el",
+                      "ned-ere", "ned-ed", "bra-sa", "bra-sb", "ita-sa", "fra-l1", "esp-ll"}
+
+
 def run_sync_all():
     import subprocess, sys
     logger.info("Scheduled sync: launching sync_real.py for all leagues")
@@ -855,7 +868,19 @@ def run_sync_all():
 
 @app.on_event("startup")
 async def on_startup():
-    await seed_data()
+    # remove any legacy / non-managed leagues (e.g. old mock leagues from an earlier deploy)
+    stale = await db.leagues.find({"league_id": {"$nin": list(MANAGED_LEAGUE_IDS)}}, {"_id": 0, "league_id": 1}).to_list(100)
+    stale_ids = [l["league_id"] for l in stale]
+    if stale_ids:
+        await db.leagues.delete_many({"league_id": {"$in": stale_ids}})
+        await db.teams.delete_many({"league_id": {"$in": stale_ids}})
+        await db.fixtures.delete_many({"league_id": {"$in": stale_ids}})
+        logger.info("Removed stale leagues: %s", stale_ids)
+    # first boot (e.g. fresh production DB): if no real data yet, pull it now
+    real = await db.leagues.count_documents({"data_source": "real"})
+    if real == 0:
+        logger.info("No real data found — launching initial API-Football sync")
+        run_sync_all()
     from apscheduler.schedulers.asyncio import AsyncIOScheduler
     scheduler = AsyncIOScheduler(timezone="UTC")
     scheduler.add_job(run_sync_all, "interval", hours=12, id="sync_all", replace_existing=True)

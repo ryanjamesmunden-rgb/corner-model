@@ -34,7 +34,7 @@ export default function Layout({ children }) {
     <LeagueContext.Provider value={{ leagueId, changeLeague, leagues }}>
       <div className="min-h-screen bg-background">
         <header className="sticky top-0 z-40 bg-[#0a0a0a]/80 backdrop-blur-xl border-b border-white/10">
-          <div className="max-w-[1600px] mx-auto px-4 sm:px-6 h-16 flex items-center gap-4">
+          <div className="max-w-[1600px] mx-auto px-4 sm:px-6 min-h-16 py-2 flex items-center gap-2 sm:gap-4 flex-wrap">
             <Link to="/scanner" className="flex items-center gap-2 shrink-0">
               <div className="h-8 w-8 rounded-md bg-primary flex items-center justify-center">
                 <CornerDownRight className="h-4 w-4 text-black" strokeWidth={2.5} />
@@ -45,7 +45,7 @@ export default function Layout({ children }) {
               </div>
             </Link>
 
-            <nav className="flex items-center gap-1 ml-2">
+            <nav className="flex items-center gap-1 sm:ml-2">
               {nav.map((n) => {
                 const active = location.pathname === n.to;
                 return (
@@ -66,7 +66,7 @@ export default function Layout({ children }) {
 
             <div className="ml-auto flex items-center gap-3">
               <Select value={leagueId} onValueChange={changeLeague}>
-                <SelectTrigger data-testid="league-switcher" className="w-[180px] bg-[#121212] border-border font-mono-data text-xs h-9">
+                <SelectTrigger data-testid="league-switcher" className="w-[130px] sm:w-[180px] bg-[#121212] border-border font-mono-data text-xs h-9">
                   <SelectValue placeholder="Select league" />
                 </SelectTrigger>
                 <SelectContent className="bg-[#121212] border-border">

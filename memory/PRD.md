@@ -69,6 +69,13 @@ Multi-league corner value betting web app. Rebuilds a spreadsheet corner model i
 - **Best Bets Today** strip (3 cards): top value bet, top mismatch, top streak — the standout from each signal, each clickable to its fixture. Backend `GET /api/best-bets`.
 - **Top Mismatches This Week**: cross-league table (all leagues, next 7 days) of strong corner-team vs leaky-defence matchups, ranked by projected λ, with team/g, opp-conceded, proj λ, and model line@odds. Backend `GET /api/top-mismatches?within_days=&limit=` (per-league averages used for the mismatch threshold).
 - Both rendered at the top of the Value Finder (`HomeInsights` component) above the ranked value table.
+
+## Pre-Launch Hardening (2026-07-25)
+- Full regression test passed (54/54 backend, all frontend flows) — `/app/test_reports/iteration_2.json`.
+- Fixes: Login copy "7"→"14" leagues; mobile header made responsive (flex-wrap, narrower switcher); `/refresh` now has a 120s per-league throttle (`_last_refresh`) to protect API quota under multi-user load.
+- Startup now: removes non-managed/legacy leagues (`MANAGED_LEAGUE_IDS`), and if no `data_source:real` leagues exist (fresh production DB) it auto-launches the initial API-Football sync. Removed the old mock `seed_data()` call from startup.
+- `reseed_odds.py`: realigned placeholder demo odds against the current real-data model so displayed EV edges are realistic (max ~16%, was showing stale +125% outliers).
+- LAUNCH NOTE: ensure `API_FOOTBALL_KEY` + `API_FOOTBALL_SEASON` env vars are set in the production environment so the scheduled/first-boot sync works after redeploy.
 - (2026-07-25) **Model now uses REAL matches everywhere** via `_src()` helper (form tables, fixture splits, Poisson λ, confidence) — synthetic data is fallback only for teams with zero real games. A **real-sample badge** ("N real" / "0 real · est.") on each fixture-detail team shows how much real data backs the figures.
 - P1: (done 2026-07-25) "Refresh data" button on dashboard → triggers live re-sync.
 - P1: (done 2026-07-25) APScheduler auto-refresh of all leagues every 12h.

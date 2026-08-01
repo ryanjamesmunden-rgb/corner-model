@@ -717,6 +717,83 @@ async def best_bets(user: dict = Depends(get_current_user)):
             "mismatch": mism[0] if mism else None}
 
 
+@api_router.get("/export")
+async def export_report(user: dict = Depends(get_current_user)):
+    from fastapi.responses import PlainTextResponse
+    leagues = await db.leagues.find({}, {"_id": 0}).to_list(100)
+    leagues.sort(key=lambda l: (l.get("country", ""), l.get("name", "")))
+    now = datetime.now(timezone.utc)
+    lines = []
+    lines.append("# The Corner Model 2.0 — Full Data Export")
+    lines.append(f"Generated: {now.strftime('%Y-%m-%d %H:%M UTC')}")
+    lines.append("Corner stats are REAL (API-Football). Bookmaker odds are user-entered; model figures are the fair values.\n")
+
+    for lg in leagues:
+        lid = lg["league_id"]
+        teams = await db.teams.find({"league_id": lid}, {"_id": 0}).to_list(200)
+        teams_by_id = {t["team_id"]: t for t in teams}
+        fixtures = await db.fixtures.find({"league_id": lid}, {"_id": 0}).to_list(200)
+        fixtures.sort(key=lambda f: f["date"])
+        all_won = [m["corners_for"] for t in teams for m in _src(t)]
+        avg = round(sum(all_won) / len(all_won), 2) if all_won else 0
+        lines.append(f"\n## {lg.get('country','')} — {lg.get('name','')} (season {lg.get('season','?')}, avg {avg} corners won/team/game)")
+
+        # Upcoming fixtures with model projections
+        lines.append("\n### Upcoming fixtures (model projections)")
+        for fx in fixtures:
+            h, a = teams_by_id.get(fx["home_team_id"]), teams_by_id.get(fx["away_team_id"])
+            if not h or not a:
+                continue
+            lam = expected_lambdas(h, a)
+            conf = confidence_for(h, a)
+            d = fx["date"][:10]
+            lines.append(f"- {d}  {fx['home_name']} vs {fx['away_name']}  | total λ {lam['total']} (home {lam['home']} / away {lam['away']}) | confidence {conf['label']} ({conf['score']})")
+
+        # Team corner form (real games)
+        rows = []
+        for t in teams:
+            gp = len(_src(t))
+            ov = team_split(_src(t), "overall", 0)
+            hm = team_split(_src(t), "home", 0)
+            aw = team_split(_src(t), "away", 0)
+            l5 = team_split(_src(t), "overall", 5)
+            rows.append((ov["for_avg"], t["name"], gp, ov, hm, aw, l5, t.get("real_samples", 0)))
+        rows.sort(key=lambda x: x[0], reverse=True)
+        lines.append("\n### Team corner form — won/conceded per game (real games)")
+        lines.append("| Team | GP(real) | Overall W/C | Home W/C | Away W/C | Last5 W/C | Total/g |")
+        lines.append("|---|---|---|---|---|---|---|")
+        for _, name, gp, ov, hm, aw, l5, rs in rows:
+            lines.append(f"| {name} | {rs} | {ov['for_avg']}/{ov['against_avg']} | {hm['for_avg']}/{hm['against_avg']} | {aw['for_avg']}/{aw['against_avg']} | {l5['for_avg']}/{l5['against_avg']} | {ov['total_avg']} |")
+
+    # Cross-league sections
+    mism = await _all_mismatches(within_days=None, limit=40)
+    lines.append("\n\n## Top corner mismatches (strong team vs leaky defence, all leagues)")
+    lines.append("| Team | League | Next | Team/g | Opp conc | Proj λ | Model line |")
+    lines.append("|---|---|---|---|---|---|---|")
+    for r in mism:
+        nf = r.get("next_fixture") or {}
+        vs = f"{'vs' if nf.get('is_home') else '@'} {nf.get('opponent','')}"
+        lines.append(f"| {r['name']} | {r['league_name']} | {vs} {(nf.get('date') or '')[:10]} | {r['team_for']} | {r['opp_conceded']} | {r['lambda']} | {r['line']}+ @ {r['fair_odds']} |")
+
+    trend = await trends(league_id="all", window=5, metric="total", side="overall", user=user)
+    lines.append("\n## Hot form — averaging more total corners than season baseline (Last 5)")
+    lines.append("| Team | League | Recent avg | Season avg | Δ |")
+    lines.append("|---|---|---|---|---|")
+    for r in trend[:40]:
+        lines.append(f"| {r['name']} | {r['league_name']} | {r['recent_total']} | {r['season_total']} | +{r['delta']} |")
+
+    strk = await streaks(league_id="all", side="overall", window=5, min_hits=5,
+                         threshold=None, min_line=3, within_days=None, user=user)
+    lines.append("\n## Consistency streaks — hit a team-corner line in all of last 5 games")
+    lines.append("| Team | League | Line | Avg | Recent (won) |")
+    lines.append("|---|---|---|---|---|")
+    for r in strk[:60]:
+        rec = ",".join(str(m["corners"]) for m in r["recent"])
+        lines.append(f"| {r['name']} | {r['league_name']} | {r['line']}+ (5/5) | {r['avg']} | {rec} |")
+
+    return PlainTextResponse("\n".join(lines))
+
+
 # ----------------------------- Bet Tracking + Kelly -----------------------------
 
 def kelly_fraction(prob: float, book_odds: float) -> float:

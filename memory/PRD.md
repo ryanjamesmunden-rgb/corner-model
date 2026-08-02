@@ -92,5 +92,8 @@ Multi-league corner value betting web app. Rebuilds a spreadsheet corner model i
 - API-Football account: Pro plan, active until 2026-08-25, ~3.5k/7500 req/day used at time of sync. Backup: renew plan before expiry to keep auto-updates flowing.
 - Tested: `/app/test_reports/iteration_3.json` — 6/6 frontend flows + endpoint checks PASS.
 
-## Value Table Fixture Dates (2026-08-02)
-- Ranked Value Bets table (bottom of Value Finder / Scanner) now shows the **fixture date** (weekday · month day) in the Fixture column beside the league; the **+EV** column was already present. `/api/scanner` already returned `date`; only the frontend render was added (`Scanner.jsx`, `data-testid=scanner-row-date`). Mismatches/Matchup/Streak tables already showed dates.
+## Fixture Round / Matchday (2026-08-02)
+- Fixtures now carry the real **round** from API-Football (`sync_real.py` captures `league.round`, prettified "Regular Season - N" → "Round N"; `_round_label`). Displayed across the app: Ranked Value Bets table (`scanner-row-round`), Leagues matchup "Next fixture" cell, Top Mismatches fixture cell, and Fixture Detail header (`fixture-round`). Sentinel "Upcoming" (round unknown) is hidden.
+- Backend exposes `round` via `/api/scanner` and every `next_fixture` (`_next_fixtures`, streaks). Existing preview data backfilled cheaply via `backend/backfill_rounds.py` (one /fixtures call per league, no stats calls).
+- Verified `/app/test_reports/iteration_4.json` — 100% (eng-nl=Round 1, bra-sa=Round 22 across scanner/matchups/mismatches/detail).
+- OBSERVATION (pre-existing, out of scope): National League (eng-nl) matchup table shows 0.00 corners/'est' with no projections — the league's new season hasn't started and API-Football corner stats for that tier appear unavailable, so the model has no real samples yet.

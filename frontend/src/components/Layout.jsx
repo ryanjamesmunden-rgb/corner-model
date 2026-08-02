@@ -20,6 +20,20 @@ export default function Layout({ children }) {
     api.leagues().then(setLeagues).catch(() => {});
   }, []);
 
+  const lastSynced = leagues
+    .map((l) => l.synced_at)
+    .filter(Boolean)
+    .sort()
+    .slice(-1)[0];
+  const freshness = (() => {
+    if (!lastSynced) return null;
+    const mins = Math.max(0, Math.round((Date.now() - new Date(lastSynced).getTime()) / 60000));
+    if (mins < 60) return `${mins}m ago`;
+    const hrs = Math.round(mins / 60);
+    if (hrs < 48) return `${hrs}h ago`;
+    return `${Math.round(hrs / 24)}d ago`;
+  })();
+
   const changeLeague = (id) => {
     setLeagueId(id);
     localStorage.setItem("leagueId", id);
@@ -66,6 +80,21 @@ export default function Layout({ children }) {
             </nav>
 
             <div className="ml-auto flex items-center gap-3">
+              {freshness && (
+                <div
+                  data-testid="data-freshness"
+                  title={`Fixtures & stats auto-refresh every 12h · last update ${new Date(lastSynced).toLocaleString()}`}
+                  className="hidden md:flex items-center gap-2 px-2.5 py-1.5 rounded-md bg-emerald-500/10 border border-emerald-500/25"
+                >
+                  <span className="relative flex h-2 w-2">
+                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-60" />
+                    <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-400" />
+                  </span>
+                  <span className="font-mono-data text-[10px] text-emerald-300 tracking-wide leading-none">
+                    LIVE · {freshness}
+                  </span>
+                </div>
+              )}
               <Select value={leagueId} onValueChange={changeLeague}>
                 <SelectTrigger data-testid="league-switcher" className="w-[130px] sm:w-[180px] bg-[#121212] border-border font-mono-data text-xs h-9">
                   <SelectValue placeholder="Select league" />

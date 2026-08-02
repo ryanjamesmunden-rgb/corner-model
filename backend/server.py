@@ -971,10 +971,44 @@ MANAGED_LEAGUE_IDS = {"eng-pl", "eng-ch", "eng-l1", "eng-l2", "eng-nl", "aus-al"
                       "ned-ere", "ned-ed", "bra-sa", "bra-sb", "ita-sa", "fra-l1", "esp-ll"}
 
 
+STALE_HOURS = 12          # data older than this triggers a boot-time refresh
+SYNC_LOCK_MINUTES = 20     # don't relaunch a sync if one started within this window
+
+
 def run_sync_all():
     import subprocess, sys
-    logger.info("Scheduled sync: launching sync_real.py for all leagues")
+    logger.info("Sync: launching sync_real.py for all leagues")
     subprocess.Popen([sys.executable, str(ROOT_DIR / "sync_real.py")], cwd=str(ROOT_DIR))
+
+
+async def _maybe_sync_on_boot():
+    """Refresh on boot when data is missing or stale, guarded by a DB lock so
+    frequent restarts (hot-reload) don't spawn overlapping syncs."""
+    now = datetime.now(timezone.utc)
+    real = await db.leagues.count_documents({"data_source": "real"})
+    newest = await db.leagues.find({"data_source": "real"}, {"_id": 0, "synced_at": 1}) \
+        .sort("synced_at", -1).limit(1).to_list(1)
+    stale = True
+    if newest and newest[0].get("synced_at"):
+        try:
+            last = datetime.fromisoformat(newest[0]["synced_at"])
+            stale = (now - last).total_seconds() > STALE_HOURS * 3600
+        except Exception:
+            stale = True
+    if real > 0 and not stale:
+        return
+    lock = await db.meta.find_one({"_id": "sync_lock"})
+    if lock and lock.get("started_at"):
+        try:
+            started = datetime.fromisoformat(lock["started_at"])
+            if (now - started).total_seconds() < SYNC_LOCK_MINUTES * 60:
+                logger.info("Boot sync skipped — a sync started %s", lock["started_at"])
+                return
+        except Exception:
+            pass
+    await db.meta.update_one({"_id": "sync_lock"}, {"$set": {"started_at": now.isoformat()}}, upsert=True)
+    logger.info("Boot sync: real=%s stale=%s — launching API-Football sync", real, stale)
+    run_sync_all()
 
 
 @app.on_event("startup")
@@ -987,11 +1021,7 @@ async def on_startup():
         await db.teams.delete_many({"league_id": {"$in": stale_ids}})
         await db.fixtures.delete_many({"league_id": {"$in": stale_ids}})
         logger.info("Removed stale leagues: %s", stale_ids)
-    # first boot (e.g. fresh production DB): if no real data yet, pull it now
-    real = await db.leagues.count_documents({"data_source": "real"})
-    if real == 0:
-        logger.info("No real data found — launching initial API-Football sync")
-        run_sync_all()
+    await _maybe_sync_on_boot()
     from apscheduler.schedulers.asyncio import AsyncIOScheduler
     scheduler = AsyncIOScheduler(timezone="UTC")
     scheduler.add_job(run_sync_all, "interval", hours=12, id="sync_all", replace_existing=True)

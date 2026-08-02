@@ -15,19 +15,23 @@ export default function Layout({ children }) {
   const navigate = useNavigate();
   const [leagues, setLeagues] = useState([]);
   const [leagueId, setLeagueId] = useState(localStorage.getItem("leagueId") || "ned-ed");
+  const [now, setNow] = useState(Date.now());
 
   useEffect(() => {
     api.leagues().then(setLeagues).catch(() => {});
+    const t = setInterval(() => setNow(Date.now()), 60000);
+    return () => clearInterval(t);
   }, []);
 
   const lastSynced = leagues
     .map((l) => l.synced_at)
     .filter(Boolean)
-    .sort()
+    .map((s) => new Date(s).getTime())
+    .sort((a, b) => a - b)
     .slice(-1)[0];
   const freshness = (() => {
     if (!lastSynced) return null;
-    const mins = Math.max(0, Math.round((Date.now() - new Date(lastSynced).getTime()) / 60000));
+    const mins = Math.max(0, Math.round((now - lastSynced) / 60000));
     if (mins < 60) return `${mins}m ago`;
     const hrs = Math.round(mins / 60);
     if (hrs < 48) return `${hrs}h ago`;

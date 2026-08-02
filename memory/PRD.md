@@ -83,3 +83,11 @@ Multi-league corner value betting web app. Rebuilds a spreadsheet corner model i
 
 ## Next Tasks
 - Integrate live data API when key is available; add background scheduler for auto-refresh.
+
+## Go-Live Hardening + Auto-Update (2026-08-02)
+- **Self-healing boot sync**: `on_startup` now refreshes on boot when data is missing OR stale (>12h old), guarded by a `meta.sync_lock` (20-min window) so frequent hot-reload restarts don't spawn overlapping syncs. Fixes the prior weakness where the interval-only scheduler reset its 12h timer on every restart and rarely fired — data had gone 8 days stale. Verified end-to-end: boot detected stale data → launched sync → all 14 leagues refreshed with current fixtures & stats (real, API-Football).
+- **Data-freshness badge**: header now shows a pulsing "LIVE · X ago" badge (`data-testid=data-freshness`, desktop/md+ only) derived from the newest league `synced_at`; ticks every 60s; tooltip explains the 12h auto-refresh. Gives public users confidence data is current.
+- **Export menu verified** (built prior session, now UI-tested): Copy-for-Claude markdown, Download .md, teams CSV, fixtures CSV — all endpoints 200, toasts fire. `/api/export`, `/api/export/csv?type=teams|fixtures`.
+- **Deployment readiness: PASS** (deployment_agent) — no hardcoded secrets, env vars correct, /api prefix, ports 8001/3000, CORS ok. Ready to Deploy. Ensure `API_FOOTBALL_KEY` + `API_FOOTBALL_SEASON` are set in the production env.
+- API-Football account: Pro plan, active until 2026-08-25, ~3.5k/7500 req/day used at time of sync. Backup: renew plan before expiry to keep auto-updates flowing.
+- Tested: `/app/test_reports/iteration_3.json` — 6/6 frontend flows + endpoint checks PASS.

@@ -3,6 +3,7 @@ import { Link, useLocation, useNavigate } from "react-router-dom";
 import { CornerDownRight, LayoutDashboard, Radar, Flame, LogOut } from "lucide-react";
 import { useAuth } from "@/context/AuthContext";
 import { LeagueContext } from "@/context/LeagueContext";
+import ExportMenu from "@/components/ExportMenu";
 import { api } from "@/lib/api";
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
@@ -77,6 +78,8 @@ export default function Layout({ children }) {
                   ))}
                 </SelectContent>
               </Select>
+
+              <ExportMenu />
 
               <div className="hidden md:flex items-center gap-2">
                 {user?.picture ? (

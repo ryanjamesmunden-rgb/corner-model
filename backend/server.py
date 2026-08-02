@@ -315,6 +315,40 @@ async def auth_logout(request: Request, response: Response):
 
 # ----------------------------- App Routes -----------------------------
 
+@api_router.get("/export/csv")
+async def export_csv(type: str = "teams", user: dict = Depends(get_current_user)):
+    from fastapi.responses import PlainTextResponse
+    leagues = {l["league_id"]: l for l in await db.leagues.find({}, {"_id": 0}).to_list(100)}
+    rows = []
+    if type == "fixtures":
+        rows.append("League,Date,Home,Away,Lambda_Home,Lambda_Away,Lambda_Total,Confidence")
+        teams = {t["team_id"]: t for t in await db.teams.find({}, {"_id": 0}).to_list(5000)}
+        fixtures = await db.fixtures.find({}, {"_id": 0}).to_list(2000)
+        fixtures.sort(key=lambda f: (f["league_id"], f["date"]))
+        for fx in fixtures:
+            h, a = teams.get(fx["home_team_id"]), teams.get(fx["away_team_id"])
+            if not h or not a:
+                continue
+            lam = expected_lambdas(h, a)
+            conf = confidence_for(h, a)
+            ln = leagues.get(fx["league_id"], {}).get("name", fx["league_id"])
+            rows.append(f"{ln},{fx['date'][:10]},{fx['home_name']},{fx['away_name']},{lam['home']},{lam['away']},{lam['total']},{conf['label']}")
+    else:
+        rows.append("League,Team,GamesReal,Won_Overall,Conc_Overall,Won_Home,Conc_Home,Won_Away,Conc_Away,Won_Last5,Conc_Last5,Total_PerGame")
+        teams = await db.teams.find({}, {"_id": 0}).to_list(5000)
+        for t in teams:
+            src = _src(t)
+            ov = team_split(src, "overall", 0)
+            hm = team_split(src, "home", 0)
+            aw = team_split(src, "away", 0)
+            l5 = team_split(src, "overall", 5)
+            ln = leagues.get(t["league_id"], {}).get("name", t["league_id"])
+            name = t["name"].replace(",", " ")
+            rows.append(f"{ln},{name},{t.get('real_samples',0)},{ov['for_avg']},{ov['against_avg']},{hm['for_avg']},{hm['against_avg']},{aw['for_avg']},{aw['against_avg']},{l5['for_avg']},{l5['against_avg']},{ov['total_avg']}")
+    return PlainTextResponse("\n".join(rows), media_type="text/csv",
+                             headers={"Content-Disposition": f"attachment; filename=corner-model-{type}.csv"})
+
+
 @api_router.get("/")
 async def root():
     return {"message": "Corner Model 2.0 API"}

@@ -15,6 +15,8 @@ export const api = {
   trends: (params) => axios.get(`${API}/trends`, { params }).then((r) => r.data),
   bestBets: () => axios.get(`${API}/best-bets`).then((r) => r.data),
   topMismatches: (params) => axios.get(`${API}/top-mismatches`, { params }).then((r) => r.data),
+  exportMarkdown: () => axios.get(`${API}/export`, { responseType: "text" }).then((r) => r.data),
+  exportCsv: (type) => axios.get(`${API}/export/csv`, { params: { type }, responseType: "text" }).then((r) => r.data),
   refresh: (id) => axios.post(`${API}/leagues/${id}/refresh`).then((r) => r.data),
 };
 

@@ -71,6 +71,17 @@ async def current_season(hc, api_id):
     return cur or max((s["year"] for s in seasons), default=int(os.environ.get("API_FOOTBALL_SEASON", "2024")))
 
 
+def _round_label(raw):
+    if not raw:
+        return None
+    raw = str(raw).strip()
+    import re
+    m = re.match(r"^Regular Season\s*-\s*(\d+)$", raw)
+    if m:
+        return f"Round {m.group(1)}"
+    return raw
+
+
 def _synth_matches(mean_for, mean_ag, n, rng):
     out = []
     for i in range(n):
@@ -179,7 +190,8 @@ async def sync_league(hc, my_lid):
     for f in upcoming:
         hid, aid = f["teams"]["home"]["id"], f["teams"]["away"]["id"]
         fixture_docs.append({
-            "fixture_id": str(uuid.uuid4()), "league_id": my_lid, "round": "Upcoming",
+            "fixture_id": str(uuid.uuid4()), "league_id": my_lid,
+            "round": _round_label((f.get("league") or {}).get("round")) or "Upcoming",
             "home_team_id": f"{my_lid}-{hid}", "away_team_id": f"{my_lid}-{aid}",
             "home_name": f["teams"]["home"]["name"], "away_name": f["teams"]["away"]["name"],
             "date": f["fixture"]["date"], "status": "upcoming",

@@ -80,7 +80,14 @@ export default function MatchupTable({ leagueId }) {
                   </td>
                   <td className="px-4 py-2.5 text-right text-emerald-400 font-semibold">{t.side_for.toFixed(2)}</td>
                   <td className="px-4 py-2.5 text-xs text-muted-foreground whitespace-nowrap">
-                    {t.next_fixture ? `${t.next_fixture.is_home ? "vs" : "@"} ${t.next_fixture.opponent} · ${fmt(t.next_fixture.date)}` : "—"}
+                    {t.next_fixture ? (
+                      <>
+                        {t.next_fixture.is_home ? "vs" : "@"} {t.next_fixture.opponent} · {fmt(t.next_fixture.date)}
+                        {t.next_fixture.round && t.next_fixture.round !== "Upcoming" && (
+                          <span className="ml-1.5 text-[10px] text-muted-foreground/70">· {t.next_fixture.round}</span>
+                        )}
+                      </>
+                    ) : "—"}
                   </td>
                   <td className="px-4 py-2.5 text-right">
                     {p ? <span className={p.opp_conceded >= data.league_avg_won * 1.1 ? "text-emerald-400" : "text-muted-foreground"}>{p.opp_conceded.toFixed(1)}</span> : <span className="text-muted-foreground">—</span>}

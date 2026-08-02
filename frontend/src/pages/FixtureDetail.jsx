@@ -78,7 +78,12 @@ export default function FixtureDetail() {
           <h1 className="font-head text-2xl sm:text-3xl font-bold tracking-tight">
             {fixture.home_name} <span className="text-muted-foreground font-normal">vs</span> {fixture.away_name}
           </h1>
-          <p className="font-mono-data text-xs text-muted-foreground mt-1">{new Date(fixture.date).toLocaleString()}</p>
+          <p className="font-mono-data text-xs text-muted-foreground mt-1">
+            {new Date(fixture.date).toLocaleString()}
+            {fixture.round && fixture.round !== "Upcoming" && (
+              <span data-testid="fixture-round" className="ml-2 text-primary/80">· {fixture.round}</span>
+            )}
+          </p>
         </div>
         <div className="flex gap-3">
           <Metric label="λ Home" value={model.lambdas.home.toFixed(2)} />

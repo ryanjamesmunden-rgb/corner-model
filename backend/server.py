@@ -479,6 +479,7 @@ async def scanner(league_id: Optional[str] = None, market: Optional[str] = None,
             results.append({"fixture_id": fx["fixture_id"], "league_id": fx["league_id"],
                             "league_name": leagues.get(fx["league_id"], ""), "home_name": fx["home_name"],
                             "away_name": fx["away_name"], "date": fx["date"],
+                            "round": fx.get("round"),
                             "market_label": f"{m['group_label']} {m['label']}", "group": m["group"],
                             "book_odds": m["book_odds"], "fair_odds": m["fair_odds"], "prob": m["prob"],
                             "ev": m["ev"], "tier": m["tier"], "confidence": model["confidence"]})
@@ -510,6 +511,7 @@ async def _next_fixtures(q):
                                           (fx["away_team_id"], fx["home_name"], fx["home_team_id"], False)):
             if tid not in nf:
                 nf[tid] = {"fixture_id": fx["fixture_id"], "date": fx["date"],
+                           "round": fx.get("round"),
                            "opponent": opp, "opponent_team_id": opp_id, "is_home": is_home}
     return nf
 
@@ -535,6 +537,7 @@ async def streaks(league_id: Optional[str] = None, side: str = "overall", window
                                           (fx["away_team_id"], fx["home_name"], fx["home_team_id"], False)):
             if tid not in next_fx:
                 next_fx[tid] = {"fixture_id": fx["fixture_id"], "date": fx["date"],
+                                "round": fx.get("round"),
                                 "opponent": opp, "opponent_team_id": opp_id, "is_home": is_home}
     # odds entered for the relevant upcoming fixtures (for live edge %)
     fx_ids = list({v["fixture_id"] for v in next_fx.values()})

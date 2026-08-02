@@ -118,6 +118,7 @@ export default function Scanner() {
                       <div className="flex items-center gap-1.5 text-[10px] text-muted-foreground uppercase tracking-wider font-sans">
                         <span>{r.league_name}</span>
                         {fmtDate(r.date) && <><span className="opacity-40">·</span><span data-testid="scanner-row-date" className="text-primary/80 normal-case tracking-normal">{fmtDate(r.date)}</span></>}
+                        {r.round && r.round !== "Upcoming" && <><span className="opacity-40">·</span><span data-testid="scanner-row-round" className="normal-case tracking-normal">{r.round}</span></>}
                       </div>
                     </td>
                     <td className="px-4 py-3 text-foreground whitespace-nowrap">{r.market_label}</td>

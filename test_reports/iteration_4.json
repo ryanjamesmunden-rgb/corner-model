@@ -1,0 +1,27 @@
+{
+  "summary": "Frontend-only regression of the new fixture 'round' display (plus API confirmation via Bearer token). Verified: (1) /api/scanner returns a real 'round' per row (Round 1..Round 23, none 'Upcoming' in sample of 465); (2) /api/leagues/eng-nl/matchups next_fixture.round = 'Round 1' and /api/leagues/bra-sa/matchups = 'Round 22'; (3) Scanner table renders data-testid='scanner-row-round' on all 465 rows with values like Round 1/2/10/21/23 and never the literal 'Upcoming'; (4) Top Mismatches table Fixture cells append the round after the date (e.g. 'vs Telstar - Aug 8 - Round 1', 'vs Mirassol - Aug 9 - Round 22'); (5) Dashboard league switcher to National League shows 'Round 1' on all 24 matchup rows, Brazil Serie A shows 'Round 22' on all 20 rows; (6) Fixture detail header shows data-testid='fixture-round' = 'Round 1' next to the kickoff datetime. Auth via session_token=qa-test-token-123 cookie worked; no console errors. POST refresh was NOT triggered.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Leagues (Dashboard) - National League matchup table", "issues": ["Pre-existing/unrelated to round feature: every eng-nl row shows corners won/g = 0.00 with 'est' badge and Opp concedes / Proj lambda / Model all '—', so the table carries no model value for this league (rounds display correctly). Aldershot Town shows '—' for Next fixture while all other eng-nl teams have an Aug 8 Round 1 fixture (matches API next_fixture=null) — possible fixture-coverage gap."]}
+    ]
+  },
+  "test_report_links": ["/app/backend/tests/backend_test.py"],
+  "action_items": [
+    "No action needed for the round-display feature — all 5 requested checks pass.",
+    "Optional: investigate why National League (eng-nl) team stats are all 0.00/est with no projections, and why Aldershot Town has no next fixture."
+  ],
+  "critical_code_review_comments": [
+    "Round guard is duplicated in 4 components (r.round && r.round !== 'Upcoming'); consider a tiny shared helper/formatRound() to avoid drift if more sentinel labels appear."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "100% (2 endpoints spot-checked for round field)", "frontend": "100% (all 4 round-display surfaces pass)"},
+  "seed_data_creation": "None; used existing qa-user-1 session token.",
+  "should_call_test_agent_after_fix": false,
+  "should_main_agent_self_test": true,
+  "test_credentials": "session_token cookie / Bearer qa-test-token-123 (qa-user-1) — works",
+  "context_for_next_testing_agent": "Round feature verified end-to-end at iteration 4. Rounds present in scanner (all rows), matchup table (eng-nl Round 1, bra-sa Round 22), mismatch table, and fixture detail header (data-testid fixture-round). Remaining open observation: eng-nl team stats are all zero/'est' with no projections in the matchup table.",
+  "rca_of_the_issue": "N/A - no defects found in the tested feature."
+}

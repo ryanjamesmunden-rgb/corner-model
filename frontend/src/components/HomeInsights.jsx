@@ -117,6 +117,9 @@ export default function HomeInsights() {
                   </td>
                   <td className="px-4 py-2.5 text-xs text-muted-foreground whitespace-nowrap">
                     {r.next_fixture?.is_home ? "vs" : "@"} {r.next_fixture?.opponent} · {fmt(r.next_fixture?.date)}
+                    {r.next_fixture?.round && r.next_fixture.round !== "Upcoming" && (
+                      <span className="ml-1.5 text-[10px] text-muted-foreground/70">· {r.next_fixture.round}</span>
+                    )}
                   </td>
                   <td className="px-4 py-2.5 text-right text-emerald-400 font-semibold">{r.team_for.toFixed(1)}</td>
                   <td className="px-4 py-2.5 text-right text-emerald-400">{r.opp_conceded.toFixed(1)}</td>

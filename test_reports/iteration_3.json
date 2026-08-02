@@ -1,0 +1,25 @@
+{
+  "summary": "Frontend-focused verification of the new data-freshness badge, header/nav rendering, and the Export menu on /scanner using the pre-created QA session (session_token=qa-test-token-123 via context.add_cookies). Also curl-verified /api/auth/me, /api/leagues, /api/export and /api/export/csv?type=teams|fixtures with the Bearer token. All 6 requested features PASSED with no bugs found.",
+  "backend_issues": { "critical": [], "minor": [] },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Header (mobile 390px)", "issues": ["League switcher value text is clipped/truncated ('Eerste Divisie·') — cosmetic only, w-[130px] trigger; badge correctly hidden below md as designed"]}
+    ]
+  },
+  "test_report_links": ["/app/backend/tests/backend_test.py"],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "Layout.jsx computes `freshness` once at render; it never ticks. If a user leaves the tab open, 'LIVE · 3m ago' will stay stale until a re-render/navigation. Consider a setInterval(60s) tick for accuracy (non-blocking nitpick).",
+    "Layout.jsx sorts synced_at strings lexicographically to find the newest — this works only because all timestamps are same-offset ISO strings. Prefer comparing Date values for safety."
+  ],
+  "updated_files": [],
+  "success_rate": { "backend": "100% (6/6 endpoint checks)", "frontend": "100% (all requested flows)" },
+  "seed_data_creation": "None created; used existing qa-user-1 session token provided by main agent.",
+  "should_call_test_agent_after_fix": false,
+  "should_main_agent_self_test": false,
+  "test_credentials": "session_token='qa-test-token-123' (user_id qa-user-1) works both as httpOnly cookie via Playwright context.add_cookies and as 'Authorization: Bearer' header. /api/auth/me -> 200 {user_id: qa-user-1, email: qa@test.com}. Unauthenticated /api/export/csv correctly returns 401.",
+  "context_for_next_testing_agent": "Verified this iteration: (1) /scanner loads authenticated, header shows nav-scanner/nav-dashboard/nav-streaks, league-switcher, logout-btn; navigation between all 3 tabs works and badge persists. (2) data-freshness badge renders on desktop as 'LIVE · 3m ago' with tooltip 'Fixtures & stats auto-refresh every 12h · last update 8/2/2026, 6:20:14 PM'; correctly hidden at 390px. (3) export-btn dropdown shows all 4 items with exact expected labels. (4) export-csv-teams -> GET /api/export/csv?type=teams 200 + success toast; export-csv-fixtures -> type=fixtures 200; export-copy-md -> GET /api/export 200, clipboard contained 46,510 chars of markdown starting '# The Corner Model 2.0 — Full Data Export' and 'paste into Claude' toast shown; export-dl-md -> 200 + 'Markdown downloaded' toast. No 'Export failed' toasts, 0 error elements, no console errors. (5) /api/leagues returns exactly 14 leagues, each with data_source='real' and a fresh ISO synced_at. Not re-tested this round: scanner odds entry/EV math, streaks page internals, league refresh POST (skipped intentionally to protect API-Football quota).",
+  "rca_of_the_issue": "N/A — no failures reproduced."
+}

@@ -91,3 +91,6 @@ Multi-league corner value betting web app. Rebuilds a spreadsheet corner model i
 - **Deployment readiness: PASS** (deployment_agent) — no hardcoded secrets, env vars correct, /api prefix, ports 8001/3000, CORS ok. Ready to Deploy. Ensure `API_FOOTBALL_KEY` + `API_FOOTBALL_SEASON` are set in the production env.
 - API-Football account: Pro plan, active until 2026-08-25, ~3.5k/7500 req/day used at time of sync. Backup: renew plan before expiry to keep auto-updates flowing.
 - Tested: `/app/test_reports/iteration_3.json` — 6/6 frontend flows + endpoint checks PASS.
+
+## Value Table Fixture Dates (2026-08-02)
+- Ranked Value Bets table (bottom of Value Finder / Scanner) now shows the **fixture date** (weekday · month day) in the Fixture column beside the league; the **+EV** column was already present. `/api/scanner` already returned `date`; only the frontend render was added (`Scanner.jsx`, `data-testid=scanner-row-date`). Mismatches/Matchup/Streak tables already showed dates.

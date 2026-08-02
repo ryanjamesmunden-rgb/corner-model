@@ -20,6 +20,11 @@ const EDGES = [
   { v: "5", l: "Strong value (5%+)" },
 ];
 
+const fmtDate = (d) => {
+  if (!d) return null;
+  return new Date(d).toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" });
+};
+
 export default function Scanner() {
   const { leagueId, leagues } = useLeague();
   const navigate = useNavigate();
@@ -110,7 +115,10 @@ export default function Scanner() {
                     </td>
                     <td className="px-4 py-3">
                       <div className="text-foreground whitespace-nowrap">{r.home_name} <span className="text-muted-foreground">v</span> {r.away_name}</div>
-                      <div className="text-[10px] text-muted-foreground uppercase tracking-wider font-sans">{r.league_name}</div>
+                      <div className="flex items-center gap-1.5 text-[10px] text-muted-foreground uppercase tracking-wider font-sans">
+                        <span>{r.league_name}</span>
+                        {fmtDate(r.date) && <><span className="opacity-40">·</span><span data-testid="scanner-row-date" className="text-primary/80 normal-case tracking-normal">{fmtDate(r.date)}</span></>}
+                      </div>
                     </td>
                     <td className="px-4 py-3 text-foreground whitespace-nowrap">{r.market_label}</td>
                     <td className="px-4 py-3 text-right text-foreground">{r.book_odds?.toFixed(2)}</td>

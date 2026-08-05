@@ -1,11 +1,12 @@
 import { useState, useEffect } from "react";
 import { toast } from "sonner";
-import { Flag, RefreshCw } from "lucide-react";
+import { Flag, RefreshCw, RotateCw } from "lucide-react";
 import { api } from "@/lib/api";
 import { useLeague } from "@/context/LeagueContext";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import MatchupTable from "@/components/MatchupTable";
 import CornerLeagueTable from "@/components/CornerLeagueTable";
+import SyncPanel from "@/components/SyncPanel";
 
 const SPLITS = [{ v: "overall", l: "Overall" }, { v: "home", l: "Home" }, { v: "away", l: "Away" }];
 const WINDOWS = [{ v: "3", l: "Last 3" }, { v: "5", l: "Last 5" }, { v: "10", l: "Last 10" }];
@@ -16,6 +17,7 @@ export default function Dashboard() {
   const [split, setSplit] = useState("overall");
   const [window, setWindow] = useState("5");
   const [syncing, setSyncing] = useState(false);
+  const [syncingAll, setSyncingAll] = useState(false);
   const league = leagues.find((l) => l.league_id === leagueId);
 
   const loadData = () => {
@@ -33,6 +35,22 @@ export default function Dashboard() {
     } catch {
       toast.error("Could not start sync");
       setSyncing(false);
+    }
+  };
+
+  const handleRefreshAll = async () => {
+    setSyncingAll(true);
+    try {
+      const res = await api.refreshAll();
+      if (res.status === "already_syncing") {
+        toast.info("A full sync is already running — check the Data & Sync panel below.");
+      } else {
+        toast.success("Full sync started for all leagues. Watch progress in the Data & Sync panel below.");
+      }
+    } catch {
+      toast.error("Could not start full sync");
+    } finally {
+      setTimeout(() => setSyncingAll(false), 3000);
     }
   };
 
@@ -60,6 +78,15 @@ export default function Dashboard() {
           >
             <RefreshCw className={`h-4 w-4 ${syncing ? "animate-spin" : ""}`} />
             {syncing ? "Syncing…" : "Refresh data"}
+          </button>
+          <button
+            data-testid="refresh-all-btn"
+            onClick={handleRefreshAll}
+            disabled={syncingAll}
+            className="flex items-center gap-2 bg-primary hover:bg-primary/90 text-black border border-primary text-sm font-medium rounded-md px-3 py-2 transition-colors duration-150 disabled:opacity-60"
+          >
+            <RotateCw className={`h-4 w-4 ${syncingAll ? "animate-spin" : ""}`} />
+            {syncingAll ? "Starting…" : "Refresh all"}
           </button>
         </div>
       </div>
@@ -115,6 +142,8 @@ export default function Dashboard() {
 
         <CornerLeagueTable leagueId={leagueId} />
       </div>
+
+      <SyncPanel />
     </div>
   );
 }

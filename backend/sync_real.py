@@ -138,6 +138,12 @@ async def sync_league(hc, my_lid):
     samples = {tid: [] for tid in all_team_ids}
     league_corners = []
     recent = ft[-STATS_CAP:] if len(ft) > STATS_CAP else ft
+    recent_ids = [f["fixture"]["id"] for f in recent]
+    # PERSISTENT CACHE: past results never change — only fetch fixtures we haven't seen before
+    cached = {}
+    async for c in db.fixture_stats.find({"_id": {"$in": recent_ids}}):
+        cached[c["_id"]] = c
+    fetched = 0
     for f in recent:
         fid = f["fixture"]["id"]
         hid = f["teams"]["home"]["id"]
@@ -145,26 +151,37 @@ async def sync_league(hc, my_lid):
         hname = f["teams"]["home"]["name"]
         aname = f["teams"]["away"]["name"]
         fdate = f["fixture"]["date"]
-        try:
-            st = await af_get(hc, "/fixtures/statistics", {"fixture": fid})
-        except Exception as e:
-            print(f"  stat {fid} err {e}"); continue
-        corners = {}
-        shots = {}
-        for t in st:
-            c = next((s["value"] for s in t["statistics"] if s["type"] == "Corner Kicks"), None)
-            corners[t["team"]["id"]] = c if isinstance(c, int) else 0
-            sh = next((s["value"] for s in t["statistics"] if s["type"] == "Total Shots"), None)
-            shots[t["team"]["id"]] = sh if isinstance(sh, int) else 0
-        if hid not in corners or aid not in corners:
-            continue
-        hc_, ac_ = corners.get(hid, 0), corners.get(aid, 0)
-        hs_, as_ = shots.get(hid, 0), shots.get(aid, 0)
+        c = cached.get(fid)
+        if c:
+            hc_, ac_, hs_, as_ = c["home_corners"], c["away_corners"], c["home_shots"], c["away_shots"]
+        else:
+            try:
+                st = await af_get(hc, "/fixtures/statistics", {"fixture": fid})
+            except Exception as e:
+                print(f"  stat {fid} err {e}"); continue
+            corners = {}
+            shots = {}
+            for t in st:
+                cc = next((s["value"] for s in t["statistics"] if s["type"] == "Corner Kicks"), None)
+                corners[t["team"]["id"]] = cc if isinstance(cc, int) else 0
+                sh = next((s["value"] for s in t["statistics"] if s["type"] == "Total Shots"), None)
+                shots[t["team"]["id"]] = sh if isinstance(sh, int) else 0
+            if hid not in corners or aid not in corners:
+                continue
+            hc_, ac_ = corners.get(hid, 0), corners.get(aid, 0)
+            hs_, as_ = shots.get(hid, 0), shots.get(aid, 0)
+            fetched += 1
+            await db.fixture_stats.update_one({"_id": fid}, {"$set": {
+                "_id": fid, "league_id": my_lid, "date": fdate,
+                "home_id": hid, "away_id": aid,
+                "home_corners": hc_, "away_corners": ac_,
+                "home_shots": hs_, "away_shots": as_}}, upsert=True)
         league_corners += [hc_, ac_]
         if hid in samples:
             samples[hid].append({"home": True, "corners_for": hc_, "corners_against": ac_, "shots_for": hs_, "date": fdate, "opponent": aname})
         if aid in samples:
             samples[aid].append({"home": False, "corners_for": ac_, "corners_against": hc_, "shots_for": as_, "date": fdate, "opponent": hname})
+    print(f"[{my_lid}] stats cache_hit={len(cached)} api_fetched={fetched}")
 
     league_avg = (sum(league_corners) / len(league_corners)) if league_corners else 5.0
     print(f"[{my_lid}] league avg corners/team/game = {league_avg:.2f}")
@@ -242,16 +259,38 @@ async def sync_league(hc, my_lid):
                                           "synced_at": datetime.now(timezone.utc).isoformat()}},
                                 upsert=True)
     print(f"[{my_lid}] DONE teams={len(team_docs)} fixtures={len(fixture_docs)} odds={len(odds_docs)}")
+    return {"teams": len(team_docs), "fixtures": len(fixture_docs),
+            "cache_hit": len(cached), "api_fetched": fetched}
 
 
 async def main():
-    targets = sys.argv[1:] if len(sys.argv) > 1 else list(LEAGUE_META.keys())
+    import uuid as _uuid
+    trigger = os.environ.get("SYNC_TRIGGER", "manual")
+    targets = [a for a in sys.argv[1:] if not a.startswith("--")] or list(LEAGUE_META.keys())
+    run_id = str(_uuid.uuid4())
+    await db.sync_runs.insert_one({
+        "_id": run_id, "trigger": trigger, "started_at": datetime.now(timezone.utc).isoformat(),
+        "finished_at": None, "status": "running", "targets": targets, "leagues": []})
+    results = []
     async with httpx.AsyncClient() as hc:
         for lid in targets:
             try:
-                await sync_league(hc, lid)
+                counts = await sync_league(hc, lid)
+                entry = {"league_id": lid, "status": "ok", **(counts or {})}
             except Exception as e:
+                entry = {"league_id": lid, "status": "error", "error": str(e)[:300]}
                 print(f"[{lid}] FAILED: {e}")
+            results.append(entry)
+            await db.sync_runs.update_one({"_id": run_id}, {"$set": {"leagues": results}})
+    errors = [r for r in results if r["status"] == "error"]
+    status = "success" if not errors else ("failed" if len(errors) == len(results) else "partial")
+    await db.sync_runs.update_one({"_id": run_id}, {"$set": {
+        "finished_at": datetime.now(timezone.utc).isoformat(), "status": status,
+        "error_count": len(errors)}})
+    # retain only the most recent 30 run records
+    old = await db.sync_runs.find({}, {"_id": 1}).sort("started_at", -1).skip(30).to_list(1000)
+    if old:
+        await db.sync_runs.delete_many({"_id": {"$in": [o["_id"] for o in old]}})
 
 
 if __name__ == "__main__":

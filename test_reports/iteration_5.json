@@ -1,0 +1,45 @@
+{
+  "summary": "Frontend-focused regression on the Leagues page (/dashboard) for the new sync-observability features, plus curl checks of GET /api/sync/runs and POST /api/sync/refresh-all with Bearer qa-test-token-123. Verified: refresh-all-btn renders next to refresh-data-btn and is clickable; first click started a real full sync (27 targets) and showed a success toast; second click hit the 5-min throttle and correctly showed an INFO toast ('A full sync is already running'), not an error. Data & Sync panel (sync-panel) renders with latest-run summary (status/finished time/trigger/API-vs-cache counts) and 3 sync-run-row entries incl. the in-progress run (Running 0/27) and the two prior den-sl runs (0/120 cache-hit and 120/0 API-fetched) — matching backend data exactly. sync-errors block correctly absent (no errored leagues). Existing sections intact: MatchupTable (Top Corner Teams & Next Matchup), Team Corner Form (20 team-row rows, split/window tabs), and corner-league-table sidebar. No console errors, no HTTP >=400 responses during the whole flow. Backend API: GET /api/sync/runs returned 200 with trigger, status, started_at, targets and leagues[] entries containing api_fetched/cache_hit; /api/auth/me 200 for the QA token.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {
+        "component": "SyncPanel",
+        "issue": "For status 'running', STATUS.running.cls = 'text-primary animate-spin' is applied to the TEXT label as well as the icon, so the word 'Running' physically rotates in both the latest-run summary span and the table status cell (clearly visible in screenshot as garbled rotating text). animate-spin should be applied only to the Loader2 icon (keep a separate `iconCls`/`spin` flag), not to `${s.cls}` on the <span> and <td>.",
+        "selector": "[data-testid=\"sync-panel\"] [data-testid=\"sync-run-row\"] td (status cell)",
+        "priority": "MEDIUM"
+      }
+    ],
+    "integration_issues": [],
+    "design_issues": [
+      {
+        "screen": "Leagues page — Data & Sync panel",
+        "issues": [
+          "Panel only re-polls every 30s and has no manual refresh/immediate re-fetch after clicking 'Refresh all', so a user who clicks the button sees no new 'Running' row for up to 30s (had to reload the page to see it). Consider calling load() right after a successful refresh-all (e.g. via a shared context/event or a short 5s poll while a run is 'running').",
+          "Minor: 'Refresh data' (per-league) starts a 90s timer and unconditionally toasts '<league> data updated' even if the sync failed server-side; not part of this scope but worth noting."
+        ]
+      }
+    ]
+  },
+  "test_report_links": [],
+  "action_items": [
+    "SyncPanel.jsx: stop applying animate-spin to the status text (only the icon should spin) — currently renders rotated/unreadable 'Running' label in the summary and the run row.",
+    "Optional UX: refresh the sync-runs list immediately after 'Refresh all' succeeds (and poll faster while status === 'running') instead of waiting for the 30s interval."
+  ],
+  "critical_code_review_comments": [
+    "SyncPanel run rows use key={r.started_at}; safe today but a composite key (trigger+started_at) is more robust if two runs ever share a timestamp.",
+    "SyncPanel swallows API errors (.catch(() => setRuns([]))) and then shows 'No sync runs recorded yet.' — a failed /api/sync/runs call is indistinguishable from an empty history; add an error state.",
+    "Reusing the STATUS map's className for both icon and text couples animation to typography — split into icon vs text classes."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "100%", "frontend": "95%"},
+  "seed_data_creation": "None created. Used pre-existing QA session (user_id qa-user-1, session_token qa-test-token-123). Note: clicking 'Refresh all' once started a real full sync across 27 leagues (logged as a 'manual' run at 2026-08-05T09:08:20Z).",
+  "should_call_test_agent_after_fix": false,
+  "should_main_agent_self_test": true,
+  "test_credentials": "session_token / Bearer token: qa-test-token-123 (user_id qa-user-1) — verified working as httpOnly cookie and Authorization header.",
+  "context_for_next_testing_agent": "New Leagues-page UI (refresh-all-btn, sync-panel, sync-run-row) is functionally working end-to-end with the backend; only a cosmetic animate-spin-on-text bug remains. A full 27-league manual sync was triggered at 09:08 UTC on 2026-08-05 — subsequent refresh-all calls will return 'already_syncing' for 5 min. Do not trigger more full syncs to preserve API-Football quota. Quick Scan/export/streaks were not re-tested this iteration.",
+  "rca_of_the_issue": "The rotating status label comes from STATUS.running.cls in /app/frontend/src/components/SyncPanel.jsx line 9 ('text-primary animate-spin'); the same string is spread onto the icon (line 108), the summary text span (line 109) and the table status cell (line 82), so Tailwind's animate-spin rotates the text nodes too. Reproduce: trigger POST /api/sync/refresh-all then load /dashboard while a run has status 'running'."
+}

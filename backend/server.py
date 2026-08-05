@@ -372,9 +372,30 @@ async def refresh_league(league_id: str, user: dict = Depends(get_current_user))
         return {"status": "already_syncing", "league_id": league_id,
                 "started_at": last.isoformat()}
     _last_refresh[league_id] = now
-    import subprocess, sys
-    subprocess.Popen([sys.executable, str(ROOT_DIR / "sync_real.py"), league_id], cwd=str(ROOT_DIR))
+    import subprocess, sys, os as _os
+    subprocess.Popen([sys.executable, str(ROOT_DIR / "sync_real.py"), league_id], cwd=str(ROOT_DIR),
+                     env={**_os.environ, "SYNC_TRIGGER": "manual"})
     return {"status": "syncing", "league_id": league_id, "started_at": now.isoformat()}
+
+
+_last_refresh_all = {"at": None}
+
+
+@api_router.post("/sync/refresh-all")
+async def refresh_all(user: dict = Depends(get_current_user)):
+    now = datetime.now(timezone.utc)
+    last = _last_refresh_all["at"]
+    if last and (now - last).total_seconds() < 300:
+        return {"status": "already_syncing", "started_at": last.isoformat()}
+    _last_refresh_all["at"] = now
+    run_sync_all("manual")
+    return {"status": "syncing", "started_at": now.isoformat()}
+
+
+@api_router.get("/sync/runs")
+async def sync_runs(limit: int = 8, user: dict = Depends(get_current_user)):
+    runs = await db.sync_runs.find({}, {"_id": 0}).sort("started_at", -1).limit(limit).to_list(limit)
+    return runs
 
 
 @api_router.get("/leagues/{league_id}/teams")
@@ -1003,10 +1024,11 @@ STALE_HOURS = 12          # data older than this triggers a boot-time refresh
 SYNC_LOCK_MINUTES = 20     # don't relaunch a sync if one started within this window
 
 
-def run_sync_all():
-    import subprocess, sys
-    logger.info("Sync: launching sync_real.py for all leagues")
-    subprocess.Popen([sys.executable, str(ROOT_DIR / "sync_real.py")], cwd=str(ROOT_DIR))
+def run_sync_all(trigger="scheduled"):
+    import subprocess, sys, os as _os
+    logger.info("Sync (%s): launching sync_real.py for all leagues", trigger)
+    subprocess.Popen([sys.executable, str(ROOT_DIR / "sync_real.py")], cwd=str(ROOT_DIR),
+                     env={**_os.environ, "SYNC_TRIGGER": trigger})
 
 
 async def _maybe_sync_on_boot():
@@ -1036,7 +1058,7 @@ async def _maybe_sync_on_boot():
             pass
     await db.meta.update_one({"_id": "sync_lock"}, {"$set": {"started_at": now.isoformat()}}, upsert=True)
     logger.info("Boot sync: real=%s stale=%s — launching API-Football sync", real, stale)
-    run_sync_all()
+    run_sync_all("boot")
 
 
 @app.on_event("startup")
@@ -1051,11 +1073,12 @@ async def on_startup():
         logger.info("Removed stale leagues: %s", stale_ids)
     await _maybe_sync_on_boot()
     from apscheduler.schedulers.asyncio import AsyncIOScheduler
+    from apscheduler.triggers.cron import CronTrigger
     scheduler = AsyncIOScheduler(timezone="UTC")
-    scheduler.add_job(run_sync_all, "interval", hours=12, id="sync_all", replace_existing=True)
+    scheduler.add_job(run_sync_all, CronTrigger(hour="7,19", minute=0), id="sync_all", replace_existing=True)
     scheduler.start()
     app.state.scheduler = scheduler
-    logger.info("Auto-refresh scheduler started (every 12h)")
+    logger.info("Auto-refresh scheduler started (07:00 & 19:00 UTC daily)")
 
 
 @app.on_event("shutdown")

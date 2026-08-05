@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect } from "react";
 import { Database, CheckCircle2, AlertTriangle, Loader2, Clock } from "lucide-react";
 import { api } from "@/lib/api";
 
@@ -6,7 +6,7 @@ const STATUS = {
   success: { icon: CheckCircle2, cls: "text-emerald-400", label: "Success" },
   partial: { icon: AlertTriangle, cls: "text-amber-400", label: "Partial" },
   failed: { icon: AlertTriangle, cls: "text-red-400", label: "Failed" },
-  running: { icon: Loader2, cls: "text-primary animate-spin", label: "Running" },
+  running: { icon: Loader2, cls: "text-primary", label: "Running", spin: true },
 };
 
 const when = (iso) => (iso ? new Date(iso).toLocaleString() : "—");
@@ -15,15 +15,19 @@ export default function SyncPanel() {
   const [runs, setRuns] = useState([]);
   const [loading, setLoading] = useState(true);
 
-  const load = useCallback(() => {
-    api.syncRuns(8).then(setRuns).catch(() => setRuns([])).finally(() => setLoading(false));
-  }, []);
-
   useEffect(() => {
-    load();
-    const t = setInterval(load, 30000);
-    return () => clearInterval(t);
-  }, [load]);
+    let active = true;
+    let timer;
+    const tick = async () => {
+      let data = [];
+      try { data = await api.syncRuns(8); if (active) setRuns(data); } catch {} finally { if (active) setLoading(false); }
+      if (!active) return;
+      const running = data[0]?.status === "running";
+      timer = setTimeout(tick, running ? 6000 : 30000);
+    };
+    tick();
+    return () => { active = false; clearTimeout(timer); };
+  }, []);
 
   const latest = runs[0];
 
@@ -72,14 +76,19 @@ export default function SyncPanel() {
                 <tbody className="font-mono-data text-xs">
                   {runs.map((r) => {
                     const s = STATUS[r.status] || STATUS.running;
+                    const SIcon = s.icon;
                     const okCount = (r.leagues || []).filter((l) => l.status === "ok").length;
                     const fetched = (r.leagues || []).reduce((a, l) => a + (l.api_fetched || 0), 0);
                     const cache = (r.leagues || []).reduce((a, l) => a + (l.cache_hit || 0), 0);
                     return (
-                      <tr key={r.started_at} data-testid="sync-run-row" className="border-b border-border/40">
+                      <tr key={`${r.trigger}-${r.started_at}`} data-testid="sync-run-row" className="border-b border-border/40">
                         <td className="px-2 py-1.5 text-muted-foreground whitespace-nowrap">{when(r.started_at)}</td>
                         <td className="px-2 py-1.5 text-muted-foreground">{r.trigger}</td>
-                        <td className={`px-2 py-1.5 ${s.cls}`}>{s.label}</td>
+                        <td className={`px-2 py-1.5 ${s.cls}`}>
+                          <span className="inline-flex items-center gap-1">
+                            <SIcon className={`h-3 w-3 ${s.spin ? "animate-spin" : ""}`} />{s.label}
+                          </span>
+                        </td>
                         <td className="px-2 py-1.5 text-right text-foreground">{okCount}/{(r.targets || []).length}</td>
                         <td className="px-2 py-1.5 text-right text-muted-foreground">
                           <span className="text-amber-400">{fetched}</span> / <span className="text-emerald-400">{cache}</span>
@@ -105,7 +114,7 @@ function LatestSummary({ run }) {
   return (
     <div className="flex flex-wrap items-center gap-x-6 gap-y-2 rounded-md bg-secondary/60 border border-border p-3">
       <div className="flex items-center gap-2">
-        <Icon className={`h-4 w-4 ${s.cls}`} />
+        <Icon className={`h-4 w-4 ${s.cls} ${s.spin ? "animate-spin" : ""}`} />
         <span className={`text-sm font-medium ${s.cls}`}>{s.label}</span>
       </div>
       <div className="flex items-center gap-1.5 text-xs text-muted-foreground">

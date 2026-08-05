@@ -92,6 +92,21 @@ Multi-league corner value betting web app. Rebuilds a spreadsheet corner model i
 - API-Football account: Pro plan, active until 2026-08-25, ~3.5k/7500 req/day used at time of sync. Backup: renew plan before expiry to keep auto-updates flowing.
 - Tested: `/app/test_reports/iteration_3.json` — 6/6 frontend flows + endpoint checks PASS.
 
+## Sync Efficiency, Scheduling & Observability (2026-08-05)
+- **Persistent stats cache** (`fixture_stats` collection, keyed by API fixture id): past results never change, so each finished fixture's corner+shot stats are fetched from API-Football ONCE and cached forever. Re-syncs skip cached fixtures — validated live: 1st den-sl sync `api_fetched=120 cache_hit=0`, 2nd `api_fetched=0 cache_hit=120`. Massive quota reduction on every recurring run.
+- **Fixed schedule**: APScheduler now uses a CronTrigger at **07:00 & 19:00 UTC** daily (was interval-12h-from-boot). Self-heal-on-boot retained.
+- **Sync run log + errors**: every sync writes a `sync_runs` doc (trigger boot/scheduled/manual, per-league status, api_fetched/cache_hit, errors; last 30 retained). New endpoints `GET /api/sync/runs`, `POST /api/sync/refresh-all` (5-min throttle). Per-league `/refresh` and boot/scheduled runs tagged via `SYNC_TRIGGER`.
+- **Frontend**: Leagues page gained a **"Refresh all"** button + a **"Data & Sync"** panel (`SyncPanel.jsx`) showing latest-run status, API-vs-cache counts (quota saved), a recent-runs table, and a red error block on failures. Adaptive polling (6s while a run is 'running', else 30s). Frontend still reads ONLY cached DB data — never calls API-Football on page load.
+- Provider confirmed: **API-Football (Pro)**. Utility scripts: `probe_leagues.py` (league eligibility), `backfill_rounds.py` (cheap round backfill).
+- Tested `/app/test_reports/iteration_5.json` — backend 100%, frontend features working (one cosmetic animate-spin-on-text bug fixed post-report).
+
+## League Expansion + Quick Value Scan + Corner Table (2026-08-05)
+- Expanded 14 → **27 leagues across 20 countries** (added Germany x2, Portugal, Belgium, Scotland, Turkey, MLS, Denmark, Switzerland, Austria, Greece, Japan J1, Argentina) — all verified to have API-Football corner + shot stats and 10+ games/team. `MANAGED_LEAGUE_IDS` updated (critical: startup deletes unlisted leagues).
+- Sync now also captures **Total Shots** per match (`shots_for`) alongside corners.
+- **Quick Scan** tab (`/quick-scan`, `QuickScan.jsx`): head-to-head pairing cards (strong corner team vs leaky-defence opponent) — rebrand of the old "Top Mismatches" table (removed from Value Finder home; Best Bets strip kept). Reuses `/api/top-mismatches`.
+- **Corner League Table** sidebar on Leagues page (`CornerLeagueTable.jsx`, `/api/leagues/{id}/corner-table`): ranks the selected league's teams by corners won/g with a shots/g column; follows the league switcher.
+- Tested `/app/test_reports/iteration_5.json` earlier pass (100%). Known data gap: England National League (eng-nl) has no API-Football corner stats → shows 0.00 (out of scope).
+
 ## Fixture Round / Matchday (2026-08-02)
 - Fixtures now carry the real **round** from API-Football (`sync_real.py` captures `league.round`, prettified "Regular Season - N" → "Round N"; `_round_label`). Displayed across the app: Ranked Value Bets table (`scanner-row-round`), Leagues matchup "Next fixture" cell, Top Mismatches fixture cell, and Fixture Detail header (`fixture-round`). Sentinel "Upcoming" (round unknown) is hidden.
 - Backend exposes `round` via `/api/scanner` and every `next_fixture` (`_next_fixtures`, streaks). Existing preview data backfilled cheaply via `backend/backfill_rounds.py` (one /fixtures call per league, no stats calls).

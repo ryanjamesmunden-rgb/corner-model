@@ -12,6 +12,7 @@ export const api = {
   scanner: (params) => axios.get(`${API}/scanner`, { params }).then((r) => r.data),
   streaks: (params) => axios.get(`${API}/streaks`, { params }).then((r) => r.data),
   matchups: (id, side) => axios.get(`${API}/leagues/${id}/matchups`, { params: { side } }).then((r) => r.data),
+  cornerTable: (id) => axios.get(`${API}/leagues/${id}/corner-table`).then((r) => r.data),
   trends: (params) => axios.get(`${API}/trends`, { params }).then((r) => r.data),
   bestBets: () => axios.get(`${API}/best-bets`).then((r) => r.data),
   topMismatches: (params) => axios.get(`${API}/top-mismatches`, { params }).then((r) => r.data),

@@ -41,6 +41,19 @@ LEAGUE_META = {
     "ita-sa":  {"api": 135, "name": "Serie A",          "country": "Italy"},
     "fra-l1":  {"api": 61,  "name": "Ligue 1",          "country": "France"},
     "esp-ll":  {"api": 140, "name": "La Liga",          "country": "Spain"},
+    "ger-bl":  {"api": 78,  "name": "Bundesliga",       "country": "Germany"},
+    "ger-bl2": {"api": 79,  "name": "2. Bundesliga",    "country": "Germany"},
+    "por-pl":  {"api": 94,  "name": "Primeira Liga",    "country": "Portugal"},
+    "bel-pl":  {"api": 144, "name": "Jupiler Pro League","country": "Belgium"},
+    "sco-pl":  {"api": 179, "name": "Premiership",      "country": "Scotland"},
+    "tur-sl":  {"api": 203, "name": "Süper Lig",        "country": "Turkey"},
+    "usa-ml":  {"api": 253, "name": "MLS",              "country": "USA"},
+    "den-sl":  {"api": 119, "name": "Superliga",        "country": "Denmark"},
+    "sui-sl":  {"api": 207, "name": "Super League",     "country": "Switzerland"},
+    "aut-bl":  {"api": 218, "name": "Bundesliga",       "country": "Austria"},
+    "gre-sl":  {"api": 197, "name": "Super League",     "country": "Greece"},
+    "jpn-j1":  {"api": 98,  "name": "J1 League",        "country": "Japan"},
+    "arg-lp":  {"api": 128, "name": "Liga Profesional", "country": "Argentina"},
 }
 STATS_CAP = 120  # max per-fixture statistics calls per league
 
@@ -137,17 +150,21 @@ async def sync_league(hc, my_lid):
         except Exception as e:
             print(f"  stat {fid} err {e}"); continue
         corners = {}
+        shots = {}
         for t in st:
             c = next((s["value"] for s in t["statistics"] if s["type"] == "Corner Kicks"), None)
             corners[t["team"]["id"]] = c if isinstance(c, int) else 0
+            sh = next((s["value"] for s in t["statistics"] if s["type"] == "Total Shots"), None)
+            shots[t["team"]["id"]] = sh if isinstance(sh, int) else 0
         if hid not in corners or aid not in corners:
             continue
         hc_, ac_ = corners.get(hid, 0), corners.get(aid, 0)
+        hs_, as_ = shots.get(hid, 0), shots.get(aid, 0)
         league_corners += [hc_, ac_]
         if hid in samples:
-            samples[hid].append({"home": True, "corners_for": hc_, "corners_against": ac_, "date": fdate, "opponent": aname})
+            samples[hid].append({"home": True, "corners_for": hc_, "corners_against": ac_, "shots_for": hs_, "date": fdate, "opponent": aname})
         if aid in samples:
-            samples[aid].append({"home": False, "corners_for": ac_, "corners_against": hc_, "date": fdate, "opponent": hname})
+            samples[aid].append({"home": False, "corners_for": ac_, "corners_against": hc_, "shots_for": as_, "date": fdate, "opponent": hname})
 
     league_avg = (sum(league_corners) / len(league_corners)) if league_corners else 5.0
     print(f"[{my_lid}] league avg corners/team/game = {league_avg:.2f}")

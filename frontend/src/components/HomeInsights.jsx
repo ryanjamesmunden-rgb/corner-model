@@ -1,9 +1,7 @@
 import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
-import { Trophy, Flame, TrendingUp, Target, ArrowRight, Star } from "lucide-react";
+import { Trophy, Flame, TrendingUp, ArrowRight, Star } from "lucide-react";
 import { api } from "@/lib/api";
-
-const fmt = (d) => new Date(d).toLocaleDateString(undefined, { month: "short", day: "numeric" });
 
 function BestCard({ icon: Icon, label, title, sub, chip, chipClass, onClick, accent }) {
   return (
@@ -30,11 +28,9 @@ function BestCard({ icon: Icon, label, title, sub, chip, chipClass, onClick, acc
 export default function HomeInsights() {
   const navigate = useNavigate();
   const [best, setBest] = useState(null);
-  const [mismatches, setMismatches] = useState([]);
 
   useEffect(() => {
     api.bestBets().then(setBest).catch(() => {});
-    api.topMismatches({ within_days: 7, limit: 10 }).then(setMismatches).catch(() => setMismatches([]));
   }, []);
 
   const go = (fixtureId) => fixtureId && navigate(`/fixture/${fixtureId}`);
@@ -76,60 +72,6 @@ export default function HomeInsights() {
               onClick={() => go(best.streak.next_fixture?.fixture_id)}
             />
           ) : <SkeletonCard />}
-        </div>
-      </div>
-
-      {/* Top mismatches this week */}
-      <div className="bg-card border border-border rounded-lg">
-        <div className="flex items-center gap-2 px-4 py-3 border-b border-border">
-          <Target className="h-4 w-4 text-emerald-400" />
-          <h2 className="font-head font-semibold text-lg">Top Mismatches This Week</h2>
-          <span className="text-xs text-muted-foreground hidden sm:inline">strong corner team vs leaky defence · next 7 days · all leagues</span>
-          <span className="ml-auto font-mono-data text-xs text-muted-foreground">{mismatches.length}</span>
-        </div>
-        <div className="overflow-x-auto">
-          <table className="w-full">
-            <thead>
-              <tr className="border-b border-border text-muted-foreground text-xs uppercase tracking-wider">
-                <th className="text-left font-medium px-4 py-2.5">Team</th>
-                <th className="text-left font-medium px-4 py-2.5">Fixture</th>
-                <th className="text-right font-medium px-4 py-2.5">Team /g</th>
-                <th className="text-right font-medium px-4 py-2.5">Opp conc</th>
-                <th className="text-right font-medium px-4 py-2.5">Proj λ</th>
-                <th className="text-right font-medium px-4 py-2.5">Model</th>
-                <th className="px-4 py-2.5"></th>
-              </tr>
-            </thead>
-            <tbody className="font-mono-data text-sm">
-              {mismatches.length === 0 ? (
-                <tr><td colSpan={7} className="px-4 py-8 text-center text-muted-foreground text-xs">No strong mismatches in the next 7 days — check the Leagues tab for the full board.</td></tr>
-              ) : mismatches.map((r) => (
-                <tr
-                  key={r.team_id}
-                  data-testid="mismatch-row"
-                  onClick={() => go(r.next_fixture?.fixture_id)}
-                  className="border-b border-border/50 hover:bg-white/5 cursor-pointer transition-colors duration-150"
-                  style={{ borderLeft: "2px solid #10B981" }}
-                >
-                  <td className="px-4 py-2.5">
-                    <div className="text-foreground font-sans font-medium whitespace-nowrap">{r.name}</div>
-                    <div className="text-[10px] text-muted-foreground uppercase tracking-wider font-sans">{r.league_name}</div>
-                  </td>
-                  <td className="px-4 py-2.5 text-xs text-muted-foreground whitespace-nowrap">
-                    {r.next_fixture?.is_home ? "vs" : "@"} {r.next_fixture?.opponent} · {fmt(r.next_fixture?.date)}
-                    {r.next_fixture?.round && r.next_fixture.round !== "Upcoming" && (
-                      <span className="ml-1.5 text-[10px] text-muted-foreground/70">· {r.next_fixture.round}</span>
-                    )}
-                  </td>
-                  <td className="px-4 py-2.5 text-right text-emerald-400 font-semibold">{r.team_for.toFixed(1)}</td>
-                  <td className="px-4 py-2.5 text-right text-emerald-400">{r.opp_conceded.toFixed(1)}</td>
-                  <td className="px-4 py-2.5 text-right text-primary font-semibold">{r.lambda.toFixed(1)}</td>
-                  <td className="px-4 py-2.5 text-right text-foreground whitespace-nowrap" title={`${r.prob.toFixed(0)}% to win ${r.line}+`}>{r.line}+ @ {r.fair_odds?.toFixed(2)}</td>
-                  <td className="px-4 py-2.5 text-right"><ArrowRight className="h-4 w-4 text-muted-foreground inline" /></td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
         </div>
       </div>
     </div>

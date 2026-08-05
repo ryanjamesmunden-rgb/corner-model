@@ -29,7 +29,7 @@ export default function Login() {
             Find corner value<br />before the market moves.
           </h1>
           <p className="text-muted-foreground text-sm mb-8 leading-relaxed">
-            Auto-updating Poisson model across 14 leagues. Fair odds, EV%, confidence ratings, and a daily value scanner.
+            Auto-updating Poisson model across 20 countries. Fair odds, EV%, confidence ratings, and a daily value scanner.
           </p>
           <button
             data-testid="google-login-btn"

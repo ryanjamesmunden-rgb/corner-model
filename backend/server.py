@@ -392,6 +392,29 @@ async def get_teams(league_id: str, split: str = "overall", window: int = 5, use
     return out
 
 
+@api_router.get("/leagues/{league_id}/corner-table")
+async def corner_table(league_id: str, user: dict = Depends(get_current_user)):
+    """Corner-league standings: teams ranked by corners won/game, with shots taken/game (real data)."""
+    teams = await db.teams.find({"league_id": league_id}, {"_id": 0}).to_list(200)
+    league = await db.leagues.find_one({"league_id": league_id}, {"_id": 0}) or {}
+    out = []
+    for t in teams:
+        real = t.get("real_matches") or []
+        n = len(real)
+        if n == 0:
+            won = concd = shots = 0.0
+        else:
+            won = sum(m["corners_for"] for m in real) / n
+            concd = sum(m["corners_against"] for m in real) / n
+            shots = sum(m.get("shots_for", 0) for m in real) / n
+        out.append({"team_id": t["team_id"], "name": t["name"], "games": n,
+                    "corners_won": round(won, 2), "corners_conceded": round(concd, 2),
+                    "shots": round(shots, 1), "real_samples": t.get("real_samples", 0)})
+    out.sort(key=lambda x: x["corners_won"], reverse=True)
+    return {"league_id": league_id, "league_name": league.get("name", league_id),
+            "country": league.get("country", ""), "teams": out}
+
+
 async def _odds_for(fixture_id: str) -> Dict[str, float]:
     doc = await db.odds.find_one({"fixture_id": fixture_id}, {"_id": 0})
     return doc["odds"] if doc else {}
@@ -971,7 +994,9 @@ app.add_middleware(
 
 
 MANAGED_LEAGUE_IDS = {"eng-pl", "eng-ch", "eng-l1", "eng-l2", "eng-nl", "aus-al", "nor-el",
-                      "ned-ere", "ned-ed", "bra-sa", "bra-sb", "ita-sa", "fra-l1", "esp-ll"}
+                      "ned-ere", "ned-ed", "bra-sa", "bra-sb", "ita-sa", "fra-l1", "esp-ll",
+                      "ger-bl", "ger-bl2", "por-pl", "bel-pl", "sco-pl", "tur-sl", "usa-ml",
+                      "den-sl", "sui-sl", "aut-bl", "gre-sl", "jpn-j1", "arg-lp"}
 
 
 STALE_HOURS = 12          # data older than this triggers a boot-time refresh

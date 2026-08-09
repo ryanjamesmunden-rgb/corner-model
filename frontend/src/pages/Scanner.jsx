@@ -4,6 +4,7 @@ import { Radar, TrendingUp, Filter, ArrowRight } from "lucide-react";
 import { api, tierMeta, confMeta } from "@/lib/api";
 import { useLeague } from "@/context/LeagueContext";
 import HomeInsights from "@/components/HomeInsights";
+import IntroBanner from "@/components/IntroBanner";
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from "@/components/ui/select";
@@ -62,6 +63,8 @@ export default function Scanner() {
           <StatChip label="Total" value={rows.length} className="text-foreground" dot="bg-primary" />
         </div>
       </div>
+
+      <IntroBanner />
 
       <HomeInsights />
 

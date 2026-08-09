@@ -487,6 +487,7 @@ async def settle_picks_now(user: dict = Depends(get_current_user)):
 from emergentintegrations.llm.chat import LlmChat, UserMessage
 
 EMERGENT_LLM_KEY = os.environ.get("EMERGENT_LLM_KEY")
+_explain_calls = defaultdict(deque)  # per-user timestamps for LLM rate limiting
 
 
 class ExplainReq(BaseModel):
@@ -507,11 +508,23 @@ class ExplainReq(BaseModel):
 
 @api_router.post("/explain")
 async def explain_pick(req: ExplainReq, user: dict = Depends(get_current_user)):
-    cached = await db.explanations.find_one({"_id": req.key}, {"_id": 0})
+    # derive the cache key server-side from the actual stats (ignore client key to prevent poisoning)
+    import hashlib
+    sig = f"{req.team}|{req.opponent}|{req.line}|{round(req.team_for,1)}|{round(req.opp_conceded,1)}|{round(req.lam,1)}|{round(req.prob)}"
+    ckey = hashlib.md5(sig.encode()).hexdigest()
+    cached = await db.explanations.find_one({"_id": ckey}, {"_id": 0})
     if cached:
         return {"explanation": cached["text"], "cached": True}
     if not EMERGENT_LLM_KEY:
         raise HTTPException(status_code=503, detail="LLM key not configured")
+    # light per-user throttle on uncached (paid) calls
+    now_ts = datetime.now(timezone.utc).timestamp()
+    bucket = _explain_calls[user["user_id"]]
+    while bucket and now_ts - bucket[0] > 60:
+        bucket.popleft()
+    if len(bucket) >= 20:
+        raise HTTPException(status_code=429, detail="Too many explanations — please wait a moment.")
+    bucket.append(now_ts)
     venue = "at home" if req.is_home else "away"
     extra = ""
     if req.team_shots is not None:
@@ -540,8 +553,8 @@ async def explain_pick(req: ExplainReq, user: dict = Depends(get_current_user)):
         raise HTTPException(status_code=502, detail="Could not generate explanation")
     text = (resp if isinstance(resp, str) else str(resp)).strip()
     await db.explanations.update_one(
-        {"_id": req.key},
-        {"$set": {"_id": req.key, "text": text, "created_at": datetime.now(timezone.utc).isoformat()}},
+        {"_id": ckey},
+        {"$set": {"_id": ckey, "text": text, "created_at": datetime.now(timezone.utc).isoformat()}},
         upsert=True)
     return {"explanation": text, "cached": False}
 

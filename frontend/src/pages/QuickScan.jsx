@@ -57,7 +57,7 @@ export default function QuickScan() {
           No strong mismatches in this window. Try widening the timeframe.
         </div>
       ) : (
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 items-start">
           {rows.map((r) => (
             <PairCard key={r.team_id} r={r} onClick={() => r.next_fixture?.fixture_id && navigate(`/fixture/${r.next_fixture.fixture_id}`)} />
           ))}
@@ -140,9 +140,18 @@ function PairCard({ r, onClick }) {
 
       {/* Claude explainer */}
       {explanation ? (
-        <div data-testid="quickscan-explanation" className="rounded-md bg-primary/5 border border-primary/20 p-2.5 flex gap-2">
-          <Sparkles className="h-3.5 w-3.5 text-primary shrink-0 mt-0.5" />
-          <p className="text-xs text-foreground/90 leading-relaxed">{explanation}</p>
+        <div data-testid="quickscan-explanation" className="rounded-md bg-primary/5 border border-primary/20 p-2.5">
+          <div className="flex gap-2">
+            <Sparkles className="h-3.5 w-3.5 text-primary shrink-0 mt-0.5" />
+            <p className="text-xs text-foreground/90 leading-relaxed">{explanation}</p>
+          </div>
+          <button
+            data-testid="quickscan-hide-btn"
+            onClick={(e) => { e.stopPropagation(); setExplanation(null); }}
+            className="mt-1.5 ml-5 text-[10px] text-muted-foreground hover:text-foreground transition-colors"
+          >
+            Hide
+          </button>
         </div>
       ) : (
         <button

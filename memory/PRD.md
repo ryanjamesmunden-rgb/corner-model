@@ -92,6 +92,13 @@ Multi-league corner value betting web app. Rebuilds a spreadsheet corner model i
 - API-Football account: Pro plan, active until 2026-08-25, ~3.5k/7500 req/day used at time of sync. Backup: renew plan before expiry to keep auto-updates flowing.
 - Tested: `/app/test_reports/iteration_3.json` — 6/6 frontend flows + endpoint checks PASS.
 
+## Claude Explainer — Phase 3 (2026-08-09)
+- **"Why this angle?" explainer** on Quick Scan pairing cards: on demand, Claude (`claude-sonnet-4-6` via Emergent LLM key + emergentintegrations) writes a 2-sentence rationale grounded ONLY in the model's numbers (team corners/g, opp conceded, projected λ, hit %, fair odds). Explain, not auto-generate (user's choice).
+- Backend `POST /api/explain` (`server.py`): cache key derived SERVER-SIDE from a hash of the stats (prevents client cache poisoning); results cached in `db.explanations`; per-user rate limit (20 uncached/min) to protect LLM budget. Env: `EMERGENT_LLM_KEY` in backend/.env; `emergentintegrations==0.2.0` in requirements.
+- Frontend: `QuickScan.jsx` PairCard has `quickscan-explain-btn` → shows `quickscan-explanation` with a Hide toggle; grid uses `items-start` (no layout shift).
+- Verified `/app/test_reports/iteration_8.json` — backend 100% (4/4 pytest `tests/test_explain.py`: auth, validation, generation+cache, no _id leak), frontend 100% (button → loading → rationale citing real numbers, no nav on click). Post-test hardening (server-side key + throttle) curl-verified: different client key + same stats → cached hit.
+- Model rework COMPLETE (Phases 1-3): backtester, v2 model, Claude explainer all live.
+
 ## Model v2 — Phase 2 (2026-08-09)
 - **Model upgraded v1 → v2**, proven on 3,174 matches via the backtester BEFORE shipping:
   - **Negative-Binomial (r=11)** replaces Poisson for team-corner probabilities → fixes overdispersion. This was the big win: it corrected the systematic over-rating of low lines (4+ calibration gap 4.3% → 0.6%).

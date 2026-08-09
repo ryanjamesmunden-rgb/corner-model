@@ -1,0 +1,30 @@
+{
+  "summary": "Tested the new Model v2 (NB dispersion + shots/form) rollout and the 'Model Backtest — v1 vs v2' panel, plus regression on Value Finder, Quick Scan, Leagues, Fixture Detail. Backend: new pytest suite /app/backend/tests/test_model_v2.py — 11/11 passed. /api/backtest?model=v1 -> brier 0.2255, avg gap 2.05%; model=v2 -> brier 0.2226, avg gap 0.78% (v2 better on both; ground-truth n/actual_hit_rate identical across models = no leakage of the model change into truth). Single-league (eng-pl) backtest 200 with 120 matches; unknown league returns empty lines + null brier gracefully; unauthenticated request 401. /api/scanner (617 rows), /api/top-mismatches (20), /api/leagues/eng-pl/matchups (20 teams), /api/streaks (154), /api/fixtures/{id} (18 markets, lambdas home 3.83 / away 5.17 / total 9.00) all 200 with populated, _id-free payloads. Frontend (desktop 1920x900, cookie session_token=qa-test-token-123): backtest-panel renders 2 score cards (v1 0.2255/±2.05%, v2 0.2226/±0.78% with '✓ better'), 4 backtest-row entries with all 5 columns; scope toggle to 'This league' reloads correctly (Eerste Divisie: v1 0.2427/±5.00%, v2 0.2405/±4.45%) and back to 'All leagues' without error. Dashboard MatchupTable/Team Corner Form/Corner Table/Sync panel all render. Value Finder shows Best Bets strip + 617 ranked rows with fixture/date/round/EV%; clicking a row opens /fixture/{id} rendering total + both team-corner markets with probabilities. Quick Scan renders 30 quickscan-card items with team, opponent, Proj λ and 'line+ @ odds'. Zero console errors, zero error elements on all pages.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Leagues — Model Backtest panel", "issues": ["Score cards are asymmetric: the 'matches' count (3,174) is only rendered on the v1 card because BacktestPanel passes the `matches` prop to v1 only — the v2 card's right side is empty.", "Table percentages are inconsistently formatted (e.g. '54%' vs '54.4%', '66%' vs '66.6%') because API values are already rounded and no toFixed(1) is applied — makes column comparison visually uneven."]}
+    ]
+  },
+  "test_report_links": ["/app/backend/tests/test_model_v2.py", "/app/test_reports/pytest/pytest_results_iter7.xml"],
+  "action_items": [
+    "Cosmetic: pass `matches` to the v2 ScoreCard too (or drop it from v1) so both cards are symmetric.",
+    "Cosmetic: format backtest table percentages to 1 decimal (toFixed(1)) for aligned comparison.",
+    "Optional: BacktestPanel's .catch(() => setV1/V2(null)) makes a failed /api/backtest look identical to 'Not enough historical data to backtest this league yet.' — add a distinct error state."
+  ],
+  "critical_code_review_comments": [
+    "BacktestPanel computes avg gap client-side from already-rounded (1dp) calibration_gap values, so it displays ±2.05%/±0.78% instead of the true ±2.06%/±0.80%. Consider returning an avg_gap field from /api/backtest for exactness.",
+    "Each scope change fires two full backtests in parallel (v1+v2) over up to 30k fixture_stats docs loaded into memory; currently ~2s but this is an O(all-matches) uncached recomputation per toggle — consider caching results per (league_id, model, window).",
+    "server.py is 1250 lines; model (nb_ge/v2_lambda/_league_shots_map/backtest) should be split into a models module."
+  ],
+  "updated_files": ["/app/backend/tests/test_model_v2.py"],
+  "success_rate": {"backend": "100%", "frontend": "100%"},
+  "seed_data_creation": "None; used existing qa-user-1 / qa-test-token-123 session and seeded league data.",
+  "should_call_test_agent_after_fix": false,
+  "should_main_agent_self_test": true,
+  "test_credentials": "session_token / Bearer qa-test-token-123 (user_id qa-user-1)",
+  "context_for_next_testing_agent": "New regression suite at /app/backend/tests/test_model_v2.py covers /api/backtest (v1 vs v2), scanner, top-mismatches, matchups, streaks and fixture detail contracts. Response shapes worth remembering: /api/leagues/{id}/matchups returns {league_avg_won, teams[]} (not a list); /api/fixtures/{id} returns {fixture, model:{lambdas, markets, confidence}, home_team, away_team}; scanner rows use home_name/away_name/market_label. Only 4 backtest lines (4,5,6,7 team corners) exist. Do not POST refresh/settle.",
+  "rca_of_the_issue": ""
+}

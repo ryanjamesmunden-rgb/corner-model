@@ -62,6 +62,59 @@ def tier_for_ev(ev: float) -> str:
     return "none"
 
 
+# ---- Model v2: Negative-Binomial (dispersion-corrected) + shots/form intent ----
+NB_R = 11          # dispersion param tuned via backtester (Brier 0.2226, calibration gap 0.80%)
+REF_SHOTS = 12.0   # fallback league avg shots when unknown
+
+
+def nb_ge(k: int, lam: float, r: float = NB_R) -> float:
+    """P(X >= k) under a Negative Binomial with mean lam (better tail fit than Poisson)."""
+    if lam <= 0:
+        return 0.0
+    k = int(k)
+    p = r / (r + lam)
+    cum = 0.0
+    for i in range(k):
+        cum += math.exp(math.lgamma(i + r) - math.lgamma(r) - math.lgamma(i + 1)
+                        + r * math.log(p) + i * math.log(1.0 - p))
+    return max(0.0, min(1.0, 1.0 - cum))
+
+
+def _shots_form(team: dict, venue: str):
+    rms = (team or {}).get("real_matches") or []
+    if venue == "home":
+        pool = [m for m in rms if m["home"]]
+    elif venue == "away":
+        pool = [m for m in rms if not m["home"]]
+    else:
+        pool = rms
+    if not pool:
+        pool = rms
+    if not pool:
+        return None, None
+    sf = sum(m.get("shots_for", 0) for m in pool) / len(pool)
+    fh = sum(1 for m in pool if m.get("fh_goals_for", 0) >= 1) / len(pool)
+    return sf, fh
+
+
+def v2_lambda(base: float, team: dict, venue: str, league_shots: float) -> float:
+    """Nudge base corner-lambda by shots-intent (+/-~10%) and first-half-goal form (+/-3%)."""
+    sf, fh = _shots_form(team, venue)
+    if sf is None or not league_shots:
+        return round(base, 2)
+    intent = 0.90 + 0.10 * max(0.6, min(1.5, sf / league_shots))
+    form = 1.0 + 0.03 * (fh - 0.5)
+    return round(base * intent * form, 2)
+
+
+def _league_shots_map(teams: list) -> dict:
+    agg = defaultdict(list)
+    for t in teams:
+        for m in (t.get("real_matches") or []):
+            agg[t["league_id"]].append(m.get("shots_for", 0))
+    return {lid: (sum(v) / len(v) if v else REF_SHOTS) for lid, v in agg.items()}
+
+
 TOTAL_LINES = [6.5, 7.5, 8.5, 9.5, 10.5, 11.5, 12.5, 13.5]
 TEAM_LINES = [2.5, 3.5, 4.5, 5.5, 6.5]
 
@@ -113,7 +166,7 @@ def _src(team: dict) -> list:
     return team.get("real_matches") or team.get("matches") or []
 
 
-def expected_lambdas(home: dict, away: dict) -> dict:
+def expected_lambdas(home: dict, away: dict, league_shots: float = REF_SHOTS) -> dict:
     h_home = team_split(_src(home), "home", 0)
     a_away = team_split(_src(away), "away", 0)
     # fall back to overall if a team has no games on that venue
@@ -121,8 +174,8 @@ def expected_lambdas(home: dict, away: dict) -> dict:
         h_home = team_split(_src(home), "overall", 0)
     if a_away["played"] == 0:
         a_away = team_split(_src(away), "overall", 0)
-    lam_home = round((h_home["for_avg"] + a_away["against_avg"]) / 2, 2)
-    lam_away = round((a_away["for_avg"] + h_home["against_avg"]) / 2, 2)
+    lam_home = v2_lambda((h_home["for_avg"] + a_away["against_avg"]) / 2, home, "home", league_shots)
+    lam_away = v2_lambda((a_away["for_avg"] + h_home["against_avg"]) / 2, away, "away", league_shots)
     return {"home": lam_home, "away": lam_away, "total": round(lam_home + lam_away, 2)}
 
 
@@ -228,7 +281,7 @@ def build_markets(lambdas: dict, odds: Dict[str, float]) -> List[dict]:
     for group, label, lam, lines in specs:
         for line in lines:
             k = int(line) + 1
-            p = poisson_ge(k, lam)
+            p = nb_ge(k, lam) if group in ("home", "away") else poisson_ge(k, lam)
             key = f"{group}_over_{line}"
             fo = fair_odds(p)
             book = odds.get(key)
@@ -242,7 +295,9 @@ def build_markets(lambdas: dict, odds: Dict[str, float]) -> List[dict]:
 async def get_fixture_model(fixture: dict, odds: Dict[str, float]) -> dict:
     home = await db.teams.find_one({"team_id": fixture["home_team_id"]}, {"_id": 0})
     away = await db.teams.find_one({"team_id": fixture["away_team_id"]}, {"_id": 0})
-    lambdas = expected_lambdas(home, away)
+    league = await db.leagues.find_one({"league_id": fixture["league_id"]}, {"_id": 0}) or {}
+    ls = league.get("avg_shots") or REF_SHOTS
+    lambdas = expected_lambdas(home, away, ls)
     return {"lambdas": lambdas, "markets": build_markets(lambdas, odds), "confidence": confidence_for(home, away)}
 
 
@@ -429,13 +484,14 @@ async def settle_picks_now(user: dict = Depends(get_current_user)):
 
 
 def model_lambda(model: str, team_for: float, opp_against: float,
-                 team_shots: float = 0.0, league_shots: float = 0.0) -> float:
-    """Expected team corners. v1 = corner form only. v2 = + shots-intent nudge (used by backtester/model lab)."""
+                 team_shots: float = 0.0, league_shots: float = 0.0, team_fh: float = 0.5) -> float:
+    """Expected team corners. v1 = corner form only. v2 = + shots-intent x first-half-goal form
+    (matches the tuned production formula)."""
     base = (team_for + opp_against) / 2.0
     if model == "v2" and league_shots > 0 and team_shots > 0:
-        # more shots than league norm => more corners; capped +/-20%
-        intent = max(0.8, min(1.2, team_shots / league_shots))
-        base = base * (0.75 + 0.25 * intent)
+        intent = 0.90 + 0.10 * max(0.6, min(1.5, team_shots / league_shots))
+        form = 1.0 + 0.03 * (team_fh - 0.5)
+        base = base * intent * form
     return base
 
 
@@ -454,6 +510,7 @@ async def backtest(league_id: str = "all", window: int = 10, min_games: int = 5,
     hist_for = defaultdict(lambda: deque(maxlen=window))
     hist_against = defaultdict(lambda: deque(maxlen=window))
     hist_shots = defaultdict(lambda: deque(maxlen=window))
+    hist_fh = defaultdict(lambda: deque(maxlen=window))
     lines = [4, 5, 6, 7]
     stats = {L: {"n": 0, "pred": 0.0, "hit": 0, "brier": 0.0} for L in lines}
     preds = 0
@@ -461,27 +518,28 @@ async def backtest(league_id: str = "all", window: int = 10, min_games: int = 5,
     def avg(d):
         return sum(d) / len(d) if d else 0.0
 
+    prob_fn = nb_ge if model == "v2" else poisson_ge
     for m in matches:
         h, a = m["home_id"], m["away_id"]
         sides = [
-            ("home", hist_for[h], hist_against[a], hist_shots[h], m["home_corners"],
+            ("home", hist_for[h], hist_against[a], hist_shots[h], hist_fh[h], m["home_corners"],
              len(hist_for[h]) >= min_games and len(hist_against[a]) >= min_games),
-            ("away", hist_for[a], hist_against[h], hist_shots[a], m["away_corners"],
+            ("away", hist_for[a], hist_against[h], hist_shots[a], hist_fh[a], m["away_corners"],
              len(hist_for[a]) >= min_games and len(hist_against[h]) >= min_games),
         ]
-        for _side, tf_d, oa_d, ts_d, actual, can in sides:
+        for _side, tf_d, oa_d, ts_d, fh_d, actual, can in sides:
             if not can:
                 continue
-            lam = model_lambda(model, avg(tf_d), avg(oa_d), avg(ts_d), league_shots)
+            lam = model_lambda(model, avg(tf_d), avg(oa_d), avg(ts_d), league_shots, avg(fh_d))
             preds += 1
             for L in lines:
-                p = poisson_ge(L, lam)
+                p = prob_fn(L, lam)
                 hit = 1 if actual >= L else 0
                 s = stats[L]
                 s["n"] += 1; s["pred"] += p; s["hit"] += hit; s["brier"] += (p - hit) ** 2
         # update rolling form AFTER predicting (no leakage)
-        hist_for[h].append(m["home_corners"]); hist_against[h].append(m["away_corners"]); hist_shots[h].append(m.get("home_shots", 0))
-        hist_for[a].append(m["away_corners"]); hist_against[a].append(m["home_corners"]); hist_shots[a].append(m.get("away_shots", 0))
+        hist_for[h].append(m["home_corners"]); hist_against[h].append(m["away_corners"]); hist_shots[h].append(m.get("home_shots", 0)); hist_fh[h].append(1 if m.get("home_fh_goals", 0) >= 1 else 0)
+        hist_for[a].append(m["away_corners"]); hist_against[a].append(m["home_corners"]); hist_shots[a].append(m.get("away_shots", 0)); hist_fh[a].append(1 if m.get("away_fh_goals", 0) >= 1 else 0)
 
     out_lines, total_brier, total_n = [], 0.0, 0
     for L in lines:
@@ -672,6 +730,7 @@ async def streaks(league_id: Optional[str] = None, side: str = "overall", window
     q = {} if not league_id or league_id == "all" else {"league_id": league_id}
     teams = await db.teams.find(q, {"_id": 0}).to_list(1000)
     teams_by_id = {t["team_id"]: t for t in teams}
+    ls_map = _league_shots_map(teams)
     leagues = {l["league_id"]: l["name"] for l in await db.leagues.find({}, {"_id": 0}).to_list(100)}
 
     # earliest upcoming fixture per team
@@ -734,8 +793,8 @@ async def streaks(league_id: Optional[str] = None, side: str = "overall", window
             t_for = _real_avg(t, team_venue, "corners_for")
             o_against = _real_avg(opp, opp_venue, "corners_against")
             if t_for is not None and o_against is not None:
-                lam = round((t_for + o_against) / 2, 2)
-                p = poisson_ge(line, lam)
+                lam = v2_lambda((t_for + o_against) / 2, t, team_venue, ls_map.get(t["league_id"], REF_SHOTS))
+                p = nb_ge(line, lam)
                 mkey = f"{team_venue}_over_{line - 0.5}"
                 book = odds_map.get(nf["fixture_id"], {}).get(mkey)
                 ev = round((book * p - 1) * 100, 2) if book else None
@@ -760,6 +819,7 @@ async def matchups(league_id: str, side: str = "overall", user: dict = Depends(g
     """Top corner-winning teams in a league (by venue) with their next fixture + opponent-concede mismatch."""
     teams = await db.teams.find({"league_id": league_id}, {"_id": 0}).to_list(200)
     teams_by_id = {t["team_id"]: t for t in teams}
+    ls = _league_shots_map(teams).get(league_id, REF_SHOTS)
     next_fx = await _next_fixtures({"league_id": league_id})
     all_won = [m["corners_for"] for t in teams for m in (_src(t))]
     avg = (sum(all_won) / len(all_won)) if all_won else 5.0
@@ -777,9 +837,9 @@ async def matchups(league_id: str, side: str = "overall", user: dict = Depends(g
             opp = teams_by_id.get(nf["opponent_team_id"])
             opp_conc = (_real_avg(opp, opp_venue, "corners_against") if opp else None)
             if opp_conc is not None:
-                lam = round((team_for + opp_conc) / 2, 2)
+                lam = v2_lambda((team_for + opp_conc) / 2, t, venue, ls)
                 line = max(3, round(lam) - 1)
-                p = poisson_ge(line, lam)
+                p = nb_ge(line, lam)
                 projection = {"team_for": round(team_for, 2), "opp_conceded": round(opp_conc, 2),
                               "lambda": lam, "line": line, "prob": round(p * 100, 1), "fair_odds": fair_odds(p)}
                 if team_for >= avg * 1.1 and opp_conc >= avg * 1.1:
@@ -838,6 +898,7 @@ async def trends(league_id: Optional[str] = None, window: int = 5, metric: str =
 async def _all_mismatches(within_days: Optional[int] = None, limit: int = 20):
     teams = await db.teams.find({}, {"_id": 0}).to_list(2000)
     teams_by_id = {t["team_id"]: t for t in teams}
+    ls_map = _league_shots_map(teams)
     leagues = {l["league_id"]: l["name"] for l in await db.leagues.find({}, {"_id": 0}).to_list(100)}
     next_fx = await _next_fixtures({})
     # per-league average corners won
@@ -871,9 +932,9 @@ async def _all_mismatches(within_days: Optional[int] = None, limit: int = 20):
         avg = league_avgs.get(t["league_id"], 5.0)
         if not (team_for >= avg * 1.1 and opp_conc >= avg * 1.1):
             continue
-        lam = round((team_for + opp_conc) / 2, 2)
+        lam = v2_lambda((team_for + opp_conc) / 2, t, venue, ls_map.get(t["league_id"], REF_SHOTS))
         line = max(3, round(lam) - 1)
-        p = poisson_ge(line, lam)
+        p = nb_ge(line, lam)
         out.append({"team_id": t["team_id"], "name": t["name"], "league_id": t["league_id"],
                     "league_name": leagues.get(t["league_id"], ""), "team_for": round(team_for, 2),
                     "opp_conceded": round(opp_conc, 2), "lambda": lam, "line": line,

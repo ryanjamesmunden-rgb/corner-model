@@ -151,9 +151,18 @@ async def sync_league(hc, my_lid):
         hname = f["teams"]["home"]["name"]
         aname = f["teams"]["away"]["name"]
         fdate = f["fixture"]["date"]
+        # goals come free from the fixture object (no extra API call)
+        g = f.get("goals") or {}
+        hth = ((f.get("score") or {}).get("halftime") or {})
+        hg, ag = (g.get("home") or 0), (g.get("away") or 0)
+        hfg, afg = (hth.get("home") or 0), (hth.get("away") or 0)
         c = cached.get(fid)
         if c:
             hc_, ac_, hs_, as_ = c["home_corners"], c["away_corners"], c["home_shots"], c["away_shots"]
+            # self-heal: backfill goals onto older cache docs that predate goal capture
+            if c.get("home_goals") is None:
+                await db.fixture_stats.update_one({"_id": fid}, {"$set": {
+                    "home_goals": hg, "away_goals": ag, "home_fh_goals": hfg, "away_fh_goals": afg}})
         else:
             try:
                 st = await af_get(hc, "/fixtures/statistics", {"fixture": fid})
@@ -175,12 +184,16 @@ async def sync_league(hc, my_lid):
                 "_id": fid, "league_id": my_lid, "date": fdate,
                 "home_id": hid, "away_id": aid,
                 "home_corners": hc_, "away_corners": ac_,
-                "home_shots": hs_, "away_shots": as_}}, upsert=True)
+                "home_shots": hs_, "away_shots": as_,
+                "home_goals": hg, "away_goals": ag,
+                "home_fh_goals": hfg, "away_fh_goals": afg}}, upsert=True)
         league_corners += [hc_, ac_]
         if hid in samples:
-            samples[hid].append({"home": True, "corners_for": hc_, "corners_against": ac_, "shots_for": hs_, "date": fdate, "opponent": aname})
+            samples[hid].append({"home": True, "corners_for": hc_, "corners_against": ac_, "shots_for": hs_,
+                                 "goals_for": hg, "goals_against": ag, "fh_goals_for": hfg, "date": fdate, "opponent": aname})
         if aid in samples:
-            samples[aid].append({"home": False, "corners_for": ac_, "corners_against": hc_, "shots_for": as_, "date": fdate, "opponent": hname})
+            samples[aid].append({"home": False, "corners_for": ac_, "corners_against": hc_, "shots_for": as_,
+                                 "goals_for": ag, "goals_against": hg, "fh_goals_for": afg, "date": fdate, "opponent": hname})
     print(f"[{my_lid}] stats cache_hit={len(cached)} api_fetched={fetched}")
 
     league_avg = (sum(league_corners) / len(league_corners)) if league_corners else 5.0
@@ -252,10 +265,12 @@ async def sync_league(hc, my_lid):
     if odds_docs:
         await db.odds.insert_many(odds_docs)
 
+    all_shots = [m.get("shots_for", 0) for t in team_docs for m in (t.get("real_matches") or [])]
+    avg_shots = round(sum(all_shots) / len(all_shots), 2) if all_shots else None
     await db.leagues.update_one({"league_id": my_lid},
                                 {"$set": {"league_id": my_lid, "name": meta["name"],
                                           "country": meta["country"], "data_source": "real",
-                                          "season": season,
+                                          "season": season, "avg_shots": avg_shots,
                                           "synced_at": datetime.now(timezone.utc).isoformat()}},
                                 upsert=True)
     print(f"[{my_lid}] DONE teams={len(team_docs)} fixtures={len(fixture_docs)} odds={len(odds_docs)}")

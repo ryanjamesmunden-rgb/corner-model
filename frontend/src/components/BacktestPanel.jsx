@@ -50,7 +50,7 @@ export default function BacktestPanel({ leagueId }) {
           <>
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-4">
               <ScoreCard title="v1 — old (Poisson, corners only)" brier={v1?.overall_brier} gap={g1} accent="#64748B" matches={v1?.matches} />
-              <ScoreCard title="v2 — new (dispersion + shots/form)" brier={v2?.overall_brier} gap={g2} accent="#22D3EE" better={g2 != null && g1 != null && g2 < g1} />
+              <ScoreCard title="v2 — new (dispersion + shots/form)" brier={v2?.overall_brier} gap={g2} accent="#22D3EE" matches={v2?.matches} better={g2 != null && g1 != null && g2 < g1} />
             </div>
             <div className="overflow-x-auto">
               <table className="w-full">
@@ -71,9 +71,9 @@ export default function BacktestPanel({ leagueId }) {
                       <tr key={r.line} data-testid="backtest-row" className="border-b border-border/40">
                         <td className="px-2 py-2 text-foreground flex items-center gap-1.5"><Target className="h-3 w-3 text-primary/70" />{r.line}+ corners</td>
                         <td className="px-2 py-2 text-right text-muted-foreground">{r.n?.toLocaleString()}</td>
-                        <td className="px-2 py-2 text-right text-foreground font-semibold">{r.actual}%</td>
-                        <td className={`px-2 py-2 text-right ${g1l > 2 ? "text-amber-400" : "text-muted-foreground"}`}>{r.v1}%</td>
-                        <td className={`px-2 py-2 text-right ${g2l <= 1.5 ? "text-emerald-400" : "text-primary"}`}>{r.v2}%</td>
+                        <td className="px-2 py-2 text-right text-foreground font-semibold">{r.actual?.toFixed(1)}%</td>
+                        <td className={`px-2 py-2 text-right ${g1l > 2 ? "text-amber-400" : "text-muted-foreground"}`}>{r.v1?.toFixed(1)}%</td>
+                        <td className={`px-2 py-2 text-right ${g2l <= 1.5 ? "text-emerald-400" : "text-primary"}`}>{r.v2?.toFixed(1)}%</td>
                       </tr>
                     );
                   })}

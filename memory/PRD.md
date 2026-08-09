@@ -92,6 +92,18 @@ Multi-league corner value betting web app. Rebuilds a spreadsheet corner model i
 - API-Football account: Pro plan, active until 2026-08-25, ~3.5k/7500 req/day used at time of sync. Backup: renew plan before expiry to keep auto-updates flowing.
 - Tested: `/app/test_reports/iteration_3.json` — 6/6 frontend flows + endpoint checks PASS.
 
+## Model v2 — Phase 2 (2026-08-09)
+- **Model upgraded v1 → v2**, proven on 3,174 matches via the backtester BEFORE shipping:
+  - **Negative-Binomial (r=11)** replaces Poisson for team-corner probabilities → fixes overdispersion. This was the big win: it corrected the systematic over-rating of low lines (4+ calibration gap 4.3% → 0.6%).
+  - **Shots-intent × first-half-goal form multiplier** on λ (the goals/form signals the user asked for): `v2_lambda = base × (0.90 + 0.10·clamp(team_shots/league_shots,0.6,1.5)) × (1 + 0.03·(fh_goal_rate − 0.5))`.
+  - Overall Brier 0.2255 → 0.2226; avg calibration gap 2.06% → 0.80%.
+- Data: sync now captures **goals + first-half goals** (free from the fixtures response, no extra API calls) into `fixture_stats` + team `real_matches`; league `avg_shots` stored on league docs. Backfilled existing 3,174 fixtures (`backfill_goals.py`) + league avg_shots (DB-only, no API).
+- v2 applied everywhere team-corner probs are computed: `expected_lambdas`/`build_markets` (scanner value, fixture detail), streaks/trend, matchups, `_all_mismatches` (Quick Scan). Totals still Poisson (not separately validated).
+- UI: **Model Backtest — v1 vs v2** panel on Leagues tab (`BacktestPanel.jsx`) shows before/after (Brier + calibration gap + per-line Actual/v1/v2), scope All-leagues / This-league.
+- Tuning/analysis scripts: `tune_model.py` (candidate search), `backfill_goals.py`. `/api/backtest?model=v1|v2`.
+- Verified `/app/test_reports/iteration_7.json` — backend 100% (11/11 pytest `tests/test_model_v2.py`), frontend 100%, no regressions on scanner/quick-scan/matchups/fixture-detail.
+- NEXT (Phase 3): Claude explainer that justifies flagged picks (explain, not auto-generate) via Emergent LLM key.
+
 ## Model Backtester — Phase 1 of model rework (2026-08-09)
 - Walk-forward backtester (`GET /api/backtest?league_id=&model=v1|v2&window=&min_games=`): replays cached `fixture_stats` chronologically, predicts each team's corner probabilities from PRIOR form only (no leakage), compares to actual. Returns per-line (4/5/6/7): sample, model %, actual hit %, calibration gap, Brier; plus overall Brier.
 - `model_lambda(model, team_for, opp_against, team_shots, league_shots)`: v1 = (team_for+opp_against)/2 (matches production `expected_lambdas`); v2 = + shots-intent nudge (placeholder, to be tuned).

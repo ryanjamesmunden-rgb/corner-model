@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
-import { Zap, ArrowRight, Swords, TrendingUp, ShieldAlert } from "lucide-react";
+import { Zap, ArrowRight, Swords, TrendingUp, ShieldAlert, Sparkles, Loader2 } from "lucide-react";
 import { api } from "@/lib/api";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
@@ -69,11 +69,34 @@ export default function QuickScan() {
 
 function PairCard({ r, onClick }) {
   const nf = r.next_fixture || {};
+  const [explanation, setExplanation] = useState(null);
+  const [loadingExp, setLoadingExp] = useState(false);
+
+  const explain = async (e) => {
+    e.stopPropagation();
+    if (explanation || loadingExp) return;
+    setLoadingExp(true);
+    try {
+      const res = await api.explain({
+        key: `${nf.fixture_id}-${r.line}`,
+        team: r.name, opponent: nf.opponent, league: r.league_name,
+        is_home: !!nf.is_home, line: r.line,
+        team_for: r.team_for, opp_conceded: r.opp_conceded,
+        lam: r.lambda, prob: r.prob, fair_odds: r.fair_odds,
+      });
+      setExplanation(res.explanation);
+    } catch {
+      setExplanation("Couldn't generate an explanation right now.");
+    } finally {
+      setLoadingExp(false);
+    }
+  };
+
   return (
-    <button
+    <div
       onClick={onClick}
       data-testid="quickscan-card"
-      className="group text-left bg-card border border-border rounded-lg p-4 hover:border-emerald-500/40 transition-colors duration-150 flex flex-col gap-3"
+      className="group cursor-pointer bg-card border border-border rounded-lg p-4 hover:border-emerald-500/40 transition-colors duration-150 flex flex-col gap-3"
       style={{ borderTop: "2px solid #10B981" }}
     >
       <div className="flex items-center gap-2 text-[10px] uppercase tracking-widest text-muted-foreground">
@@ -114,6 +137,24 @@ function PairCard({ r, onClick }) {
         </div>
         <ArrowRight className="h-4 w-4 text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity" />
       </div>
-    </button>
+
+      {/* Claude explainer */}
+      {explanation ? (
+        <div data-testid="quickscan-explanation" className="rounded-md bg-primary/5 border border-primary/20 p-2.5 flex gap-2">
+          <Sparkles className="h-3.5 w-3.5 text-primary shrink-0 mt-0.5" />
+          <p className="text-xs text-foreground/90 leading-relaxed">{explanation}</p>
+        </div>
+      ) : (
+        <button
+          data-testid="quickscan-explain-btn"
+          onClick={explain}
+          disabled={loadingExp}
+          className="self-start inline-flex items-center gap-1.5 text-[11px] text-primary hover:text-primary/80 transition-colors disabled:opacity-60"
+        >
+          {loadingExp ? <Loader2 className="h-3 w-3 animate-spin" /> : <Sparkles className="h-3 w-3" />}
+          {loadingExp ? "Thinking…" : "Why this angle?"}
+        </button>
+      )}
+    </div>
   );
 }

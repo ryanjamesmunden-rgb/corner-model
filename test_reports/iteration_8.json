@@ -1,0 +1,25 @@
+{
+  "summary": "Regression-light testing of Phase 3 Claude explainer only. Backend: created /app/backend/tests/test_explain.py (4 pytest cases) covering auth enforcement, Pydantic validation, LLM generation + server-side cache, and _id leakage — all 4 passed. Frontend: Playwright on /quick-scan (1920x900) with session_token cookie — 30 quickscan-cards rendered, 'Why this angle?' button visible, 'Thinking…' loading state observed, quickscan-explanation block rendered a 2-sentence rationale citing concrete numbers (8.0 for, 9.0 conceded, proj λ 8.5, 67%, fair odds 1.50), no navigation on explain click (stopPropagation works), and card click still navigates to /fixture/<id>. Zero console errors, no failed API requests.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Quick Scan grid", "issues": ["Expanding an explanation grows that card and stretches all sibling cards in the same grid row (layout shift). Cosmetic only.", "Once the explanation renders, the 'Why this angle?' button is replaced with no way to collapse/re-hide the block. Cosmetic/UX only."]}
+    ]
+  },
+  "test_report_links": ["/app/backend/tests/test_explain.py", "/app/test_reports/pytest/pytest_results_iter8.xml"],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "POST /api/explain cache key is client-supplied and global (`fixture_id-line`) with no namespacing/validation — a client can overwrite/poison another key's cached text by passing an arbitrary `key` with different stats. Consider deriving the key server-side from the payload (hash) instead of trusting req.key.",
+    "No rate limiting on /api/explain; each uncached request triggers a paid LLM call. Consider a per-user throttle."
+  ],
+  "updated_files": ["/app/backend/tests/test_explain.py", "/app/test_reports/iteration_8.json"],
+  "success_rate": {"backend": "100%", "frontend": "100%"},
+  "seed_data_creation": "One db.explanations doc per unique test key (uuid-suffixed, deleted in module teardown). UI test cached one real fixture key (Feyenoord 7+).",
+  "should_call_test_agent_after_fix": false,
+  "should_main_agent_self_test": true,
+  "test_credentials": "session_token=qa-test-token-123 (cookie or Bearer), user qa-user-1",
+  "context_for_next_testing_agent": "Explainer (Phase 3) fully verified. Use a UUID-suffixed `key` when testing /api/explain to observe cached:false then cached:true, and avoid many distinct keys (LLM cost). test_explain.py is reusable as regression.",
+  "rca_of_the_issue": "N/A — no defects found."
+}

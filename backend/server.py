@@ -483,6 +483,69 @@ async def settle_picks_now(user: dict = Depends(get_current_user)):
     return {"status": "settling", "started_at": now.isoformat()}
 
 
+# ---- Phase 3: Claude explainer — justify a model-flagged corner pick ----
+from emergentintegrations.llm.chat import LlmChat, UserMessage
+
+EMERGENT_LLM_KEY = os.environ.get("EMERGENT_LLM_KEY")
+
+
+class ExplainReq(BaseModel):
+    key: str
+    team: str
+    opponent: str
+    league: str = ""
+    is_home: bool = True
+    line: int
+    team_for: float
+    opp_conceded: float
+    lam: float
+    prob: float
+    fair_odds: float
+    team_shots: Optional[float] = None
+    fh_goal_rate: Optional[float] = None
+
+
+@api_router.post("/explain")
+async def explain_pick(req: ExplainReq, user: dict = Depends(get_current_user)):
+    cached = await db.explanations.find_one({"_id": req.key}, {"_id": 0})
+    if cached:
+        return {"explanation": cached["text"], "cached": True}
+    if not EMERGENT_LLM_KEY:
+        raise HTTPException(status_code=503, detail="LLM key not configured")
+    venue = "at home" if req.is_home else "away"
+    extra = ""
+    if req.team_shots is not None:
+        extra += f"\n- {req.team} average shots/game: {req.team_shots:.1f}"
+    if req.fh_goal_rate is not None:
+        extra += f"\n- {req.team} scores a first-half goal in {round(req.fh_goal_rate * 100)}% of games"
+    prompt = (
+        f"Fixture: {req.team} vs {req.opponent} ({req.league}), {req.team} playing {venue}.\n"
+        f"Model read on the '{req.team} {req.line}+ team corners' market:\n"
+        f"- {req.team} wins {req.team_for:.1f} corners/game (recent form)\n"
+        f"- {req.opponent} concedes {req.opp_conceded:.1f} corners/game\n"
+        f"- Projected corners (lambda) for {req.team}: {req.lam:.1f}\n"
+        f"- Model probability of {req.line}+: {req.prob:.0f}%  (fair odds {req.fair_odds:.2f}){extra}\n\n"
+        f"Explain in 2 short sentences WHY this is a strong corner angle, in plain punter language. "
+        f"Reference the concrete numbers. Do not invent stats, injuries or news. No preamble, no disclaimer."
+    )
+    chat = LlmChat(
+        api_key=EMERGENT_LLM_KEY,
+        session_id=f"explain-{req.key}",
+        system_message="You are a sharp, concise football corners betting analyst. You only use the numbers provided.",
+    ).with_model("anthropic", "claude-sonnet-4-6")
+    try:
+        resp = await chat.send_message(UserMessage(text=prompt))
+    except Exception as e:
+        logger.error("explain LLM error: %s", e)
+        raise HTTPException(status_code=502, detail="Could not generate explanation")
+    text = (resp if isinstance(resp, str) else str(resp)).strip()
+    await db.explanations.update_one(
+        {"_id": req.key},
+        {"$set": {"_id": req.key, "text": text, "created_at": datetime.now(timezone.utc).isoformat()}},
+        upsert=True)
+    return {"explanation": text, "cached": False}
+
+
 def model_lambda(model: str, team_for: float, opp_against: float,
                  team_shots: float = 0.0, league_shots: float = 0.0, team_fh: float = 0.5) -> float:
     """Expected team corners. v1 = corner form only. v2 = + shots-intent x first-half-goal form

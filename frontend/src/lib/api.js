@@ -24,6 +24,7 @@ export const api = {
   picks: () => axios.get(`${API}/picks`).then((r) => r.data),
   settlePicks: () => axios.post(`${API}/picks/settle`).then((r) => r.data),
   backtest: (leagueId = "all", model = "v1") => axios.get(`${API}/backtest`, { params: { league_id: leagueId, model } }).then((r) => r.data),
+  explain: (payload) => axios.post(`${API}/explain`, payload).then((r) => r.data),
 };
 
 export const tierMeta = {

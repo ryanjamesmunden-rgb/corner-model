@@ -10,6 +10,7 @@ import {
 } from "@/components/ui/select";
 
 const MARKETS = [
+  { v: "team", l: "Team Corners (chase)" },
   { v: "all", l: "All Markets" },
   { v: "total", l: "Total Corners" },
   { v: "home", l: "Home Team" },
@@ -30,7 +31,7 @@ export default function Scanner() {
   const { leagueId, leagues } = useLeague();
   const navigate = useNavigate();
   const [scope, setScope] = useState("all");
-  const [market, setMarket] = useState("all");
+  const [market, setMarket] = useState("team");
   const [minEdge, setMinEdge] = useState("0");
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -54,7 +55,7 @@ export default function Scanner() {
           </div>
           <h1 className="font-head text-3xl sm:text-4xl font-bold tracking-tight">Ranked Value Bets</h1>
           <p className="text-muted-foreground text-sm mt-1">
-            Model-priced edges across upcoming fixtures. Paste odds in a fixture to add more.
+            Team-corner chase spots ranked by value. Switch markets in the filter below.
           </p>
         </div>
         <div className="flex gap-3">

@@ -772,8 +772,12 @@ async def scanner(league_id: Optional[str] = None, market: Optional[str] = None,
         for m in model["markets"]:
             if m["ev"] is None:
                 continue
-            if market and market != "all" and m["group"] != market:
-                continue
+            if market and market != "all":
+                if market == "team":
+                    if m["group"] not in ("home", "away"):
+                        continue
+                elif m["group"] != market:
+                    continue
             if m["ev"] < min_edge:
                 continue
             results.append({"fixture_id": fx["fixture_id"], "league_id": fx["league_id"],
@@ -1048,7 +1052,7 @@ async def top_mismatches(within_days: Optional[int] = None, limit: int = 20,
 
 @api_router.get("/best-bets")
 async def best_bets(user: dict = Depends(get_current_user)):
-    val = await scanner(league_id="all", market="all", min_edge=0.0, user=user)
+    val = await scanner(league_id="all", market="team", min_edge=0.0, user=user)
     strk = await streaks(league_id="all", side="overall", window=5, min_hits=5,
                          threshold=None, min_line=3, within_days=None, user=user)
     mism = await _all_mismatches(within_days=None, limit=1)

@@ -1,0 +1,47 @@
+{
+  "summary": "Session-4 testing of the Weekly Chase Board (backend + frontend). Backend: created /app/backend/tests/test_chase_board.py (12 pytest cases) — chase-board shape/fields/sorting, opp_fh_rate populated, _id leak, limit/window/league filters, auth enforcement, /api/best-bets 'chase' card, paste-odds -> EV recalculation (with mongo cleanup), and /api/picks regression. All 12 passed. Full suite: 93 passed / 1 failed (pre-existing eng-nl zero-shots data gap). Verified via API: within_days 3/7/14 -> 16/155/216 candidates, limit honoured, board sorted by chase_score desc, opp_fh_rate non-zero on 25/25 rows (mean 58.7%), market_key always '{venue}_over_{line-0.5}'. Frontend (Playwright, cookie session): /scanner renders chase-board with 25 chase-rows showing team vs/@ opponent, Won/g, Opp conc, Opp FH %, Hits x/5, Proj lambda, Line (X+), Fair, and 'add odds' (expected, placeholders cleared); filter-window 3d -> 16 rows, 14d -> 25, filter-limit Top 15 -> 15 rows, filter-scope 'Eerste Divisie' -> 7 rows; best-top-chase card renders and navigates to /fixture/:id. Fixture detail quick-paste: target=home + '4.5 2.20 / 5.5 3.10' saved and recalculated (home_over_4.5 +67.8% @2.2, home_over_5.5 +100.2% @3.1, 'EV recalculated' toast); 'Palmeiras 5+ 3.50' correctly routed to the AWAY table as Over 4.5 @3.5 without touching home odds; the chase board row for that fixture then showed chase-ev '+100.2% @ 3.1'. Picks page shows won/lost/pending + 70% strike rate tile with 7 manual picks and no Profit/ROI. Test odds pasted during testing were deleted afterwards (state restored).",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "/api/leagues/eng-nl/corner-table", "issue": "All teams have shots=0 for eng-nl (National League) — v2 lambda shots-intent factor degrades to neutral for that league. Pre-existing data-ingest gap, not a session-4 regression."},
+      {"endpoint": "POST /api/fixtures/{id}/odds", "issue": "Odds are merged only; there is no way to clear/delete a wrongly pasted price (posting {} or a value <=1 is silently ignored). Users cannot undo a bad paste from the UI."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "/picks record strip", "issues": ["The strike-rate tile renders only the sub-text '7/10 settled' — RecordChip hides `label` whenever `sub` is present, so the word 'Strike rate' never appears next to the 70% figure (data-testid=picks-strike-rate exists). Consider showing both label and sub."]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_chase_board.py",
+    "/app/backend/tests/backend_test.py",
+    "/app/backend/tests/test_model_v2.py",
+    "/app/backend/tests/test_explain.py",
+    "/app/test_reports/pytest/pytest_results_iter9.xml"
+  ],
+  "action_items": [
+    "Optional: backfill shots data for eng-nl (only league with all-zero shots).",
+    "Optional: add label to the Picks strike-rate tile so the 70% figure is self-explanatory.",
+    "Optional: allow clearing a pasted odds value (delete market key when input is emptied)."
+  ],
+  "critical_code_review_comments": [
+    "server.py is 1439 lines — consider splitting routers (picks/scanner/chase/explain) into modules.",
+    "_chase_board rebuilds the full teams collection + odds on every request with no caching; at 27 leagues it is fine (<1s) but will not scale linearly if leagues grow.",
+    "GET /api/fixtures/{id} does not expose the raw odds map (only inside model.markets); harmless but worth noting for API consumers/tests."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_chase_board.py",
+    "/app/backend/tests/backend_test.py",
+    "/app/backend/tests/test_model_v2.py",
+    "/app/backend/tests/test_explain.py"
+  ],
+  "success_rate": {"backend": "99% (93/94; the 1 failure is a pre-existing eng-nl data gap)", "frontend": "100% of tested flows"},
+  "seed_data_creation": "Temporarily pasted odds on fixture 9e1fe55c (Fluminense vs Palmeiras) to verify EV recalculation; odds doc deleted afterwards.",
+  "should_call_test_agent_after_fix": false,
+  "should_main_agent_self_test": true,
+  "test_credentials": "Bearer/cookie session_token=qa-test-token-123 (qa-user-1)",
+  "context_for_next_testing_agent": "Stale expectations in older test files were updated this iteration: backend_test.py now expects 27 leagues and best-bets keys {chase,streak,mismatch}, scanner tests tolerate 0 rows (placeholder odds cleared by design), test_model_v2 sources a fixture from /api/chase-board instead of /api/scanner, and test_explain accepts cached True on first call (cache key is derived server-side from stats, so identical payloads stay cached). If you paste odds during testing, delete the db.odds doc afterwards to keep the chase board in its 'add odds' baseline state.",
+  "rca_of_the_issue": "No functional defects found in the chase-board feature. The single failing regression test (eng-nl all-zero shots) stems from the data ingest for the National League not populating shot counts on team.real_matches."
+}

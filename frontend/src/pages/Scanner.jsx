@@ -1,67 +1,42 @@
-import { useState, useEffect } from "react";
-import { useNavigate } from "react-router-dom";
-import { Radar, TrendingUp, Filter, ArrowRight } from "lucide-react";
-import { api, tierMeta, confMeta } from "@/lib/api";
+import { useState } from "react";
+import { Target, Filter } from "lucide-react";
 import { useLeague } from "@/context/LeagueContext";
 import HomeInsights from "@/components/HomeInsights";
 import IntroBanner from "@/components/IntroBanner";
+import ChaseBoard from "@/components/ChaseBoard";
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from "@/components/ui/select";
 
-const MARKETS = [
-  { v: "team", l: "Team Corners (chase)" },
-  { v: "all", l: "All Markets" },
-  { v: "total", l: "Total Corners" },
-  { v: "home", l: "Home Team" },
-  { v: "away", l: "Away Team" },
+const WINDOWS = [
+  { v: "7", l: "Next 7 days" },
+  { v: "14", l: "Next 14 days" },
+  { v: "3", l: "Next 3 days" },
 ];
-const EDGES = [
-  { v: "-100", l: "All bets" },
-  { v: "0", l: "Positive EV only" },
-  { v: "5", l: "Strong value (5%+)" },
+const LIMITS = [
+  { v: "25", l: "Top 25" },
+  { v: "50", l: "Top 50" },
+  { v: "15", l: "Top 15" },
 ];
-
-const fmtDate = (d) => {
-  if (!d) return null;
-  return new Date(d).toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" });
-};
 
 export default function Scanner() {
   const { leagueId, leagues } = useLeague();
-  const navigate = useNavigate();
   const [scope, setScope] = useState("all");
-  const [market, setMarket] = useState("team");
-  const [minEdge, setMinEdge] = useState("0");
-  const [rows, setRows] = useState([]);
-  const [loading, setLoading] = useState(true);
-
-  useEffect(() => {
-    setLoading(true);
-    api.scanner({ league_id: scope === "current" ? leagueId : "all", market, min_edge: minEdge })
-      .then(setRows).catch(() => setRows([])).finally(() => setLoading(false));
-  }, [scope, leagueId, market, minEdge]);
-
-  const strong = rows.filter((r) => r.tier === "strong").length;
-  const small = rows.filter((r) => r.tier === "small").length;
+  const [withinDays, setWithinDays] = useState("7");
+  const [limit, setLimit] = useState("25");
 
   return (
     <div className="space-y-6" data-testid="scanner-page">
       <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-4">
         <div>
           <div className="flex items-center gap-2 text-primary mb-1">
-            <Radar className="h-4 w-4" />
-            <span className="font-mono-data text-xs tracking-widest uppercase">Daily Value Scanner</span>
+            <Target className="h-4 w-4" />
+            <span className="font-mono-data text-xs tracking-widest uppercase">Weekly Chase Board</span>
           </div>
-          <h1 className="font-head text-3xl sm:text-4xl font-bold tracking-tight">Ranked Value Bets</h1>
+          <h1 className="font-head text-3xl sm:text-4xl font-bold tracking-tight">This Week's Best Corner Spots</h1>
           <p className="text-muted-foreground text-sm mt-1">
-            Team-corner chase spots ranked by value. Switch markets in the filter below.
+            The whole market trimmed to the strongest team-corner chase spots — ranked, not 600 rows.
           </p>
-        </div>
-        <div className="flex gap-3">
-          <StatChip label="Strong" value={strong} className="text-emerald-400" dot="bg-emerald-500" />
-          <StatChip label="Small edge" value={small} className="text-amber-400" dot="bg-amber-500" />
-          <StatChip label="Total" value={rows.length} className="text-foreground" dot="bg-primary" />
         </div>
       </div>
 
@@ -77,83 +52,25 @@ export default function Scanner() {
           { v: "all", l: "All Leagues" },
           { v: "current", l: leagues.find((l) => l.league_id === leagueId)?.name || "Current League" },
         ]} />
-        <FilterSelect testid="filter-market" value={market} onChange={setMarket} options={MARKETS} />
-        <FilterSelect testid="filter-edge" value={minEdge} onChange={setMinEdge} options={EDGES} />
+        <FilterSelect testid="filter-window" value={withinDays} onChange={setWithinDays} options={WINDOWS} />
+        <FilterSelect testid="filter-limit" value={limit} onChange={setLimit} options={LIMITS} />
       </div>
 
-      <div className="bg-card border border-border rounded-lg overflow-hidden">
-        <div className="overflow-x-auto">
-          <table className="w-full">
-            <thead>
-              <tr className="border-b border-border text-muted-foreground text-xs uppercase tracking-wider">
-                <th className="text-left font-medium px-4 py-3">Tier</th>
-                <th className="text-left font-medium px-4 py-3">Fixture</th>
-                <th className="text-left font-medium px-4 py-3">Market</th>
-                <th className="text-right font-medium px-4 py-3">Book</th>
-                <th className="text-right font-medium px-4 py-3">Model</th>
-                <th className="text-right font-medium px-4 py-3">Prob</th>
-                <th className="text-right font-medium px-4 py-3">EV</th>
-                <th className="text-left font-medium px-4 py-3">Conf</th>
-                <th className="px-4 py-3"></th>
-              </tr>
-            </thead>
-            <tbody className="font-mono-data text-sm">
-              {loading ? (
-                <tr><td colSpan={9} className="px-4 py-16 text-center text-muted-foreground animate-pulse">Scanning fixtures…</td></tr>
-              ) : rows.length === 0 ? (
-                <tr><td colSpan={9} className="px-4 py-16 text-center text-muted-foreground">No value bets match these filters. Paste odds in a fixture to feed the scanner.</td></tr>
-              ) : rows.map((r, i) => {
-                const t = tierMeta[r.tier];
-                return (
-                  <tr
-                    key={`${r.fixture_id}-${r.market_label}-${i}`}
-                    data-testid="scanner-row"
-                    onClick={() => navigate(`/fixture/${r.fixture_id}`)}
-                    className="border-b border-border/50 hover:bg-white/5 cursor-pointer transition-colors duration-150"
-                    style={{ borderLeft: r.tier === "strong" ? "2px solid #10B981" : "2px solid transparent" }}
-                  >
-                    <td className="px-4 py-3">
-                      <span className={`inline-flex items-center gap-1.5 text-xs px-2 py-1 rounded border ${t.chip}`}>
-                        <span className={`h-1.5 w-1.5 rounded-full ${t.dot}`} /> {t.label}
-                      </span>
-                    </td>
-                    <td className="px-4 py-3">
-                      <div className="text-foreground whitespace-nowrap">{r.home_name} <span className="text-muted-foreground">v</span> {r.away_name}</div>
-                      <div className="flex items-center gap-1.5 text-[10px] text-muted-foreground uppercase tracking-wider font-sans">
-                        <span>{r.league_name}</span>
-                        {fmtDate(r.date) && <><span className="opacity-40">·</span><span data-testid="scanner-row-date" className="text-primary/80 normal-case tracking-normal">{fmtDate(r.date)}</span></>}
-                        {r.round && r.round !== "Upcoming" && <><span className="opacity-40">·</span><span data-testid="scanner-row-round" className="normal-case tracking-normal">{r.round}</span></>}
-                      </div>
-                    </td>
-                    <td className="px-4 py-3 text-foreground whitespace-nowrap">{r.market_label}</td>
-                    <td className="px-4 py-3 text-right text-foreground">{r.book_odds?.toFixed(2)}</td>
-                    <td className="px-4 py-3 text-right text-muted-foreground">{r.fair_odds?.toFixed(2)}</td>
-                    <td className="px-4 py-3 text-right text-muted-foreground">{r.prob?.toFixed(1)}%</td>
-                    <td className={`px-4 py-3 text-right font-semibold ${t.text}`}>
-                      {r.ev > 0 ? "+" : ""}{r.ev?.toFixed(1)}%
-                    </td>
-                    <td className="px-4 py-3">
-                      <span className={`text-[10px] px-2 py-0.5 rounded border ${confMeta[r.confidence.label]}`}>{r.confidence.label}</span>
-                    </td>
-                    <td className="px-4 py-3 text-right"><ArrowRight className="h-4 w-4 text-muted-foreground inline" /></td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
-      </div>
+      <ChaseBoard
+        leagueId={scope === "current" ? leagueId : "all"}
+        withinDays={parseInt(withinDays, 10)}
+        limit={parseInt(limit, 10)}
+      />
+
+      <p className="text-[11px] text-muted-foreground leading-relaxed max-w-3xl">
+        Ranked by a composite of corner dominance (team corners won + opponent corners conceded),
+        a chase catalyst (how often the opponent scores a first-half goal, putting our team behind),
+        and consistency (last-5 same-venue hit rate). Open any spot to paste the real bookmaker odds
+        and see your true edge.
+      </p>
     </div>
   );
 }
-
-const StatChip = ({ label, value, className, dot }) => (
-  <div className="flex items-center gap-2 px-3 py-2 bg-card border border-border rounded-md">
-    <span className={`h-2 w-2 rounded-full ${dot}`} />
-    <span className={`font-mono-data text-lg font-semibold ${className}`}>{value}</span>
-    <span className="text-xs text-muted-foreground">{label}</span>
-  </div>
-);
 
 const FilterSelect = ({ testid, value, onChange, options }) => (
   <Select value={value} onValueChange={onChange}>

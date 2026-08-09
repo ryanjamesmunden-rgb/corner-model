@@ -1050,13 +1050,103 @@ async def top_mismatches(within_days: Optional[int] = None, limit: int = 20,
     return await _all_mismatches(within_days, limit)
 
 
+def _venue_matches(team, venue):
+    rms = (team or {}).get("real_matches") or []
+    if venue == "home":
+        pool = [m for m in rms if m["home"]]
+    elif venue == "away":
+        pool = [m for m in rms if not m["home"]]
+    else:
+        pool = list(rms)
+    return pool or rms
+
+
+async def _chase_board(within_days: int = 7, limit: int = 25, league_id: Optional[str] = None):
+    """Weekly shortlist of the best team-corner chase spots, ranked by a composite of:
+    corner dominance (team corners won + opponent corners conceded), a CHASE CATALYST
+    (opponent scores a first-half goal → our team likely trails and chases), and CONSISTENCY
+    (how reliably the team hits the line on this venue). No book odds needed."""
+    q = {} if not league_id or league_id == "all" else {"league_id": league_id}
+    teams = await db.teams.find(q, {"_id": 0}).to_list(2000)
+    teams_by_id = {t["team_id"]: t for t in teams}
+    ls_map = _league_shots_map(teams)
+    leagues = {l["league_id"]: l["name"] for l in await db.leagues.find({}, {"_id": 0}).to_list(200)}
+    next_fx = await _next_fixtures(q)
+    league_avgs = {}
+    for t in teams:
+        league_avgs.setdefault(t["league_id"], []).extend(m["corners_for"] for m in _src(t))
+    league_avgs = {k: (sum(v) / len(v) if v else 5.0) for k, v in league_avgs.items()}
+    fx_ids = list({v["fixture_id"] for v in next_fx.values()})
+    odds_docs = await db.odds.find({"fixture_id": {"$in": fx_ids}}, {"_id": 0}).to_list(5000)
+    odds_map = {o["fixture_id"]: o.get("odds", {}) for o in odds_docs}
+    now = datetime.now(timezone.utc)
+    out = []
+    for t in teams:
+        nf = next_fx.get(t["team_id"])
+        if not nf:
+            continue
+        try:
+            dt = datetime.fromisoformat(nf["date"].replace("Z", "+00:00"))
+        except Exception:
+            continue
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        if dt < now or dt > now + timedelta(days=within_days):
+            continue
+        venue = "home" if nf["is_home"] else "away"
+        opp_venue = "away" if nf["is_home"] else "home"
+        pool = _venue_matches(t, venue)
+        if len(pool) < 4:
+            continue
+        team_for = sum(m["corners_for"] for m in pool) / len(pool)
+        opp = teams_by_id.get(nf["opponent_team_id"])
+        opp_pool = _venue_matches(opp, opp_venue) if opp else []
+        if len(opp_pool) < 4:
+            continue
+        opp_conc = sum(m["corners_against"] for m in opp_pool) / len(opp_pool)
+        opp_fh = sum(1 for m in opp_pool if m.get("fh_goals_for", 0) >= 1) / len(opp_pool)
+        lam = v2_lambda((team_for + opp_conc) / 2, t, venue, ls_map.get(t["league_id"], REF_SHOTS))
+        line = max(3, round(lam) - 1)
+        last5 = pool[-5:]
+        hit = sum(1 for m in last5 if m["corners_for"] >= line)
+        consistency = hit / len(last5)
+        p = nb_ge(line, lam)
+        avg = league_avgs.get(t["league_id"], 5.0)
+        corner_edge = round(lam / avg, 2) if avg else 1.0
+        # composite: corner projection, lifted by chase catalyst (opp FH goals) and consistency
+        chase_score = round(lam * (1 + 0.4 * opp_fh) * (0.6 + 0.4 * consistency), 3)
+        mkey = f"{venue}_over_{line - 0.5}"
+        book = odds_map.get(nf["fixture_id"], {}).get(mkey)
+        ev = round((book * p - 1) * 100, 2) if book else None
+        out.append({
+            "team_id": t["team_id"], "name": t["name"], "league_id": t["league_id"],
+            "league_name": leagues.get(t["league_id"], ""),
+            "team_for": round(team_for, 2), "opp_conceded": round(opp_conc, 2),
+            "opp_fh_rate": round(opp_fh * 100), "lambda": lam, "line": line,
+            "consistency": hit, "consistency_of": len(last5),
+            "prob": round(p * 100, 1), "fair_odds": fair_odds(p),
+            "book_odds": book, "ev": ev, "tier": tier_for_ev(ev) if ev is not None else None,
+            "market_key": mkey, "corner_edge": corner_edge, "chase_score": chase_score,
+            "real_samples": t.get("real_samples", 0), "next_fixture": nf,
+        })
+    out.sort(key=lambda x: x["chase_score"], reverse=True)
+    return out[:limit]
+
+
+@api_router.get("/chase-board")
+async def chase_board(within_days: int = 7, limit: int = 25, league_id: Optional[str] = None,
+                      user: dict = Depends(get_current_user)):
+    board = await _chase_board(within_days, limit, league_id)
+    return {"within_days": within_days, "count": len(board), "board": board}
+
+
 @api_router.get("/best-bets")
 async def best_bets(user: dict = Depends(get_current_user)):
-    val = await scanner(league_id="all", market="team", min_edge=0.0, user=user)
+    chase = await _chase_board(within_days=7, limit=1)
     strk = await streaks(league_id="all", side="overall", window=5, min_hits=5,
                          threshold=None, min_line=3, within_days=None, user=user)
     mism = await _all_mismatches(within_days=None, limit=1)
-    return {"value": val[0] if val else None,
+    return {"chase": chase[0] if chase else None,
             "streak": strk[0] if strk else None,
             "mismatch": mism[0] if mism else None}
 

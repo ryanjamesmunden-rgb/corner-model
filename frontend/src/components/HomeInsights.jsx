@@ -45,13 +45,13 @@ export default function HomeInsights() {
           <span className="text-xs text-muted-foreground">the standout pick from each signal</span>
         </div>
         <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-          {best?.value ? (
+          {best?.chase ? (
             <BestCard
-              icon={TrendingUp} label="Top Value" accent="#22D3EE"
-              title={`${best.value.home_name} v ${best.value.away_name}`}
-              sub={`${best.value.market_label} @ ${best.value.book_odds} · model ${best.value.fair_odds}`}
-              chip={`+${best.value.ev?.toFixed(1)}%`} chipClass="bg-emerald-500/15 text-emerald-400 border-emerald-500/30"
-              onClick={() => go(best.value.fixture_id)}
+              icon={TrendingUp} label="Top Chase" accent="#22D3EE"
+              title={`${best.chase.name} ${best.chase.next_fixture?.is_home ? "vs" : "@"} ${best.chase.next_fixture?.opponent}`}
+              sub={`${best.chase.line}+ corners @ ${best.chase.fair_odds} · λ ${best.chase.lambda} · opp scores FH ${best.chase.opp_fh_rate}%`}
+              chip={`${best.chase.consistency}/${best.chase.consistency_of}`} chipClass="bg-emerald-500/15 text-emerald-400 border-emerald-500/30"
+              onClick={() => go(best.chase.next_fixture?.fixture_id)}
             />
           ) : <SkeletonCard />}
           {best?.mismatch ? (

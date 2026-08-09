@@ -88,11 +88,12 @@ class TestAuth:
 
 # ------------------------- Leagues / Teams -------------------------
 class TestLeagues:
-    def test_14_leagues_with_source_and_season(self, auth):
+    def test_leagues_with_source_and_season(self, auth):
+        # league catalogue grew from 14 -> 27 in session 3
         r = auth.get(f"{API}/leagues")
         assert r.status_code == 200
         d = r.json()
-        assert len(d) == 14, f"expected 14 leagues, got {len(d)}"
+        assert len(d) == 27, f"expected 27 leagues, got {len(d)}"
         for l in d:
             assert "data_source" in l, f"{l['league_id']} missing data_source"
             assert "season" in l, f"{l['league_id']} missing season"
@@ -254,11 +255,13 @@ class TestScanner:
         r = auth.get(f"{API}/scanner?league_id=all&min_edge=-100")
         assert r.status_code == 200
         d = r.json()
-        assert len(d) > 0
+        # placeholder odds were cleared in session 4; scanner is empty until real
+        # odds are pasted, so only assert ordering when rows exist.
         evs = [x["ev"] for x in d]
         assert evs == sorted(evs, reverse=True)
-        for k in ("fixture_id", "league_name", "market_label", "book_odds", "fair_odds", "prob", "ev", "tier", "confidence"):
-            assert k in d[0]
+        if d:
+            for k in ("fixture_id", "league_name", "market_label", "book_odds", "fair_odds", "prob", "ev", "tier", "confidence"):
+                assert k in d[0]
 
     def test_min_edge_filter(self, auth):
         d = auth.get(f"{API}/scanner?league_id=all&min_edge=5").json()
@@ -266,7 +269,7 @@ class TestScanner:
 
     def test_market_filter(self, auth):
         d = auth.get(f"{API}/scanner?league_id=all&market=total&min_edge=-100").json()
-        assert d and all(x["group"] == "total" for x in d)
+        assert all(x["group"] == "total" for x in d)
 
     def test_league_filter(self, auth):
         d = auth.get(f"{API}/scanner?league_id=eng-pl&min_edge=-100").json()
@@ -365,9 +368,10 @@ class TestBestBets:
         r = auth.get(f"{API}/best-bets")
         assert r.status_code == 200
         d = r.json()
-        assert set(d.keys()) == {"value", "streak", "mismatch"}
-        if d["value"]:
-            assert d["value"]["ev"] is not None
+        # session 4: 'value' card replaced by model-driven 'chase' card
+        assert set(d.keys()) == {"chase", "streak", "mismatch"}
+        if d["chase"]:
+            assert d["chase"]["next_fixture"]["fixture_id"]
         if d["mismatch"]:
             assert "lambda" in d["mismatch"]
 

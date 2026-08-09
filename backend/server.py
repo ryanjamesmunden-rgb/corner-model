@@ -454,16 +454,36 @@ async def sync_runs(limit: int = 8, user: dict = Depends(get_current_user)):
     return runs
 
 
+def _pick_profit(p: dict) -> Optional[float]:
+    """Profit in units at a flat 1u stake. A loss always costs -1u; a win pays
+    (odds-1)u but only if we know the odds (some historical picks have none)."""
+    if p["status"] == "lost":
+        return -1.0
+    if p["status"] == "won":
+        return round(p["odds"] - 1.0, 2) if p.get("odds") else None
+    return None
+
+
 @api_router.get("/picks")
 async def get_picks(user: dict = Depends(get_current_user)):
     picks = await db.picks.find({}, {"_id": 0}).to_list(500)
-    picks.sort(key=lambda p: (p["date"], p.get("kickoff") or "", p["home"]))
+    picks.sort(key=lambda p: (p.get("date") or "", p.get("kickoff") or "", p.get("home") or p.get("team") or ""))
+    for p in picks:
+        p["profit"] = _pick_profit(p)
     won = sum(1 for p in picks if p["status"] == "won")
     lost = sum(1 for p in picks if p["status"] == "lost")
     pending = sum(1 for p in picks if p["status"] == "pending")
     settled = won + lost
+    # flat 1u staking: only picks with a computable profit are "priced"
+    priced = [p for p in picks if p["profit"] is not None]
+    profit = round(sum(p["profit"] for p in priced), 2)
+    staked = len(priced)
+    unpriced_wins = sum(1 for p in picks if p["status"] == "won" and not p.get("odds"))
     return {"record": {"won": won, "lost": lost, "pending": pending, "total": len(picks),
-                       "settled": settled, "win_rate": round(won / settled * 100, 1) if settled else 0.0},
+                       "settled": settled, "win_rate": round(won / settled * 100, 1) if settled else 0.0,
+                       "profit": profit, "staked": staked,
+                       "roi": round(profit / staked * 100, 1) if staked else 0.0,
+                       "unpriced_wins": unpriced_wins},
             "picks": picks}
 
 

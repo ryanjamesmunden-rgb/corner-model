@@ -1,9 +1,11 @@
 import { useState, useEffect } from "react";
 import { toast } from "sonner";
-import { ClipboardCheck, CheckCircle2, XCircle, Clock, RefreshCw, TrendingUp } from "lucide-react";
+import { ClipboardCheck, CheckCircle2, XCircle, Clock, RefreshCw, TrendingUp, Coins } from "lucide-react";
 import { api } from "@/lib/api";
 
-const dayFmt = (d) => new Date(d).toLocaleDateString(undefined, { weekday: "long", month: "short", day: "numeric" });
+const MANUAL_KEY = "__manual__";
+const dayFmt = (d) => (d === MANUAL_KEY ? "Manually tracked" : new Date(d).toLocaleDateString(undefined, { weekday: "long", month: "short", day: "numeric" }));
+const unit = (n) => `${n > 0 ? "+" : ""}${n.toFixed(2)}u`;
 const timeFmt = (iso) => (iso ? new Date(iso).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" }) : "");
 
 const STATUS = {
@@ -38,10 +40,15 @@ export default function Picks() {
   };
 
   const r = data.record || {};
-  // group picks by date
+  // group picks by date; picks without a date are manually-tracked historical results
   const groups = {};
-  (data.picks || []).forEach((p) => { (groups[p.date] = groups[p.date] || []).push(p); });
-  const dates = Object.keys(groups).sort();
+  (data.picks || []).forEach((p) => { const k = p.date || MANUAL_KEY; (groups[k] = groups[k] || []).push(p); });
+  // manual group first, then dated groups ascending
+  const dates = Object.keys(groups).sort((a, b) => {
+    if (a === MANUAL_KEY) return -1;
+    if (b === MANUAL_KEY) return 1;
+    return a < b ? -1 : 1;
+  });
 
   return (
     <div className="space-y-6" data-testid="picks-page">
@@ -66,11 +73,26 @@ export default function Picks() {
       </div>
 
       {/* Record strip */}
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3" data-testid="picks-record">
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3" data-testid="picks-record">
         <RecordChip label="Won" value={r.won ?? 0} cls="text-emerald-400" dot="bg-emerald-500" />
         <RecordChip label="Lost" value={r.lost ?? 0} cls="text-red-400" dot="bg-red-500" />
-        <RecordChip label="Pending" value={r.pending ?? 0} cls="text-amber-400" dot="bg-amber-500" />
         <RecordChip label="Win rate" value={r.settled ? `${r.win_rate}%` : "—"} cls="text-primary" dot="bg-primary" icon={TrendingUp} sub={r.settled ? `${r.won}/${r.settled} settled` : "no results yet"} />
+        <RecordChip
+          label="Profit"
+          value={r.staked ? unit(r.profit ?? 0) : "—"}
+          cls={(r.profit ?? 0) >= 0 ? "text-emerald-400" : "text-red-400"}
+          icon={Coins}
+          testid="picks-profit"
+          sub={r.staked ? `1u flat · ${r.staked} priced` : "no priced picks"}
+        />
+        <RecordChip
+          label="ROI"
+          value={r.staked ? `${r.roi >= 0 ? "+" : ""}${r.roi}%` : "—"}
+          cls={(r.roi ?? 0) >= 0 ? "text-emerald-400" : "text-red-400"}
+          icon={TrendingUp}
+          testid="picks-roi"
+          sub={r.unpriced_wins ? `${r.unpriced_wins} win${r.unpriced_wins > 1 ? "s" : ""} unpriced (no odds)` : "return on 1u stakes"}
+        />
       </div>
 
       {loading ? (
@@ -99,6 +121,7 @@ export default function Picks() {
 function PickRow({ p }) {
   const s = STATUS[p.status] || STATUS.pending;
   const SIcon = s.icon;
+  const hasFixture = p.home && p.away;
   return (
     <div
       data-testid="pick-card"
@@ -106,13 +129,22 @@ function PickRow({ p }) {
       style={{ borderLeft: `3px solid ${s.bar}` }}
     >
       <div className="flex-1 min-w-0">
-        <div className="flex items-center gap-2 mb-1">
+        <div className="flex items-center gap-2 mb-1 flex-wrap">
           <span className="font-head font-semibold text-base truncate">{p.team}</span>
           <span className="text-[11px] font-mono-data px-1.5 py-0.5 rounded bg-primary/15 text-primary border border-primary/30 shrink-0">{p.line}+ corners</span>
+          {p.odds ? (
+            <span data-testid="pick-odds" className="text-[11px] font-mono-data px-1.5 py-0.5 rounded bg-white/5 text-foreground border border-border shrink-0">@ {p.odds.toFixed(2)}</span>
+          ) : (
+            <span className="text-[10px] font-mono-data px-1.5 py-0.5 rounded bg-white/5 text-muted-foreground border border-border shrink-0">no odds</span>
+          )}
         </div>
-        <p className="font-mono-data text-xs text-muted-foreground truncate">
-          {p.home} <span className="opacity-50">v</span> {p.away}
-        </p>
+        {hasFixture ? (
+          <p className="font-mono-data text-xs text-muted-foreground truncate">
+            {p.home} <span className="opacity-50">v</span> {p.away}
+          </p>
+        ) : (
+          <p className="font-mono-data text-xs text-muted-foreground truncate">{p.market || `${p.line}+ team corners`}</p>
+        )}
         <p className="text-[10px] uppercase tracking-wider text-muted-foreground mt-0.5">
           {p.league_name}{p.kickoff ? ` · ${timeFmt(p.kickoff)}` : ""}
         </p>
@@ -126,13 +158,21 @@ function PickRow({ p }) {
             {p.result_corners} corners
           </span>
         )}
+        {p.profit != null && (
+          <span
+            data-testid="pick-profit"
+            className={`font-mono-data text-[11px] font-semibold ${p.profit >= 0 ? "text-emerald-400" : "text-red-400"}`}
+          >
+            {unit(p.profit)}
+          </span>
+        )}
       </div>
     </div>
   );
 }
 
-const RecordChip = ({ label, value, cls, dot, icon: Icon, sub }) => (
-  <div className="bg-card border border-border rounded-lg px-4 py-3">
+const RecordChip = ({ label, value, cls, dot, icon: Icon, sub, testid }) => (
+  <div className="bg-card border border-border rounded-lg px-4 py-3" data-testid={testid}>
     <div className="flex items-center gap-2">
       {Icon ? <Icon className={`h-4 w-4 ${cls}`} /> : <span className={`h-2 w-2 rounded-full ${dot}`} />}
       <span className={`font-mono-data text-2xl font-bold ${cls}`}>{value}</span>

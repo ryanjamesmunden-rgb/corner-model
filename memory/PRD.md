@@ -119,11 +119,16 @@ Multi-league corner value betting web app. Rebuilds a spreadsheet corner model i
 - Naive v2 shots-nudge did NOT improve Brier (0.2255→0.2260) — confirms the value of measuring before shipping.
 - NEXT (Phase 2): capture goals + first-half goals in sync; build a proper attacking-intent/form multiplier; accept only if it lowers Brier/calibration gap; then show before/after on the 18 tracked picks. NEXT (Phase 3): Claude explainer that justifies flagged picks (chosen behaviour: explain, not auto-generate).
 
-## Corner Model 2.0 Picks board (2026-08-09)
-- New **Picks** nav tab (`/picks`, `Picks.jsx`): public-facing board of 18 curated team-corner picks that auto-settle Win/Loss. Grouped by date; record strip (Won/Lost/Pending/win-rate); each card shows team, `line+` badge, fixture, league, kickoff, status chip + result corners.
+## Corner Model 2.0 Picks board (2026-08-09) (`/picks`, `Picks.jsx`): public-facing board of curated team-corner picks that auto-settle Win/Loss. Grouped by date; record strip (Won/Lost/win-rate + Profit/ROI); each card shows team, `line+` badge, odds, fixture, league, kickoff, status chip + result corners + per-pick profit.
 - Data: `picks` collection (seed via `seed_picks.py`, idempotent — keeps settled results). Settlement `settle_picks.py` resolves each pick to a real API-Football fixture (token-overlap match on both team names), and once FT compares the picked team's Corner Kicks vs the line (reuses `fixture_stats` cache). Runs at the end of every scheduled sync + manual `POST /api/picks/settle` (120s throttle). `GET /api/picks` returns record + picks.
 - Verified `/app/test_reports/iteration_6.json` (100%): 18 picks resolved w/ kickoff times; Feyenoord 5+ settled Won (10 corners).
 - OPEN REQUEST (not yet built): user wants the **model/algorithm reworked** to incorporate goals scored + team form (e.g. scored a first-half goal in last 5/5) — current Poisson λ uses only corners-won/conceded. Needs: capture goals + FH-goals in sync, blend an attacking-intent/form multiplier into λ, then backtest. Awaiting go-ahead on weighting approach.
+
+## Manual Picks + Odds + 1u ROI on Picks board (2026-08-09)
+- Seeded 7 user-tracked historical picks (`seed_manual_picks.py`, `source:manual`, `date:null`) that carry their own final result — NOT touched by `settle_picks.py` (it only processes `status:pending`).
+- `GET /api/picks` now computes **per-pick profit at a flat 1u stake** (`_pick_profit`): lost = -1u, won = (odds-1)u if odds known else null (unpriced). Record adds `profit`, `staked`, `roi`, `unpriced_wins` over priced picks only.
+- `Picks.jsx`: odds badge (`pick-odds`, "@1.73"/"no odds") next to line, per-pick profit chip (`pick-profit`), Profit + ROI chips in the record strip, and a "Manually tracked" group for date-less picks. Sort/grouping made null-date safe.
+- Verified: backend curl (record profit -1.14u / ROI -19% over 6 priced, 4 unpriced wins) + UI screenshot (all 7 manual picks render with odds/result/profit).
 
 ## Sync Efficiency, Scheduling & Observability (2026-08-05)
 - **Persistent stats cache** (`fixture_stats` collection, keyed by API fixture id): past results never change, so each finished fixture's corner+shot stats are fetched from API-Football ONCE and cached forever. Re-syncs skip cached fixtures — validated live: 1st den-sl sync `api_fetched=120 cache_hit=0`, 2nd `api_fetched=0 cache_hit=120`. Massive quota reduction on every recurring run.

@@ -7,6 +7,7 @@ import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import MatchupTable from "@/components/MatchupTable";
 import CornerLeagueTable from "@/components/CornerLeagueTable";
 import SyncPanel from "@/components/SyncPanel";
+import BacktestPanel from "@/components/BacktestPanel";
 
 const SPLITS = [{ v: "overall", l: "Overall" }, { v: "home", l: "Home" }, { v: "away", l: "Away" }];
 const WINDOWS = [{ v: "3", l: "Last 3" }, { v: "5", l: "Last 5" }, { v: "10", l: "Last 10" }];
@@ -144,6 +145,7 @@ export default function Dashboard() {
       </div>
 
       <SyncPanel />
+      <BacktestPanel leagueId={leagueId} />
     </div>
   );
 }

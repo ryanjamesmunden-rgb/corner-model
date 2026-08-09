@@ -92,6 +92,14 @@ Multi-league corner value betting web app. Rebuilds a spreadsheet corner model i
 - API-Football account: Pro plan, active until 2026-08-25, ~3.5k/7500 req/day used at time of sync. Backup: renew plan before expiry to keep auto-updates flowing.
 - Tested: `/app/test_reports/iteration_3.json` — 6/6 frontend flows + endpoint checks PASS.
 
+## Model Backtester — Phase 1 of model rework (2026-08-09)
+- Walk-forward backtester (`GET /api/backtest?league_id=&model=v1|v2&window=&min_games=`): replays cached `fixture_stats` chronologically, predicts each team's corner probabilities from PRIOR form only (no leakage), compares to actual. Returns per-line (4/5/6/7): sample, model %, actual hit %, calibration gap, Brier; plus overall Brier.
+- `model_lambda(model, team_for, opp_against, team_shots, league_shots)`: v1 = (team_for+opp_against)/2 (matches production `expected_lambdas`); v2 = + shots-intent nudge (placeholder, to be tuned).
+- UI: **Model Backtest** panel on Leagues tab (`BacktestPanel.jsx`, scope This-league / All-leagues).
+- BASELINE RESULT (all leagues, 3,174 matches / 3,736 predictions, Brier 0.2255): model is well-calibrated overall but **slightly over-rates low lines** — 4+ line model 70.9% vs actual 66.6% (gap 4.3%), 5+ 54.0% vs 52.3%. 6+ and 7+ near-perfect. Implication: some flagged "value" on 4+/5+ is slightly optimistic → likely why lower-line picks underperform odds.
+- Naive v2 shots-nudge did NOT improve Brier (0.2255→0.2260) — confirms the value of measuring before shipping.
+- NEXT (Phase 2): capture goals + first-half goals in sync; build a proper attacking-intent/form multiplier; accept only if it lowers Brier/calibration gap; then show before/after on the 18 tracked picks. NEXT (Phase 3): Claude explainer that justifies flagged picks (chosen behaviour: explain, not auto-generate).
+
 ## Corner Model 2.0 Picks board (2026-08-09)
 - New **Picks** nav tab (`/picks`, `Picks.jsx`): public-facing board of 18 curated team-corner picks that auto-settle Win/Loss. Grouped by date; record strip (Won/Lost/Pending/win-rate); each card shows team, `line+` badge, fixture, league, kickoff, status chip + result corners.
 - Data: `picks` collection (seed via `seed_picks.py`, idempotent — keeps settled results). Settlement `settle_picks.py` resolves each pick to a real API-Football fixture (token-overlap match on both team names), and once FT compares the picked team's Corner Kicks vs the line (reuses `fixture_stats` cache). Runs at the end of every scheduled sync + manual `POST /api/picks/settle` (120s throttle). `GET /api/picks` returns record + picks.

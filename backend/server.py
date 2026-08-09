@@ -11,6 +11,7 @@ from pathlib import Path
 from pydantic import BaseModel
 from typing import List, Optional, Dict
 from datetime import datetime, timezone, timedelta
+from collections import defaultdict, deque
 import httpx
 
 ROOT_DIR = Path(__file__).parent
@@ -425,6 +426,78 @@ async def settle_picks_now(user: dict = Depends(get_current_user)):
     subprocess.Popen([sys.executable, str(ROOT_DIR / "settle_picks.py")], cwd=str(ROOT_DIR),
                      env={**_os.environ})
     return {"status": "settling", "started_at": now.isoformat()}
+
+
+def model_lambda(model: str, team_for: float, opp_against: float,
+                 team_shots: float = 0.0, league_shots: float = 0.0) -> float:
+    """Expected team corners. v1 = corner form only. v2 = + shots-intent nudge (used by backtester/model lab)."""
+    base = (team_for + opp_against) / 2.0
+    if model == "v2" and league_shots > 0 and team_shots > 0:
+        # more shots than league norm => more corners; capped +/-20%
+        intent = max(0.8, min(1.2, team_shots / league_shots))
+        base = base * (0.75 + 0.25 * intent)
+    return base
+
+
+@api_router.get("/backtest")
+async def backtest(league_id: str = "all", window: int = 10, min_games: int = 5,
+                   model: str = "v1", user: dict = Depends(get_current_user)):
+    """Walk-forward backtest over cached fixture stats: for each past match we predict
+    team-corner probabilities from prior form only, then compare to what actually happened."""
+    q = {} if league_id == "all" else {"league_id": league_id}
+    matches = await db.fixture_stats.find(q, {"_id": 0}).to_list(30000)
+    matches.sort(key=lambda m: m["date"])
+    # league average shots (for v2 intent scaling)
+    all_shots = [m.get("home_shots", 0) for m in matches] + [m.get("away_shots", 0) for m in matches]
+    league_shots = (sum(all_shots) / len(all_shots)) if all_shots else 0.0
+
+    hist_for = defaultdict(lambda: deque(maxlen=window))
+    hist_against = defaultdict(lambda: deque(maxlen=window))
+    hist_shots = defaultdict(lambda: deque(maxlen=window))
+    lines = [4, 5, 6, 7]
+    stats = {L: {"n": 0, "pred": 0.0, "hit": 0, "brier": 0.0} for L in lines}
+    preds = 0
+
+    def avg(d):
+        return sum(d) / len(d) if d else 0.0
+
+    for m in matches:
+        h, a = m["home_id"], m["away_id"]
+        sides = [
+            ("home", hist_for[h], hist_against[a], hist_shots[h], m["home_corners"],
+             len(hist_for[h]) >= min_games and len(hist_against[a]) >= min_games),
+            ("away", hist_for[a], hist_against[h], hist_shots[a], m["away_corners"],
+             len(hist_for[a]) >= min_games and len(hist_against[h]) >= min_games),
+        ]
+        for _side, tf_d, oa_d, ts_d, actual, can in sides:
+            if not can:
+                continue
+            lam = model_lambda(model, avg(tf_d), avg(oa_d), avg(ts_d), league_shots)
+            preds += 1
+            for L in lines:
+                p = poisson_ge(L, lam)
+                hit = 1 if actual >= L else 0
+                s = stats[L]
+                s["n"] += 1; s["pred"] += p; s["hit"] += hit; s["brier"] += (p - hit) ** 2
+        # update rolling form AFTER predicting (no leakage)
+        hist_for[h].append(m["home_corners"]); hist_against[h].append(m["away_corners"]); hist_shots[h].append(m.get("home_shots", 0))
+        hist_for[a].append(m["away_corners"]); hist_against[a].append(m["home_corners"]); hist_shots[a].append(m.get("away_shots", 0))
+
+    out_lines, total_brier, total_n = [], 0.0, 0
+    for L in lines:
+        s = stats[L]
+        if s["n"] == 0:
+            continue
+        out_lines.append({"line": L, "n": s["n"],
+                          "model_prob": round(s["pred"] / s["n"] * 100, 1),
+                          "actual_hit_rate": round(s["hit"] / s["n"] * 100, 1),
+                          "calibration_gap": round(abs(s["pred"] - s["hit"]) / s["n"] * 100, 1),
+                          "brier": round(s["brier"] / s["n"], 4)})
+        total_brier += s["brier"]; total_n += s["n"]
+    return {"league_id": league_id, "model": model, "window": window, "min_games": min_games,
+            "matches": len(matches), "predictions": preds,
+            "overall_brier": round(total_brier / total_n, 4) if total_n else None,
+            "lines": out_lines}
 
 
 @api_router.get("/leagues/{league_id}/teams")

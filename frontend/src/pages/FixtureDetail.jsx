@@ -13,6 +13,7 @@ export default function FixtureDetail() {
   const [data, setData] = useState(null);
   const [odds, setOdds] = useState({});
   const [paste, setPaste] = useState("");
+  const [pasteTarget, setPasteTarget] = useState("home");
   const [flash, setFlash] = useState({});
 
   const load = useCallback(() => {
@@ -38,21 +39,37 @@ export default function FixtureDetail() {
     } catch { toast.error("Could not save odds"); }
   };
 
+  const nameHit = (line, name) => {
+    const toks = name.toLowerCase().split(/\s+/).filter((t) => t.length >= 4);
+    return toks.some((t) => line.includes(t));
+  };
+
   const handlePaste = () => {
-    const lines = paste.split(/\n|,/).map((s) => s.trim()).filter(Boolean);
+    const homeName = fixture.home_name;
+    const awayName = fixture.away_name;
+    const lines = paste.split(/\n|;/).map((s) => s.trim()).filter(Boolean);
     const next = { ...odds };
     let matched = 0;
-    lines.forEach((line) => {
-      const nums = line.match(/\d+\.?\d*/g);
+    lines.forEach((raw) => {
+      const low = raw.toLowerCase();
+      // route to a market group: explicit team name > "total" keyword > selected target
+      let group = pasteTarget;
+      if (nameHit(low, homeName)) group = "home";
+      else if (nameHit(low, awayName)) group = "away";
+      else if (/\btotal\b|\bmatch\b|\bgame\b/.test(low)) group = "total";
+      const nums = raw.match(/\d+\.?\d*/g);
       if (!nums || nums.length < 2) return;
-      const lineVal = parseFloat(nums[0]);
+      let lineVal = parseFloat(nums[0]);
       const price = parseFloat(nums[nums.length - 1]);
-      const key = `total_over_${lineVal}`;
+      // "5+" or a whole number → N or more corners = Over (N-0.5)
+      const isPlus = /\d+\s*\+/.test(raw) || Number.isInteger(lineVal);
+      if (isPlus) lineVal = lineVal - 0.5;
+      const key = `${group}_over_${lineVal}`;
       if (data.model.markets.some((m) => m.key === key) && price > 1) {
         next[key] = String(price); matched++;
       }
     });
-    if (matched === 0) { toast.error("No matching total lines found. Format: 10.5 2.05"); return; }
+    if (matched === 0) { toast.error('No matching lines. Try "Over 4.5 1.80" or "5+ 1.80"'); return; }
     setOdds(next); submitOdds(next); setPaste("");
     toast.success(`Parsed ${matched} line${matched > 1 ? "s" : ""}`);
   };
@@ -98,17 +115,38 @@ export default function FixtureDetail() {
 
       {/* Quick paste */}
       <div className="bg-card border border-border rounded-lg p-4">
-        <div className="flex items-center gap-2 mb-3">
+        <div className="flex items-center gap-2 mb-3 flex-wrap">
           <ClipboardPaste className="h-4 w-4 text-primary" />
           <h2 className="font-head font-semibold">Quick-Paste Bookmaker Odds</h2>
-          <span className="text-xs text-muted-foreground">Total corner lines · e.g. "10.5 2.05"</span>
+          <span className="text-xs text-muted-foreground">e.g. "4.5 1.80" or "5+ 1.80" — one per line</span>
+        </div>
+        <div className="flex items-center gap-2 mb-3">
+          <span className="text-[10px] uppercase tracking-wider text-muted-foreground mr-1">Paste into</span>
+          {[
+            { v: "home", l: fixture.home_name },
+            { v: "away", l: fixture.away_name },
+            { v: "total", l: "Total" },
+          ].map((o) => (
+            <button
+              key={o.v}
+              data-testid={`paste-target-${o.v}`}
+              onClick={() => setPasteTarget(o.v)}
+              className={`text-xs px-2.5 py-1 rounded-md border transition-colors duration-150 max-w-[160px] truncate ${
+                pasteTarget === o.v
+                  ? "bg-primary/15 text-primary border-primary/40"
+                  : "bg-secondary text-muted-foreground border-border hover:text-foreground"
+              }`}
+            >
+              {o.v === "total" ? "Total match" : `${o.l} corners`}
+            </button>
+          ))}
         </div>
         <div className="flex flex-col sm:flex-row gap-3">
           <textarea
             data-testid="odds-paste-input"
             value={paste}
             onChange={(e) => setPaste(e.target.value)}
-            placeholder={"9.5 1.80\n10.5 2.05\n11.5 2.60"}
+            placeholder={"4.5 1.80\n5.5 2.40\n6.5 3.30"}
             className="flex-1 h-24 bg-black border border-border rounded-md p-3 font-mono-data text-sm resize-none focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent"
           />
           <button
@@ -119,6 +157,10 @@ export default function FixtureDetail() {
             <Calculator className="h-4 w-4" /> Calculate EV
           </button>
         </div>
+        <p className="text-[11px] text-muted-foreground mt-2 leading-relaxed">
+          Tip: include a team name on a line (e.g. "{fixture.home_name} over 4.5 1.80") and it routes automatically.
+          "5+" is read as 5-or-more (Over 4.5).
+        </p>
       </div>
 
       {/* Markets */}

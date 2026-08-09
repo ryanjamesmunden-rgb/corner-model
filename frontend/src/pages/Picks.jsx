@@ -1,11 +1,10 @@
 import { useState, useEffect } from "react";
 import { toast } from "sonner";
-import { ClipboardCheck, CheckCircle2, XCircle, Clock, RefreshCw, TrendingUp, Coins } from "lucide-react";
+import { ClipboardCheck, CheckCircle2, XCircle, Clock, RefreshCw, TrendingUp } from "lucide-react";
 import { api } from "@/lib/api";
 
 const MANUAL_KEY = "__manual__";
 const dayFmt = (d) => (d === MANUAL_KEY ? "Manually tracked" : new Date(d).toLocaleDateString(undefined, { weekday: "long", month: "short", day: "numeric" }));
-const unit = (n) => `${n > 0 ? "+" : ""}${n.toFixed(2)}u`;
 const timeFmt = (iso) => (iso ? new Date(iso).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" }) : "");
 
 const STATUS = {
@@ -73,26 +72,11 @@ export default function Picks() {
       </div>
 
       {/* Record strip */}
-      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3" data-testid="picks-record">
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3" data-testid="picks-record">
         <RecordChip label="Won" value={r.won ?? 0} cls="text-emerald-400" dot="bg-emerald-500" />
         <RecordChip label="Lost" value={r.lost ?? 0} cls="text-red-400" dot="bg-red-500" />
-        <RecordChip label="Win rate" value={r.settled ? `${r.win_rate}%` : "—"} cls="text-primary" dot="bg-primary" icon={TrendingUp} sub={r.settled ? `${r.won}/${r.settled} settled` : "no results yet"} />
-        <RecordChip
-          label="Profit"
-          value={r.staked ? unit(r.profit ?? 0) : "—"}
-          cls={(r.profit ?? 0) >= 0 ? "text-emerald-400" : "text-red-400"}
-          icon={Coins}
-          testid="picks-profit"
-          sub={r.staked ? `1u flat · ${r.staked} priced` : "no priced picks"}
-        />
-        <RecordChip
-          label="ROI"
-          value={r.staked ? `${r.roi >= 0 ? "+" : ""}${r.roi}%` : "—"}
-          cls={(r.roi ?? 0) >= 0 ? "text-emerald-400" : "text-red-400"}
-          icon={TrendingUp}
-          testid="picks-roi"
-          sub={r.unpriced_wins ? `${r.unpriced_wins} win${r.unpriced_wins > 1 ? "s" : ""} unpriced (no odds)` : "return on 1u stakes"}
-        />
+        <RecordChip label="Pending" value={r.pending ?? 0} cls="text-amber-400" dot="bg-amber-500" />
+        <RecordChip label="Strike rate" value={r.settled ? `${r.win_rate}%` : "—"} cls="text-primary" dot="bg-primary" icon={TrendingUp} testid="picks-strike-rate" sub={r.settled ? `${r.won}/${r.settled} settled` : "no results yet"} />
       </div>
 
       {loading ? (
@@ -156,14 +140,6 @@ function PickRow({ p }) {
         {p.result_corners != null && (
           <span className="font-mono-data text-[11px] text-muted-foreground" data-testid="pick-result">
             {p.result_corners} corners
-          </span>
-        )}
-        {p.profit != null && (
-          <span
-            data-testid="pick-profit"
-            className={`font-mono-data text-[11px] font-semibold ${p.profit >= 0 ? "text-emerald-400" : "text-red-400"}`}
-          >
-            {unit(p.profit)}
           </span>
         )}
       </div>

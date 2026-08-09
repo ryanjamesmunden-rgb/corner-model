@@ -153,6 +153,6 @@ const RecordChip = ({ label, value, cls, dot, icon: Icon, sub, testid }) => (
       {Icon ? <Icon className={`h-4 w-4 ${cls}`} /> : <span className={`h-2 w-2 rounded-full ${dot}`} />}
       <span className={`font-mono-data text-2xl font-bold ${cls}`}>{value}</span>
     </div>
-    <p className="text-xs text-muted-foreground mt-0.5">{sub || label}</p>
+    <p className="text-xs text-muted-foreground mt-0.5">{label}{sub ? ` · ${sub}` : ""}</p>
   </div>
 );

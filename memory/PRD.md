@@ -92,6 +92,12 @@ Multi-league corner value betting web app. Rebuilds a spreadsheet corner model i
 - API-Football account: Pro plan, active until 2026-08-25, ~3.5k/7500 req/day used at time of sync. Backup: renew plan before expiry to keep auto-updates flowing.
 - Tested: `/app/test_reports/iteration_3.json` — 6/6 frontend flows + endpoint checks PASS.
 
+## Corner Model 2.0 Picks board (2026-08-09)
+- New **Picks** nav tab (`/picks`, `Picks.jsx`): public-facing board of 18 curated team-corner picks that auto-settle Win/Loss. Grouped by date; record strip (Won/Lost/Pending/win-rate); each card shows team, `line+` badge, fixture, league, kickoff, status chip + result corners.
+- Data: `picks` collection (seed via `seed_picks.py`, idempotent — keeps settled results). Settlement `settle_picks.py` resolves each pick to a real API-Football fixture (token-overlap match on both team names), and once FT compares the picked team's Corner Kicks vs the line (reuses `fixture_stats` cache). Runs at the end of every scheduled sync + manual `POST /api/picks/settle` (120s throttle). `GET /api/picks` returns record + picks.
+- Verified `/app/test_reports/iteration_6.json` (100%): 18 picks resolved w/ kickoff times; Feyenoord 5+ settled Won (10 corners).
+- OPEN REQUEST (not yet built): user wants the **model/algorithm reworked** to incorporate goals scored + team form (e.g. scored a first-half goal in last 5/5) — current Poisson λ uses only corners-won/conceded. Needs: capture goals + FH-goals in sync, blend an attacking-intent/form multiplier into λ, then backtest. Awaiting go-ahead on weighting approach.
+
 ## Sync Efficiency, Scheduling & Observability (2026-08-05)
 - **Persistent stats cache** (`fixture_stats` collection, keyed by API fixture id): past results never change, so each finished fixture's corner+shot stats are fetched from API-Football ONCE and cached forever. Re-syncs skip cached fixtures — validated live: 1st den-sl sync `api_fetched=120 cache_hit=0`, 2nd `api_fetched=0 cache_hit=120`. Massive quota reduction on every recurring run.
 - **Fixed schedule**: APScheduler now uses a CronTrigger at **07:00 & 19:00 UTC** daily (was interval-12h-from-boot). Self-heal-on-boot retained.

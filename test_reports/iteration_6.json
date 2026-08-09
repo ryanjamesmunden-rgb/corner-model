@@ -1,0 +1,19 @@
+{
+  "summary": "Frontend-only regression-light test of the new Picks board (desktop 1920x900, Bearer/cookie session qa-test-token-123) plus a curl verification of GET /api/picks. Nav renders exactly 5 tabs in the requested order and 'Picks' routes to /picks. Picks page renders title, record strip (1 Won / 0 Lost / 17 Pending / 100% with '1/1 settled'), 18 pick-card elements grouped by date, correct badges/fixture/league+kickoff/status chips, and 1 pick-result ('10 corners' for Feyenoord 5+). 'Refresh results' button clickable, shows success toast 'Checking latest results — updating in ~15s…', no console errors, no error elements. API returns record {won:1,lost:0,pending:17,total:18,settled:1,win_rate:100.0} and 18 picks all containing team, line, home, away, league_name, status, result_corners, kickoff. No issues found.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "Picks.jsx settle(): the button is force-locked in 'Checking…' state for a fixed 15s setTimeout; if the component unmounts the timer still fires (setState on unmounted component). Minor — consider clearing the timeout on unmount.",
+    "Picks.jsx load() swallows errors with .catch(() => {}) — a failed /api/picks call shows an empty 'No picks tracked yet.' state instead of an error state."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "100%", "frontend": "100%"},
+  "seed_data_creation": "None; used existing qa-user-1 session token and the 18 seeded picks.",
+  "should_call_test_agent_after_fix": false,
+  "should_main_agent_self_test": false,
+  "test_credentials": "session_token/Bearer qa-test-token-123 (user_id qa-user-1)",
+  "context_for_next_testing_agent": "Picks tab verified end-to-end on desktop. Settle endpoint has a 120s throttle — avoid repeated clicks. Other tabs (Value Finder, Quick Scan, Leagues, Streaks) were not re-tested this iteration; see iterations 1-5.",
+  "rca_of_the_issue": ""
+}

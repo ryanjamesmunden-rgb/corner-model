@@ -291,6 +291,13 @@ async def main():
     old = await db.sync_runs.find({}, {"_id": 1}).sort("started_at", -1).skip(30).to_list(1000)
     if old:
         await db.sync_runs.delete_many({"_id": {"$in": [o["_id"] for o in old]}})
+    # settle any Corner Model 2.0 picks whose games have finished
+    try:
+        from settle_picks import settle as settle_picks
+        async with httpx.AsyncClient() as hc:
+            await settle_picks(hc)
+    except Exception as e:
+        print(f"pick settlement skipped: {e}")
 
 
 if __name__ == "__main__":

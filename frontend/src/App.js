@@ -8,6 +8,7 @@ import Dashboard from "@/pages/Dashboard";
 import Scanner from "@/pages/Scanner";
 import Streaks from "@/pages/Streaks";
 import QuickScan from "@/pages/QuickScan";
+import Picks from "@/pages/Picks";
 import FixtureDetail from "@/pages/FixtureDetail";
 import Layout from "@/components/Layout";
 
@@ -35,6 +36,7 @@ function AppRouter() {
       <Route path="/dashboard" element={<ProtectedRoute><Dashboard /></ProtectedRoute>} />
       <Route path="/scanner" element={<ProtectedRoute><Scanner /></ProtectedRoute>} />
       <Route path="/quick-scan" element={<ProtectedRoute><QuickScan /></ProtectedRoute>} />
+      <Route path="/picks" element={<ProtectedRoute><Picks /></ProtectedRoute>} />
       <Route path="/streaks" element={<ProtectedRoute><Streaks /></ProtectedRoute>} />
       <Route path="/fixture/:id" element={<ProtectedRoute><FixtureDetail /></ProtectedRoute>} />
       <Route path="*" element={<Navigate to="/scanner" replace />} />

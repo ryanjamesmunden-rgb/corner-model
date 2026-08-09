@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
-import { CornerDownRight, LayoutDashboard, Radar, Flame, LogOut, Zap } from "lucide-react";
+import { CornerDownRight, LayoutDashboard, Radar, Flame, LogOut, Zap, ClipboardCheck } from "lucide-react";
 import { useAuth } from "@/context/AuthContext";
 import { LeagueContext } from "@/context/LeagueContext";
 import ExportMenu from "@/components/ExportMenu";
@@ -46,6 +46,7 @@ export default function Layout({ children }) {
   const nav = [
     { to: "/scanner", label: "Value Finder", icon: Radar },
     { to: "/quick-scan", label: "Quick Scan", icon: Zap },
+    { to: "/picks", label: "Picks", icon: ClipboardCheck },
     { to: "/dashboard", label: "Leagues", icon: LayoutDashboard },
     { to: "/streaks", label: "Streaks", icon: Flame },
   ];

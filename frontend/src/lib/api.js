@@ -21,6 +21,8 @@ export const api = {
   refresh: (id) => axios.post(`${API}/leagues/${id}/refresh`).then((r) => r.data),
   refreshAll: () => axios.post(`${API}/sync/refresh-all`).then((r) => r.data),
   syncRuns: (limit = 8) => axios.get(`${API}/sync/runs`, { params: { limit } }).then((r) => r.data),
+  picks: () => axios.get(`${API}/picks`).then((r) => r.data),
+  settlePicks: () => axios.post(`${API}/picks/settle`).then((r) => r.data),
 };
 
 export const tierMeta = {

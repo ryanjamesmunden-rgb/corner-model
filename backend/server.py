@@ -398,6 +398,35 @@ async def sync_runs(limit: int = 8, user: dict = Depends(get_current_user)):
     return runs
 
 
+@api_router.get("/picks")
+async def get_picks(user: dict = Depends(get_current_user)):
+    picks = await db.picks.find({}, {"_id": 0}).to_list(500)
+    picks.sort(key=lambda p: (p["date"], p.get("kickoff") or "", p["home"]))
+    won = sum(1 for p in picks if p["status"] == "won")
+    lost = sum(1 for p in picks if p["status"] == "lost")
+    pending = sum(1 for p in picks if p["status"] == "pending")
+    settled = won + lost
+    return {"record": {"won": won, "lost": lost, "pending": pending, "total": len(picks),
+                       "settled": settled, "win_rate": round(won / settled * 100, 1) if settled else 0.0},
+            "picks": picks}
+
+
+_last_pick_settle = {"at": None}
+
+
+@api_router.post("/picks/settle")
+async def settle_picks_now(user: dict = Depends(get_current_user)):
+    now = datetime.now(timezone.utc)
+    last = _last_pick_settle["at"]
+    if last and (now - last).total_seconds() < 120:
+        return {"status": "already_running", "started_at": last.isoformat()}
+    _last_pick_settle["at"] = now
+    import subprocess, sys, os as _os
+    subprocess.Popen([sys.executable, str(ROOT_DIR / "settle_picks.py")], cwd=str(ROOT_DIR),
+                     env={**_os.environ})
+    return {"status": "settling", "started_at": now.isoformat()}
+
+
 @api_router.get("/leagues/{league_id}/teams")
 async def get_teams(league_id: str, split: str = "overall", window: int = 5, user: dict = Depends(get_current_user)):
     teams = await db.teams.find({"league_id": league_id}, {"_id": 0}).to_list(100)

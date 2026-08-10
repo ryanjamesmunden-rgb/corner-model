@@ -12,7 +12,6 @@ from pydantic import BaseModel
 from typing import List, Optional, Dict
 from datetime import datetime, timezone, timedelta
 from collections import defaultdict, deque
-import httpx
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -26,8 +25,6 @@ api_router = APIRouter(prefix="/api")
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-
-EMERGENT_SESSION_URL = "https://demobackend.emergentagent.com/auth/v1/env/oauth/session-data"
 
 # ----------------------------- Poisson Engine -----------------------------
 
@@ -301,72 +298,21 @@ async def get_fixture_model(fixture: dict, odds: Dict[str, float]) -> dict:
     return {"lambdas": lambdas, "markets": build_markets(lambdas, odds), "confidence": confidence_for(home, away)}
 
 
-# ----------------------------- Auth -----------------------------
+# ----------------------------- Public access -----------------------------
+# Auth was removed when the app went public: every request acts as a single
+# shared local user, which keeps the bankroll/bets storage model intact.
+
+PUBLIC_USER_ID = "public"
+
 
 async def get_current_user(request: Request) -> dict:
-    token = request.cookies.get("session_token")
-    if not token:
-        auth = request.headers.get("Authorization", "")
-        if auth.startswith("Bearer "):
-            token = auth[7:]
-    if not token:
-        raise HTTPException(status_code=401, detail="Not authenticated")
-    session = await db.user_sessions.find_one({"session_token": token}, {"_id": 0})
-    if not session:
-        raise HTTPException(status_code=401, detail="Invalid session")
-    expires_at = session["expires_at"]
-    if isinstance(expires_at, str):
-        expires_at = datetime.fromisoformat(expires_at)
-    if expires_at.tzinfo is None:
-        expires_at = expires_at.replace(tzinfo=timezone.utc)
-    if expires_at < datetime.now(timezone.utc):
-        raise HTTPException(status_code=401, detail="Session expired")
-    user = await db.users.find_one({"user_id": session["user_id"]}, {"_id": 0})
+    user = await db.users.find_one({"user_id": PUBLIC_USER_ID}, {"_id": 0})
     if not user:
-        raise HTTPException(status_code=401, detail="User not found")
-    return user
-
-
-class SessionRequest(BaseModel):
-    session_id: str
-
-
-@api_router.post("/auth/session")
-async def auth_session(body: SessionRequest, response: Response):
-    async with httpx.AsyncClient() as hc:
-        r = await hc.get(EMERGENT_SESSION_URL, headers={"X-Session-ID": body.session_id})
-    if r.status_code != 200:
-        raise HTTPException(status_code=401, detail="Invalid session_id")
-    data = r.json()
-    email = data["email"]
-    user = await db.users.find_one({"email": email}, {"_id": 0})
-    if not user:
-        user = {"user_id": f"user_{uuid.uuid4().hex[:12]}", "email": email,
-                "name": data.get("name", email), "picture": data.get("picture", ""),
+        user = {"user_id": PUBLIC_USER_ID, "email": "", "name": "Guest", "picture": "",
                 "created_at": datetime.now(timezone.utc).isoformat()}
         await db.users.insert_one(dict(user))
-    session_token = data["session_token"]
-    expires_at = datetime.now(timezone.utc) + timedelta(days=7)
-    await db.user_sessions.insert_one({"user_id": user["user_id"], "session_token": session_token,
-                                       "expires_at": expires_at.isoformat(),
-                                       "created_at": datetime.now(timezone.utc).isoformat()})
-    response.set_cookie("session_token", session_token, httponly=True, secure=True,
-                        samesite="none", path="/", max_age=7 * 24 * 3600)
-    return {"user_id": user["user_id"], "email": user["email"], "name": user["name"], "picture": user.get("picture", "")}
-
-
-@api_router.get("/auth/me")
-async def auth_me(user: dict = Depends(get_current_user)):
-    return {"user_id": user["user_id"], "email": user["email"], "name": user["name"], "picture": user.get("picture", "")}
-
-
-@api_router.post("/auth/logout")
-async def auth_logout(request: Request, response: Response):
-    token = request.cookies.get("session_token")
-    if token:
-        await db.user_sessions.delete_one({"session_token": token})
-    response.delete_cookie("session_token", path="/")
-    return {"ok": True}
+        user.pop("_id", None)
+    return user
 
 
 # ----------------------------- App Routes -----------------------------

@@ -1,7 +1,6 @@
 import { useState, useEffect } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
-import { CornerDownRight, LayoutDashboard, Radar, Flame, LogOut, Zap, ClipboardCheck } from "lucide-react";
-import { useAuth } from "@/context/AuthContext";
+import { CornerDownRight, LayoutDashboard, Radar, Flame, Zap, ClipboardCheck } from "lucide-react";
 import { LeagueContext } from "@/context/LeagueContext";
 import ExportMenu from "@/components/ExportMenu";
 import { api } from "@/lib/api";
@@ -10,7 +9,6 @@ import {
 } from "@/components/ui/select";
 
 export default function Layout({ children }) {
-  const { user, logout } = useAuth();
   const location = useLocation();
   const navigate = useNavigate();
   const [leagues, setLeagues] = useState([]);
@@ -115,24 +113,6 @@ export default function Layout({ children }) {
               </Select>
 
               <ExportMenu />
-
-              <div className="hidden md:flex items-center gap-2">
-                {user?.picture ? (
-                  <img src={user.picture} alt="" className="h-8 w-8 rounded-full border border-border" />
-                ) : (
-                  <div className="h-8 w-8 rounded-full bg-secondary flex items-center justify-center text-xs font-mono-data">
-                    {user?.name?.[0] || "U"}
-                  </div>
-                )}
-              </div>
-              <button
-                data-testid="logout-btn"
-                onClick={logout}
-                className="p-2 rounded-md text-muted-foreground hover:text-red-400 hover:bg-white/5 transition-colors duration-150"
-                title="Log out"
-              >
-                <LogOut className="h-4 w-4" />
-              </button>
             </div>
           </div>
         </header>

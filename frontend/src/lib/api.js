@@ -1,6 +1,11 @@
 import axios from "axios";
 
-export const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
+// Falls back to the deployed backend so a missing build-time env var can't
+// ship a bundle that requests "undefined/api". Not a secret — the URL is
+// baked into the client bundle either way.
+const BACKEND = process.env.REACT_APP_BACKEND_URL || "https://corner-model.onrender.com";
+
+export const API = `${BACKEND}/api`;
 
 export const api = {
   leagues: () => axios.get(`${API}/leagues`).then((r) => r.data),

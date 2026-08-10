@@ -1136,8 +1136,31 @@ async def _chase_board(within_days: int = 7, limit: int = 25, league_id: Optiona
 @api_router.get("/chase-board")
 async def chase_board(within_days: int = 7, limit: int = 25, league_id: Optional[str] = None,
                       user: dict = Depends(get_current_user)):
-    board = await _chase_board(within_days, limit, league_id)
+    board = await _chase_board(within_days, min(max(limit, 1), 100), league_id)
     return {"within_days": within_days, "count": len(board), "board": board}
+
+
+@api_router.get("/top-corner-teams")
+async def top_corner_teams(side: str = "overall", window: int = 0, limit: int = 40,
+                           league_id: Optional[str] = None, user: dict = Depends(get_current_user)):
+    """Best corner teams across leagues, ranked by average corners WON on a venue/window (real games)."""
+    limit = min(max(limit, 1), 100)
+    q = {} if not league_id or league_id == "all" else {"league_id": league_id}
+    teams = await db.teams.find(q, {"_id": 0}).to_list(2000)
+    leagues = {l["league_id"]: l["name"] for l in await db.leagues.find({}, {"_id": 0}).to_list(200)}
+    next_fx = await _next_fixtures(q)
+    out = []
+    for t in teams:
+        s = team_split(_src(t), side, window)
+        if s["played"] < 3:
+            continue
+        out.append({"team_id": t["team_id"], "name": t["name"], "league_id": t["league_id"],
+                    "league_name": leagues.get(t["league_id"], ""), "side": side, "window": window,
+                    "games": s["played"], "won_avg": s["for_avg"], "conceded_avg": s["against_avg"],
+                    "total_avg": s["total_avg"], "real_samples": t.get("real_samples", 0),
+                    "next_fixture": next_fx.get(t["team_id"])})
+    out.sort(key=lambda x: x["won_avg"], reverse=True)
+    return out[:limit]
 
 
 @api_router.get("/best-bets")

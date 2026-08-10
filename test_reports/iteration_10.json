@@ -1,0 +1,20 @@
+{
+  "summary": "Tested the new GET /api/top-corner-teams endpoint (shape, sorting by won_avg desc, side/window/league/limit filters, auth, no _id leak) plus regressions on /api/chase-board, /api/best-bets, /api/picks, /api/streaks, /api/trends via pytest (16/16 passed). Frontend: /scanner tabbed Value Finder verified end-to-end with the QA session cookie — Best Teams is the default tab with 40 rows, all Home/Away/Overall and Season/Last5/Last10 toggles reload and re-rank correctly, all four tabs (Best Teams/Hot Form/Streaks/Chase Board) render their tables (40/254/180/25 rows), streak side toggles work (180/100/155 rows), row clicks on best-team-row, streak-row, trend-row, chase-row and the Best Bets Top Chase card all navigate to /fixture/:id, and the Picks page shows the 'Strike rate · 7/10 settled' tile with no Profit/ROI. Zero console errors, zero error elements.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": ["/app/backend/tests/test_top_corner_teams.py", "/app/test_reports/pytest/top_corner_teams.xml"],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "GET /api/top-corner-teams loads up to 2000 teams and computes team_split in Python per request with no caching — fine at current data volume but will not scale; consider caching or aggregation if team count grows.",
+    "/api/picks record still returns profit/roi/staked fields (UI correctly hides them). If ROI is deliberately retired, drop them from the payload to avoid confusion.",
+    "top_corner_teams has no bounds on `limit` (e.g. limit=100000 is accepted); add Query(le=100) validation."
+  ],
+  "updated_files": ["/app/backend/tests/test_top_corner_teams.py"],
+  "success_rate": {"backend": "100%", "frontend": "100%"},
+  "seed_data_creation": "None — used pre-seeded mock corner data and the pre-seeded QA session (qa-test-token-123).",
+  "should_call_test_agent_after_fix": false,
+  "should_main_agent_self_test": false,
+  "test_credentials": "QA session token qa-test-token-123 (Bearer header or httpOnly cookie session_token) — works as documented.",
+  "context_for_next_testing_agent": "Correct response shapes for tests: /api/chase-board returns {within_days, count, board:[...]} (not a bare list); /api/picks returns {record:{won,lost,pending,total,settled,win_rate,profit,staked,roi,unpriced_wins}, picks:[25 items]} where only 7 are the manually tracked group shown under 'Manually tracked'. Blank edge/odds ('—'/'no odds') columns are expected by design. Reusable suite: /app/backend/tests/test_top_corner_teams.py.",
+  "rca_of_the_issue": "No product defects found this iteration. Two initial pytest failures were my own wrong response-shape assumptions (chase-board wrapper object and picks count) and were corrected in the test file."
+}

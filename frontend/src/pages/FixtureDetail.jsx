@@ -221,6 +221,16 @@ export default function FixtureDetail() {
   );
 }
 
+const GoalChip = ({ label, strong }) => (
+  <span
+    className={`text-[10px] px-2 py-0.5 rounded border font-mono-data ${
+      strong ? "bg-emerald-500/15 text-emerald-400 border-emerald-500/30" : "bg-secondary text-muted-foreground border-border"
+    }`}
+  >
+    {label}
+  </span>
+);
+
 const Metric = ({ label, value, accent }) => (
   <div className="flex flex-col items-center justify-center px-3 py-2 bg-secondary rounded-md min-w-[64px]">
     <span className="text-[10px] text-muted-foreground uppercase tracking-wider mb-1">{label}</span>
@@ -236,6 +246,15 @@ function TeamBreakdown({ team, title, highlight }) {
   const filtered = recentAll.filter((m) => split === "overall" || (split === "home" ? m.home : !m.home));
   const games = filtered.slice(0, parseInt(count, 10));
   const fmtDate = (d) => new Date(d).toLocaleDateString(undefined, { month: "short", day: "numeric" });
+  // goal-form summary over the games currently shown; games without goal data are left out
+  const withGoals = games.filter((m) => m.gf != null && m.ga != null);
+  const scored = withGoals.filter((m) => m.gf >= 1).length;
+  const over25 = withGoals.filter((m) => m.gf + m.ga >= 3).length;
+  const avgGoals = withGoals.length ? withGoals.reduce((s, m) => s + m.gf + m.ga, 0) / withGoals.length : null;
+  const fhKnown = games.filter((m) => m.fh != null);
+  const fhg = fhKnown.filter((m) => m.fh).length;
+  const resultTone = (m) =>
+    m.gf > m.ga ? "text-emerald-400" : m.gf < m.ga ? "text-red-400" : "text-zinc-400";
   return (
     <div className="bg-card border border-border rounded-lg overflow-hidden">
       <div className="px-4 py-3 border-b border-border flex items-center gap-3">
@@ -292,12 +311,22 @@ function TeamBreakdown({ team, title, highlight }) {
           </TabsList>
         </Tabs>
       </div>
+      {withGoals.length > 0 && (
+        <div className="px-4 pb-2.5 flex flex-wrap gap-2" data-testid={`bd-goalform-${highlight}`}>
+          <GoalChip label={`Scored in ${scored}/${withGoals.length}`} strong={scored >= withGoals.length * 0.7} />
+          {fhKnown.length > 0 && <GoalChip label={`FHG in ${fhg}/${fhKnown.length}`} strong={fhg >= fhKnown.length * 0.6} />}
+          <GoalChip label={`${avgGoals.toFixed(1)} goals/g`} strong={avgGoals >= 2.8} />
+          <GoalChip label={`O2.5 in ${over25}/${withGoals.length}`} strong={over25 >= withGoals.length * 0.6} />
+        </div>
+      )}
       <table className="w-full">
         <thead>
           <tr className="border-b border-border text-muted-foreground text-[10px] uppercase tracking-wider">
             <th className="text-left font-medium px-4 py-1.5">Date</th>
             <th className="text-left font-medium px-4 py-1.5">Opponent</th>
             <th className="text-center font-medium px-2 py-1.5">V</th>
+            <th className="text-center font-medium px-2 py-1.5" title="Final score (goals for-against)">Score</th>
+            <th className="text-center font-medium px-2 py-1.5" title="Scored a first-half goal">FHG</th>
             <th className="text-right font-medium px-4 py-1.5">Won</th>
             <th className="text-right font-medium px-4 py-1.5">Conc</th>
             <th className="text-right font-medium px-4 py-1.5">Total</th>
@@ -305,13 +334,21 @@ function TeamBreakdown({ team, title, highlight }) {
         </thead>
         <tbody className="font-mono-data text-sm" data-testid={`bd-recent-${highlight}`}>
           {games.length === 0 ? (
-            <tr><td colSpan={6} className="px-4 py-4 text-center text-muted-foreground text-xs">No real games on this split</td></tr>
+            <tr><td colSpan={8} className="px-4 py-4 text-center text-muted-foreground text-xs">No real games on this split</td></tr>
           ) : games.map((m, i) => (
             <tr key={i} className="border-b border-border/50 hover:bg-white/5 transition-colors duration-150">
               <td className="px-4 py-1.5 text-muted-foreground text-xs">{fmtDate(m.date)}</td>
               <td className="px-4 py-1.5 text-foreground font-sans text-xs whitespace-nowrap truncate max-w-[140px]">{m.opponent}</td>
               <td className="px-2 py-1.5 text-center">
                 <span className={`text-[9px] px-1 py-0.5 rounded ${m.home ? "bg-primary/15 text-primary" : "bg-zinc-500/15 text-zinc-400"}`}>{m.home ? "H" : "A"}</span>
+              </td>
+              <td className={`px-2 py-1.5 text-center text-xs font-semibold ${m.gf != null ? resultTone(m) : "text-muted-foreground"}`}>
+                {m.gf != null ? `${m.gf}-${m.ga}` : "—"}
+              </td>
+              <td className="px-2 py-1.5 text-center text-xs">
+                {m.fh == null ? <span className="text-muted-foreground">—</span>
+                  : m.fh ? <span className="text-emerald-400">✓</span>
+                  : <span className="text-zinc-600">·</span>}
               </td>
               <td className="px-4 py-1.5 text-right text-emerald-400 font-semibold">{m.won}</td>
               <td className="px-4 py-1.5 text-right text-red-400">{m.conceded}</td>

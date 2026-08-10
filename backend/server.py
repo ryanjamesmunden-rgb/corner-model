@@ -681,7 +681,9 @@ async def fixture_detail(fixture_id: str, user: dict = Depends(get_current_user)
         rms = team.get("real_matches") or []
         return [{"date": m["date"], "opponent": m["opponent"], "home": m["home"],
                  "won": m["corners_for"], "conceded": m["corners_against"],
-                 "total": m["corners_for"] + m["corners_against"]}
+                 "total": m["corners_for"] + m["corners_against"],
+                 "gf": m.get("goals_for"), "ga": m.get("goals_against"),
+                 "fh": (m["fh_goals_for"] >= 1) if m.get("fh_goals_for") is not None else None}
                 for m in reversed(rms)]
 
     return {"fixture": fx, "model": model,

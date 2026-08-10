@@ -504,7 +504,11 @@ async def settle_picks_now(user: dict = Depends(get_current_user)):
 
 
 # ---- Phase 3: Claude explainer — justify a model-flagged corner pick ----
-from emergentintegrations.llm.chat import LlmChat, UserMessage
+try:
+    from emergentintegrations.llm.chat import LlmChat, UserMessage
+except ImportError:
+    LlmChat = None
+    UserMessage = None
 
 EMERGENT_LLM_KEY = os.environ.get("EMERGENT_LLM_KEY")
 _explain_calls = defaultdict(deque)  # per-user timestamps for LLM rate limiting

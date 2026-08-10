@@ -29,6 +29,8 @@ export const api = {
   syncRuns: (limit = 8) => axios.get(`${API}/sync/runs`, { params: { limit } }).then((r) => r.data),
   picks: () => axios.get(`${API}/picks`).then((r) => r.data),
   settlePicks: () => axios.post(`${API}/picks/settle`).then((r) => r.data),
+  ledger: () => axios.get(`${API}/ledger`).then((r) => r.data),
+  snapshotLedger: () => axios.post(`${API}/ledger/snapshot`).then((r) => r.data),
   backtest: (leagueId = "all", model = "v1") => axios.get(`${API}/backtest`, { params: { league_id: leagueId, model } }).then((r) => r.data),
   explain: (payload) => axios.post(`${API}/explain`, payload).then((r) => r.data),
 };

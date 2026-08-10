@@ -412,7 +412,8 @@ def _pick_profit(p: dict) -> Optional[float]:
 
 @api_router.get("/picks")
 async def get_picks(user: dict = Depends(get_current_user)):
-    picks = await db.picks.find({}, {"_id": 0}).to_list(500)
+    # auto-tracked Daily 2 picks live on their own ledger (/ledger), not the curated board
+    picks = await db.picks.find({"auto": {"$ne": True}}, {"_id": 0}).to_list(500)
     picks.sort(key=lambda p: (p.get("date") or "", p.get("kickoff") or "", p.get("home") or p.get("team") or ""))
     for p in picks:
         p["profit"] = _pick_profit(p)
@@ -447,6 +448,95 @@ async def settle_picks_now(user: dict = Depends(get_current_user)):
     subprocess.Popen([sys.executable, str(ROOT_DIR / "settle_picks.py")], cwd=str(ROOT_DIR),
                      env={**_os.environ})
     return {"status": "settling", "started_at": now.isoformat()}
+
+
+# ----------------------------- Daily 2 — auto-tracked ledger -----------------------------
+# The day's two strongest chase spots are snapshotted into db.picks BEFORE kickoff and
+# never recomputed. This is the whole point: a ledger that re-selected its picks from
+# finished games would be look-ahead biased and could not evidence anything.
+
+DAILY_PICK_COUNT = 2
+
+
+async def _daily_shortlist(day: str, count: int = DAILY_PICK_COUNT) -> List[dict]:
+    """Highest-ranked chase spots kicking off on `day` (UTC) that have not started."""
+    board = await _chase_board(within_days=2, limit=500)
+    now = datetime.now(timezone.utc)
+    out = []
+    for c in board:
+        nf = c.get("next_fixture") or {}
+        try:
+            dt = datetime.fromisoformat((nf.get("date") or "").replace("Z", "+00:00"))
+        except Exception:
+            continue
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        if dt <= now or dt.date().isoformat() != day:
+            continue
+        out.append(c)
+    return out[:count]
+
+
+async def _snapshot_daily_picks(day: Optional[str] = None) -> dict:
+    """Lock in the day's picks. Idempotent — a pick already stored is never rewritten."""
+    day = day or datetime.now(timezone.utc).date().isoformat()
+    shortlist = await _daily_shortlist(day)
+    inserted = []
+    for c in shortlist:
+        nf = c["next_fixture"]
+        key = {"auto": True, "date": day, "team": c["name"], "line": c["line"]}
+        if await db.picks.find_one(key):
+            continue
+        doc = {**key, "signal": "chase", "venue": "home" if nf["is_home"] else "away",
+               "home": c["name"] if nf["is_home"] else nf["opponent"],
+               "away": nf["opponent"] if nf["is_home"] else c["name"],
+               "league_id": c["league_id"], "league_name": c["league_name"],
+               "kickoff": nf["date"], "fixture_id": nf["fixture_id"],
+               "odds": c.get("book_odds"), "model_odds": c.get("fair_odds"),
+               "model_prob": c.get("prob"), "chase_score": c.get("chase_score"),
+               "status": "pending", "created_at": datetime.now(timezone.utc).isoformat()}
+        await db.picks.insert_one(dict(doc))
+        doc.pop("_id", None)
+        inserted.append(doc)
+    return {"day": day, "shortlisted": len(shortlist), "inserted": len(inserted), "picks": inserted}
+
+
+@api_router.post("/ledger/snapshot")
+async def ledger_snapshot(day: Optional[str] = None, user: dict = Depends(get_current_user)):
+    return await _snapshot_daily_picks(day)
+
+
+def _ledger_agg(subset: List[dict]) -> dict:
+    """Flat 1u summary. Strike rate covers every settled pick; profit only those with a
+    real book price, since a win at an unknown price has no computable return."""
+    settled = [p for p in subset if p.get("status") in ("won", "lost")]
+    priced = [p for p in settled if _pick_profit(p) is not None]
+    won = sum(1 for p in settled if p["status"] == "won")
+    profit = round(sum(_pick_profit(p) for p in priced), 2)
+    return {"picks": len(subset), "settled": len(settled), "won": won,
+            "lost": len(settled) - won,
+            "win_rate": round(won / len(settled) * 100, 1) if settled else 0.0,
+            "staked": len(priced), "profit": profit,
+            "roi": round(profit / len(priced) * 100, 1) if priced else 0.0}
+
+
+@api_router.get("/ledger")
+async def ledger(user: dict = Depends(get_current_user)):
+    picks = await db.picks.find({"auto": True}, {"_id": 0}).to_list(5000)
+    picks.sort(key=lambda p: (p.get("kickoff") or p.get("date") or "", p.get("team") or ""))
+    running = 0.0
+    rows = []
+    for p in picks:
+        profit = _pick_profit(p)
+        if profit is not None:
+            running = round(running + profit, 2)
+        rows.append({**p, "profit": profit, "balance": running if profit is not None else None})
+    signals = sorted({p.get("signal") or "chase" for p in picks})
+    return {"summary": _ledger_agg(picks),
+            "unpriced_wins": sum(1 for p in picks if p.get("status") == "won" and not p.get("odds")),
+            "by_venue": {v: _ledger_agg([p for p in picks if p.get("venue") == v]) for v in ("home", "away")},
+            "by_signal": {s: _ledger_agg([p for p in picks if (p.get("signal") or "chase") == s]) for s in signals},
+            "rows": rows}
 
 
 # ---- Phase 3: Claude explainer — justify a model-flagged corner pick ----
@@ -1404,9 +1494,12 @@ async def on_startup():
     from apscheduler.triggers.cron import CronTrigger
     scheduler = AsyncIOScheduler(timezone="UTC")
     scheduler.add_job(run_sync_all, CronTrigger(hour="7,19", minute=0), id="sync_all", replace_existing=True)
+    # lock in the day's two picks shortly after the morning sync, while games are unplayed
+    scheduler.add_job(_snapshot_daily_picks, CronTrigger(hour=7, minute=30),
+                      id="daily_picks", replace_existing=True)
     scheduler.start()
     app.state.scheduler = scheduler
-    logger.info("Auto-refresh scheduler started (07:00 & 19:00 UTC daily)")
+    logger.info("Auto-refresh scheduler started (07:00 & 19:00 UTC daily; Daily 2 lock-in 07:30 UTC)")
 
 
 @app.on_event("shutdown")

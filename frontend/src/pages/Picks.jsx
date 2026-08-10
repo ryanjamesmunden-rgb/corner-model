@@ -2,6 +2,7 @@ import { useState, useEffect } from "react";
 import { toast } from "sonner";
 import { ClipboardCheck, CheckCircle2, XCircle, Clock, RefreshCw, TrendingUp } from "lucide-react";
 import { api } from "@/lib/api";
+import DailyLedger from "@/components/DailyLedger";
 
 const MANUAL_KEY = "__manual__";
 const dayFmt = (d) => (d === MANUAL_KEY ? "Manually tracked" : new Date(d).toLocaleDateString(undefined, { weekday: "long", month: "short", day: "numeric" }));
@@ -51,7 +52,9 @@ export default function Picks() {
 
   return (
     <div className="space-y-6" data-testid="picks-page">
-      <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-4">
+      <DailyLedger />
+
+      <div className="border-t border-border pt-6 flex flex-col sm:flex-row sm:items-end justify-between gap-4">
         <div>
           <div className="flex items-center gap-2 text-primary mb-1">
             <ClipboardCheck className="h-4 w-4" />

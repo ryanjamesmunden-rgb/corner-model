@@ -18,7 +18,7 @@ Multi-league corner value betting web app. Rebuilds a spreadsheet corner model i
 - Auth: Emergent Google OAuth, httpOnly session_token cookie (7-day).
 
 ## Model
-- Model v2 (live): Negative-Binomial (r=11) for team-corner probs; totals still Poisson. λ nudged by shots-intent × first-half-goal form. Proven on 3,174 matches via backtester (Brier 0.2255→0.2226, calibration gap 2.06%→0.80%). Do NOT revert to Poisson without re-running the backtester.
+- Model **v3 (live)**: Negative-Binomial (r=11) for team-corner probs; totals still Poisson. λ nudged by **blocked-shots-intent** (weight 0.15) × first-half-goal form, **falling back to v2's shots-intent** for any team with fewer than `MIN_BLOCKED_GAMES` (5) games carrying blocked shots. Backtester: Brier 0.2226→0.2219, calibration gap 0.80→0.71 (at weight 0.10); 0.15 swept to 0.2214/0.68. v2 lineage: Proven on 3,174 matches via backtester (Brier 0.2255→0.2226, calibration gap 2.06%→0.80%). Do NOT revert to Poisson without re-running the backtester.
 - Managed leagues: 27 across 20 countries (`MANAGED_LEAGUE_IDS` in server.py — startup deletes unlisted leagues).
 
 ## Key API endpoints
@@ -33,6 +33,14 @@ Multi-league corner value betting web app. Rebuilds a spreadsheet corner model i
 - Bets/bankroll (built, frontend deferred): GET/PUT /api/bankroll, CRUD /api/bets, GET /api/bets/stats
 
 ## Changelog (recent, newest first)
+
+### v3 goes live: blocked-shots intent is now production pricing (2026-08-12)
+- Backtester on the real cache, default (shipping) mode: **Brier 0.2226 → 0.2219, calibration gap 0.80 → 0.71** against `v2_same_sample`. Both metrics improved, which was the stated bar. Weight swept to **0.15** (0.2214 / 0.68), up from the inherited 0.10.
+- `v2_lambda()` → **`live_lambda()`**: blocked-shots intent where the team has ≥5 games of it, otherwise v2's shots intent, unchanged. Both branches share `_intent()` with `model_lambda`, and a unit test pins that production λ and the BACKTESTER's λ agree — they are separate implementations, and if they drift the backtest stops describing production.
+- **A team the backfill hasn't reached prices exactly as it did before, to the cent.** `_blocked_form()` returns None below `MIN_BLOCKED_GAMES` rather than trusting a thin sample, and never reads a missing stat as zero.
+- Threaded `league_blocked` through all 7 pricing call sites (`expected_lambdas`, `_streak_projection` ×2, matchups, mismatches, chase board) via new `_league_blocked_map()`. `sync_real.py` now stores `avg_blocked` on the league doc alongside `avg_shots`.
+- **Rollout wrinkle**: the team-driven surfaces (streaks, chase board, mismatches, matchups) compute the league average from `teams.real_matches` and switch to v3 the moment the code deploys, while fixture pricing (`/scanner`, fixture detail) reads `league.avg_blocked` and stays on v2 until a sync writes it. **Trigger `POST /api/sync/refresh-all` after deploying** to close that window, or the same fixture can show slightly different λ on two screens until the next 07:00/19:00 sync.
+- `backend/tests/test_v3_live.py`: 13 unit tests (backtester parity, blocked term replaces shots, thin-history fallback, partial coverage, league map, `expected_lambdas` defaults). All pricing paths exercised end to end against a fake DB, including a league with blocked data and one without in the same run.
 
 ### v3 candidate: blocked shots replaces shots in the intent term (2026-08-12)
 - Measurement result on real data (`measure_features.py`, 4,820 scored rows): **blocked shots is worth roughly what the whole v1→v2 upgrade was worth.** `+blocked_shots` on top of the live model scored dBrier **-0.0021**, and **swapping** the shots term for blocked shots scored **-0.0024** — the swap beats the addition, so the two stats are largely collinear and blocked shots is the better of the pair. Prior-form r = **+0.31**. Placebo passed, calibration gap 0.74.

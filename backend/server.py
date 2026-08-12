@@ -63,6 +63,21 @@ def tier_for_ev(ev: float) -> str:
 NB_R = 11          # dispersion param tuned via backtester (Brier 0.2226, calibration gap 0.80%)
 REF_SHOTS = 12.0   # fallback league avg shots when unknown
 
+# v3 (live): the shots-intent term is driven by BLOCKED shots instead. Chosen on the
+# backtester — 0.15 beat 0.10 on Brier (0.2219 -> 0.2214) and on calibration
+# (0.71 -> 0.68) — after the offline harness showed the swap beating both the live
+# model and adding blocked shots alongside shots (the two are largely collinear).
+V3_BLOCKED_WEIGHT = 0.15
+# a team needs this many games carrying the stat before it moves a price; below it,
+# pricing falls back to v2's shots intent rather than trusting a thin sample
+MIN_BLOCKED_GAMES = 5
+
+
+def _intent(value: float, league_avg: float, weight: float) -> float:
+    """Intent multiplier: +/- `weight` on lambda, clamped to 0.6-1.5x the league average."""
+    return (1.0 - weight) + weight * max(0.6, min(1.5, value / league_avg))
+
+
 
 def nb_pmf(k: int, lam: float, r: float = NB_R) -> float:
     """P(X == k) under a Negative Binomial with mean lam."""
@@ -104,14 +119,42 @@ def _shots_form(team: dict, venue: str):
     return sf, fh
 
 
-def v2_lambda(base: float, team: dict, venue: str, league_shots: float) -> float:
-    """Nudge base corner-lambda by shots-intent (+/-~10%) and first-half-goal form (+/-3%)."""
+def _blocked_form(team: dict, venue: str) -> Optional[float]:
+    """Team's blocked-shots average on this venue, or None where the backfill hasn't
+    reached far enough. A missing stat is never read as zero, and a handful of games
+    is not enough to move a price — under MIN_BLOCKED_GAMES we say we don't know."""
+    rms = (team or {}).get("real_matches") or []
+    if venue == "home":
+        pool = [m for m in rms if m["home"]]
+    elif venue == "away":
+        pool = [m for m in rms if not m["home"]]
+    else:
+        pool = rms
+    if not pool:
+        pool = rms
+    vals = [m["blocked_shots_for"] for m in pool if m.get("blocked_shots_for") is not None]
+    if len(vals) < MIN_BLOCKED_GAMES:
+        return None
+    return sum(vals) / len(vals)
+
+
+def live_lambda(base: float, team: dict, venue: str, league_shots: float,
+                league_blocked: float = 0.0) -> float:
+    """Production corner-lambda (v3): blocked-shots intent x first-half-goal form.
+
+    Falls back to v2's shots intent for any team without enough blocked-shots history,
+    so a thinly-covered team prices exactly as it does today rather than worse. Both
+    branches are the same shape; only the stat driving the intent differs."""
     sf, fh = _shots_form(team, venue)
-    if sf is None or not league_shots:
+    if sf is None:
         return round(base, 2)
-    intent = 0.90 + 0.10 * max(0.6, min(1.5, sf / league_shots))
     form = 1.0 + 0.03 * (fh - 0.5)
-    return round(base * intent * form, 2)
+    blocked = _blocked_form(team, venue)
+    if blocked is not None and league_blocked:
+        return round(base * _intent(blocked, league_blocked, V3_BLOCKED_WEIGHT) * form, 2)
+    if not league_shots:
+        return round(base, 2)
+    return round(base * _intent(sf, league_shots, 0.10) * form, 2)
 
 
 def _league_shots_map(teams: list) -> dict:
@@ -120,6 +163,18 @@ def _league_shots_map(teams: list) -> dict:
         for m in (t.get("real_matches") or []):
             agg[t["league_id"]].append(m.get("shots_for", 0))
     return {lid: (sum(v) / len(v) if v else REF_SHOTS) for lid, v in agg.items()}
+
+
+def _league_blocked_map(teams: list) -> dict:
+    """League average blocked shots, over the fixtures that actually carry the stat.
+    A league missing from the map has no blocked data and falls back to shots intent."""
+    agg = defaultdict(list)
+    for t in teams:
+        for m in (t.get("real_matches") or []):
+            v = m.get("blocked_shots_for")
+            if v is not None:
+                agg[t["league_id"]].append(v)
+    return {lid: sum(v) / len(v) for lid, v in agg.items() if v}
 
 
 TOTAL_LINES = [6.5, 7.5, 8.5, 9.5, 10.5, 11.5, 12.5, 13.5]
@@ -208,7 +263,8 @@ def _src(team: dict) -> list:
     return team.get("real_matches") or team.get("matches") or []
 
 
-def expected_lambdas(home: dict, away: dict, league_shots: float = REF_SHOTS) -> dict:
+def expected_lambdas(home: dict, away: dict, league_shots: float = REF_SHOTS,
+                     league_blocked: float = 0.0) -> dict:
     h_home = team_split(_src(home), "home", 0)
     a_away = team_split(_src(away), "away", 0)
     # fall back to overall if a team has no games on that venue
@@ -216,8 +272,10 @@ def expected_lambdas(home: dict, away: dict, league_shots: float = REF_SHOTS) ->
         h_home = team_split(_src(home), "overall", 0)
     if a_away["played"] == 0:
         a_away = team_split(_src(away), "overall", 0)
-    lam_home = v2_lambda((h_home["for_avg"] + a_away["against_avg"]) / 2, home, "home", league_shots)
-    lam_away = v2_lambda((a_away["for_avg"] + h_home["against_avg"]) / 2, away, "away", league_shots)
+    lam_home = live_lambda((h_home["for_avg"] + a_away["against_avg"]) / 2, home, "home",
+                           league_shots, league_blocked)
+    lam_away = live_lambda((a_away["for_avg"] + h_home["against_avg"]) / 2, away, "away",
+                           league_shots, league_blocked)
     return {"home": lam_home, "away": lam_away, "total": round(lam_home + lam_away, 2)}
 
 
@@ -339,7 +397,8 @@ async def get_fixture_model(fixture: dict, odds: Dict[str, float]) -> dict:
     away = await db.teams.find_one({"team_id": fixture["away_team_id"]}, {"_id": 0})
     league = await db.leagues.find_one({"league_id": fixture["league_id"]}, {"_id": 0}) or {}
     ls = league.get("avg_shots") or REF_SHOTS
-    lambdas = expected_lambdas(home, away, ls)
+    lb = league.get("avg_blocked") or 0.0
+    lambdas = expected_lambdas(home, away, ls, lb)
     return {"lambdas": lambdas, "markets": build_markets(lambdas, odds), "confidence": confidence_for(home, away)}
 
 
@@ -662,19 +721,6 @@ async def explain_pick(req: ExplainReq, user: dict = Depends(get_current_user)):
         {"$set": {"_id": ckey, "text": text, "created_at": datetime.now(timezone.utc).isoformat()}},
         upsert=True)
     return {"explanation": text, "cached": False}
-
-
-# v3 candidate: the shots-intent term replaced by a blocked-shots-intent term. Offline
-# measurement (measure_features.py) put the swap ahead of both the live model and of
-# adding blocked shots alongside shots — the two are largely collinear, and blocked
-# shots is the better of the pair. NOT live: v3 is backtest-only until it beats v2 on
-# the backtester's Brier AND calibration, the same bar v2 had to clear.
-V3_BLOCKED_WEIGHT = 0.10   # copied from the shots term as a starting point; sweep it
-
-
-def _intent(value: float, league_avg: float, weight: float) -> float:
-    """Intent multiplier: +/- `weight` on lambda, clamped to 0.6-1.5x the league average."""
-    return (1.0 - weight) + weight * max(0.6, min(1.5, value / league_avg))
 
 
 def model_lambda(model: str, team_for: float, opp_against: float,
@@ -1093,7 +1139,7 @@ def pick_streak_line(values: List[int], direction: str, subject: str, min_hits: 
 
 def _streak_projection(team: dict, opp: Optional[dict], team_venue: str, opp_venue: str,
                        line: int, direction: str, subject: str, league_shots: float,
-                       odds: Dict[str, float]) -> Optional[dict]:
+                       odds: Dict[str, float], league_blocked: float = 0.0) -> Optional[dict]:
     """Price the streak's own market on the team's next fixture.
 
     A whole-line under can push, so the fair price is taken over SETTLED outcomes
@@ -1102,7 +1148,7 @@ def _streak_projection(team: dict, opp: Optional[dict], team_venue: str, opp_ven
     o_against = _real_avg(opp, opp_venue, "corners_against") if opp else None
     if t_for is None or o_against is None:
         return None
-    lam = v2_lambda((t_for + o_against) / 2, team, team_venue, league_shots)
+    lam = live_lambda((t_for + o_against) / 2, team, team_venue, league_shots, league_blocked)
     ge, pmf, group = nb_ge, nb_pmf, team_venue
     extra = {}
     if subject == "match":
@@ -1110,7 +1156,7 @@ def _streak_projection(team: dict, opp: Optional[dict], team_venue: str, opp_ven
         t_against = _real_avg(team, team_venue, "corners_against")
         if o_for is None or t_against is None:
             return None
-        lam_opp = v2_lambda((o_for + t_against) / 2, opp, opp_venue, league_shots)
+        lam_opp = live_lambda((o_for + t_against) / 2, opp, opp_venue, league_shots, league_blocked)
         extra = {"opp_for": round(o_for, 2), "team_conceded": round(t_against, 2),
                  "lambda_team": lam, "lambda_opp": lam_opp}
         lam = round(lam + lam_opp, 2)
@@ -1152,6 +1198,7 @@ async def streaks(league_id: Optional[str] = None, side: str = "overall", window
     teams = await db.teams.find(q, {"_id": 0}).to_list(1000)
     teams_by_id = {t["team_id"]: t for t in teams}
     ls_map = _league_shots_map(teams)
+    bl_map = _league_blocked_map(teams)
     leagues = {l["league_id"]: l["name"] for l in await db.leagues.find({}, {"_id": 0}).to_list(100)}
 
     # earliest upcoming fixture per team
@@ -1227,7 +1274,8 @@ async def streaks(league_id: Optional[str] = None, side: str = "overall", window
             opp_venue = "away" if nf["is_home"] else "home"
             projection = _streak_projection(t, opp, team_venue, opp_venue, line, direction, subject,
                                             ls_map.get(t["league_id"], REF_SHOTS),
-                                            odds_map.get(nf["fixture_id"], {}))
+                                            odds_map.get(nf["fixture_id"], {}),
+                                            bl_map.get(t["league_id"], 0.0))
         results.append({
             "team_id": t["team_id"], "name": t["name"], "league_id": t["league_id"],
             "league_name": leagues.get(t["league_id"], ""), "side": side, "window": window,
@@ -1288,6 +1336,7 @@ async def matchups(league_id: str, side: str = "overall", user: dict = Depends(g
     teams = await db.teams.find({"league_id": league_id}, {"_id": 0}).to_list(200)
     teams_by_id = {t["team_id"]: t for t in teams}
     ls = _league_shots_map(teams).get(league_id, REF_SHOTS)
+    lb = _league_blocked_map(teams).get(league_id, 0.0)
     next_fx = await _next_fixtures({"league_id": league_id})
     all_won = [m["corners_for"] for t in teams for m in (_src(t))]
     avg = (sum(all_won) / len(all_won)) if all_won else 5.0
@@ -1305,7 +1354,7 @@ async def matchups(league_id: str, side: str = "overall", user: dict = Depends(g
             opp = teams_by_id.get(nf["opponent_team_id"])
             opp_conc = (_real_avg(opp, opp_venue, "corners_against") if opp else None)
             if opp_conc is not None:
-                lam = v2_lambda((team_for + opp_conc) / 2, t, venue, ls)
+                lam = live_lambda((team_for + opp_conc) / 2, t, venue, ls, lb)
                 line = max(3, round(lam) - 1)
                 p = nb_ge(line, lam)
                 projection = {"team_for": round(team_for, 2), "opp_conceded": round(opp_conc, 2),
@@ -1367,6 +1416,7 @@ async def _all_mismatches(within_days: Optional[int] = None, limit: int = 20):
     teams = await db.teams.find({}, {"_id": 0}).to_list(2000)
     teams_by_id = {t["team_id"]: t for t in teams}
     ls_map = _league_shots_map(teams)
+    bl_map = _league_blocked_map(teams)
     leagues = {l["league_id"]: l["name"] for l in await db.leagues.find({}, {"_id": 0}).to_list(100)}
     next_fx = await _next_fixtures({})
     # per-league average corners won
@@ -1400,7 +1450,8 @@ async def _all_mismatches(within_days: Optional[int] = None, limit: int = 20):
         avg = league_avgs.get(t["league_id"], 5.0)
         if not (team_for >= avg * 1.1 and opp_conc >= avg * 1.1):
             continue
-        lam = v2_lambda((team_for + opp_conc) / 2, t, venue, ls_map.get(t["league_id"], REF_SHOTS))
+        lam = live_lambda((team_for + opp_conc) / 2, t, venue,
+                          ls_map.get(t["league_id"], REF_SHOTS), bl_map.get(t["league_id"], 0.0))
         line = max(3, round(lam) - 1)
         p = nb_ge(line, lam)
         out.append({"team_id": t["team_id"], "name": t["name"], "league_id": t["league_id"],
@@ -1438,6 +1489,7 @@ async def _chase_board(within_days: int = 7, limit: int = 25, league_id: Optiona
     teams = await db.teams.find(q, {"_id": 0}).to_list(2000)
     teams_by_id = {t["team_id"]: t for t in teams}
     ls_map = _league_shots_map(teams)
+    bl_map = _league_blocked_map(teams)
     leagues = {l["league_id"]: l["name"] for l in await db.leagues.find({}, {"_id": 0}).to_list(200)}
     next_fx = await _next_fixtures(q)
     league_avgs = {}
@@ -1473,7 +1525,8 @@ async def _chase_board(within_days: int = 7, limit: int = 25, league_id: Optiona
             continue
         opp_conc = sum(m["corners_against"] for m in opp_pool) / len(opp_pool)
         opp_fh = sum(1 for m in opp_pool if m.get("fh_goals_for", 0) >= 1) / len(opp_pool)
-        lam = v2_lambda((team_for + opp_conc) / 2, t, venue, ls_map.get(t["league_id"], REF_SHOTS))
+        lam = live_lambda((team_for + opp_conc) / 2, t, venue,
+                          ls_map.get(t["league_id"], REF_SHOTS), bl_map.get(t["league_id"], 0.0))
         line = max(3, round(lam) - 1)
         last5 = pool[-5:]
         hit = sum(1 for m in last5 if m["corners_for"] >= line)

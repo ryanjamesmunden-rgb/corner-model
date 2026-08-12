@@ -664,79 +664,136 @@ async def explain_pick(req: ExplainReq, user: dict = Depends(get_current_user)):
     return {"explanation": text, "cached": False}
 
 
+# v3 candidate: the shots-intent term replaced by a blocked-shots-intent term. Offline
+# measurement (measure_features.py) put the swap ahead of both the live model and of
+# adding blocked shots alongside shots — the two are largely collinear, and blocked
+# shots is the better of the pair. NOT live: v3 is backtest-only until it beats v2 on
+# the backtester's Brier AND calibration, the same bar v2 had to clear.
+V3_BLOCKED_WEIGHT = 0.10   # copied from the shots term as a starting point; sweep it
+
+
+def _intent(value: float, league_avg: float, weight: float) -> float:
+    """Intent multiplier: +/- `weight` on lambda, clamped to 0.6-1.5x the league average."""
+    return (1.0 - weight) + weight * max(0.6, min(1.5, value / league_avg))
+
+
 def model_lambda(model: str, team_for: float, opp_against: float,
-                 team_shots: float = 0.0, league_shots: float = 0.0, team_fh: float = 0.5) -> float:
-    """Expected team corners. v1 = corner form only. v2 = + shots-intent x first-half-goal form
-    (matches the tuned production formula)."""
+                 team_shots: float = 0.0, league_shots: float = 0.0, team_fh: float = 0.5,
+                 team_blocked: float = 0.0, league_blocked: float = 0.0,
+                 blocked_weight: float = V3_BLOCKED_WEIGHT) -> float:
+    """Expected team corners.
+    v1 = corner form only.
+    v2 = + shots-intent x first-half-goal form (matches the tuned production formula).
+    v3 = v2 with the shots-intent term SWAPPED for blocked-shots intent (candidate)."""
     base = (team_for + opp_against) / 2.0
+    form = 1.0 + 0.03 * (team_fh - 0.5)
     if model == "v2" and league_shots > 0 and team_shots > 0:
-        intent = 0.90 + 0.10 * max(0.6, min(1.5, team_shots / league_shots))
-        form = 1.0 + 0.03 * (team_fh - 0.5)
-        base = base * intent * form
+        base = base * _intent(team_shots, league_shots, 0.10) * form
+    elif model == "v3" and league_blocked > 0 and team_blocked > 0:
+        base = base * _intent(team_blocked, league_blocked, blocked_weight) * form
     return base
+
+
+def _backtest_summary(stats: dict, lines: List[int]) -> dict:
+    out_lines, total_brier, total_n, gaps = [], 0.0, 0, []
+    for L in lines:
+        s = stats[L]
+        if s["n"] == 0:
+            continue
+        gap = round(abs(s["pred"] - s["hit"]) / s["n"] * 100, 1)
+        gaps.append(gap)
+        out_lines.append({"line": L, "n": s["n"],
+                          "model_prob": round(s["pred"] / s["n"] * 100, 1),
+                          "actual_hit_rate": round(s["hit"] / s["n"] * 100, 1),
+                          "calibration_gap": gap,
+                          "brier": round(s["brier"] / s["n"], 4)})
+        total_brier += s["brier"]; total_n += s["n"]
+    return {"overall_brier": round(total_brier / total_n, 4) if total_n else None,
+            "avg_calibration_gap": round(sum(gaps) / len(gaps), 2) if gaps else None,
+            "lines": out_lines}
 
 
 @api_router.get("/backtest")
 async def backtest(league_id: str = "all", window: int = 10, min_games: int = 5,
-                   model: str = "v1", user: dict = Depends(get_current_user)):
+                   model: str = "v1", blocked_weight: float = V3_BLOCKED_WEIGHT,
+                   user: dict = Depends(get_current_user)):
     """Walk-forward backtest over cached fixture stats: for each past match we predict
-    team-corner probabilities from prior form only, then compare to what actually happened."""
+    team-corner probabilities from prior form only, then compare to what actually happened.
+
+    model=v3 additionally requires blocked-shots history, so it can only be scored where
+    that data has been backfilled. To keep the comparison honest, a v3 run also returns
+    v2 scored on those SAME rows (`v2_same_sample`) — comparing a v3 run against a
+    separate v2 run would be comparing two different samples."""
     q = {} if league_id == "all" else {"league_id": league_id}
     matches = await db.fixture_stats.find(q, {"_id": 0}).to_list(30000)
     matches.sort(key=lambda m: m["date"])
-    # league average shots (for v2 intent scaling)
+    # league averages for the intent terms (blocked shots is None where uncovered)
     all_shots = [m.get("home_shots", 0) for m in matches] + [m.get("away_shots", 0) for m in matches]
     league_shots = (sum(all_shots) / len(all_shots)) if all_shots else 0.0
+    all_blocked = [m[f"{side}_blocked_shots"] for m in matches for side in ("home", "away")
+                   if m.get(f"{side}_blocked_shots") is not None]
+    league_blocked = (sum(all_blocked) / len(all_blocked)) if all_blocked else 0.0
 
     hist_for = defaultdict(lambda: deque(maxlen=window))
     hist_against = defaultdict(lambda: deque(maxlen=window))
     hist_shots = defaultdict(lambda: deque(maxlen=window))
     hist_fh = defaultdict(lambda: deque(maxlen=window))
+    hist_blocked = defaultdict(lambda: deque(maxlen=window))
     lines = [4, 5, 6, 7]
     stats = {L: {"n": 0, "pred": 0.0, "hit": 0, "brier": 0.0} for L in lines}
-    preds = 0
+    alt_stats = {L: {"n": 0, "pred": 0.0, "hit": 0, "brier": 0.0} for L in lines}
+    preds = skipped_no_blocked = 0
 
     def avg(d):
         return sum(d) / len(d) if d else 0.0
 
-    prob_fn = nb_ge if model == "v2" else poisson_ge
+    prob_fn = nb_ge if model in ("v2", "v3") else poisson_ge
     for m in matches:
         h, a = m["home_id"], m["away_id"]
         sides = [
-            ("home", hist_for[h], hist_against[a], hist_shots[h], hist_fh[h], m["home_corners"],
-             len(hist_for[h]) >= min_games and len(hist_against[a]) >= min_games),
-            ("away", hist_for[a], hist_against[h], hist_shots[a], hist_fh[a], m["away_corners"],
-             len(hist_for[a]) >= min_games and len(hist_against[h]) >= min_games),
+            ("home", hist_for[h], hist_against[a], hist_shots[h], hist_fh[h], hist_blocked[h],
+             m["home_corners"], len(hist_for[h]) >= min_games and len(hist_against[a]) >= min_games),
+            ("away", hist_for[a], hist_against[h], hist_shots[a], hist_fh[a], hist_blocked[a],
+             m["away_corners"], len(hist_for[a]) >= min_games and len(hist_against[h]) >= min_games),
         ]
-        for _side, tf_d, oa_d, ts_d, fh_d, actual, can in sides:
+        for _side, tf_d, oa_d, ts_d, fh_d, bl_d, actual, can in sides:
             if not can:
                 continue
-            lam = model_lambda(model, avg(tf_d), avg(oa_d), avg(ts_d), league_shots, avg(fh_d))
+            if model == "v3" and len(bl_d) < min_games:
+                skipped_no_blocked += 1      # no blocked history yet — not scorable for v3
+                continue
+            lam = model_lambda(model, avg(tf_d), avg(oa_d), avg(ts_d), league_shots, avg(fh_d),
+                               avg(bl_d), league_blocked, blocked_weight)
             preds += 1
             for L in lines:
                 p = prob_fn(L, lam)
                 hit = 1 if actual >= L else 0
                 s = stats[L]
                 s["n"] += 1; s["pred"] += p; s["hit"] += hit; s["brier"] += (p - hit) ** 2
+            if model == "v3":               # same rows, live model, for a fair comparison
+                lam2 = model_lambda("v2", avg(tf_d), avg(oa_d), avg(ts_d), league_shots, avg(fh_d))
+                for L in lines:
+                    p = nb_ge(L, lam2)
+                    hit = 1 if actual >= L else 0
+                    s = alt_stats[L]
+                    s["n"] += 1; s["pred"] += p; s["hit"] += hit; s["brier"] += (p - hit) ** 2
         # update rolling form AFTER predicting (no leakage)
         hist_for[h].append(m["home_corners"]); hist_against[h].append(m["away_corners"]); hist_shots[h].append(m.get("home_shots", 0)); hist_fh[h].append(1 if m.get("home_fh_goals", 0) >= 1 else 0)
         hist_for[a].append(m["away_corners"]); hist_against[a].append(m["home_corners"]); hist_shots[a].append(m.get("away_shots", 0)); hist_fh[a].append(1 if m.get("away_fh_goals", 0) >= 1 else 0)
+        for tid, side in ((h, "home"), (a, "away")):
+            bl = m.get(f"{side}_blocked_shots")
+            if bl is not None:              # uncovered fixtures never enter the window
+                hist_blocked[tid].append(bl)
 
-    out_lines, total_brier, total_n = [], 0.0, 0
-    for L in lines:
-        s = stats[L]
-        if s["n"] == 0:
-            continue
-        out_lines.append({"line": L, "n": s["n"],
-                          "model_prob": round(s["pred"] / s["n"] * 100, 1),
-                          "actual_hit_rate": round(s["hit"] / s["n"] * 100, 1),
-                          "calibration_gap": round(abs(s["pred"] - s["hit"]) / s["n"] * 100, 1),
-                          "brier": round(s["brier"] / s["n"], 4)})
-        total_brier += s["brier"]; total_n += s["n"]
-    return {"league_id": league_id, "model": model, "window": window, "min_games": min_games,
-            "matches": len(matches), "predictions": preds,
-            "overall_brier": round(total_brier / total_n, 4) if total_n else None,
-            "lines": out_lines}
+    out = {"league_id": league_id, "model": model, "window": window, "min_games": min_games,
+           "matches": len(matches), "predictions": preds, **_backtest_summary(stats, lines)}
+    if model == "v3":
+        out["blocked_weight"] = blocked_weight
+        out["skipped_no_blocked_history"] = skipped_no_blocked
+        out["v2_same_sample"] = _backtest_summary(alt_stats, lines)
+        out["note"] = ("v3 is a candidate, not live pricing. Compare against v2_same_sample, "
+                       "not against a separate v2 run — that would be a different sample.")
+    return out
 
 
 @api_router.get("/leagues/{league_id}/teams")

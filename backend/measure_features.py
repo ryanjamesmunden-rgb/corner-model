@@ -28,6 +28,7 @@ the third decimal is noise and a raw difference will look like a win anyway.
 Run: python measure_features.py                 (every league, cached fixtures)
      python measure_features.py --league eng-pl
      python measure_features.py --window 10 --min-games 5
+     python measure_features.py --sweep       (try several blocked-shots intent weights)
 """
 import asyncio
 import math
@@ -55,6 +56,8 @@ FEATURES = ["blocked_shots", "shots_on_target"]
 BASE_FEATURE = "shots"          # what the live lambda already uses
 ALL_FEATURES = [BASE_FEATURE] + FEATURES
 PLACEBO_SEED = 20260812
+# candidate weights for --sweep (the live shots term uses 0.10)
+SWEEP_WEIGHTS = [0.05, 0.10, 0.15, 0.20, 0.30]
 
 
 def avg(d):
@@ -164,15 +167,15 @@ def score(rows, lg, intents):
     return stat, row_err
 
 
-def normalised(values, league_avg):
+def normalised(values, league_avg, weight=0.10):
     """Intent multipliers with mean exactly 1, so a candidate cannot win by simply
     scaling lambda up against an under-predicting baseline."""
-    mults = [raw_intent(v, league_avg) for v in values]
+    mults = [raw_intent(v, league_avg, weight) for v in values]
     m = sum(mults) / len(mults) if mults else 1.0
     return [x / m for x in mults] if m else mults
 
 
-async def run(league_id=None, window=WINDOW, min_games=MIN_GAMES):
+async def run(league_id=None, window=WINDOW, min_games=MIN_GAMES, sweep=False):
     rows, lg, covered, drops, matches = await build_rows(league_id, window, min_games)
     if not matches:
         print("no cached fixtures — run sync_real.py first")
@@ -209,6 +212,11 @@ async def run(league_id=None, window=WINDOW, min_games=MIN_GAMES):
     candidates["+both"] = {BASE_FEATURE: mult[BASE_FEATURE],
                            **{f: mult[f] for f in FEATURES}}
     candidates["blocked_instead_of_shots"] = {"blocked_shots": mult["blocked_shots"]}
+    if sweep:
+        # the +/-10% weight was copied from the shots term; blocked shots may want its own
+        for w in SWEEP_WEIGHTS:
+            vals = normalised([r["blocked_shots"] for r in rows], lg["blocked_shots"], w)
+            candidates[f"blocked_swap w={w:.2f}"] = {"blocked_shots": vals}
     for f in FEATURES:
         candidates[f"PLACEBO {f} (shuffled)"] = {BASE_FEATURE: mult[BASE_FEATURE], f: placebo[f]}
 
@@ -270,7 +278,8 @@ def main():
 
     asyncio.run(run(league_id=opt("--league"),
                     window=opt("--window", WINDOW, int),
-                    min_games=opt("--min-games", MIN_GAMES, int)))
+                    min_games=opt("--min-games", MIN_GAMES, int),
+                    sweep="--sweep" in args))
 
 
 if __name__ == "__main__":

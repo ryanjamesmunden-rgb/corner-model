@@ -29,6 +29,14 @@ Run: python measure_features.py                 (every league, cached fixtures)
      python measure_features.py --league eng-pl
      python measure_features.py --window 10 --min-games 5
      python measure_features.py --sweep       (try several blocked-shots intent weights)
+     python measure_features.py --game-state  (test the chase thesis; needs no backfill)
+     python measure_features.py --game-state --chase-gain 4 --delta-gain 1
+
+The --game-state mode reports corners by half-time state and venue first. That table
+is DESCRIPTIVE: it shows the chase effect exists, which is not the same as it being
+predictable. A team's corner form already contains its own average chase effect, so
+only the deviation from that team's usual chase likelihood is new information — which
+is what the centred candidates below test.
 """
 import asyncio
 import math
@@ -56,6 +64,22 @@ FEATURES = ["blocked_shots", "shots_on_target"]
 BASE_FEATURE = "shots"          # what the live lambda already uses
 ALL_FEATURES = [BASE_FEATURE] + FEATURES
 PLACEBO_SEED = 20260812
+# shrinkage for the chase trait: a team with few trailing games is pulled back towards
+# 'no chase effect' rather than trusted
+GAME_STATE_K = 5
+# Chase propensity is a behavioural TRAIT, not recent form, so it gets its own much
+# longer lookback. At the 10-match form window only ~2 of a team's games involve
+# trailing at half-time — far too few to estimate a multiplier from, and the shrinkage
+# (correctly) erases the trait before it can be measured at all.
+STATE_WINDOW = 40
+# how hard the centred chase terms push lambda; both are mean-neutralised afterwards,
+# so these set the SPREAD of the multiplier, not its level
+# Validated on synthetic data: these set how hard the centred chase terms push lambda.
+# The right magnitude is unknown — sweep them with --chase-gain before reading much
+# into a result. At 0.5/2.0 a deliberately absurd synthetic chase effect still only
+# just moved Brier, because corner form already absorbs most of the mechanism.
+CHASE_DELTA_GAIN = 0.5
+CHASE_INTERACTION_GAIN = 2.0
 # candidate weights for --sweep (the live shots term uses 0.10)
 SWEEP_WEIGHTS = [0.05, 0.10, 0.15, 0.20, 0.30]
 
@@ -93,14 +117,28 @@ def mean_ci(diffs):
     return m, 1.96 * math.sqrt(var / n)
 
 
-async def build_rows(league_id, window, min_games):
-    """Walk-forward pass: one prediction row per team-side, using prior form only."""
+def _ht_state(m, side, other):
+    """Team's half-time state in a cached fixture: -1 trailing, 0 level, +1 leading."""
+    mine, theirs = m.get(f"{side}_fh_goals"), m.get(f"{other}_fh_goals")
+    if mine is None or theirs is None:
+        return None
+    return (mine > theirs) - (mine < theirs)
+
+
+async def build_rows(league_id, window, min_games, required=None, state_window=STATE_WINDOW):
+    """Walk-forward pass: one prediction row per team-side, using prior form only.
+
+    `required` lists the features a team must have history for before its row is
+    scored — the same-sample guard. Game-state rows derive from goals, which every
+    cached fixture carries, so that mode only requires the base feature and keeps
+    far more rows than the blocked-shots comparison can."""
+    required = ALL_FEATURES if required is None else required
     q = {} if not league_id or league_id == "all" else {"league_id": league_id}
     matches = await db.fixture_stats.find(q, {"_id": 0}).to_list(60000)
     matches = [m for m in matches if m.get("date")]
     matches.sort(key=lambda m: m["date"])
     if not matches:
-        return [], {}, {}, {}, matches
+        return [], {}, {}, {}, matches, {}
 
     lg, covered = {}, {}
     sides = len(matches) * 2
@@ -113,7 +151,12 @@ async def build_rows(league_id, window, min_games):
     cf = defaultdict(lambda: deque(maxlen=window))
     ca = defaultdict(lambda: deque(maxlen=window))
     fhg = defaultdict(lambda: deque(maxlen=window))
+    # (corners won, half-time state) per past match, for the chase-propensity trait
+    state_hist = defaultdict(lambda: deque(maxlen=state_window))
     hist = {f: defaultdict(lambda: deque(maxlen=window)) for f in ALL_FEATURES}
+
+    # descriptive, NOT predictive: corners actually won in each half-time state
+    desc = {(s, v): [] for s in (-1, 0, 1) for v in (True, False)}
 
     rows, drops = [], {"form": 0, "feature": 0}
     for m in matches:
@@ -126,25 +169,50 @@ async def build_rows(league_id, window, min_games):
             if len(cf[team]) < min_games or len(ca[opp]) < min_games:
                 drops["form"] += 1
                 continue
-            if any(len(hist[f][team]) < min_games for f in ALL_FEATURES):
+            if any(len(hist[f][team]) < min_games for f in required):
                 drops["feature"] += 1
                 continue
             row = {"tf": avg(cf[team]), "oa": avg(ca[opp]), "fh": avg(fhg[team]),
                    "actual": actual}
             for f in ALL_FEATURES:
                 row[f] = avg(hist[f][team])
+
+            # --- game state, from prior matches only ---
+            past = list(state_hist[team])
+            trailing = [c for c, s in past if s == -1]
+            all_c = [c for c, _ in past]
+            base_c = sum(all_c) / len(all_c) if all_c else 0.0
+            ratio = ((sum(trailing) / len(trailing)) / base_c) if trailing and base_c else 1.0
+            # shrink towards 1.0 (no chase effect): a team with two trailing games has
+            # not earned a strong multiplier
+            n_t = len(trailing)
+            row["chase_prop"] = (n_t * ratio + GAME_STATE_K) / (n_t + GAME_STATE_K)
+            row["trail_games"] = n_t
+            # likelihood of being the chasing side: opponent scores in H1 and we don't
+            row["opp_fh"] = avg(fhg[opp])
+            row["p_trail"] = row["opp_fh"] * (1.0 - row["fh"])
+            # How often this team USUALLY trails. Corner form already contains the
+            # average chase effect — a team that chases hard simply averages more
+            # corners — so only the DEVIATION from its own baseline is new information.
+            row["p_trail_base"] = (n_t / len(past)) if past else 0.0
+            row["p_trail_delta"] = row["p_trail"] - row["p_trail_base"]
             rows.append(row)
 
         # update rolling form AFTER predicting (no leakage)
         for team, side, other in ((h, "home", "away"), (a, "away", "home")):
-            cf[team].append(m.get(f"{side}_corners") or 0)
+            corners = m.get(f"{side}_corners") or 0
+            cf[team].append(corners)
             ca[team].append(m.get(f"{other}_corners") or 0)
             fhg[team].append(1 if (m.get(f"{side}_fh_goals") or 0) >= 1 else 0)
+            st = _ht_state(m, side, other)
+            if st is not None:
+                state_hist[team].append((corners, st))
+                desc[(st, side == "home")].append(corners)
             for f in ALL_FEATURES:
                 v = m.get(f"{side}_{f}")
                 if v is not None:               # uncovered fixtures never enter the window
                     hist[f][team].append(v)
-    return rows, lg, covered, drops, matches
+    return rows, lg, covered, drops, matches, desc
 
 
 def score(rows, lg, intents):
@@ -175,14 +243,82 @@ def normalised(values, league_avg, weight=0.10):
     return [x / m for x in mults] if m else mults
 
 
-async def run(league_id=None, window=WINDOW, min_games=MIN_GAMES, sweep=False):
-    rows, lg, covered, drops, matches = await build_rows(league_id, window, min_games)
+def mean_one(mults):
+    """Mean-neutralise an arbitrary multiplier list (see guard 2 in the module docstring)."""
+    m = sum(mults) / len(mults) if mults else 1.0
+    return [x / m for x in mults] if m else mults
+
+
+def game_state_candidates(rows, weight=0.15, delta_gain=CHASE_DELTA_GAIN,
+                          interaction_gain=CHASE_INTERACTION_GAIN):
+    """Decompose the chase thesis into three testable claims.
+
+    The app already assumes this mechanism (the chase board multiplies by the
+    opponent's first-half-goal rate) but has never measured it. Splitting it apart
+    says WHICH part carries signal, if any:
+      chase_propensity — is 'chases hard when behind' a persistent team trait?
+      opp_fh_rate      — does the opponent's scoring rate alone beat corner form?
+      chase_delta      — does facing an unusually early-scoring opponent matter, for
+                         any team? (league-level effect, no team trait)
+      chase_interaction— the full hypothesis: this team's trait, applied to the extent
+                         THIS fixture is more chase-prone than its usual one.
+
+    The last two centre on the team's own baseline deliberately. Corner form already
+    contains a team's average chase effect, so an uncentred term mostly re-states
+    information the model has, which is why it measures as nothing.
+    """
+    lg_opp_fh = sum(r["opp_fh"] for r in rows) / len(rows) if rows else 0.0
+    clamp = lambda x: max(0.6, min(1.5, x))                                  # noqa: E731
+    return {
+        "chase_propensity": mean_one(
+            [(1 - weight) + weight * clamp(r["chase_prop"]) for r in rows]),
+        "opp_fh_rate": mean_one(
+            [(1 - weight) + weight * clamp(r["opp_fh"] / lg_opp_fh if lg_opp_fh else 1.0)
+             for r in rows]),
+        # league-level: this fixture is more/less chase-prone than this team's normal
+        "chase_delta": mean_one(
+            [1.0 + delta_gain * r["p_trail_delta"] for r in rows]),
+        # the full hypothesis: the team's own trait, applied to that deviation
+        "chase_interaction": mean_one(
+            [1.0 + (clamp(r["chase_prop"]) - 1.0) * r["p_trail_delta"] * interaction_gain
+             for r in rows]),
+    }
+
+
+def print_state_descriptives(desc):
+    """What the data says outright, before any model: corners by half-time state and
+    venue. This is the effect itself — it says nothing about whether it is PREDICTABLE,
+    since a team's corner form already contains its own average chase effect."""
+    labels = {-1: "trailing at HT", 0: "level at HT", 1: "leading at HT"}
+    total = [c for v in desc.values() for c in v]
+    base = sum(total) / len(total) if total else 0.0
+    print("\ncorners won by half-time state (descriptive, NOT a prediction) — "
+          f"overall average {base:.2f}:")
+    print(f"  {'state':16} {'home n':>8} {'home avg':>9} {'away n':>8} {'away avg':>9} "
+          f"{'both':>7} {'vs overall':>11}")
+    for s in (-1, 0, 1):
+        hv, av = desc[(s, True)], desc[(s, False)]
+        both = hv + av
+        if not both:
+            continue
+        f = lambda v: (sum(v) / len(v)) if v else float("nan")            # noqa: E731
+        print(f"  {labels[s]:16} {len(hv):8} {f(hv):9.2f} {len(av):8} {f(av):9.2f} "
+              f"{f(both):7.2f} {(f(both) / base - 1) * 100:+10.1f}%")
+
+
+async def run(league_id=None, window=WINDOW, min_games=MIN_GAMES, sweep=False,
+              game_state=False, state_window=STATE_WINDOW,
+              delta_gain=CHASE_DELTA_GAIN, chase_gain=CHASE_INTERACTION_GAIN):
+    required = [BASE_FEATURE] if game_state else None
+    rows, lg, covered, drops, matches, desc = await build_rows(league_id, window, min_games,
+                                                               required, state_window)
     if not matches:
         print("no cached fixtures — run sync_real.py first")
         return
 
     sides = len(matches) * 2
-    print(f"fixtures={len(matches)}  league={league_id or 'all'}  window={window}  min_games={min_games}")
+    print(f"fixtures={len(matches)}  league={league_id or 'all'}  window={window}  "
+          f"min_games={min_games}" + (f"  state_window={state_window}" if game_state else ""))
     print(f"date range: {matches[0]['date'][:10]} -> {matches[-1]['date'][:10]}")
     print("coverage (team-sides carrying the stat):")
     for f in ALL_FEATURES:
@@ -207,18 +343,37 @@ async def run(league_id=None, window=WINDOW, min_games=MIN_GAMES, sweep=False):
         placebo[f] = shuffled
 
     candidates = {"v2_baseline (live)": {BASE_FEATURE: mult[BASE_FEATURE]}}
-    for f in FEATURES:
-        candidates[f"+{f}"] = {BASE_FEATURE: mult[BASE_FEATURE], f: mult[f]}
-    candidates["+both"] = {BASE_FEATURE: mult[BASE_FEATURE],
-                           **{f: mult[f] for f in FEATURES}}
-    candidates["blocked_instead_of_shots"] = {"blocked_shots": mult["blocked_shots"]}
-    if sweep:
-        # the +/-10% weight was copied from the shots term; blocked shots may want its own
-        for w in SWEEP_WEIGHTS:
-            vals = normalised([r["blocked_shots"] for r in rows], lg["blocked_shots"], w)
-            candidates[f"blocked_swap w={w:.2f}"] = {"blocked_shots": vals}
-    for f in FEATURES:
-        candidates[f"PLACEBO {f} (shuffled)"] = {BASE_FEATURE: mult[BASE_FEATURE], f: placebo[f]}
+    placebo_names, corr_keys = [], []
+    if game_state:
+        # goals are on every cached fixture, so these need no backfill and no coverage
+        # filter — the comparison runs on every row the baseline can score
+        gs = game_state_candidates(rows, delta_gain=delta_gain, interaction_gain=chase_gain)
+        for name, vals in gs.items():
+            candidates[f"+{name}"] = {BASE_FEATURE: mult[BASE_FEATURE], name: vals}
+        # does the chase term stand on its own, without the shots term underneath?
+        candidates["chase_instead_of_shots"] = {"chase_interaction": gs["chase_interaction"]}
+        for name, vals in gs.items():
+            shuffled = list(vals)
+            random.Random(PLACEBO_SEED).shuffle(shuffled)
+            candidates[f"PLACEBO {name} (shuffled)"] = {BASE_FEATURE: mult[BASE_FEATURE],
+                                                        name: shuffled}
+            placebo_names.append(name)
+        corr_keys = ["chase_prop", "opp_fh", "p_trail", "p_trail_delta"]
+    else:
+        for f in FEATURES:
+            candidates[f"+{f}"] = {BASE_FEATURE: mult[BASE_FEATURE], f: mult[f]}
+        candidates["+both"] = {BASE_FEATURE: mult[BASE_FEATURE],
+                               **{f: mult[f] for f in FEATURES}}
+        candidates["blocked_instead_of_shots"] = {"blocked_shots": mult["blocked_shots"]}
+        if sweep:
+            # the +/-10% weight was copied from the shots term; blocked shots may want its own
+            for w in SWEEP_WEIGHTS:
+                vals = normalised([r["blocked_shots"] for r in rows], lg["blocked_shots"], w)
+                candidates[f"blocked_swap w={w:.2f}"] = {"blocked_shots": vals}
+        for f in FEATURES:
+            candidates[f"PLACEBO {f} (shuffled)"] = {BASE_FEATURE: mult[BASE_FEATURE], f: placebo[f]}
+            placebo_names.append(f)
+        corr_keys = list(FEATURES) + [BASE_FEATURE]
 
     results = {name: score(rows, lg, ints) for name, ints in candidates.items()}
     base = "v2_baseline (live)"
@@ -249,14 +404,17 @@ async def run(league_id=None, window=WINDOW, min_games=MIN_GAMES, sweep=False):
     # only a placebo that scores BETTER is a problem: shuffling destroys the team link,
     # so a shuffled feature can legitimately come out slightly worse (it adds noise to
     # lambda), but it can never legitimately improve the prediction
-    bad_placebo = [f for f in FEATURES if verdicts[f"PLACEBO {f} (shuffled)"] == "better"]
+    bad_placebo = [f for f in placebo_names if verdicts[f"PLACEBO {f} (shuffled)"] == "better"]
+    if game_state:
+        print_state_descriptives(desc)
+        trail = [r["trail_games"] for r in rows]
+        print(f"\ntrailing games behind each chase_prop: median={sorted(trail)[len(trail) // 2]}, "
+              f"rows with none={sum(1 for t in trail if t == 0)} (those shrink to no effect)")
     print("\nprior-form correlation with corners won (Pearson r):")
-    for f in FEATURES:
-        r = pearson([row[f] for row in rows], [row["actual"] for row in rows])
-        print(f"  {f:18} r={r:+.4f}" if r is not None else f"  {f:18} r=n/a")
-    r_base = pearson([row[BASE_FEATURE] for row in rows], [row["actual"] for row in rows])
-    print(f"  {BASE_FEATURE:18} r={r_base:+.4f}  <- the stat already in the model, for scale"
-          if r_base is not None else "")
+    for key in corr_keys:
+        r = pearson([row[key] for row in rows], [row["actual"] for row in rows])
+        tail = "  <- the stat already in the model, for scale" if key == BASE_FEATURE else ""
+        print(f"  {key:18} r={r:+.4f}{tail}" if r is not None else f"  {key:18} r=n/a")
 
     if bad_placebo:
         print(f"\n!! PLACEBO FAILED for {', '.join(bad_placebo)}: a SHUFFLED feature scored as "
@@ -279,7 +437,11 @@ def main():
     asyncio.run(run(league_id=opt("--league"),
                     window=opt("--window", WINDOW, int),
                     min_games=opt("--min-games", MIN_GAMES, int),
-                    sweep="--sweep" in args))
+                    sweep="--sweep" in args,
+                    game_state="--game-state" in args,
+                    state_window=opt("--state-window", STATE_WINDOW, int),
+                    delta_gain=opt("--delta-gain", CHASE_DELTA_GAIN, float),
+                    chase_gain=opt("--chase-gain", CHASE_INTERACTION_GAIN, float)))
 
 
 if __name__ == "__main__":

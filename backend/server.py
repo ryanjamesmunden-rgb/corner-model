@@ -684,13 +684,19 @@ def model_lambda(model: str, team_for: float, opp_against: float,
     """Expected team corners.
     v1 = corner form only.
     v2 = + shots-intent x first-half-goal form (matches the tuned production formula).
-    v3 = v2 with the shots-intent term SWAPPED for blocked-shots intent (candidate)."""
+    v3 = v2 with the shots-intent term SWAPPED for blocked-shots intent (candidate).
+
+    v3 FALLS BACK TO v2 when a team has no blocked-shots history. Blocked shots only
+    exist as far back as the backfill reached, while shots are on every cached fixture,
+    so without this a team short on blocked data would price off bare corner form —
+    losing the first-half-goal term too, and coming out WORSE than the model it is
+    meant to replace. The backtester skips those rows, so it would never show it."""
     base = (team_for + opp_against) / 2.0
     form = 1.0 + 0.03 * (team_fh - 0.5)
-    if model == "v2" and league_shots > 0 and team_shots > 0:
-        base = base * _intent(team_shots, league_shots, 0.10) * form
-    elif model == "v3" and league_blocked > 0 and team_blocked > 0:
-        base = base * _intent(team_blocked, league_blocked, blocked_weight) * form
+    if model == "v3" and league_blocked > 0 and team_blocked > 0:
+        return base * _intent(team_blocked, league_blocked, blocked_weight) * form
+    if model in ("v2", "v3") and league_shots > 0 and team_shots > 0:
+        return base * _intent(team_shots, league_shots, 0.10) * form
     return base
 
 
@@ -716,14 +722,20 @@ def _backtest_summary(stats: dict, lines: List[int]) -> dict:
 @api_router.get("/backtest")
 async def backtest(league_id: str = "all", window: int = 10, min_games: int = 5,
                    model: str = "v1", blocked_weight: float = V3_BLOCKED_WEIGHT,
-                   user: dict = Depends(get_current_user)):
+                   only_covered: bool = False, user: dict = Depends(get_current_user)):
     """Walk-forward backtest over cached fixture stats: for each past match we predict
     team-corner probabilities from prior form only, then compare to what actually happened.
 
-    model=v3 additionally requires blocked-shots history, so it can only be scored where
-    that data has been backfilled. To keep the comparison honest, a v3 run also returns
-    v2 scored on those SAME rows (`v2_same_sample`) — comparing a v3 run against a
-    separate v2 run would be comparing two different samples."""
+    A v3 run always also returns v2 scored on the SAME rows (`v2_same_sample`) —
+    comparing a v3 run against a separate v2 run would compare two different samples.
+
+    Two v3 questions, two modes:
+    - default: every row is scored, v3 falling back to v2 where a team has no
+      blocked-shots history. This is the SHIPPING question — how the model would
+      behave in production, uneven coverage included. `rows_using_blocked` says how
+      many rows actually got the new term.
+    - only_covered=true: rows without blocked history are skipped instead. This is the
+      FEATURE question — how much the blocked term is worth where it applies."""
     q = {} if league_id == "all" else {"league_id": league_id}
     matches = await db.fixture_stats.find(q, {"_id": 0}).to_list(30000)
     matches.sort(key=lambda m: m["date"])
@@ -742,7 +754,7 @@ async def backtest(league_id: str = "all", window: int = 10, min_games: int = 5,
     lines = [4, 5, 6, 7]
     stats = {L: {"n": 0, "pred": 0.0, "hit": 0, "brier": 0.0} for L in lines}
     alt_stats = {L: {"n": 0, "pred": 0.0, "hit": 0, "brier": 0.0} for L in lines}
-    preds = skipped_no_blocked = 0
+    preds = skipped_no_blocked = fell_back = 0
 
     def avg(d):
         return sum(d) / len(d) if d else 0.0
@@ -759,11 +771,16 @@ async def backtest(league_id: str = "all", window: int = 10, min_games: int = 5,
         for _side, tf_d, oa_d, ts_d, fh_d, bl_d, actual, can in sides:
             if not can:
                 continue
-            if model == "v3" and len(bl_d) < min_games:
-                skipped_no_blocked += 1      # no blocked history yet — not scorable for v3
-                continue
+            has_blocked = len(bl_d) >= min_games
+            if model == "v3" and not has_blocked:
+                if only_covered:
+                    skipped_no_blocked += 1
+                    continue
+                fell_back += 1               # thin history -> v3 prices as v2 would
+            # a too-short window is passed as 0 so the fallback fires, rather than
+            # letting two games of blocked data masquerade as form
             lam = model_lambda(model, avg(tf_d), avg(oa_d), avg(ts_d), league_shots, avg(fh_d),
-                               avg(bl_d), league_blocked, blocked_weight)
+                               avg(bl_d) if has_blocked else 0.0, league_blocked, blocked_weight)
             preds += 1
             for L in lines:
                 p = prob_fn(L, lam)
@@ -789,10 +806,18 @@ async def backtest(league_id: str = "all", window: int = 10, min_games: int = 5,
            "matches": len(matches), "predictions": preds, **_backtest_summary(stats, lines)}
     if model == "v3":
         out["blocked_weight"] = blocked_weight
+        out["only_covered"] = only_covered
         out["skipped_no_blocked_history"] = skipped_no_blocked
+        out["rows_using_blocked"] = preds - fell_back
+        out["rows_fell_back_to_v2"] = fell_back
         out["v2_same_sample"] = _backtest_summary(alt_stats, lines)
         out["note"] = ("v3 is a candidate, not live pricing. Compare against v2_same_sample, "
-                       "not against a separate v2 run — that would be a different sample.")
+                       "not against a separate v2 run — that would be a different sample. "
+                       + ("only_covered=true: scored only where blocked history exists (what the "
+                          "feature is worth where it applies)."
+                          if only_covered else
+                          "Default mode: every row scored, falling back to v2 where blocked "
+                          "history is short (what shipping this would actually do)."))
     return out
 
 

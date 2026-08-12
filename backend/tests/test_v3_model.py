@@ -59,10 +59,25 @@ def test_v3_intent_is_clamped_both_ways():
     assert tiny == pytest.approx(at_floor)
 
 
-def test_v3_falls_back_when_blocked_data_is_missing():
-    """An uncovered team must not be silently priced off a zero."""
-    assert model_lambda("v3", TF, OA, 14.0, 12.0, FH, 0.0, 2.0) == BASE
-    assert model_lambda("v3", TF, OA, 14.0, 12.0, FH, 3.0, 0.0) == BASE
+def test_v3_falls_back_to_v2_when_blocked_data_is_missing():
+    """Blocked shots only go back as far as the backfill. A team without them must get
+    the live v2 model, NOT bare corner form — falling back to base would make v3 worse
+    than the model it replaces, and the backtester skips those rows so it wouldn't show."""
+    v2 = model_lambda("v2", TF, OA, 14.0, 12.0, FH)
+    assert model_lambda("v3", TF, OA, 14.0, 12.0, FH, 0.0, 2.0) == v2      # team uncovered
+    assert model_lambda("v3", TF, OA, 14.0, 12.0, FH, 3.0, 0.0) == v2      # league uncovered
+    assert v2 != BASE                                                       # fallback isn't bare
+
+
+def test_v3_falls_back_to_bare_form_only_when_shots_are_missing_too():
+    assert model_lambda("v3", TF, OA, 0.0, 0.0, FH, 0.0, 0.0) == BASE
+
+
+def test_v3_fallback_keeps_the_first_half_goal_term():
+    """The bug this guards: bare-base fallback silently dropped the form multiplier."""
+    high = model_lambda("v3", TF, OA, 14.0, 12.0, 1.0, 0.0, 2.0)
+    low = model_lambda("v3", TF, OA, 14.0, 12.0, 0.0, 0.0, 2.0)
+    assert high > low
 
 
 def test_intent_is_neutral_at_the_league_average():

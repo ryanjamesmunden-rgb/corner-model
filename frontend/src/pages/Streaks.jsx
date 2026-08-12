@@ -18,7 +18,8 @@ export default function Streaks() {
         </div>
         <h1 className="font-head text-3xl sm:text-4xl font-bold tracking-tight">Streaks</h1>
         <p className="text-muted-foreground text-sm mt-1">
-          Teams heating up (averaging more than usual) and teams hitting corner lines consistently.
+          Teams heating up (averaging more than usual) and teams landing the same side of a corner line —
+          over or under — game after game.
         </p>
       </div>
 

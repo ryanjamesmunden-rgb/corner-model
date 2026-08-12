@@ -259,6 +259,62 @@ def team_features(matches: List[dict], split: str = "overall", window: int = 0) 
     return out
 
 
+# ----------------------------- Corners by match state -----------------------------
+# Corners grouped by the state the team was in. NOTE the limitation this carries:
+# API-Football gives corner totals for the whole match only — there are no corner
+# timings and no half split — so these are the team's FULL-MATCH corners in games
+# where it was, say, behind at half-time. That is not the same as "corners won while
+# behind", and a chase effect concentrated in the second half will read diluted here.
+# probe_corner_halves.py checks whether a real half split is obtainable.
+
+HT_LABELS = {-1: "trailing", 0: "level", 1: "leading"}
+FT_LABELS = {-1: "lost", 0: "drew", 1: "won"}
+
+
+def _match_state(m: dict, phase: str) -> Optional[int]:
+    """-1 behind, 0 level, +1 ahead — at half-time or at full-time."""
+    if phase == "ht":
+        f, a = m.get("fh_goals_for"), m.get("fh_goals_against")
+    else:
+        f, a = m.get("goals_for"), m.get("goals_against")
+    if f is None or a is None:
+        return None
+    return (f > a) - (f < a)
+
+
+def team_state_splits(matches: List[dict], split: str = "overall", window: int = 0) -> dict:
+    """Corners won/conceded per game, grouped by half-time state and by final result.
+
+    `games` travels with every bucket: a 6.8 average over three matches is not the
+    same evidence as one over twenty, and these buckets get thin fast."""
+    if split == "home":
+        pool = [m for m in matches if m["home"]]
+    elif split == "away":
+        pool = [m for m in matches if not m["home"]]
+    else:
+        pool = list(matches)
+    pool = pool[-window:] if window else pool
+
+    out = {}
+    for phase, labels in (("ht", HT_LABELS), ("ft", FT_LABELS)):
+        buckets, covered = {}, 0
+        for state, label in labels.items():
+            rows = [m for m in pool if _match_state(m, phase) == state]
+            covered += len(rows)
+            n = len(rows)
+            buckets[label] = {
+                "games": n,
+                "won": round(sum(m["corners_for"] for m in rows) / n, 2) if n else None,
+                "conceded": round(sum(m["corners_against"] for m in rows) / n, 2) if n else None,
+                "total": round(sum(m["corners_for"] + m["corners_against"] for m in rows) / n, 2) if n else None,
+            }
+        # games the provider left without the goals needed to classify them
+        buckets["unknown_games"] = len(pool) - covered
+        out[phase] = buckets
+    out["played"] = len(pool)
+    return out
+
+
 def _src(team: dict) -> list:
     """Prefer real match data; fall back to (synthetic) matches only if no real games."""
     return team.get("real_matches") or team.get("matches") or []
@@ -1089,6 +1145,10 @@ async def fixture_detail(fixture_id: str, user: dict = Depends(get_current_user)
     def features(team):
         return {sp: team_features(team.get("real_matches") or [], sp) for sp in ["home", "away", "overall"]}
 
+    def states(team):
+        return {sp: team_state_splits(team.get("real_matches") or [], sp)
+                for sp in ["home", "away", "overall"]}
+
     def recent(team):
         rms = team.get("real_matches") or []
         return [{"date": m["date"], "opponent": m["opponent"], "home": m["home"],
@@ -1096,14 +1156,18 @@ async def fixture_detail(fixture_id: str, user: dict = Depends(get_current_user)
                  "total": m["corners_for"] + m["corners_against"],
                  "gf": m.get("goals_for"), "ga": m.get("goals_against"),
                  "fh": (m["fh_goals_for"] >= 1) if m.get("fh_goals_for") is not None else None,
+                 "ht_state": HT_LABELS.get(_match_state(m, "ht")),
+                 "ft_state": FT_LABELS.get(_match_state(m, "ft")),
                  **{f: m.get(f) for f in ("shots_for", "shots_on_target_for",
                                           "blocked_shots_for", "dangerous_attacks_for")}}
                 for m in reversed(rms)]
 
     return {"fixture": fx, "model": model,
             "home_team": {"name": home["name"], "splits": splits(home), "features": features(home),
+                          "state_splits": states(home),
                           "recent": recent(home), "real_samples": home.get("real_samples", 0)},
             "away_team": {"name": away["name"], "splits": splits(away), "features": features(away),
+                          "state_splits": states(away),
                           "recent": recent(away), "real_samples": away.get("real_samples", 0)}}
 
 
@@ -1468,6 +1532,30 @@ async def feature_coverage(league_id: Optional[str] = None, user: dict = Depends
                      for f in SHOT_FEATURES}
     return {"features": list(SHOT_FEATURES), "totals": totals,
             "leagues": sorted(per_league.values(), key=lambda r: r["league_name"])}
+
+
+@api_router.get("/leagues/{league_id}/state-splits")
+async def league_state_splits(league_id: str, split: str = "overall",
+                              user: dict = Depends(get_current_user)):
+    """Corners won/conceded per team, grouped by half-time state and by final result.
+
+    CAVEAT worth repeating at every call site: API-Football reports corners for the
+    whole match only, so these are full-match corners in games where the team was in
+    that state — not corners won while in it. A chase effect that lives in the second
+    half reads diluted here. See probe_corner_halves.py."""
+    teams = await db.teams.find({"league_id": league_id}, {"_id": 0}).to_list(200)
+    league = await db.leagues.find_one({"league_id": league_id}, {"_id": 0}) or {}
+    rows = []
+    for t in teams:
+        rows.append({"team_id": t["team_id"], "name": t["name"],
+                     "real_samples": t.get("real_samples", 0),
+                     **team_state_splits(t.get("real_matches") or [], split)})
+    # league baseline: every team-game pooled, so a team's bucket has something to beat
+    pooled = [m for t in teams for m in (t.get("real_matches") or [])]
+    rows.sort(key=lambda r: (r["ht"]["trailing"]["won"] or 0), reverse=True)
+    return {"league_id": league_id, "league_name": league.get("name", league_id),
+            "split": split, "league_baseline": team_state_splits(pooled, split),
+            "teams": rows}
 
 
 @api_router.get("/leagues/{league_id}/matchups")

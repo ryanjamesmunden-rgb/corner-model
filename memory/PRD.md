@@ -34,6 +34,13 @@ Multi-league corner value betting web app. Rebuilds a spreadsheet corner model i
 
 ## Changelog (recent, newest first)
 
+### Corners by match state — and the 1H/2H blocker (2026-08-12)
+- `team_state_splits()` groups a team's corners won/conceded by **half-time state** (trailing/level/leading) and by **final result** (won/drew/lost), per venue, each bucket carrying its `games` count. Exposed on `/api/fixtures/{id}` (`state_splits` per split, plus `ht_state`/`ft_state` on each recent row) and a new `GET /api/leagues/{id}/state-splits?split=` with a pooled `league_baseline` to compare against.
+- `sync_real.py` now stores `fh_goals_against` on `teams.real_matches` — without the opponent's half-time goals a team's HT state is not derivable. `backfill_fh.py` fills it onto existing docs (**DB-only, no API calls**).
+- **The honest caveat, repeated at every call site**: API-Football reports corners for the WHOLE MATCH only. These are full-match corners in games where the team was in a given state — *not* corners won while in it. A chase effect concentrated in the second half reads diluted here, which may be part of why `--game-state` came back null.
+- **1H/2H corners are blocked on data, not effort.** There are no corner timings post-match and no corner events in `/fixtures/events`. `probe_corner_halves.py` checks four routes on one fixture — including `?half=true`, which some API-Football versions document — and states plainly what each outcome implies. If the half parameter works, history is recoverable and this is cheap; if not, the only route is snapshotting statistics at half-time on LIVE fixtures, which accumulates going forward only and never backfills.
+- A missing goal figure classifies as `unknown_games`, never silently as a draw. `backend/tests/test_state_splits.py`: 8 unit tests.
+
 ### Chase board rank-quality test (2026-08-12)
 - **Result that prompted it**: `--game-state` came back `no effect` for BOTH `chase_interaction` and `opp_fh_rate`, placebo clean. The chase thesis does not predict corners beyond what corner form already captures — the effect is real descriptively, but the corner average was already carrying it. That leaves `chase_score`'s `(1 + 0.4·opp_fh)` term without evidence.
 - Runnable from the Tools panel (`chase_board` mode). `measure_chase_board.py` measures the board at the job it actually does — **ordering** — rather than by probability accuracy. Walk-forward replay of every past fixture as the board would have seen it, then buckets by rank.

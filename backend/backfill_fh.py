@@ -1,5 +1,8 @@
-"""Backfill fh_goals_for (+ goals_for/against) onto team.real_matches from the
-fixture_stats cache. DB-only, no API calls. Matches on api_team_id + date (day)."""
+"""Backfill fh_goals_for/against (+ goals_for/against) onto team.real_matches from
+the fixture_stats cache. DB-only, no API calls. Matches on api_team_id + date (day).
+
+fh_goals_against is what makes a team's HALF-TIME state derivable (was it behind at
+the break?), which the corners-by-state splits need."""
 import asyncio
 import os
 from pathlib import Path
@@ -21,9 +24,9 @@ async def main():
         hg, ag = c.get("home_goals"), c.get("away_goals")
         hfg, afg = c.get("home_fh_goals"), c.get("away_fh_goals")
         if hid is not None:
-            lut[(hid, d)] = {"fh": hfg or 0, "gf": hg or 0, "ga": ag or 0}
+            lut[(hid, d)] = {"fh": hfg or 0, "fha": afg or 0, "gf": hg or 0, "ga": ag or 0}
         if aid is not None:
-            lut[(aid, d)] = {"fh": afg or 0, "gf": ag or 0, "ga": hg or 0}
+            lut[(aid, d)] = {"fh": afg or 0, "fha": hfg or 0, "gf": ag or 0, "ga": hg or 0}
 
     teams = 0
     updated_matches = 0
@@ -38,6 +41,7 @@ async def main():
             hit = lut.get(key)
             if hit:
                 m["fh_goals_for"] = hit["fh"]
+                m["fh_goals_against"] = hit["fha"]
                 m["goals_for"] = hit["gf"]
                 m["goals_against"] = hit["ga"]
                 updated_matches += 1
@@ -45,7 +49,8 @@ async def main():
         if changed:
             await db.teams.update_one({"_id": t["_id"]}, {"$set": {"real_matches": rms}})
             teams += 1
-    print(f"backfilled fh/goals onto {updated_matches} matches across {teams} teams")
+    print(f"backfilled fh (for+against)/goals onto {updated_matches} matches "
+          f"across {teams} teams")
 
 
 if __name__ == "__main__":

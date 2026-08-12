@@ -261,11 +261,13 @@ async def sync_league(hc, my_lid):
         league_corners += [hc_, ac_]
         if hid in samples:
             samples[hid].append({"home": True, "corners_for": hc_, "corners_against": ac_, "shots_for": hs_,
-                                 "goals_for": hg, "goals_against": ag, "fh_goals_for": hfg, "date": fdate,
+                                 "goals_for": hg, "goals_against": ag, "fh_goals_for": hfg,
+                                 "fh_goals_against": afg, "date": fdate,
                                  "opponent": aname, **_feature_sample(home_feat, away_feat)})
         if aid in samples:
             samples[aid].append({"home": False, "corners_for": ac_, "corners_against": hc_, "shots_for": as_,
-                                 "goals_for": ag, "goals_against": hg, "fh_goals_for": afg, "date": fdate,
+                                 "goals_for": ag, "goals_against": hg, "fh_goals_for": afg,
+                                 "fh_goals_against": hfg, "date": fdate,
                                  "opponent": hname, **_feature_sample(away_feat, home_feat)})
     print(f"[{my_lid}] stats cache_hit={len(cached)} api_fetched={fetched}")
     if coverage["fixtures"]:

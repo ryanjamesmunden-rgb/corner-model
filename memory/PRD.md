@@ -25,6 +25,7 @@ Multi-league corner value betting web app. Rebuilds a spreadsheet corner model i
 - Auth: POST /api/auth/session, GET /api/auth/me, POST /api/auth/logout
 - GET /api/scanner (market: team|all|total|home|away; `team`=home+away combined), /api/best-bets, /api/top-mismatches, /api/streaks, /api/trends
 - GET /api/leagues, /api/leagues/{id}/teams|fixtures|matchups|corner-table, /api/fixtures/{id}, POST /api/fixtures/{id}/odds
+- GET /api/features/coverage?league_id — fill rate of the shot-volume features per league (see changelog; these are captured but NOT yet in the projection)
 - GET /api/picks (record incl. profit/staked/roi/unpriced_wins + per-pick profit), POST /api/picks/settle
 - POST /api/explain (Claude Sonnet 4.6 via Emergent LLM key, server-side cache + throttle)
 - GET /api/backtest?model=v1|v2, /api/sync/runs, POST /api/sync/refresh-all, /api/leagues/{id}/refresh
@@ -32,6 +33,16 @@ Multi-league corner value betting web app. Rebuilds a spreadsheet corner model i
 - Bets/bankroll (built, frontend deferred): GET/PUT /api/bankroll, CRUD /api/bets, GET /api/bets/stats
 
 ## Changelog (recent, newest first)
+
+### Shot-volume features captured (data only — NOT in the projection) (2026-08-12)
+- `sync_real.py` now pulls **shots, shots on target, blocked shots and dangerous attacks** out of `/fixtures/statistics` per team per fixture, via `parse_team_stats()` + a normalised alias table (`STAT_TYPES`) because the provider labels these inconsistently. Stored on `fixture_stats` as `home_/away_{feature}` plus a `features_at` stamp, and on `teams.real_matches` as `{feature}_for/_against`.
+- **A stat the provider didn't report is stored as `None`, never 0** — a blank must not read as "zero blocked shots" when this is fitted on later. The one exception is `shots_for/_against`, coerced to int because the live v2 λ already consumes `shots_for` and must not start seeing None.
+- **Coverage is first-class**: `team_features()` returns each average with the number of games it was actually computed from (`covered`), sync prints per-league coverage and records it in `sync_runs.feature_coverage`, and `GET /api/features/coverage` reports fill rates per league. **Expect dangerous attacks to be sparse** — API-Football only returns it where the league's coverage includes it, so check this endpoint before reading anything into that feature.
+- Exposed alongside the corner inputs on `/api/leagues/{id}/teams` (`features`), `/api/leagues/{id}/corner-table` (`shots_on_target`, `blocked_shots`, `dangerous_attacks` + `features`) and `/api/fixtures/{id}` (per-split `features` + per-match values on `recent`).
+- **Ingest fix that came with it**: a fixture whose statistics carry no Corner Kicks value used to be cached as 0-0 corners (the old parser coerced a null to 0) and fed the model as a real 0-0 game. It is now skipped. A genuine 0 still parses as 0, so only truly uncovered fixtures are dropped — expect the cached fixture count to be slightly lower than before on leagues with patchy coverage.
+- **The projection is deliberately unchanged** — `v2_lambda`, `expected_lambdas`, `build_markets` and the backtester are untouched, so model output is byte-identical. Wiring these in is a separate decision once the backtester says they help.
+- `backfill_shots.py`: fills this season's cached fixtures (one statistics call each, `--limit N` per league, resumable via `features_at`, `--project-only` for the DB-only half), then projects onto `teams.real_matches` on the `(api_team_id, day)` join `backfill_fh.py` uses.
+- `backend/tests/test_shot_features.py`: 20 offline unit tests (alias/percent/null parsing, None-vs-zero, venue/window aggregation, coverage counts).
 
 ### Value Finder rebuilt: Best Teams & Streaks front-and-centre (2026-08-09)
 - Team-corner odds aren't available, so the home now leads with raw signals in a **tabbed Value Finder** (`Scanner.jsx`): **Best Teams** (default) | **Hot Form** | **Streaks** | **Chase Board**, above the Best Bets strip + intro.

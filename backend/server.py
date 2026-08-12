@@ -158,6 +158,41 @@ def team_split(matches: List[dict], split: str, window: int) -> dict:
     return {"played": n, "for_avg": round(cf / n, 2), "against_avg": round(ca / n, 2), "total_avg": round((cf + ca) / n, 2)}
 
 
+# ----------------------------- Shot-volume features -----------------------------
+# Captured per team per fixture by sync_real.py alongside corners. These are NOT wired
+# into the projection — they are exposed so their predictive value can be measured
+# before anything depends on them. A fixture the provider didn't cover carries None,
+# so every average travels with the sample size it was actually computed from.
+
+SHOT_FEATURES = ("shots", "shots_on_target", "blocked_shots", "dangerous_attacks")
+
+
+def _feature_avg(pool: List[dict], key: str) -> Optional[float]:
+    vals = [m[key] for m in pool if m.get(key) is not None]
+    return round(sum(vals) / len(vals), 2) if vals else None
+
+
+def team_features(matches: List[dict], split: str = "overall", window: int = 0) -> dict:
+    """Per-game feature averages for a team, with the coverage behind each one.
+
+    `covered` counts the games in the pool that actually carried the stat: an average
+    over 3 of 12 games is not the same evidence as one over 12, and the caller has to
+    be able to tell the difference."""
+    if split == "home":
+        pool = [m for m in matches if m["home"]]
+    elif split == "away":
+        pool = [m for m in matches if not m["home"]]
+    else:
+        pool = list(matches)
+    pool = pool[-window:] if window else pool
+    out = {"played": len(pool), "covered": {}}
+    for f in SHOT_FEATURES:
+        out[f"{f}_for"] = _feature_avg(pool, f"{f}_for")
+        out[f"{f}_against"] = _feature_avg(pool, f"{f}_against")
+        out["covered"][f] = sum(1 for m in pool if m.get(f"{f}_for") is not None)
+    return out
+
+
 def _src(team: dict) -> list:
     """Prefer real match data; fall back to (synthetic) matches only if no real games."""
     return team.get("real_matches") or team.get("matches") or []
@@ -704,7 +739,8 @@ async def get_teams(league_id: str, split: str = "overall", window: int = 5, use
         overall = team_split(src, "overall", 0)
         out.append({"team_id": t["team_id"], "name": t["name"], "played": s["played"],
                     "for_avg": s["for_avg"], "against_avg": s["against_avg"],
-                    "total_avg": s["total_avg"], "season_total_avg": overall["total_avg"]})
+                    "total_avg": s["total_avg"], "season_total_avg": overall["total_avg"],
+                    "features": team_features(src, split, window)})
     out.sort(key=lambda x: x["for_avg"], reverse=True)
     return out
 
@@ -724,9 +760,14 @@ async def corner_table(league_id: str, user: dict = Depends(get_current_user)):
             won = sum(m["corners_for"] for m in real) / n
             concd = sum(m["corners_against"] for m in real) / n
             shots = sum(m.get("shots_for", 0) for m in real) / n
+        feats = team_features(real)
         out.append({"team_id": t["team_id"], "name": t["name"], "games": n,
                     "corners_won": round(won, 2), "corners_conceded": round(concd, 2),
-                    "shots": round(shots, 1), "real_samples": t.get("real_samples", 0)})
+                    "shots": round(shots, 1), "real_samples": t.get("real_samples", 0),
+                    "shots_on_target": feats["shots_on_target_for"],
+                    "blocked_shots": feats["blocked_shots_for"],
+                    "dangerous_attacks": feats["dangerous_attacks_for"],
+                    "features": feats})
     out.sort(key=lambda x: x["corners_won"], reverse=True)
     return {"league_id": league_id, "league_name": league.get("name", league_id),
             "country": league.get("country", ""), "teams": out}
@@ -767,19 +808,24 @@ async def fixture_detail(fixture_id: str, user: dict = Depends(get_current_user)
     def splits(team):
         return {sp: {str(w): team_split(_src(team), sp, w) for w in [3, 5, 10, 0]} for sp in ["home", "away", "overall"]}
 
+    def features(team):
+        return {sp: team_features(team.get("real_matches") or [], sp) for sp in ["home", "away", "overall"]}
+
     def recent(team):
         rms = team.get("real_matches") or []
         return [{"date": m["date"], "opponent": m["opponent"], "home": m["home"],
                  "won": m["corners_for"], "conceded": m["corners_against"],
                  "total": m["corners_for"] + m["corners_against"],
                  "gf": m.get("goals_for"), "ga": m.get("goals_against"),
-                 "fh": (m["fh_goals_for"] >= 1) if m.get("fh_goals_for") is not None else None}
+                 "fh": (m["fh_goals_for"] >= 1) if m.get("fh_goals_for") is not None else None,
+                 **{f: m.get(f) for f in ("shots_for", "shots_on_target_for",
+                                          "blocked_shots_for", "dangerous_attacks_for")}}
                 for m in reversed(rms)]
 
     return {"fixture": fx, "model": model,
-            "home_team": {"name": home["name"], "splits": splits(home),
+            "home_team": {"name": home["name"], "splits": splits(home), "features": features(home),
                           "recent": recent(home), "real_samples": home.get("real_samples", 0)},
-            "away_team": {"name": away["name"], "splits": splits(away),
+            "away_team": {"name": away["name"], "splits": splits(away), "features": features(away),
                           "recent": recent(away), "real_samples": away.get("real_samples", 0)}}
 
 
@@ -954,6 +1000,39 @@ async def streaks(league_id: Optional[str] = None, side: str = "overall", window
         })
     results.sort(key=lambda x: (x["line"], x["hits"], x["avg"]), reverse=True)
     return results
+
+
+@api_router.get("/features/coverage")
+async def feature_coverage(league_id: Optional[str] = None, user: dict = Depends(get_current_user)):
+    """How much of the shot-volume data actually landed, per league.
+
+    Providers cover these unevenly (dangerous attacks especially), so before reading
+    anything into these features you need to know what fraction of fixtures carry them.
+    Counts are over team-sides — two per cached fixture."""
+    q = {} if not league_id or league_id == "all" else {"league_id": league_id}
+    docs = await db.fixture_stats.find(q, {"_id": 0}).to_list(50000)
+    leagues = {l["league_id"]: l["name"] for l in await db.leagues.find({}, {"_id": 0}).to_list(200)}
+    per_league = {}
+    for d in docs:
+        lid = d.get("league_id", "")
+        row = per_league.setdefault(lid, {"league_id": lid, "league_name": leagues.get(lid, lid),
+                                          "fixtures": 0, "sides": 0,
+                                          **{f: 0 for f in SHOT_FEATURES}})
+        row["fixtures"] += 1
+        row["sides"] += 2
+        for f in SHOT_FEATURES:
+            row[f] += sum(1 for side in ("home", "away") if d.get(f"{side}_{f}") is not None)
+    for row in per_league.values():
+        row["pct"] = {f: round(row[f] / row["sides"] * 100, 1) if row["sides"] else 0.0
+                      for f in SHOT_FEATURES}
+    totals = {"fixtures": sum(r["fixtures"] for r in per_league.values()),
+              "sides": sum(r["sides"] for r in per_league.values())}
+    for f in SHOT_FEATURES:
+        totals[f] = sum(r[f] for r in per_league.values())
+    totals["pct"] = {f: round(totals[f] / totals["sides"] * 100, 1) if totals["sides"] else 0.0
+                     for f in SHOT_FEATURES}
+    return {"features": list(SHOT_FEATURES), "totals": totals,
+            "leagues": sorted(per_league.values(), key=lambda r: r["league_name"])}
 
 
 @api_router.get("/leagues/{league_id}/matchups")

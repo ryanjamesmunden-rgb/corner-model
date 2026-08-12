@@ -95,6 +95,7 @@ Then remove `from emergentintegrations.llm.chat import LlmChat, UserMessage`, dr
 - `seed_picks.py` / `seed_manual_picks.py` — seed the Picks board.
 - `settle_picks.py` — auto-settles picks Win/Loss from real results.
 - `backfill_fh.py` / `backfill_goals.py` / `backfill_rounds.py` — one-off DB backfills (no API calls).
+- `backfill_shots.py` — fills shot-volume features (shots, shots on target, blocked shots, dangerous attacks) onto this season's cached fixtures, then projects them onto `teams.real_matches`. **Spends one statistics call per un-filled fixture**, so it is capped per league (`--limit N`) and resumable; `--project-only` re-runs the DB half with no API calls.
 - `reseed_odds.py` / `seed_team_odds.py` — placeholder-odds generators (optional; not needed since the app now leads with averages/streaks).
 - `tune_model.py` / `probe_leagues.py` — analysis helpers.
 

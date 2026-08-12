@@ -12,7 +12,7 @@ Multi-league corner value betting web app. Rebuilds a spreadsheet corner model i
 - Staking: flat 1u per bet (picks board). User does NOT want aggregate P/L shown (misleading with no-odds picks) — strike rate only.
 
 ## Architecture
-- Frontend: React (JS) + Tailwind + shadcn/ui. Pages: Login, Scanner (Value Finder home), QuickScan, Picks, Dashboard (Leagues), Streaks, FixtureDetail. Context: AuthContext, LeagueContext. Components: HomeInsights, IntroBanner, MatchupTable, StreakFinder, TrendFinder, BacktestPanel, SyncPanel, CornerLeagueTable, ExportMenu.
+- Frontend: React (JS) + Tailwind + shadcn/ui. Pages: Login, Scanner (Value Finder home), QuickScan, Picks, Dashboard (Leagues), Streaks, FixtureDetail. Context: AuthContext, LeagueContext. Components: HomeInsights, IntroBanner, MatchupTable, StreakFinder, TrendFinder, BacktestPanel, ToolsPanel, SyncPanel, CornerLeagueTable, ExportMenu.
 - Backend: FastAPI (`server.py`, large ~1350 lines). NB engine, EV/confidence, scanner/streaks/matchups/trends/mismatches, picks, backtester, Claude explainer, bets/bankroll+Kelly, APScheduler cron (07:00 & 19:00 UTC), self-heal boot sync. `sync_real.py` (API-Football ingest + permanent fixture_stats cache). Seed/util scripts: seed_picks, seed_manual_picks, settle_picks, reseed_odds, seed_team_odds, backfill_goals, backfill_rounds, tune_model, probe_leagues.
 - DB: MongoDB (leagues, teams w/ real_matches, fixtures, odds, users, user_sessions, picks, bets, sync_runs, fixture_stats, explanations, meta).
 - Auth: Emergent Google OAuth, httpOnly session_token cookie (7-day).
@@ -33,6 +33,13 @@ Multi-league corner value betting web app. Rebuilds a spreadsheet corner model i
 - Bets/bankroll (built, frontend deferred): GET/PUT /api/bankroll, CRUD /api/bets, GET /api/bets/stats
 
 ## Changelog (recent, newest first)
+
+### Phone-operable: v2-vs-v3 backtest panel + Tools runner (2026-08-12)
+- **Fixed a false claim in the UI**: `BacktestPanel` still compared v1 vs v2 and its footer read "v2 is now live across the site", which stopped being true when v3 shipped. It now compares **v2 vs v3** off a SINGLE `?model=v3` call, using the `v2_same_sample` block — one call gives both models on identical rows, where two calls would have compared different samples. Shows `rows_using_blocked` / `rows_fell_back_to_v2` and says so plainly when a league has no blocked data yet (v3 == v2 there).
+- **`ToolsPanel`** (Dashboard) runs `backfill_shots.py` and `measure_features.py` (features / sweep / game-state) from the browser, with live status and captured output — the only part of the workflow that previously needed a shell. Makes the whole loop phone-operable.
+- Backend `POST /api/tools/backfill-shots`, `POST /api/tools/measure`, `GET /api/tools/runs`, storing each run in `db.script_runs` (last 30 kept, output capped at 60KB).
+- **Security**: the app is public and the backfill spends API credits, so these are gated behind a `TOOLS_TOKEN` env var and return **503 when it is unset** — disabled by default, opt-in only. Token compared with `secrets.compare_digest`. Every subprocess argument is built from validated values (league ids checked against `MANAGED_LEAGUE_IDS`, mode from an enum, limit clamped 1-500) — no raw user string reaches argv. Per-script cooldowns (backfill 10min, measure 2min) and a one-run-at-a-time guard.
+- The frontend keeps the token in `localStorage` only (`cm2_tools_token`), with a "Forget token" control.
 
 ### v3 goes live: blocked-shots intent is now production pricing (2026-08-12)
 - Backtester on the real cache, default (shipping) mode: **Brier 0.2226 → 0.2219, calibration gap 0.80 → 0.71** against `v2_same_sample`. Both metrics improved, which was the stated bar. Weight swept to **0.15** (0.2214 / 0.68), up from the inherited 0.10.

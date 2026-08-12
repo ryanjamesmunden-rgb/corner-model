@@ -33,6 +33,9 @@ export const api = {
   snapshotLedger: () => axios.post(`${API}/ledger/snapshot`).then((r) => r.data),
   backtest: (leagueId = "all", model = "v1") => axios.get(`${API}/backtest`, { params: { league_id: leagueId, model } }).then((r) => r.data),
   explain: (payload) => axios.post(`${API}/explain`, payload).then((r) => r.data),
+  toolRuns: (token, script) => axios.get(`${API}/tools/runs`, { params: { token, script } }).then((r) => r.data),
+  toolMeasure: (token, mode, leagueId) => axios.post(`${API}/tools/measure`, null, { params: { token, mode, league_id: leagueId } }).then((r) => r.data),
+  toolBackfill: (token, { limit, leagueId, project_only } = {}) => axios.post(`${API}/tools/backfill-shots`, null, { params: { token, limit, league_id: leagueId, project_only } }).then((r) => r.data),
 };
 
 export const tierMeta = {

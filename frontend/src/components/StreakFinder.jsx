@@ -1,24 +1,19 @@
 import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
-import { Flame, ArrowRight, Target } from "lucide-react";
+import { Flame, ArrowRight, Target, TrendingDown, History } from "lucide-react";
 import { api } from "@/lib/api";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 
 const SIDES = [{ v: "home", l: "Home" }, { v: "away", l: "Away" }, { v: "overall", l: "Overall" }];
+// One model, two directions: overs clear the line, unders stay below it (exact line = void).
+const DIRECTIONS = [{ v: "over", l: "Over" }, { v: "under", l: "Under" }];
+const SUBJECTS = [{ v: "team", l: "Team corners" }, { v: "match", l: "Match total" }];
 const PRESETS = [
   { v: "5-5", l: "5 / 5", window: 5, min_hits: 5 },
   { v: "8-10", l: "8 / 10", window: 10, min_hits: 8 },
   { v: "9-10", l: "9 / 10", window: 10, min_hits: 9 },
   { v: "10-10", l: "10 / 10", window: 10, min_hits: 10 },
-];
-const THRESHOLDS = [
-  { v: "auto", l: "Best line (auto)" },
-  { v: "3", l: "3+ corners" },
-  { v: "4", l: "4+ corners" },
-  { v: "5", l: "5+ corners" },
-  { v: "6", l: "6+ corners" },
-  { v: "7", l: "7+ corners" },
 ];
 const TIMEFRAMES = [
   { v: "all", l: "Any upcoming" },
@@ -26,28 +21,59 @@ const TIMEFRAMES = [
   { v: "7", l: "Next 7 days" },
   { v: "14", l: "Next 14 days" },
 ];
+// Laddered lines per direction/subject — team corners run far lower than match totals.
+const LADDERS = {
+  "over-team": [3, 4, 5, 6, 7],
+  "over-match": [8, 9, 10, 11, 12, 13],
+  "under-team": [3, 4, 5, 6, 7, 8],
+  "under-match": [8, 9, 10, 11, 12],
+};
+const MIN_LINE = { team: 3, match: 7 };
 
-// Global cross-league corner consistency finder for the home page.
+const lineLabel = (line, direction) => (direction === "under" ? `U ${line}` : `${line}+`);
+const fmtDate = (d) => (d ? new Date(d).toLocaleDateString(undefined, { month: "short", day: "numeric" }) : "");
+
+// Global cross-league corner streak finder: overs and unders, team corners or match totals.
 export default function StreakFinder({ leagueId }) {
   const navigate = useNavigate();
   const [scope, setScope] = useState("all");
   const [side, setSide] = useState("home");
+  const [direction, setDirection] = useState("over");
+  const [subject, setSubject] = useState("team");
   const [preset, setPreset] = useState("5-5");
   const [threshold, setThreshold] = useState("auto");
   const [days, setDays] = useState("all");
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(true);
 
+  const ladder = LADDERS[`${direction}-${subject}`] || [];
+  const isUnder = direction === "under";
+
+  // a line from the previous ladder is meaningless on the new one
+  const switchTo = (setter) => (v) => { setter(v); setThreshold("auto"); };
+
   useEffect(() => {
     const p = PRESETS.find((x) => x.v === preset);
-    const params = { league_id: scope === "current" ? leagueId : "all", side, window: p.window, min_hits: p.min_hits, min_line: 3 };
+    const params = {
+      league_id: scope === "current" ? leagueId : "all",
+      side, window: p.window, min_hits: p.min_hits, direction, subject,
+    };
+    if (!isUnder) params.min_line = MIN_LINE[subject];
     if (threshold !== "auto") params.threshold = threshold;
     if (days !== "all") params.within_days = days;
     setLoading(true);
     api.streaks(params).then(setRows).catch(() => setRows([])).finally(() => setLoading(false));
-  }, [scope, side, preset, threshold, days, leagueId]);
+  }, [scope, side, direction, subject, preset, threshold, days, leagueId, isUnder]);
 
-  const fmt = (d) => new Date(d).toLocaleDateString(undefined, { month: "short", day: "numeric" });
+  const accent = isUnder ? "#38BDF8" : "#10B981";
+  const lineChip = isUnder
+    ? "bg-sky-500/15 text-sky-400 border-sky-500/30"
+    : "bg-emerald-500/15 text-emerald-400 border-emerald-500/30";
+  const resultChip = {
+    win: isUnder ? "bg-sky-500/20 text-sky-400" : "bg-emerald-500/20 text-emerald-400",
+    void: "bg-zinc-500/20 text-zinc-400",
+    loss: "bg-red-500/15 text-red-400",
+  };
 
   return (
     <section className="bg-card border border-border rounded-lg" data-testid="streak-finder">
@@ -55,9 +81,26 @@ export default function StreakFinder({ leagueId }) {
         <div className="flex items-center gap-2">
           <Flame className="h-4 w-4 text-primary" />
           <h2 className="font-head font-semibold text-lg">Corner Streak Finder</h2>
-          <span className="text-xs text-muted-foreground hidden sm:inline">consistent corner-winners (real games only)</span>
+          <span className="text-xs text-muted-foreground hidden sm:inline">
+            {isUnder
+              ? "teams staying under the line (exact line = void, streak survives)"
+              : "consistent corner-winners (real games only)"}
+          </span>
         </div>
         <div className="lg:ml-auto flex flex-wrap items-center gap-2">
+          <Tabs value={direction} onValueChange={switchTo(setDirection)}>
+            <TabsList className="bg-secondary h-8">
+              {DIRECTIONS.map((d) => (
+                <TabsTrigger key={d.v} value={d.v} data-testid={`streak-direction-${d.v}`} className="text-xs px-2.5 h-6">{d.l}</TabsTrigger>
+              ))}
+            </TabsList>
+          </Tabs>
+          <Select value={subject} onValueChange={switchTo(setSubject)}>
+            <SelectTrigger data-testid="streak-subject" className="w-[140px] bg-[#121212] border-border text-xs h-8"><SelectValue /></SelectTrigger>
+            <SelectContent className="bg-[#121212] border-border">
+              {SUBJECTS.map((o) => <SelectItem key={o.v} value={o.v} className="text-xs">{o.l}</SelectItem>)}
+            </SelectContent>
+          </Select>
           <Tabs value={side} onValueChange={setSide}>
             <TabsList className="bg-secondary h-8">
               {SIDES.map((s) => <TabsTrigger key={s.v} value={s.v} data-testid={`streak-side-${s.v}`} className="text-xs px-2.5 h-6">{s.l}</TabsTrigger>)}
@@ -71,7 +114,12 @@ export default function StreakFinder({ leagueId }) {
           <Select value={threshold} onValueChange={setThreshold}>
             <SelectTrigger data-testid="streak-threshold" className="w-[150px] bg-[#121212] border-border text-xs h-8"><SelectValue /></SelectTrigger>
             <SelectContent className="bg-[#121212] border-border">
-              {THRESHOLDS.map((o) => <SelectItem key={o.v} value={o.v} className="text-xs">{o.l}</SelectItem>)}
+              <SelectItem value="auto" className="text-xs">Best line (auto)</SelectItem>
+              {ladder.map((l) => (
+                <SelectItem key={l} value={String(l)} className="text-xs">
+                  {isUnder ? `Under ${l} corners` : `${l}+ corners`}
+                </SelectItem>
+              ))}
             </SelectContent>
           </Select>
           <Select value={days} onValueChange={setDays}>
@@ -97,10 +145,12 @@ export default function StreakFinder({ leagueId }) {
               <th className="text-left font-medium px-4 py-2.5">Team</th>
               <th className="text-left font-medium px-4 py-2.5">Line</th>
               <th className="text-left font-medium px-4 py-2.5">Hit rate</th>
+              <th className="text-left font-medium px-4 py-2.5">Streak</th>
+              <th className="text-left font-medium px-4 py-2.5">Longest</th>
               <th className="text-right font-medium px-4 py-2.5">Avg</th>
               <th className="text-left font-medium px-4 py-2.5 hidden md:table-cell">Recent ({side})</th>
               <th className="text-left font-medium px-4 py-2.5">Next</th>
-              <th className="text-right font-medium px-4 py-2.5">Opp conc</th>
+              <th className="text-right font-medium px-4 py-2.5">{subject === "match" ? "Proj λ" : "Opp conc"}</th>
               <th className="text-right font-medium px-4 py-2.5">Model odds</th>
               <th className="text-right font-medium px-4 py-2.5">Edge</th>
               <th className="px-4 py-2.5"></th>
@@ -108,52 +158,95 @@ export default function StreakFinder({ leagueId }) {
           </thead>
           <tbody className="font-mono-data text-sm">
             {loading ? (
-              <tr><td colSpan={10} className="px-4 py-12 text-center text-muted-foreground animate-pulse">Scanning corner streaks…</td></tr>
+              <tr><td colSpan={12} className="px-4 py-12 text-center text-muted-foreground animate-pulse">Scanning corner streaks…</td></tr>
             ) : rows.length === 0 ? (
-              <tr><td colSpan={10} className="px-4 py-12 text-center text-muted-foreground">No teams match this streak. Try a lower threshold or a wider window.</td></tr>
+              <tr><td colSpan={12} className="px-4 py-12 text-center text-muted-foreground">
+                No teams match this streak. Try {isUnder ? "a higher" : "a lower"} line or a wider window.
+              </td></tr>
             ) : rows.map((r) => (
               <tr
                 key={r.team_id}
                 data-testid="streak-row"
                 onClick={() => r.next_fixture && navigate(`/fixture/${r.next_fixture.fixture_id}`)}
                 className={`border-b border-border/50 transition-colors duration-150 ${r.next_fixture ? "hover:bg-white/5 cursor-pointer" : ""}`}
-                style={{ borderLeft: "2px solid #10B981" }}
+                style={{ borderLeft: `2px solid ${accent}` }}
               >
                 <td className="px-4 py-2.5">
                   <div className="text-foreground font-sans font-medium whitespace-nowrap">{r.name}</div>
                   <div className="text-[10px] text-muted-foreground uppercase tracking-wider font-sans">{r.league_name}</div>
                 </td>
                 <td className="px-4 py-2.5">
-                  <span className="inline-flex items-center gap-1 text-xs px-2 py-1 rounded border bg-emerald-500/15 text-emerald-400 border-emerald-500/30">
-                    <Target className="h-3 w-3" /> {r.line}+
+                  <span className={`inline-flex items-center gap-1 text-xs px-2 py-1 rounded border ${lineChip}`}
+                    title={subject === "match" ? "Match total corners" : "Team corners"}>
+                    {isUnder ? <TrendingDown className="h-3 w-3" /> : <Target className="h-3 w-3" />} {lineLabel(r.line, r.direction)}
                   </span>
                 </td>
-                <td className="px-4 py-2.5 text-emerald-400 font-semibold whitespace-nowrap">{r.hits}/{r.window}</td>
+                <td className="px-4 py-2.5 whitespace-nowrap">
+                  <span className={isUnder ? "text-sky-400 font-semibold" : "text-emerald-400 font-semibold"}>
+                    {r.hits}/{r.settled ?? r.window}
+                  </span>
+                  {r.voids > 0 && (
+                    <span className="ml-1 text-[10px] text-zinc-400" title="Landed exactly on the line — void, streak intact">
+                      +{r.voids} void
+                    </span>
+                  )}
+                </td>
+                <td className="px-4 py-2.5 whitespace-nowrap">
+                  {r.streak && r.streak.length > 0 ? (
+                    <>
+                      <span className="text-foreground font-semibold">{r.streak.length}</span>
+                      <span className="ml-1 text-[10px] text-muted-foreground font-sans">
+                        since {fmtDate(r.streak.start_date)}
+                      </span>
+                    </>
+                  ) : (
+                    <span className="text-muted-foreground" title="Broken — the latest game missed this line">0</span>
+                  )}
+                </td>
+                <td className="px-4 py-2.5 whitespace-nowrap">
+                  {r.longest ? (
+                    <span className={r.longest.is_current ? "text-foreground" : "text-muted-foreground"}
+                      title={r.longest.is_current
+                        ? "This run is the team's longest on record"
+                        : `Best run: ${fmtDate(r.longest.start_date)} – ${fmtDate(r.longest.end_date)}`}>
+                      <History className="h-3 w-3 inline mr-1 opacity-60" />{r.longest.length}
+                      {r.longest.is_current && <span className="ml-1 text-[10px] text-amber-400 font-sans">best ever</span>}
+                    </span>
+                  ) : <span className="text-muted-foreground">—</span>}
+                </td>
                 <td className="px-4 py-2.5 text-right text-foreground">{r.avg.toFixed(1)}</td>
                 <td className="px-4 py-2.5 hidden md:table-cell">
                   <div className="flex gap-1">
                     {r.recent.map((m, i) => (
-                      <span key={i} title={`${m.corners} vs ${m.opponent}`}
-                        className={`inline-flex h-5 min-w-5 px-1 items-center justify-center rounded text-[10px] ${m.corners >= r.line ? "bg-emerald-500/20 text-emerald-400" : "bg-red-500/15 text-red-400"}`}>
+                      <span key={i} title={`${m.corners} vs ${m.opponent}${m.result === "void" ? " — void (exact line)" : ""}`}
+                        className={`inline-flex h-5 min-w-5 px-1 items-center justify-center rounded text-[10px] ${resultChip[m.result] || resultChip.loss}`}>
                         {m.corners}
                       </span>
                     ))}
                   </div>
                 </td>
                 <td className="px-4 py-2.5 text-xs text-muted-foreground whitespace-nowrap">
-                  {r.next_fixture ? `${r.next_fixture.is_home ? "vs" : "@"} ${r.next_fixture.opponent} · ${fmt(r.next_fixture.date)}` : "—"}
+                  {r.next_fixture ? `${r.next_fixture.is_home ? "vs" : "@"} ${r.next_fixture.opponent} · ${fmtDate(r.next_fixture.date)}` : "—"}
                 </td>
                 <td className="px-4 py-2.5 text-right">
                   {r.projection ? (
-                    <span className={r.projection.opp_conceded >= r.line ? "text-emerald-400" : "text-muted-foreground"}>
-                      {r.projection.opp_conceded.toFixed(1)}
-                    </span>
+                    subject === "match" ? (
+                      <span className="text-foreground" title="Projected match total corners">{r.projection.lambda.toFixed(1)}</span>
+                    ) : (
+                      <span className={isUnder
+                        ? (r.projection.opp_conceded <= r.line ? "text-sky-400" : "text-muted-foreground")
+                        : (r.projection.opp_conceded >= r.line ? "text-emerald-400" : "text-muted-foreground")}>
+                        {r.projection.opp_conceded.toFixed(1)}
+                      </span>
+                    )
                   ) : <span className="text-muted-foreground">—</span>}
                 </td>
                 <td className="px-4 py-2.5 text-right whitespace-nowrap">
-                  {r.projection ? (
-                    <span className="text-foreground font-semibold" title={`Model: ${r.projection.prob.toFixed(1)}% to win ${r.line}+ corners (λ ${r.projection.lambda})`}>
-                      {r.projection.fair_odds?.toFixed(2)}
+                  {r.projection && r.projection.fair_odds ? (
+                    <span className="text-foreground font-semibold"
+                      title={`Model: ${r.projection.prob.toFixed(1)}% to land ${lineLabel(r.line, r.direction)} (λ ${r.projection.lambda})`
+                        + (r.projection.void_prob ? ` · ${r.projection.void_prob.toFixed(1)}% void` : "")}>
+                      {r.projection.fair_odds.toFixed(2)}
                     </span>
                   ) : <span className="text-muted-foreground">—</span>}
                 </td>
@@ -163,7 +256,7 @@ export default function StreakFinder({ leagueId }) {
                       title={`Book ${r.projection.book_odds} vs model ${r.projection.fair_odds}`}>
                       {r.projection.ev > 0 ? "+" : ""}{r.projection.ev.toFixed(1)}%
                     </span>
-                  ) : <span className="text-muted-foreground" title="Paste this team's corner odds on the fixture page">—</span>}
+                  ) : <span className="text-muted-foreground" title={`Paste ${r.projection?.market_key || "this"} odds on the fixture page`}>—</span>}
                 </td>
                 <td className="px-4 py-2.5 text-right">{r.next_fixture && <ArrowRight className="h-4 w-4 text-muted-foreground inline" />}</td>
               </tr>

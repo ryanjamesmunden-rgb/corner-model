@@ -23,7 +23,7 @@ Multi-league corner value betting web app. Rebuilds a spreadsheet corner model i
 
 ## Key API endpoints
 - Auth: POST /api/auth/session, GET /api/auth/me, POST /api/auth/logout
-- GET /api/scanner (market: team|all|total|home|away; `team`=home+away combined), /api/best-bets, /api/top-mismatches, /api/streaks, /api/trends
+- GET /api/scanner (market: team|all|total|home|away; `team`=home+away combined), /api/best-bets, /api/top-mismatches, /api/streaks (direction=over|under, subject=team|match, side, window, min_hits, threshold, min_line, max_line, within_days), /api/trends
 - GET /api/leagues, /api/leagues/{id}/teams|fixtures|matchups|corner-table, /api/fixtures/{id}, POST /api/fixtures/{id}/odds
 - GET /api/features/coverage?league_id — fill rate of the shot-volume features per league (see changelog; these are captured but NOT yet in the projection)
 - GET /api/picks (record incl. profit/staked/roi/unpriced_wins + per-pick profit), POST /api/picks/settle
@@ -43,6 +43,15 @@ Multi-league corner value betting web app. Rebuilds a spreadsheet corner model i
 - **The projection is deliberately unchanged** — `v2_lambda`, `expected_lambdas`, `build_markets` and the backtester are untouched, so model output is byte-identical. Wiring these in is a separate decision once the backtester says they help.
 - `backfill_shots.py`: fills this season's cached fixtures (one statistics call each, `--limit N` per league, resumable via `features_at`, `--project-only` for the DB-only half), then projects onto `teams.real_matches` on the `(api_team_id, day)` join `backfill_fh.py` uses.
 - `backend/tests/test_shot_features.py`: 20 offline unit tests (alias/percent/null parsing, None-vs-zero, venue/window aggregation, coverage counts).
+
+### Under-line corner streaks — one streak model, two directions (2026-08-12)
+- `/api/streaks` gained `direction=over|under` and `subject=team|match` (plus `max_line`) instead of a second endpoint/collection. Defaults (`over`/`team`) are byte-compatible with the old response, so `best-bets`, the export and existing tests are untouched.
+- **Settlement**: `settle_streak_leg()` — an over line keeps its historic "L+" meaning (= Over L-0.5, can't push); an under is a laddered WHOLE line where below wins, **exactly on the line voids** and above loses. A void never breaks a run, is excluded from the hit-rate denominator (`settled = hits + misses`) and counts towards `min_hits`; a line carried entirely by voids is rejected.
+- **Ladder**: `pick_streak_line()` walks `STREAK_LADDERS` (team 1-15, match 1-30) and picks the HIGHEST cleared line on an over, the TIGHTEST held line on an under. Under rows are capped by `UNDER_LINE_CAP` (team 8, match 12) — above that a line is true too often to mean anything.
+- **Streak record**: every row carries `streak {length, start_date, last_date, voids, status: active|broken}` computed over the team's full venue history (can exceed the window) and `longest {length, start_date, end_date, is_current}` — the longest historical run at that line/direction, shown next to the live one.
+- **Pricing** (`_streak_projection`): match totals use Poisson on λ(team)+λ(opp), team lines stay NB. Whole-line unders price over SETTLED outcomes (`p_win / (p_win + p_loss)`), EV credits the pushed stake back (`book·p_win + p_void − 1`), market key `{group}_under_{line}` (overs keep `{group}_over_{line-0.5}`). New `nb_pmf()`; `nb_ge()` now sums it.
+- Frontend: `StreakFinder.jsx` gained an **Over/Under toggle + Team corners/Match total select in-place** (deliberately NOT a new /scanner tab) and Streak / Longest columns; recent chips colour win/void/miss; unders render in sky, overs stay emerald. Testids: `streak-direction-over|under`, `streak-subject`. Export report gained team + match under-streak tables.
+- `backend/tests/test_streak_model.py`: 19 offline unit tests (settlement, voids, run tracking, ladder, push-adjusted pricing) — no backend or DB needed.
 
 ### Value Finder rebuilt: Best Teams & Streaks front-and-centre (2026-08-09)
 - Team-corner odds aren't available, so the home now leads with raw signals in a **tabbed Value Finder** (`Scanner.jsx`): **Best Teams** (default) | **Hot Form** | **Streaks** | **Chase Board**, above the Best Bets strip + intro.

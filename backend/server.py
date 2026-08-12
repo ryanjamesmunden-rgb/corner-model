@@ -64,16 +64,26 @@ NB_R = 11          # dispersion param tuned via backtester (Brier 0.2226, calibr
 REF_SHOTS = 12.0   # fallback league avg shots when unknown
 
 
+def nb_pmf(k: int, lam: float, r: float = NB_R) -> float:
+    """P(X == k) under a Negative Binomial with mean lam."""
+    if lam <= 0:
+        return 1.0 if k == 0 else 0.0
+    k = int(k)
+    if k < 0:
+        return 0.0
+    p = r / (r + lam)
+    return math.exp(math.lgamma(k + r) - math.lgamma(r) - math.lgamma(k + 1)
+                    + r * math.log(p) + k * math.log(1.0 - p))
+
+
 def nb_ge(k: int, lam: float, r: float = NB_R) -> float:
     """P(X >= k) under a Negative Binomial with mean lam (better tail fit than Poisson)."""
     if lam <= 0:
         return 0.0
     k = int(k)
-    p = r / (r + lam)
     cum = 0.0
     for i in range(k):
-        cum += math.exp(math.lgamma(i + r) - math.lgamma(r) - math.lgamma(i + 1)
-                        + r * math.log(p) + i * math.log(1.0 - p))
+        cum += nb_pmf(i, lam, r)
     return max(0.0, min(1.0, 1.0 - cum))
 
 
@@ -908,13 +918,154 @@ async def _next_fixtures(q):
     return nf
 
 
+# ----------------------------- Streak model -----------------------------
+# One model, two directions. A streak is always described by a whole-number line
+# plus a DIRECTION:
+#   over  — the historic behaviour: "line+" corners, i.e. value >= line (= Over line-0.5).
+#           A half-line can't land exactly, so an over leg never voids.
+#   under — a laddered whole line: below it wins, EXACTLY on it is a void (stake back,
+#           as books settle a whole corner line) and above it loses.
+# A void is neutral: it neither extends nor breaks a run, and it is excluded from the
+# hit-rate denominator instead of counting as a miss.
+# SUBJECT picks what the line is measured against: the team's own corners, or the
+# match total (team + opponent). Same model, same rows — no parallel collection.
+
+WIN, VOID, LOSS = "win", "void", "loss"
+
+# Laddered lines the auto-picker walks. Team corners top out far lower than match totals.
+STREAK_LADDERS = {"team": list(range(1, 16)), "match": list(range(1, 31))}
+# Default ceiling for under streaks: above these a line is true so often it says nothing.
+UNDER_LINE_CAP = {"team": 8, "match": 12}
+
+
+def settle_streak_leg(value: int, line: int, direction: str) -> str:
+    """Settle one game against a streak line. Exact-line results void on unders."""
+    if direction == "under":
+        if value < line:
+            return WIN
+        return VOID if value == line else LOSS
+    return WIN if value >= line else LOSS
+
+
+def streak_value(match: dict, subject: str) -> int:
+    """The number a streak line is measured against for one played match."""
+    if subject == "match":
+        return match["corners_for"] + match["corners_against"]
+    return match["corners_for"]
+
+
+def streak_legs(matches: List[dict], line: int, direction: str, subject: str) -> List[dict]:
+    return [{"date": m.get("date"), "value": streak_value(m, subject),
+             "result": settle_streak_leg(streak_value(m, subject), line, direction)}
+            for m in matches]
+
+
+def streak_runs(legs: List[dict]) -> dict:
+    """Current and longest run over chronological (oldest-first) settled legs.
+
+    The current run is the one still alive at the newest game — its length, the date it
+    started and whether it is still active. Voids are skipped, so a run that goes
+    win-win-void-win is three long and unbroken."""
+    longest = {"length": 0, "start_date": None, "end_date": None, "voids": 0}
+    length, voids, start, end = 0, 0, None, None
+    for leg in legs:
+        if leg["result"] == VOID:
+            if length:
+                voids += 1
+            continue
+        if leg["result"] == WIN:
+            length += 1
+            if length == 1:
+                start, voids = leg["date"], 0
+            end = leg["date"]
+            if length > longest["length"]:
+                longest = {"length": length, "start_date": start, "end_date": end, "voids": voids}
+        else:
+            length, start, end, voids = 0, None, None, 0
+    current = {"length": length, "start_date": start, "last_date": end, "voids": voids,
+               "status": "active" if length else "broken"}
+    longest["is_current"] = bool(length) and longest["length"] == length and longest["end_date"] == end
+    return {"current": current, "longest": longest}
+
+
+def streak_line_label(line: int, direction: str) -> str:
+    return f"under {line}" if direction == "under" else f"{line}+"
+
+
+def pick_streak_line(values: List[int], direction: str, subject: str, min_hits: int) -> int:
+    """Best laddered line for this run: the highest line still cleared on an over,
+    the tightest line still held on an under. Voids count towards min_hits (they are
+    not misses) but a line carried entirely by voids is not a streak."""
+    ladder = STREAK_LADDERS.get(subject, STREAK_LADDERS["team"])
+
+    def qualifies(line: int) -> bool:
+        legs = [settle_streak_leg(v, line, direction) for v in values]
+        wins = legs.count(WIN)
+        return wins >= 1 and wins + legs.count(VOID) >= min_hits
+
+    hits = [x for x in ladder if qualifies(x)]
+    if not hits:
+        return 0
+    return min(hits) if direction == "under" else max(hits)
+
+
+def _streak_projection(team: dict, opp: Optional[dict], team_venue: str, opp_venue: str,
+                       line: int, direction: str, subject: str, league_shots: float,
+                       odds: Dict[str, float]) -> Optional[dict]:
+    """Price the streak's own market on the team's next fixture.
+
+    A whole-line under can push, so the fair price is taken over SETTLED outcomes
+    (p_win / (p_win + p_loss)) and EV credits the void back at stake."""
+    t_for = _real_avg(team, team_venue, "corners_for")
+    o_against = _real_avg(opp, opp_venue, "corners_against") if opp else None
+    if t_for is None or o_against is None:
+        return None
+    lam = v2_lambda((t_for + o_against) / 2, team, team_venue, league_shots)
+    ge, pmf, group = nb_ge, nb_pmf, team_venue
+    extra = {}
+    if subject == "match":
+        o_for = _real_avg(opp, opp_venue, "corners_for")
+        t_against = _real_avg(team, team_venue, "corners_against")
+        if o_for is None or t_against is None:
+            return None
+        lam_opp = v2_lambda((o_for + t_against) / 2, opp, opp_venue, league_shots)
+        extra = {"opp_for": round(o_for, 2), "team_conceded": round(t_against, 2),
+                 "lambda_team": lam, "lambda_opp": lam_opp}
+        lam = round(lam + lam_opp, 2)
+        ge, pmf, group = poisson_ge, poisson_pmf, "total"
+    if direction == "under":
+        p_void = pmf(line, lam)
+        p = max(0.0, 1.0 - ge(line, lam))          # P(X <= line - 1)
+        p_loss = max(0.0, 1.0 - p - p_void)
+        settled = p + p_loss
+        fo = fair_odds(p / settled) if settled > 0 else None
+        mkey = f"{group}_under_{line}"
+        book = odds.get(mkey)
+        ev = round((book * p + p_void - 1) * 100, 2) if book else None
+    else:
+        p, p_void = ge(line, lam), 0.0
+        fo = fair_odds(p)
+        mkey = f"{group}_over_{line - 0.5}"
+        book = odds.get(mkey)
+        ev = round((book * p - 1) * 100, 2) if book else None
+    return {"team_for": round(t_for, 2), "opp_conceded": round(o_against, 2), **extra,
+            "lambda": lam, "line": line, "direction": direction, "subject": subject,
+            "prob": round(p * 100, 1), "void_prob": round(p_void * 100, 1),
+            "fair_odds": fo, "market_key": mkey, "book_odds": book, "ev": ev,
+            "tier": tier_for_ev(ev) if ev is not None else None}
+
+
 @api_router.get("/streaks")
 async def streaks(league_id: Optional[str] = None, side: str = "overall", window: int = 5,
                   min_hits: int = 5, threshold: Optional[int] = None, min_line: int = 3,
-                  within_days: Optional[int] = None,
+                  within_days: Optional[int] = None, direction: str = "over",
+                  subject: str = "team", max_line: Optional[int] = None,
                   user: dict = Depends(get_current_user)):
-    """Teams that hit a team-corner threshold consistently over recent REAL games
-    (e.g. 4+ corners in 5/5 home games, or 8/10 last 10)."""
+    """Teams that keep landing the same side of a corner line over recent REAL games —
+    e.g. 4+ team corners in 5/5 home games, or the match total under 10 in 8 of the last 10.
+
+    direction: over (line+) | under (below the line, exact line voids)
+    subject:   team (team corners) | match (match total corners)"""
     q = {} if not league_id or league_id == "all" else {"league_id": league_id}
     teams = await db.teams.find(q, {"_id": 0}).to_list(1000)
     teams_by_id = {t["team_id"]: t for t in teams}
@@ -938,29 +1089,43 @@ async def streaks(league_id: Optional[str] = None, side: str = "overall", window
     odds_map = {o["fixture_id"]: o.get("odds", {}) for o in odds_docs}
     now = datetime.now(timezone.utc)
 
+    direction = "under" if direction == "under" else "over"
+    subject = "match" if subject == "match" else "team"
+    cap = max_line if max_line is not None else UNDER_LINE_CAP[subject]
+
     results = []
     for t in teams:
         rms = t.get("real_matches") or []
         if side == "home":
-            pool = [m for m in rms if m["home"]]
+            history = [m for m in rms if m["home"]]
         elif side == "away":
-            pool = [m for m in rms if not m["home"]]
+            history = [m for m in rms if not m["home"]]
         else:
-            pool = list(rms)
-        pool = pool[-window:]
+            history = list(rms)
+        pool = history[-window:]
         if len(pool) < window:
             continue
-        wons = [m["corners_for"] for m in pool]
-        if threshold is not None:
-            line = int(threshold)
-            hits = sum(1 for w in wons if w >= line)
-        else:
-            line = max((x for x in range(1, 16) if sum(1 for w in wons if w >= x) >= min_hits), default=0)
-            hits = sum(1 for w in wons if w >= line)
-        if line < min_line or hits < min_hits:
+        values = [streak_value(m, subject) for m in pool]
+        line = int(threshold) if threshold is not None else pick_streak_line(values, direction, subject, min_hits)
+        if line <= 0:
             continue
-        recent = [{"corners": m["corners_for"], "opponent": m["opponent"], "home": m["home"], "date": m["date"]}
-                  for m in reversed(pool)]
+        # An under is impressive when the line is LOW, an over when it is HIGH.
+        if direction == "under":
+            if line > cap:
+                continue
+        elif line < min_line:
+            continue
+        legs = streak_legs(pool, line, direction, subject)
+        hits = sum(1 for lg in legs if lg["result"] == WIN)
+        voids = sum(1 for lg in legs if lg["result"] == VOID)
+        misses = len(legs) - hits - voids
+        # voids are stake-back, so they neither count as hits nor break the run
+        if hits < 1 or hits + voids < min_hits:
+            continue
+        runs = streak_runs(streak_legs(history, line, direction, subject))
+        recent = [{"corners": lg["value"], "value": lg["value"], "result": lg["result"],
+                   "opponent": m["opponent"], "home": m["home"], "date": m["date"]}
+                  for m, lg in zip(reversed(pool), reversed(legs))]
         nf = next_fx.get(t["team_id"])
         if within_days is not None:
             if not nf:
@@ -978,27 +1143,27 @@ async def streaks(league_id: Optional[str] = None, side: str = "overall", window
             opp = teams_by_id.get(nf["opponent_team_id"])
             team_venue = "home" if nf["is_home"] else "away"
             opp_venue = "away" if nf["is_home"] else "home"
-            t_for = _real_avg(t, team_venue, "corners_for")
-            o_against = _real_avg(opp, opp_venue, "corners_against")
-            if t_for is not None and o_against is not None:
-                lam = v2_lambda((t_for + o_against) / 2, t, team_venue, ls_map.get(t["league_id"], REF_SHOTS))
-                p = nb_ge(line, lam)
-                mkey = f"{team_venue}_over_{line - 0.5}"
-                book = odds_map.get(nf["fixture_id"], {}).get(mkey)
-                ev = round((book * p - 1) * 100, 2) if book else None
-                projection = {"team_for": round(t_for, 2), "opp_conceded": round(o_against, 2),
-                              "lambda": lam, "prob": round(p * 100, 1), "fair_odds": fair_odds(p),
-                              "market_key": mkey, "book_odds": book, "ev": ev,
-                              "tier": tier_for_ev(ev) if ev is not None else None}
+            projection = _streak_projection(t, opp, team_venue, opp_venue, line, direction, subject,
+                                            ls_map.get(t["league_id"], REF_SHOTS),
+                                            odds_map.get(nf["fixture_id"], {}))
         results.append({
             "team_id": t["team_id"], "name": t["name"], "league_id": t["league_id"],
             "league_name": leagues.get(t["league_id"], ""), "side": side, "window": window,
-            "min_hits": min_hits, "hits": hits, "line": line,
-            "avg": round(sum(wons) / len(wons), 2), "min_won": min(wons), "max_won": max(wons),
+            "direction": direction, "subject": subject,
+            "min_hits": min_hits, "hits": hits, "voids": voids, "misses": misses,
+            "settled": hits + misses, "line": line,
+            "line_label": streak_line_label(line, direction),
+            "hit_rate": round(hits / (hits + misses) * 100, 1) if (hits + misses) else 0.0,
+            "avg": round(sum(values) / len(values), 2), "min_won": min(values), "max_won": max(values),
+            "streak": runs["current"], "longest": runs["longest"],
             "real_samples": t.get("real_samples", 0), "recent": recent,
             "next_fixture": nf, "projection": projection,
         })
-    results.sort(key=lambda x: (x["line"], x["hits"], x["avg"]), reverse=True)
+    # tightest under / highest over first, then the most reliable and longest runs
+    if direction == "under":
+        results.sort(key=lambda x: (-x["line"], x["hits"], x["streak"]["length"], -x["avg"]), reverse=True)
+    else:
+        results.sort(key=lambda x: (x["line"], x["hits"], x["streak"]["length"], x["avg"]), reverse=True)
     return results
 
 
@@ -1363,11 +1528,25 @@ async def export_report(user: dict = Depends(get_current_user)):
     strk = await streaks(league_id="all", side="overall", window=5, min_hits=5,
                          threshold=None, min_line=3, within_days=None, user=user)
     lines.append("\n## Consistency streaks — hit a team-corner line in all of last 5 games")
-    lines.append("| Team | League | Line | Avg | Recent (won) |")
-    lines.append("|---|---|---|---|---|")
+    lines.append("| Team | League | Line | Avg | Current | Longest | Recent (won) |")
+    lines.append("|---|---|---|---|---|---|---|")
     for r in strk[:60]:
         rec = ",".join(str(m["corners"]) for m in r["recent"])
-        lines.append(f"| {r['name']} | {r['league_name']} | {r['line']}+ (5/5) | {r['avg']} | {rec} |")
+        lines.append(f"| {r['name']} | {r['league_name']} | {r['line']}+ (5/5) | {r['avg']} | "
+                     f"{r['streak']['length']} | {r['longest']['length']} | {rec} |")
+
+    for subj, title, unit in (("team", "team corners", "won"), ("match", "match total corners", "total")):
+        unders = await streaks(league_id="all", side="overall", window=5, min_hits=5,
+                               threshold=None, min_line=3, within_days=None,
+                               direction="under", subject=subj, user=user)
+        lines.append(f"\n## Under streaks — {title} stayed under the line in all of last 5 games")
+        lines.append(f"| Team | League | Line | Avg | Current | Longest | Recent ({unit}) |")
+        lines.append("|---|---|---|---|---|---|---|")
+        for r in unders[:60]:
+            rec = ",".join(str(m["corners"]) for m in r["recent"])
+            voids = f" ({r['voids']} void)" if r["voids"] else ""
+            lines.append(f"| {r['name']} | {r['league_name']} | under {r['line']} ({r['hits']}/{r['settled']}{voids}) | "
+                         f"{r['avg']} | {r['streak']['length']} | {r['longest']['length']} | {rec} |")
 
     return PlainTextResponse("\n".join(lines))
 

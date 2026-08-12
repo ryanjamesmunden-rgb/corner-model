@@ -332,6 +332,64 @@ class TestStreaks:
         for row in d:
             assert len(row["recent"]) == 10 and row["hits"] >= 8
 
+    def test_streak_and_longest_records(self, auth):
+        d = auth.get(f"{API}/streaks?league_id=all&side=overall&window=5&min_hits=5&min_line=3").json()
+        assert d
+        for row in d:
+            cur, best = row["streak"], row["longest"]
+            assert cur["status"] in ("active", "broken")
+            assert cur["length"] >= 0 and best["length"] >= cur["length"]
+            if cur["length"]:
+                assert cur["start_date"] and cur["last_date"] >= cur["start_date"]
+            else:
+                assert cur["start_date"] is None
+            if best["length"]:
+                assert best["end_date"] >= best["start_date"]
+
+
+# ------------------------- Streaks: under direction -------------------------
+class TestUnderStreaks:
+    @pytest.mark.parametrize("subject", ["team", "match"])
+    def test_under_rows_settle_exact_lines_as_voids(self, auth, subject):
+        r = auth.get(f"{API}/streaks?league_id=all&side=overall&window=5&min_hits=5"
+                     f"&direction=under&subject={subject}")
+        assert r.status_code == 200
+        for row in r.json():
+            assert row["direction"] == "under" and row["subject"] == subject
+            assert row["line_label"] == f"under {row['line']}"
+            for g in row["recent"]:
+                expected = "win" if g["corners"] < row["line"] else ("void" if g["corners"] == row["line"] else "loss")
+                assert g["result"] == expected, g
+            hits = sum(1 for g in row["recent"] if g["result"] == "win")
+            voids = sum(1 for g in row["recent"] if g["result"] == "void")
+            # voids are stake-back: they don't count as hits, and they don't count as misses
+            assert (row["hits"], row["voids"]) == (hits, voids)
+            assert row["settled"] == row["window"] - voids
+            assert row["hits"] >= 1 and row["hits"] + row["voids"] >= row["min_hits"]
+
+    def test_under_projection_is_push_adjusted(self, auth):
+        d = auth.get(f"{API}/streaks?league_id=all&side=overall&window=5&min_hits=5&direction=under").json()
+        proj = [r["projection"] for r in d if r.get("projection")]
+        assert proj, "no under streak rows have projections"
+        for p in proj:
+            assert p["market_key"].endswith(f"_under_{p['line']}")
+            # the pushed stake comes back, so the fair price is taken over settled outcomes only
+            settled = 100 - p["void_prob"]
+            assert abs(1 / p["fair_odds"] - p["prob"] / settled) < 0.01
+
+    def test_match_subject_uses_total_market(self, auth):
+        d = auth.get(f"{API}/streaks?league_id=all&side=overall&window=5&min_hits=5"
+                     f"&direction=under&subject=match").json()
+        for row in d:
+            if row.get("projection"):
+                assert row["projection"]["market_key"] == f"total_under_{row['line']}"
+
+    def test_threshold_pins_the_under_line(self, auth):
+        d = auth.get(f"{API}/streaks?league_id=all&side=overall&window=5&min_hits=4"
+                     f"&threshold=4&direction=under").json()
+        for row in d:
+            assert row["line"] == 4
+
 
 # ------------------------- Trends -------------------------
 class TestTrends:

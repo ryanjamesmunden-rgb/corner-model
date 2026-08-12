@@ -10,6 +10,7 @@ const MEASURES = [
   { mode: "features", label: "Blocked shots", hint: "does the shot data improve prediction?" },
   { mode: "sweep", label: "Weight sweep", hint: "try several blocked-shots intent weights" },
   { mode: "game_state", label: "Game state", hint: "the chase thesis — corners by half-time state" },
+  { mode: "chase_board", label: "Chase board rank", hint: "does the board's ranking pick better spots?" },
 ];
 
 const when = (iso) => (iso ? new Date(iso).toLocaleString() : "—");

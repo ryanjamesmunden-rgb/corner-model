@@ -2,6 +2,7 @@ from fastapi import FastAPI, APIRouter, HTTPException, Depends, Request, Respons
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
+import asyncio
 import os
 import logging
 import math
@@ -763,6 +764,133 @@ def _backtest_summary(stats: dict, lines: List[int]) -> dict:
     return {"overall_brier": round(total_brier / total_n, 4) if total_n else None,
             "avg_calibration_gap": round(sum(gaps) / len(gaps), 2) if gaps else None,
             "lines": out_lines}
+
+
+# ----------------------------- Tool runners (phone-operable) -----------------------------
+# The analysis scripts are the one part of the workflow that needs a shell. These run them
+# as subprocesses and store the output so the whole loop works from a browser.
+#
+# The app is PUBLIC (auth was removed), and backfill_shots.py spends API-Football credits,
+# so these are gated behind TOOLS_TOKEN and are DISABLED unless that env var is set.
+# Arguments are built from validated values only — never from raw user strings.
+
+TOOLS_TOKEN = os.environ.get("TOOLS_TOKEN")
+TOOL_SCRIPTS = {"backfill_shots": "backfill_shots.py", "measure_features": "measure_features.py"}
+TOOL_COOLDOWN = {"backfill_shots": 600, "measure_features": 120}   # seconds
+TOOL_OUTPUT_CAP = 60000                                            # chars kept per run
+
+
+def _check_tools_token(token: Optional[str]):
+    import secrets
+    if not TOOLS_TOKEN:
+        raise HTTPException(status_code=503,
+                            detail="Tool endpoints are disabled — set TOOLS_TOKEN in the backend env")
+    if not token or not secrets.compare_digest(token, TOOLS_TOKEN):
+        raise HTTPException(status_code=403, detail="Bad or missing token")
+
+
+async def _tool_guard(script: str):
+    """One run of a script at a time, and not more often than its cooldown."""
+    running = await db.script_runs.find_one({"script": script, "status": "running"}, {"_id": 1})
+    if running:
+        raise HTTPException(status_code=409, detail=f"{script} is already running")
+    last = await db.script_runs.find({"script": script}, {"_id": 0, "started_at": 1}) \
+        .sort("started_at", -1).limit(1).to_list(1)
+    if last and last[0].get("started_at"):
+        try:
+            age = (datetime.now(timezone.utc)
+                   - datetime.fromisoformat(last[0]["started_at"])).total_seconds()
+        except Exception:
+            age = 1e9
+        cd = TOOL_COOLDOWN[script]
+        if age < cd:
+            raise HTTPException(status_code=429,
+                                detail=f"{script} ran {int(age)}s ago — wait {int(cd - age)}s")
+
+
+async def _run_tool(run_id: str, script: str, argv: List[str]):
+    import sys as _sys
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            _sys.executable, str(ROOT_DIR / TOOL_SCRIPTS[script]), *argv, cwd=str(ROOT_DIR),
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
+        out, _ = await proc.communicate()
+        text = out.decode("utf-8", "replace")
+        await db.script_runs.update_one({"_id": run_id}, {"$set": {
+            "status": "success" if proc.returncode == 0 else "failed",
+            "exit_code": proc.returncode, "output": text[-TOOL_OUTPUT_CAP:],
+            "truncated": len(text) > TOOL_OUTPUT_CAP,
+            "finished_at": datetime.now(timezone.utc).isoformat()}})
+    except Exception as e:
+        logger.exception("tool %s failed", script)
+        await db.script_runs.update_one({"_id": run_id}, {"$set": {
+            "status": "failed", "exit_code": -1, "output": f"runner error: {e}",
+            "finished_at": datetime.now(timezone.utc).isoformat()}})
+
+
+async def _start_tool(script: str, argv: List[str], label: str) -> dict:
+    await _tool_guard(script)
+    run_id = f"run_{uuid.uuid4().hex[:12]}"
+    doc = {"_id": run_id, "script": script, "label": label, "argv": argv, "status": "running",
+           "started_at": datetime.now(timezone.utc).isoformat(), "finished_at": None,
+           "output": "", "exit_code": None}
+    await db.script_runs.insert_one(dict(doc))
+    asyncio.create_task(_run_tool(run_id, script, argv))
+    # keep the last 30 runs only
+    old = await db.script_runs.find({}, {"_id": 1}).sort("started_at", -1).skip(30).to_list(500)
+    if old:
+        await db.script_runs.delete_many({"_id": {"$in": [o["_id"] for o in old]}})
+    doc.pop("output", None)
+    return {"started": True, **doc}
+
+
+@api_router.post("/tools/backfill-shots")
+async def tool_backfill_shots(token: Optional[str] = None, league_id: Optional[str] = None,
+                              limit: int = 120, project_only: bool = False,
+                              user: dict = Depends(get_current_user)):
+    """Fill shot-volume features on this season's cached fixtures. SPENDS API CREDITS —
+    one statistics call per un-filled fixture, capped by `limit` per league."""
+    _check_tools_token(token)
+    argv, parts = [], []
+    if league_id and league_id != "all":
+        if league_id not in MANAGED_LEAGUE_IDS:
+            raise HTTPException(status_code=400, detail=f"unknown league_id {league_id}")
+        argv.append(league_id)
+        parts.append(league_id)
+    argv += ["--limit", str(max(1, min(int(limit), 500)))]
+    parts.append(f"limit={max(1, min(int(limit), 500))}")
+    if project_only:
+        argv.append("--project-only")
+        parts.append("project-only")
+    return await _start_tool("backfill_shots", argv, " ".join(parts) or "all leagues")
+
+
+@api_router.post("/tools/measure")
+async def tool_measure(token: Optional[str] = None, mode: str = "features",
+                       league_id: Optional[str] = None, user: dict = Depends(get_current_user)):
+    """Run the offline measurement harness. Read-only against the DB, no API calls.
+    mode: features (blocked shots) | sweep (weights) | game_state (chase thesis)"""
+    _check_tools_token(token)
+    if mode not in ("features", "sweep", "game_state"):
+        raise HTTPException(status_code=400, detail="mode must be features|sweep|game_state")
+    argv = {"features": [], "sweep": ["--sweep"], "game_state": ["--game-state"]}[mode]
+    parts = [mode]
+    if league_id and league_id != "all":
+        if league_id not in MANAGED_LEAGUE_IDS:
+            raise HTTPException(status_code=400, detail=f"unknown league_id {league_id}")
+        argv = argv + ["--league", league_id]
+        parts.append(league_id)
+    return await _start_tool("measure_features", argv, " ".join(parts))
+
+
+@api_router.get("/tools/runs")
+async def tool_runs(token: Optional[str] = None, script: Optional[str] = None, limit: int = 5,
+                    user: dict = Depends(get_current_user)):
+    _check_tools_token(token)
+    q = {"script": script} if script in TOOL_SCRIPTS else {}
+    runs = await db.script_runs.find(q, {"_id": 0, "argv": 0}).sort("started_at", -1) \
+        .limit(max(1, min(limit, 20))).to_list(20)
+    return {"enabled": True, "runs": runs}
 
 
 @api_router.get("/backtest")

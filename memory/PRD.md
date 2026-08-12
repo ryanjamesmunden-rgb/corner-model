@@ -34,6 +34,14 @@ Multi-league corner value betting web app. Rebuilds a spreadsheet corner model i
 
 ## Changelog (recent, newest first)
 
+### Chase board rank-quality test (2026-08-12)
+- **Result that prompted it**: `--game-state` came back `no effect` for BOTH `chase_interaction` and `opp_fh_rate`, placebo clean. The chase thesis does not predict corners beyond what corner form already captures — the effect is real descriptively, but the corner average was already carrying it. That leaves `chase_score`'s `(1 + 0.4·opp_fh)` term without evidence.
+- `measure_chase_board.py` measures the board at the job it actually does — **ordering** — rather than by probability accuracy. Walk-forward replay of every past fixture as the board would have seen it, then buckets by rank.
+- **The metric is the RESIDUAL** (actual hit rate − the model's own probability), never the raw hit rate: the line moves with λ (`round(λ)-1`), so top-ranked spots sit at higher lines and hit less often by construction. Raw hit rate by rank mostly measures where the line landed.
+- Isolates every term: `chase_score`, `lambda_only`, `no_opp_fh`, `no_consistency`, plus a **RANDOM control** that sets the noise floor. Two views: buckets over all rows, and **top-N per matchday** (what the board and the Daily 2 ledger actually do).
+- **Interpretive caveat baked into the tool**: a gradient can be real even when the model is correctly specified, because λ is *estimated* from 10 games and `consistency` is a second independent look at the same quantity. In validation on data drawn from the model's own distribution — where no market edge exists by construction — consistency still separated buckets by 7.5 points against a 1.8 control floor. That is a statement about ESTIMATION NOISE, not about finding mispriced games, and the fix it implies is folding venue form into λ rather than betting the top of the board harder.
+- Validated on two synthetic cases; `no_opp_fh` outscored the live `chase_score` in both, consistent with the opp_fh null.
+
 ### Phone-operable: v2-vs-v3 backtest panel + Tools runner (2026-08-12)
 - **Fixed a false claim in the UI**: `BacktestPanel` still compared v1 vs v2 and its footer read "v2 is now live across the site", which stopped being true when v3 shipped. It now compares **v2 vs v3** off a SINGLE `?model=v3` call, using the `v2_same_sample` block — one call gives both models on identical rows, where two calls would have compared different samples. Shows `rows_using_blocked` / `rows_fell_back_to_v2` and says so plainly when a league has no blocked data yet (v3 == v2 there).
 - **`ToolsPanel`** (Dashboard) runs `backfill_shots.py` and `measure_features.py` (features / sweep / game-state) from the browser, with live status and captured output — the only part of the workflow that previously needed a shell. Makes the whole loop phone-operable.

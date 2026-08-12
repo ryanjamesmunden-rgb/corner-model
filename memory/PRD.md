@@ -34,6 +34,16 @@ Multi-league corner value betting web app. Rebuilds a spreadsheet corner model i
 
 ## Changelog (recent, newest first)
 
+### measure_features.py — does the shot data actually help? (2026-08-12)
+- Offline walk-forward harness (sibling of `tune_model.py`, same reporting shape) testing whether **blocked shots** / **shots on target** improve corner prediction. Baseline is the LIVE v2 model, imported from `server.py` so it is the real thing, not a re-implementation. Candidates add each feature as a multiplicative intent term of the same shape the production λ uses for shots. **Changes nothing** — pure measurement, no API calls.
+- **Confirmed: dangerous attacks is not available post-match.** eng-pl backfill returned `dangerous_attacks=0/40` with the other three at 40/40 — API-Football only exposes it live/in-play. It stays in the capture (costs nothing, self-populates if coverage ever appears) but is excluded from the measurement.
+- Three guards, each of which was verified to matter:
+  1. **Same sample** — rows lacking history for ANY feature under test are dropped for every model alike, so a candidate is never scored on an easier subset than the baseline. Drop count is reported.
+  2. **Mean-neutral intent** — each intent term is divided by its own mean over the scored rows. Without this, an intent term averaging >1 scales λ up, and since the baseline under-predicts at the low lines, EVERY feature scores as an improvement. This was a real false positive caught in testing, not a hypothetical.
+  3. **Shuffled placebo** — every feature is also scored with its values shuffled across rows. A placebo scoring *better* means the harness is measuring an artifact and the script says so loudly. (A placebo scoring slightly *worse* is expected — shuffling only adds noise to λ.)
+- Differences are paired per-row with a 95% interval, and the script refuses to endorse a result below `MIN_ROWS` (2000) scored rows. Also reports Pearson r of prior-form feature vs corners, with `shots` shown alongside for scale.
+- Validated against synthetic data with known answers: real team-level signal → `better` (r≈+0.50); true null → `no effect`; 30% coverage → rows correctly dropped, signal still found; independent latents over 60 teams → `no effect`.
+
 ### Shot-volume features captured (data only — NOT in the projection) (2026-08-12)
 - `sync_real.py` now pulls **shots, shots on target, blocked shots and dangerous attacks** out of `/fixtures/statistics` per team per fixture, via `parse_team_stats()` + a normalised alias table (`STAT_TYPES`) because the provider labels these inconsistently. Stored on `fixture_stats` as `home_/away_{feature}` plus a `features_at` stamp, and on `teams.real_matches` as `{feature}_for/_against`.
 - **A stat the provider didn't report is stored as `None`, never 0** — a blank must not read as "zero blocked shots" when this is fitted on later. The one exception is `shots_for/_against`, coerced to int because the live v2 λ already consumes `shots_for` and must not start seeing None.

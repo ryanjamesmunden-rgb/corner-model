@@ -343,10 +343,16 @@ async def sync_league(hc, my_lid):
 
     all_shots = [m.get("shots_for", 0) for t in team_docs for m in (t.get("real_matches") or [])]
     avg_shots = round(sum(all_shots) / len(all_shots), 2) if all_shots else None
+    # league blocked-shots average drives the v3 intent term; None where the backfill
+    # hasn't reached this league, which makes its teams price off shots intent instead
+    all_blocked = [m["blocked_shots_for"] for t in team_docs for m in (t.get("real_matches") or [])
+                   if m.get("blocked_shots_for") is not None]
+    avg_blocked = round(sum(all_blocked) / len(all_blocked), 2) if all_blocked else None
     await db.leagues.update_one({"league_id": my_lid},
                                 {"$set": {"league_id": my_lid, "name": meta["name"],
                                           "country": meta["country"], "data_source": "real",
                                           "season": season, "avg_shots": avg_shots,
+                                          "avg_blocked": avg_blocked,
                                           "synced_at": datetime.now(timezone.utc).isoformat()}},
                                 upsert=True)
     print(f"[{my_lid}] DONE teams={len(team_docs)} fixtures={len(fixture_docs)} odds={len(odds_docs)}")

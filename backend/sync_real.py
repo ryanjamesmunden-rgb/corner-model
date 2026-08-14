@@ -238,6 +238,9 @@ async def sync_league(hc, my_lid):
         hid, aid = f["teams"]["home"]["id"], f["teams"]["away"]["id"]
         fixture_docs.append({
             "fixture_id": str(uuid.uuid4()), "league_id": my_lid,
+            # real API-Football id (synthesized fallback fixtures get a string id,
+            # which settlement treats as unsettleable rather than guessing)
+            "api_fixture_id": f["fixture"]["id"],
             "round": _round_label((f.get("league") or {}).get("round")) or "Upcoming",
             "home_team_id": f"{my_lid}-{hid}", "away_team_id": f"{my_lid}-{aid}",
             "home_name": f["teams"]["home"]["name"], "away_name": f["teams"]["away"]["name"],

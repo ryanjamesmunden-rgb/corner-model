@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { toast } from "sonner";
-import { ClipboardCheck, CheckCircle2, XCircle, Clock, RefreshCw, TrendingUp } from "lucide-react";
+import { ClipboardCheck, CheckCircle2, XCircle, Clock, MinusCircle, RefreshCw, TrendingUp } from "lucide-react";
 import { api } from "@/lib/api";
 import DailyLedger from "@/components/DailyLedger";
 
@@ -10,7 +10,10 @@ const timeFmt = (iso) => (iso ? new Date(iso).toLocaleTimeString(undefined, { ho
 
 const STATUS = {
   won: { icon: CheckCircle2, chip: "bg-emerald-500/15 text-emerald-400 border-emerald-500/30", bar: "#10B981", label: "Won" },
+  half_won: { icon: CheckCircle2, chip: "bg-emerald-500/10 text-emerald-400/80 border-emerald-500/20", bar: "#10B981", label: "Half won" },
   lost: { icon: XCircle, chip: "bg-red-500/15 text-red-400 border-red-500/30", bar: "#EF4444", label: "Lost" },
+  half_lost: { icon: XCircle, chip: "bg-red-500/10 text-red-400/80 border-red-500/20", bar: "#EF4444", label: "Half lost" },
+  void: { icon: MinusCircle, chip: "bg-zinc-500/15 text-zinc-400 border-zinc-500/30", bar: "#71717A", label: "Void" },
   pending: { icon: Clock, chip: "bg-amber-500/15 text-amber-400 border-amber-500/30", bar: "#F59E0B", label: "Pending" },
 };
 

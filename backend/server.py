@@ -13,6 +13,9 @@ from typing import List, Optional, Dict
 from datetime import datetime, timezone, timedelta
 from collections import defaultdict, deque
 
+import settlement
+from settlement import settle_pending
+
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
 
@@ -401,13 +404,33 @@ async def sync_runs(limit: int = 8, user: dict = Depends(get_current_user)):
 
 
 def _pick_profit(p: dict) -> Optional[float]:
-    """Profit in units at a flat 1u stake. A loss always costs -1u; a win pays
-    (odds-1)u but only if we know the odds (some historical picks have none)."""
-    if p["status"] == "lost":
-        return -1.0
-    if p["status"] == "won":
-        return round(p["odds"] - 1.0, 2) if p.get("odds") else None
-    return None
+    """Profit in units at a flat 1u stake, including Asian half-wins and pushes."""
+    return settlement.pick_profit(p.get("status"), p.get("odds"))
+
+
+# statuses that represent a graded outcome; a void returns the stake, so it counts
+# as settled but must stay out of strike-rate and ROI denominators
+_WIN_STATUSES = (settlement.WON, settlement.HALF_WON)
+_LOSS_STATUSES = (settlement.LOST, settlement.HALF_LOST)
+_GRADED = _WIN_STATUSES + _LOSS_STATUSES
+
+
+def _record(picks: List[dict]) -> dict:
+    """Flat 1u summary. Strike rate covers graded picks (voids excluded); profit
+    only those with a real price, since a win at an unknown price has no return."""
+    graded = [p for p in picks if p.get("status") in _GRADED]
+    voided = [p for p in picks if p.get("status") == settlement.VOID]
+    priced = [p for p in graded if _pick_profit(p) is not None]
+    won = sum(1 for p in graded if p["status"] in _WIN_STATUSES)
+    profit = round(sum(_pick_profit(p) for p in priced), 2)
+    return {"picks": len(picks), "settled": len(graded), "void": len(voided),
+            "won": won, "lost": len(graded) - won,
+            "pending": sum(1 for p in picks if p.get("status") == settlement.PENDING),
+            "win_rate": round(won / len(graded) * 100, 1) if graded else 0.0,
+            "staked": len(priced), "profit": profit,
+            "roi": round(profit / len(priced) * 100, 1) if priced else 0.0,
+            "unpriced_wins": sum(1 for p in picks
+                                 if p.get("status") in _WIN_STATUSES and not p.get("odds"))}
 
 
 @api_router.get("/picks")
@@ -417,37 +440,46 @@ async def get_picks(user: dict = Depends(get_current_user)):
     picks.sort(key=lambda p: (p.get("date") or "", p.get("kickoff") or "", p.get("home") or p.get("team") or ""))
     for p in picks:
         p["profit"] = _pick_profit(p)
-    won = sum(1 for p in picks if p["status"] == "won")
-    lost = sum(1 for p in picks if p["status"] == "lost")
-    pending = sum(1 for p in picks if p["status"] == "pending")
-    settled = won + lost
-    # flat 1u staking: only picks with a computable profit are "priced"
-    priced = [p for p in picks if p["profit"] is not None]
-    profit = round(sum(p["profit"] for p in priced), 2)
-    staked = len(priced)
-    unpriced_wins = sum(1 for p in picks if p["status"] == "won" and not p.get("odds"))
-    return {"record": {"won": won, "lost": lost, "pending": pending, "total": len(picks),
-                       "settled": settled, "win_rate": round(won / settled * 100, 1) if settled else 0.0,
-                       "profit": profit, "staked": staked,
-                       "roi": round(profit / staked * 100, 1) if staked else 0.0,
-                       "unpriced_wins": unpriced_wins},
-            "picks": picks}
+    return {"record": {**_record(picks), "total": len(picks)}, "picks": picks}
 
 
-_last_pick_settle = {"at": None}
+_settle_state = {"at": None, "running": False, "last_result": None}
+SETTLE_MIN_INTERVAL_SECONDS = 60
+
+
+async def _run_settlement() -> dict:
+    """Grade pending picks. Safe to call repeatedly — settlement is idempotent and
+    a short interval guard stops overlapping runs (e.g. cron ping + UI button)."""
+    now = datetime.now(timezone.utc)
+    last = _settle_state["at"]
+    if _settle_state["running"]:
+        return {"status": "already_running", "started_at": last.isoformat() if last else None,
+                **(_settle_state["last_result"] or {})}
+    if last and (now - last).total_seconds() < SETTLE_MIN_INTERVAL_SECONDS:
+        return {"status": "throttled", "started_at": last.isoformat(),
+                **(_settle_state["last_result"] or {})}
+    _settle_state.update({"at": now, "running": True})
+    try:
+        import httpx
+        async with httpx.AsyncClient() as hc:
+            result = await settle_pending(db, hc)
+    except Exception as exc:                                  # noqa: BLE001
+        logger.exception("settlement run failed")
+        _settle_state["running"] = False
+        return {"status": "error", "error": str(exc)}
+    _settle_state.update({"running": False, "last_result": result})
+    return {"status": "ok", **result}
+
+
+@api_router.post("/settle")
+async def settle_now(user: dict = Depends(get_current_user)):
+    """Settlement entrypoint — also the target for an external cron ping."""
+    return await _run_settlement()
 
 
 @api_router.post("/picks/settle")
 async def settle_picks_now(user: dict = Depends(get_current_user)):
-    now = datetime.now(timezone.utc)
-    last = _last_pick_settle["at"]
-    if last and (now - last).total_seconds() < 120:
-        return {"status": "already_running", "started_at": last.isoformat()}
-    _last_pick_settle["at"] = now
-    import subprocess, sys, os as _os
-    subprocess.Popen([sys.executable, str(ROOT_DIR / "settle_picks.py")], cwd=str(ROOT_DIR),
-                     env={**_os.environ})
-    return {"status": "settling", "started_at": now.isoformat()}
+    return await _run_settlement()
 
 
 # ----------------------------- Daily 2 — auto-tracked ledger -----------------------------
@@ -507,17 +539,7 @@ async def ledger_snapshot(day: Optional[str] = None, user: dict = Depends(get_cu
 
 
 def _ledger_agg(subset: List[dict]) -> dict:
-    """Flat 1u summary. Strike rate covers every settled pick; profit only those with a
-    real book price, since a win at an unknown price has no computable return."""
-    settled = [p for p in subset if p.get("status") in ("won", "lost")]
-    priced = [p for p in settled if _pick_profit(p) is not None]
-    won = sum(1 for p in settled if p["status"] == "won")
-    profit = round(sum(_pick_profit(p) for p in priced), 2)
-    return {"picks": len(subset), "settled": len(settled), "won": won,
-            "lost": len(settled) - won,
-            "win_rate": round(won / len(settled) * 100, 1) if settled else 0.0,
-            "staked": len(priced), "profit": profit,
-            "roi": round(profit / len(priced) * 100, 1) if priced else 0.0}
+    return _record(subset)
 
 
 @api_router.get("/ledger")
@@ -532,8 +554,9 @@ async def ledger(user: dict = Depends(get_current_user)):
             running = round(running + profit, 2)
         rows.append({**p, "profit": profit, "balance": running if profit is not None else None})
     signals = sorted({p.get("signal") or "chase" for p in picks})
-    return {"summary": _ledger_agg(picks),
-            "unpriced_wins": sum(1 for p in picks if p.get("status") == "won" and not p.get("odds")),
+    summary = _ledger_agg(picks)
+    return {"summary": summary,
+            "unpriced_wins": summary["unpriced_wins"],
             "by_venue": {v: _ledger_agg([p for p in picks if p.get("venue") == v]) for v in ("home", "away")},
             "by_signal": {s: _ledger_agg([p for p in picks if (p.get("signal") or "chase") == s]) for s in signals},
             "rows": rows}
@@ -1497,6 +1520,8 @@ async def on_startup():
     # lock in the day's two picks shortly after the morning sync, while games are unplayed
     scheduler.add_job(_snapshot_daily_picks, CronTrigger(hour=7, minute=30),
                       id="daily_picks", replace_existing=True)
+    # settle hourly — most fixtures finish well after the twice-daily sync
+    scheduler.add_job(_run_settlement, CronTrigger(minute=20), id="settle", replace_existing=True)
     scheduler.start()
     app.state.scheduler = scheduler
     logger.info("Auto-refresh scheduler started (07:00 & 19:00 UTC daily; Daily 2 lock-in 07:30 UTC)")

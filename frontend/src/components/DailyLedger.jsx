@@ -4,6 +4,16 @@ import { LineChart, RefreshCw, TrendingUp, TrendingDown } from "lucide-react";
 import { api } from "@/lib/api";
 
 const unit = (n) => `${n > 0 ? "+" : ""}${n.toFixed(2)}u`;
+
+// Asian lines can land half-won/half-lost, and a push returns the stake.
+const RESULT = {
+  won: ["Won", "text-emerald-400"],
+  half_won: ["Half won", "text-emerald-400/80"],
+  lost: ["Lost", "text-red-400"],
+  half_lost: ["Half lost", "text-red-400/80"],
+  void: ["Void", "text-zinc-400"],
+  pending: ["Pending", "text-amber-400"],
+};
 const dayFmt = (d) => (d ? new Date(d).toLocaleDateString(undefined, { month: "short", day: "numeric" }) : "—");
 
 export default function DailyLedger() {
@@ -117,9 +127,10 @@ export default function DailyLedger() {
                     {r.odds ? r.odds.toFixed(2) : <span title="no bookmaker price recorded">—</span>}
                   </td>
                   <td className="px-3 py-2 text-center text-xs">
-                    {r.status === "won" ? <span className="text-emerald-400">Won</span>
-                      : r.status === "lost" ? <span className="text-red-400">Lost</span>
-                      : <span className="text-amber-400">Pending</span>}
+                    {(() => {
+                      const [label, cls] = RESULT[r.status] || RESULT.pending;
+                      return <span className={cls} title={r.settle_reason || undefined}>{label}</span>;
+                    })()}
                     {r.result_corners != null && <span className="text-muted-foreground"> · {r.result_corners}</span>}
                   </td>
                   <td className={`px-3 py-2 text-right ${r.profit == null ? "text-muted-foreground" : r.profit >= 0 ? "text-emerald-400" : "text-red-400"}`}>

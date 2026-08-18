@@ -29,10 +29,18 @@ Multi-league corner value betting web app. Rebuilds a spreadsheet corner model i
 - GET /api/picks (record incl. profit/staked/roi/unpriced_wins + per-pick profit), POST /api/picks/settle
 - POST /api/explain (Claude Sonnet 4.6 via Emergent LLM key, server-side cache + throttle)
 - GET /api/backtest?model=v1|v2|v3&blocked_weight (v3 = candidate, backtest-only; a v3 run also returns `v2_same_sample` scored on identical rows), /api/sync/runs, POST /api/sync/refresh-all, /api/leagues/{id}/refresh
-- GET /api/export, /api/export/csv?type=teams|fixtures
+- GET /api/export, /api/export/csv?type=teams|fixtures, /api/export/streaks?days&window&min_hits&side&league_id (fixture-first streak markdown, overs + unders, team + match)
 - Bets/bankroll (built, frontend deferred): GET/PUT /api/bankroll, CRUD /api/bets, GET /api/bets/stats
 
 ## Changelog (recent, newest first)
+
+### Fixture-first streaks export (2026-08-12)
+- `GET /api/export/streaks?days=7` — every streak angle on the fixtures kicking off in the window, **grouped by day then fixture**, as markdown built to paste into a chat. Covers the full grid: over/under × team-corners/match-total. Each angle carries the record (with voids), average, current streak + start date, longest, the recent sequence, the model price, and book odds/edge where they exist.
+- The main `/api/export` already had streak tables but they were **not tied to a fixture window and carried no kickoff or opponent**, so you could not tell which game an angle belonged to. Match-total OVERS were missing entirely.
+- **Match-total angles name their source team** (`match total under 6 (via Bores's games)`). A match total is derived from ONE team's recent games, not from the fixture, so the same fixture can legitimately show an over from one side and an under from the other. Unlabelled, that reads as the model contradicting itself — caught in the first end-to-end run. The header explains it too.
+- Match totals are deduped per fixture per direction (tightest under / highest over), since both teams otherwise generate near-duplicate rows.
+- Match-total overs use a `min_line` floor of 7; at 3 every fixture qualifies and the export is noise.
+- `ExportMenu` gains "Copy this week's streaks" and "Copy next 3 days" alongside the existing full export.
 
 ### Corners by match state — and the 1H/2H blocker (2026-08-12)
 - `team_state_splits()` groups a team's corners won/conceded by **half-time state** (trailing/level/leading) and by **final result** (won/drew/lost), per venue, each bucket carrying its `games` count. Exposed on `/api/fixtures/{id}` (`state_splits` per split, plus `ht_state`/`ft_state` on each recent row) and a new `GET /api/leagues/{id}/state-splits?split=` with a pooled `league_baseline` to compare against.

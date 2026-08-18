@@ -832,16 +832,24 @@ def _backtest_summary(stats: dict, lines: List[int]) -> dict:
 
 TOOLS_TOKEN = os.environ.get("TOOLS_TOKEN")
 TOOL_SCRIPTS = {"backfill_shots": "backfill_shots.py", "measure_features": "measure_features.py",
-                "measure_chase_board": "measure_chase_board.py"}
+                "measure_chase_board": "measure_chase_board.py",
+                "backfill_fh": "backfill_fh.py",
+                "probe_corner_halves": "probe_corner_halves.py"}
 TOOL_COOLDOWN = {"backfill_shots": 600, "measure_features": 120,
-                 "measure_chase_board": 120}                       # seconds
+                 "measure_chase_board": 120, "backfill_fh": 120,
+                 "probe_corner_halves": 600}                       # seconds
 # mode -> (script, fixed argv). Modes are an enum precisely so nothing user-supplied
 # ever reaches argv; --league is appended only after validation.
+# mode -> (script, fixed argv, accepts --league). Modes are an enum precisely so
+# nothing user-supplied ever reaches argv; --league is appended only after validation
+# AND only for the scripts that actually take it — backfill_fh.py does not, and passing
+# it would kill the run with an unrecognised-argument error.
 MEASURE_MODES = {
-    "features": ("measure_features", []),
-    "sweep": ("measure_features", ["--sweep"]),
-    "game_state": ("measure_features", ["--game-state"]),
-    "chase_board": ("measure_chase_board", []),
+    "features": ("measure_features", [], True),
+    "sweep": ("measure_features", ["--sweep"], True),
+    "game_state": ("measure_features", ["--game-state"], True),
+    "chase_board": ("measure_chase_board", [], True),
+    "backfill_fh": ("backfill_fh", [], False),
 }
 TOOL_OUTPUT_CAP = 60000                                            # chars kept per run
 
@@ -934,21 +942,39 @@ async def tool_backfill_shots(token: Optional[str] = None, league_id: Optional[s
 @api_router.post("/tools/measure")
 async def tool_measure(token: Optional[str] = None, mode: str = "features",
                        league_id: Optional[str] = None, user: dict = Depends(get_current_user)):
-    """Run an offline measurement harness. Read-only against the DB, no API calls.
+    """Run an offline tool. All of these touch the DATABASE ONLY — no API calls, so
+    they cost nothing to run. (The one tool that does spend API credits, the half-split
+    probe, has its own endpoint below so this promise stays true.)
+
     mode: features (blocked shots) | sweep (weights) | game_state (chase thesis)
-        | chase_board (does the board's ranking pick better spots?)"""
+        | chase_board (does the board's ranking pick better spots?)
+        | backfill_fh (fill half-time goals onto team history from the fixture cache)"""
     _check_tools_token(token)
     if mode not in MEASURE_MODES:
         raise HTTPException(status_code=400,
                             detail=f"mode must be one of {'|'.join(MEASURE_MODES)}")
-    script, fixed = MEASURE_MODES[mode]
+    script, fixed, takes_league = MEASURE_MODES[mode]
     argv, parts = list(fixed), [mode]
     if league_id and league_id != "all":
         if league_id not in MANAGED_LEAGUE_IDS:
             raise HTTPException(status_code=400, detail=f"unknown league_id {league_id}")
+        if not takes_league:
+            raise HTTPException(status_code=400,
+                                detail=f"mode {mode} runs across all leagues; drop league_id")
         argv += ["--league", league_id]
         parts.append(league_id)
     return await _start_tool(script, argv, " ".join(parts))
+
+
+@api_router.post("/tools/probe-halves")
+async def tool_probe_halves(token: Optional[str] = None,
+                            user: dict = Depends(get_current_user)):
+    """Probe whether API-Football can give corners split by half.
+
+    SPENDS API CREDITS — a handful of calls on a single fixture. Deliberately not a
+    `measure` mode, because that endpoint promises no API calls and this one breaks it."""
+    _check_tools_token(token)
+    return await _start_tool("probe_corner_halves", [], "1H/2H availability")
 
 
 @api_router.get("/tools/runs")

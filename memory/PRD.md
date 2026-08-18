@@ -34,6 +34,12 @@ Multi-league corner value betting web app. Rebuilds a spreadsheet corner model i
 
 ## Changelog (recent, newest first)
 
+### Tools panel covers the last two shell-only scripts (2026-08-18)
+- `backfill_fh.py` (fills `fh_goals_against` — required before the corners-by-state splits show anything but `unknown_games`) is now a `measure` mode: **DB-only, no API calls**.
+- `probe_corner_halves.py` gets its **own** endpoint `POST /api/tools/probe-halves` rather than a measure mode, because `/tools/measure` promises no API calls and the probe spends about six. Keeping that promise true matters more than the tidiness of one dispatch table.
+- `MEASURE_MODES` entries gain an **accepts-`--league`** flag. `backfill_fh.py` takes no such argument, and appending it would have killed the run with an unrecognised-argument error; a mode that cannot take a league now returns 400 rather than failing at the subprocess. Covered by a test that walks every mode.
+- With these two, nothing in the workflow needs a shell any more.
+
 ### Fixture-first streaks export + truncation fixes (2026-08-12)
 - **Why leagues were missing from exports — three separate caps, all silent:**
   1. `sync_real.py` stored only the **next 10 upcoming fixtures per league** (`ns[:10]`). Every "next N days" view was capped by this at the data layer — a league with a weekend round plus a midweek round could not fit. Now `UPCOMING_FIXTURES = 40`, which costs **nothing extra in API calls** (they come from the `/fixtures` call the sync already makes).

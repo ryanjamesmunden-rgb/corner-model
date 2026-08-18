@@ -34,7 +34,12 @@ Multi-league corner value betting web app. Rebuilds a spreadsheet corner model i
 
 ## Changelog (recent, newest first)
 
-### Fixture-first streaks export (2026-08-12)
+### Fixture-first streaks export + truncation fixes (2026-08-12)
+- **Why leagues were missing from exports — three separate caps, all silent:**
+  1. `sync_real.py` stored only the **next 10 upcoming fixtures per league** (`ns[:10]`). Every "next N days" view was capped by this at the data layer — a league with a weekend round plus a midweek round could not fit. Now `UPCOMING_FIXTURES = 40`, which costs **nothing extra in API calls** (they come from the `/fixtures` call the sync already makes).
+  2. `/api/export` sliced its tables at `[:40]`/`[:60]` on globally-sorted lists, so entire lower-ranked leagues fell off the bottom. Now `EXPORT_ROWS = 250`, and any section that still truncates **says so** (`Showing the top 250 of N`).
+  3. `streaks()` capped its team/fixture queries at `to_list(1000)`; 27 leagues x ~20 teams was already over half of it. Raised to 5000.
+- The streaks export now reports **coverage**: fixtures in the window per league, which leagues produced angles, which had fixtures but nothing qualifying, and which have **no fixtures stored at all** (the last being the only one that is a data problem — it means that league has not synced).
 - `GET /api/export/streaks?days=7` — every streak angle on the fixtures kicking off in the window, **grouped by day then fixture**, as markdown built to paste into a chat. Covers the full grid: over/under × team-corners/match-total. Each angle carries the record (with voids), average, current streak + start date, longest, the recent sequence, the model price, and book odds/edge where they exist.
 - The main `/api/export` already had streak tables but they were **not tied to a fixture window and carried no kickoff or opponent**, so you could not tell which game an angle belonged to. Match-total OVERS were missing entirely.
 - **Match-total angles name their source team** (`match total under 6 (via Bores's games)`). A match total is derived from ONE team's recent games, not from the fixture, so the same fixture can legitimately show an over from one side and an under from the other. Unlabelled, that reads as the model contradicting itself — caught in the first end-to-end run. The header explains it too.

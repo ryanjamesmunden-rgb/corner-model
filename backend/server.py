@@ -1399,14 +1399,14 @@ async def streaks(league_id: Optional[str] = None, side: str = "overall", window
     direction: over (line+) | under (below the line, exact line voids)
     subject:   team (team corners) | match (match total corners)"""
     q = {} if not league_id or league_id == "all" else {"league_id": league_id}
-    teams = await db.teams.find(q, {"_id": 0}).to_list(1000)
+    teams = await db.teams.find(q, {"_id": 0}).to_list(5000)
     teams_by_id = {t["team_id"]: t for t in teams}
     ls_map = _league_shots_map(teams)
     bl_map = _league_blocked_map(teams)
     leagues = {l["league_id"]: l["name"] for l in await db.leagues.find({}, {"_id": 0}).to_list(100)}
 
     # earliest upcoming fixture per team
-    fixtures = await db.fixtures.find(q, {"_id": 0}).to_list(1000)
+    fixtures = await db.fixtures.find(q, {"_id": 0}).to_list(5000)
     fixtures.sort(key=lambda f: f["date"])
     next_fx = {}
     for fx in fixtures:
@@ -1823,6 +1823,11 @@ async def best_bets(user: dict = Depends(get_current_user)):
             "mismatch": mism[0] if mism else None}
 
 
+# Rows per section in the full markdown report. The old 40/60 caps silently dropped
+# whole leagues off the bottom of globally-sorted tables.
+EXPORT_ROWS = 250
+
+
 def _streak_line_label(row: dict) -> str:
     """How the angle reads on a betting slip.
 
@@ -1914,6 +1919,40 @@ async def export_streaks(days: int = 7, window: int = 5, min_hits: int = 5,
            "",
            f"**{len(fixtures)} fixtures** · " + " · ".join(f"{k} {v}" for k, v in counts.items()),
            ""]
+
+    # Coverage, so "where are my other leagues?" is answerable from the export itself.
+    # A league can be absent for two very different reasons and they need telling
+    # apart: no fixtures stored in the window, or fixtures but nothing qualified.
+    # Only the first is a data problem.
+    all_leagues = {l["league_id"]: l["name"]
+                   for l in await db.leagues.find({}, {"_id": 0}).to_list(500)}
+    all_fx = await db.fixtures.find({} if lid == "all" else {"league_id": lid},
+                                    {"_id": 0}).to_list(5000)
+    horizon = now + timedelta(days=days)
+    fx_by_league = defaultdict(int)
+    for f in all_fx:
+        try:
+            dt = datetime.fromisoformat(f["date"].replace("Z", "+00:00"))
+        except Exception:
+            continue
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        if now <= dt <= horizon:
+            fx_by_league[f["league_id"]] += 1
+    with_angles = {f["league"] for f in fixtures}
+    quiet = sorted(all_leagues.get(k, k) for k in fx_by_league
+                   if all_leagues.get(k, k) not in with_angles)
+    none_stored = sorted(n for k, n in all_leagues.items() if not fx_by_league.get(k))
+    out += [f"Coverage: {sum(fx_by_league.values())} fixtures in this window across "
+            f"{len(fx_by_league)} leagues; angles found in {len(with_angles)} of them.", ""]
+    if quiet:
+        out.append(f"- Fixtures but no qualifying streak ({len(quiet)}): {', '.join(quiet)}")
+    if none_stored:
+        out.append(f"- No fixtures stored in this window ({len(none_stored)}): "
+                   f"{', '.join(none_stored)}")
+        out.append("  (a league playing this week that appears here has not synced — "
+                   "run a refresh)")
+    out.append("")
     if not fixtures:
         out.append("_No streaks match this window. Try more days, a lower min_hits, or a wider "
                    "window._")
@@ -2002,7 +2041,7 @@ async def export_report(user: dict = Depends(get_current_user)):
             lines.append(f"| {name} | {rs} | {ov['for_avg']}/{ov['against_avg']} | {hm['for_avg']}/{hm['against_avg']} | {aw['for_avg']}/{aw['against_avg']} | {l5['for_avg']}/{l5['against_avg']} | {ov['total_avg']} |")
 
     # Cross-league sections
-    mism = await _all_mismatches(within_days=None, limit=40)
+    mism = await _all_mismatches(within_days=None, limit=EXPORT_ROWS)
     lines.append("\n\n## Top corner mismatches (strong team vs leaky defence, all leagues)")
     lines.append("| Team | League | Next | Team/g | Opp conc | Proj λ | Model line |")
     lines.append("|---|---|---|---|---|---|---|")
@@ -2015,7 +2054,9 @@ async def export_report(user: dict = Depends(get_current_user)):
     lines.append("\n## Hot form — averaging more total corners than season baseline (Last 5)")
     lines.append("| Team | League | Recent avg | Season avg | Δ |")
     lines.append("|---|---|---|---|---|")
-    for r in trend[:40]:
+    if len(trend) > EXPORT_ROWS:
+        lines.append(f"_Showing the top {EXPORT_ROWS} of {len(trend)}._")
+    for r in trend[:EXPORT_ROWS]:
         lines.append(f"| {r['name']} | {r['league_name']} | {r['recent_total']} | {r['season_total']} | +{r['delta']} |")
 
     strk = await streaks(league_id="all", side="overall", window=5, min_hits=5,
@@ -2023,7 +2064,9 @@ async def export_report(user: dict = Depends(get_current_user)):
     lines.append("\n## Consistency streaks — hit a team-corner line in all of last 5 games")
     lines.append("| Team | League | Line | Avg | Current | Longest | Recent (won) |")
     lines.append("|---|---|---|---|---|---|---|")
-    for r in strk[:60]:
+    if len(strk) > EXPORT_ROWS:
+        lines.append(f"_Showing the top {EXPORT_ROWS} of {len(strk)}._")
+    for r in strk[:EXPORT_ROWS]:
         rec = ",".join(str(m["corners"]) for m in r["recent"])
         lines.append(f"| {r['name']} | {r['league_name']} | {r['line']}+ (5/5) | {r['avg']} | "
                      f"{r['streak']['length']} | {r['longest']['length']} | {rec} |")
@@ -2035,7 +2078,9 @@ async def export_report(user: dict = Depends(get_current_user)):
         lines.append(f"\n## Under streaks — {title} stayed under the line in all of last 5 games")
         lines.append(f"| Team | League | Line | Avg | Current | Longest | Recent ({unit}) |")
         lines.append("|---|---|---|---|---|---|---|")
-        for r in unders[:60]:
+        if len(unders) > EXPORT_ROWS:
+            lines.append(f"_Showing the top {EXPORT_ROWS} of {len(unders)}._")
+        for r in unders[:EXPORT_ROWS]:
             rec = ",".join(str(m["corners"]) for m in r["recent"])
             voids = f" ({r['voids']} void)" if r["voids"] else ""
             lines.append(f"| {r['name']} | {r['league_name']} | under {r['line']} ({r['hits']}/{r['settled']}{voids}) | "

@@ -1399,14 +1399,14 @@ async def streaks(league_id: Optional[str] = None, side: str = "overall", window
     direction: over (line+) | under (below the line, exact line voids)
     subject:   team (team corners) | match (match total corners)"""
     q = {} if not league_id or league_id == "all" else {"league_id": league_id}
-    teams = await db.teams.find(q, {"_id": 0}).to_list(1000)
+    teams = await db.teams.find(q, {"_id": 0}).to_list(5000)
     teams_by_id = {t["team_id"]: t for t in teams}
     ls_map = _league_shots_map(teams)
     bl_map = _league_blocked_map(teams)
     leagues = {l["league_id"]: l["name"] for l in await db.leagues.find({}, {"_id": 0}).to_list(100)}
 
     # earliest upcoming fixture per team
-    fixtures = await db.fixtures.find(q, {"_id": 0}).to_list(1000)
+    fixtures = await db.fixtures.find(q, {"_id": 0}).to_list(5000)
     fixtures.sort(key=lambda f: f["date"])
     next_fx = {}
     for fx in fixtures:
@@ -1823,6 +1823,175 @@ async def best_bets(user: dict = Depends(get_current_user)):
             "mismatch": mism[0] if mism else None}
 
 
+# Rows per section in the full markdown report. The old 40/60 caps silently dropped
+# whole leagues off the bottom of globally-sorted tables.
+EXPORT_ROWS = 250
+
+
+def _streak_line_label(row: dict) -> str:
+    """How the angle reads on a betting slip.
+
+    A match-total angle is derived from ONE team's recent games, not from this
+    fixture, so the source team is named. Without it the same fixture can show an
+    over and an under total — each true of a different side — and read as the model
+    contradicting itself."""
+    if row["subject"] == "match":
+        side = "match total"
+    else:
+        side = f"{row['name']} team corners"
+    line = f"under {row['line']}" if row["direction"] == "under" else f"{row['line']}+"
+    if row["subject"] == "match":
+        return f"{side} {line} (via {row['name']}'s games)"
+    return f"{side} {line}"
+
+
+def _streak_record(row: dict) -> str:
+    voids = f" +{row['voids']} void" if row.get("voids") else ""
+    return f"{row['hits']}/{row.get('settled', row['window'])}{voids}"
+
+
+@api_router.get("/export/streaks")
+async def export_streaks(days: int = 7, window: int = 5, min_hits: int = 5,
+                         side: str = "overall", league_id: Optional[str] = None,
+                         user: dict = Depends(get_current_user)):
+    """Every streak angle — overs and unders, team corners and match totals — on the
+    fixtures kicking off in the next `days`, grouped by fixture. Markdown, built to be
+    pasted straight into a chat.
+
+    The main report (/api/export) also carries streak tables, but they are not tied to
+    a fixture window and carry no kickoff or opponent, so you cannot tell which game an
+    angle belongs to. This one is fixture-first."""
+    from fastapi.responses import PlainTextResponse
+    lid = league_id or "all"
+    # match-total overs need a higher floor or every fixture qualifies at line 3
+    grid = [("over", "team", 3), ("under", "team", 3),
+            ("over", "match", 7), ("under", "match", 3)]
+    by_fixture: Dict[str, dict] = {}
+    counts = {f"{d}/{s}": 0 for d, s, _ in grid}
+
+    for direction, subject, min_line in grid:
+        rows = await streaks(league_id=lid, side=side, window=window, min_hits=min_hits,
+                             threshold=None, min_line=min_line, within_days=days,
+                             direction=direction, subject=subject, user=user)
+        for r in rows:
+            nf = r.get("next_fixture")
+            if not nf:
+                continue
+            counts[f"{direction}/{subject}"] += 1
+            slot = by_fixture.setdefault(nf["fixture_id"], {
+                "date": nf["date"], "league": r["league_name"],
+                "home": r["name"] if nf["is_home"] else nf["opponent"],
+                "away": nf["opponent"] if nf["is_home"] else r["name"],
+                "angles": [], "totals": []})
+            entry = {**r, "is_home": nf["is_home"]}
+            # a match total is the same bet from either team's side, so keep only the
+            # strongest reading of it rather than printing two contradictory lines
+            if subject == "match":
+                slot["totals"].append(entry)
+            else:
+                slot["angles"].append(entry)
+
+    for slot in by_fixture.values():
+        best = {}
+        for t in slot["totals"]:
+            key = t["direction"]
+            cur = best.get(key)
+            better = cur is None or (
+                (t["line"] < cur["line"]) if key == "under" else (t["line"] > cur["line"]))
+            if better or (cur and t["line"] == cur["line"] and t["hits"] > cur["hits"]):
+                best[key] = t
+        slot["angles"] += list(best.values())
+        slot["angles"].sort(key=lambda a: (a["subject"] != "team", a["direction"]))
+
+    fixtures = sorted(by_fixture.values(), key=lambda f: f["date"])
+    now = datetime.now(timezone.utc)
+    out = [f"# Corner streaks — fixtures in the next {days} days",
+           f"Generated {now.strftime('%Y-%m-%d %H:%M UTC')} · window {min_hits}/{window} · "
+           f"side {side} · league {lid}",
+           "",
+           "Every team/match angle whose streak is live going into the fixture. Model prices are "
+           "this app's own (v3); book odds and edge appear only where odds have been pasted in.",
+           "An UNDER line is a whole number — landing exactly on it is a void, which does not "
+           "break the streak and is excluded from the hit count.",
+           "A match-total angle comes from one team's own recent games, so a fixture can show "
+           "both an over and an under total — they describe the two sides' different histories, "
+           "not a contradiction. The team is named on each.",
+           "",
+           f"**{len(fixtures)} fixtures** · " + " · ".join(f"{k} {v}" for k, v in counts.items()),
+           ""]
+
+    # Coverage, so "where are my other leagues?" is answerable from the export itself.
+    # A league can be absent for two very different reasons and they need telling
+    # apart: no fixtures stored in the window, or fixtures but nothing qualified.
+    # Only the first is a data problem.
+    all_leagues = {l["league_id"]: l["name"]
+                   for l in await db.leagues.find({}, {"_id": 0}).to_list(500)}
+    all_fx = await db.fixtures.find({} if lid == "all" else {"league_id": lid},
+                                    {"_id": 0}).to_list(5000)
+    horizon = now + timedelta(days=days)
+    fx_by_league = defaultdict(int)
+    for f in all_fx:
+        try:
+            dt = datetime.fromisoformat(f["date"].replace("Z", "+00:00"))
+        except Exception:
+            continue
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        if now <= dt <= horizon:
+            fx_by_league[f["league_id"]] += 1
+    with_angles = {f["league"] for f in fixtures}
+    quiet = sorted(all_leagues.get(k, k) for k in fx_by_league
+                   if all_leagues.get(k, k) not in with_angles)
+    none_stored = sorted(n for k, n in all_leagues.items() if not fx_by_league.get(k))
+    out += [f"Coverage: {sum(fx_by_league.values())} fixtures in this window across "
+            f"{len(fx_by_league)} leagues; angles found in {len(with_angles)} of them.", ""]
+    if quiet:
+        out.append(f"- Fixtures but no qualifying streak ({len(quiet)}): {', '.join(quiet)}")
+    if none_stored:
+        out.append(f"- No fixtures stored in this window ({len(none_stored)}): "
+                   f"{', '.join(none_stored)}")
+        out.append("  (a league playing this week that appears here has not synced — "
+                   "run a refresh)")
+    out.append("")
+    if not fixtures:
+        out.append("_No streaks match this window. Try more days, a lower min_hits, or a wider "
+                   "window._")
+        return PlainTextResponse("\n".join(out))
+
+    day = None
+    for fx in fixtures:
+        d = fx["date"][:10]
+        if d != day:
+            day = d
+            try:
+                pretty = datetime.fromisoformat(fx["date"].replace("Z", "+00:00")).strftime("%a %d %b")
+            except Exception:
+                pretty = d
+            out.append(f"\n## {pretty}")
+        out.append(f"\n### {fx['date'][11:16]} · {fx['league']} · {fx['home']} v {fx['away']}")
+        for a in fx["angles"]:
+            proj = a.get("projection") or {}
+            bits = [f"{a['direction']}/{a['subject']}", _streak_record(a),
+                    f"avg {a['avg']}",
+                    f"streak {a['streak']['length']}" + (
+                        f" since {a['streak']['start_date'][:10]}" if a['streak'].get('start_date') else ""),
+                    f"best {a['longest']['length']}"]
+            venue = "" if a["subject"] == "match" else f" ({'H' if a['is_home'] else 'A'})"
+            out.append(f"- **{_streak_line_label(a)}**{venue} — " + " · ".join(bits))
+            recent = ",".join(str(m["corners"]) for m in a["recent"])
+            detail = [f"recent {recent}"]
+            if proj.get("fair_odds"):
+                detail.append(f"model {proj['fair_odds']} ({proj['prob']}%)")
+            if proj.get("void_prob"):
+                detail.append(f"void {proj['void_prob']}%")
+            if proj.get("book_odds"):
+                detail.append(f"book {proj['book_odds']} · edge {proj.get('ev')}%")
+            if a["subject"] == "team" and proj.get("opp_conceded") is not None:
+                detail.append(f"opp concedes {proj['opp_conceded']}")
+            out.append(f"  {' · '.join(detail)}")
+    return PlainTextResponse("\n".join(out))
+
+
 @api_router.get("/export")
 async def export_report(user: dict = Depends(get_current_user)):
     from fastapi.responses import PlainTextResponse
@@ -1872,7 +2041,7 @@ async def export_report(user: dict = Depends(get_current_user)):
             lines.append(f"| {name} | {rs} | {ov['for_avg']}/{ov['against_avg']} | {hm['for_avg']}/{hm['against_avg']} | {aw['for_avg']}/{aw['against_avg']} | {l5['for_avg']}/{l5['against_avg']} | {ov['total_avg']} |")
 
     # Cross-league sections
-    mism = await _all_mismatches(within_days=None, limit=40)
+    mism = await _all_mismatches(within_days=None, limit=EXPORT_ROWS)
     lines.append("\n\n## Top corner mismatches (strong team vs leaky defence, all leagues)")
     lines.append("| Team | League | Next | Team/g | Opp conc | Proj λ | Model line |")
     lines.append("|---|---|---|---|---|---|---|")
@@ -1885,7 +2054,9 @@ async def export_report(user: dict = Depends(get_current_user)):
     lines.append("\n## Hot form — averaging more total corners than season baseline (Last 5)")
     lines.append("| Team | League | Recent avg | Season avg | Δ |")
     lines.append("|---|---|---|---|---|")
-    for r in trend[:40]:
+    if len(trend) > EXPORT_ROWS:
+        lines.append(f"_Showing the top {EXPORT_ROWS} of {len(trend)}._")
+    for r in trend[:EXPORT_ROWS]:
         lines.append(f"| {r['name']} | {r['league_name']} | {r['recent_total']} | {r['season_total']} | +{r['delta']} |")
 
     strk = await streaks(league_id="all", side="overall", window=5, min_hits=5,
@@ -1893,7 +2064,9 @@ async def export_report(user: dict = Depends(get_current_user)):
     lines.append("\n## Consistency streaks — hit a team-corner line in all of last 5 games")
     lines.append("| Team | League | Line | Avg | Current | Longest | Recent (won) |")
     lines.append("|---|---|---|---|---|---|---|")
-    for r in strk[:60]:
+    if len(strk) > EXPORT_ROWS:
+        lines.append(f"_Showing the top {EXPORT_ROWS} of {len(strk)}._")
+    for r in strk[:EXPORT_ROWS]:
         rec = ",".join(str(m["corners"]) for m in r["recent"])
         lines.append(f"| {r['name']} | {r['league_name']} | {r['line']}+ (5/5) | {r['avg']} | "
                      f"{r['streak']['length']} | {r['longest']['length']} | {rec} |")
@@ -1905,7 +2078,9 @@ async def export_report(user: dict = Depends(get_current_user)):
         lines.append(f"\n## Under streaks — {title} stayed under the line in all of last 5 games")
         lines.append(f"| Team | League | Line | Avg | Current | Longest | Recent ({unit}) |")
         lines.append("|---|---|---|---|---|---|---|")
-        for r in unders[:60]:
+        if len(unders) > EXPORT_ROWS:
+            lines.append(f"_Showing the top {EXPORT_ROWS} of {len(unders)}._")
+        for r in unders[:EXPORT_ROWS]:
             rec = ",".join(str(m["corners"]) for m in r["recent"])
             voids = f" ({r['voids']} void)" if r["voids"] else ""
             lines.append(f"| {r['name']} | {r['league_name']} | under {r['line']} ({r['hits']}/{r['settled']}{voids}) | "

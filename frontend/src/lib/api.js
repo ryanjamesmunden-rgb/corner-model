@@ -23,6 +23,7 @@ export const api = {
   topCornerTeams: (params) => axios.get(`${API}/top-corner-teams`, { params }).then((r) => r.data),
   topMismatches: (params) => axios.get(`${API}/top-mismatches`, { params }).then((r) => r.data),
   exportMarkdown: () => axios.get(`${API}/export`, { responseType: "text" }).then((r) => r.data),
+  exportStreaks: (days = 7) => axios.get(`${API}/export/streaks`, { params: { days }, responseType: "text" }).then((r) => r.data),
   exportCsv: (type) => axios.get(`${API}/export/csv`, { params: { type }, responseType: "text" }).then((r) => r.data),
   refresh: (id) => axios.post(`${API}/leagues/${id}/refresh`).then((r) => r.data),
   refreshAll: () => axios.post(`${API}/sync/refresh-all`).then((r) => r.data),

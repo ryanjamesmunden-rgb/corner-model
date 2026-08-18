@@ -56,6 +56,11 @@ LEAGUE_META = {
     "arg-lp":  {"api": 128, "name": "Liga Profesional", "country": "Argentina"},
 }
 STATS_CAP = 120  # max per-fixture statistics calls per league
+# Upcoming fixtures stored per league. These come out of the /fixtures call the sync
+# already makes, so a bigger number costs NOTHING extra in API calls — and the old
+# value of 10 was silently capping every downstream "next N days" view: a league
+# playing a weekend round plus a midweek round could not fit inside it.
+UPCOMING_FIXTURES = 40
 
 # Shot-volume stats pulled out of /fixtures/statistics alongside corners. The provider
 # labels these inconsistently across leagues (and "Dangerous Attacks" is only present
@@ -299,7 +304,7 @@ async def sync_league(hc, my_lid):
     # build fixtures: real upcoming NS if available, else pair recent teams
     await db.fixtures.delete_many({"league_id": my_lid})
     fixture_docs = []
-    upcoming = ns[:10]
+    upcoming = ns[:UPCOMING_FIXTURES]
     if not upcoming and ft:
         # fallback: synthesize an upcoming round from real team pairings
         ids = list(team_names.keys())

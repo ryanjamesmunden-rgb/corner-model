@@ -4,16 +4,23 @@ import { CalendarDays, ChevronRight, Flame, Target, TrendingDown } from "lucide-
 import { api } from "@/lib/api";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
-// The best upcoming games, grouped by day and capped — a schedule you can scan, not
-// another ranked list of teams. Every other board here is team-first with the fixture
-// riding along; this one's unit is the match.
+// The best upcoming games, grouped by day — a schedule you can scan, not another ranked
+// list of teams. Every other board here is team-first with the fixture riding along;
+// this one's unit is the match.
 //
-// The order is TRIAGE, not a measured edge: which games to open first. The actual bet
-// comes from the angles listed on the row, which are priced. See _fixture_board in
-// server.py for exactly what "best" means.
+// "Per day" is a CEILING, not a quota. Every fixture clears an absolute bar first
+// (sample behind both sides, an at-or-above-par projection, and at least one STRONG
+// angle), so a quiet day shows fewer games — or none — rather than promoting whatever
+// happened to be on. A day where nothing clears is shown as such, because an absent day
+// looks like missing data.
+//
+// The ORDER is triage, not a measured edge: which games to open first. The bet itself
+// comes from the angles on the row, which are priced. See _fixture_board in server.py.
 const PER_DAY = [
-  { v: "2", l: "2 / day" },
-  { v: "3", l: "3 / day" },
+  { v: "3", l: "3" },
+  { v: "5", l: "5" },
+  { v: "8", l: "8" },
+  { v: "20", l: "All" },
 ];
 const DAYS = [
   { v: "3", l: "3 days" },
@@ -43,7 +50,7 @@ export default function FixtureBoard({ leagueId = "all" }) {
   const navigate = useNavigate();
   const [board, setBoard] = useState(null);
   const [loading, setLoading] = useState(true);
-  const [perDay, setPerDay] = useState("3");
+  const [perDay, setPerDay] = useState("5");
   const [days, setDays] = useState("3");
 
   useEffect(() => {
@@ -62,7 +69,7 @@ export default function FixtureBoard({ leagueId = "all" }) {
           <CalendarDays className="h-4 w-4 text-primary shrink-0" />
           <h2 className="font-head font-semibold text-lg">Best Upcoming Games</h2>
           <span className="text-xs text-muted-foreground hidden md:inline truncate">
-            the games worth opening, day by day
+            only games that clear the bar — a quiet day shows fewer, not worse
           </span>
         </div>
         <div className="sm:ml-auto flex gap-2">
@@ -91,8 +98,8 @@ export default function FixtureBoard({ leagueId = "all" }) {
         </div>
       ) : !board?.days?.length ? (
         <p className="px-4 py-6 text-sm text-muted-foreground" data-testid="fb-empty">
-          No upcoming fixtures carry a live angle in this window. Try the full week, or
-          refresh the data if a round is due.
+          No upcoming fixtures in this window. Try the full week, or refresh the data if a
+          round is due.
         </p>
       ) : (
         <div className="divide-y divide-border">
@@ -101,17 +108,32 @@ export default function FixtureBoard({ leagueId = "all" }) {
               <div className="flex items-center gap-2 px-4 py-2 bg-secondary/40">
                 <span className="text-xs font-head font-semibold text-foreground">{dayLabel(d.day)}</span>
                 <span className="ml-auto text-[10px] text-muted-foreground font-mono-data"
-                  title="Shown out of the fixtures that day carrying at least one angle">
-                  {d.fixtures.length} of {d.considered}
+                  title="Shown out of every fixture kicking off that day">
+                  {d.fixtures.length} of {d.scanned ?? d.considered}
                 </span>
               </div>
-              {d.fixtures.map((f) => (
+              {d.fixtures.length ? d.fixtures.map((f) => (
                 <FixtureRow key={f.fixture_id} f={f}
                   onClick={() => navigate(`/fixture/${f.fixture_id}`)} />
-              ))}
+              )) : (
+                // Saying so beats hiding the day: a missing date reads as broken data,
+                // and "nothing qualified" is itself the answer to "what's on tonight".
+                <p className="px-4 py-3 text-xs text-muted-foreground" data-testid="fb-day-empty">
+                  Nothing cleared the bar
+                  {d.scanned ? ` — ${d.scanned} fixture${d.scanned === 1 ? "" : "s"} on, none with enough behind ${d.scanned === 1 ? "it" : "them"}` : ""}.
+                </p>
+              )}
             </div>
           ))}
         </div>
+      )}
+      {board?.days?.length > 0 && (
+        <p className="px-4 py-2.5 border-t border-border text-[10px] text-muted-foreground">
+          A fixture qualifies on evidence, not on the day being quiet: {board.min_games}+ games
+          behind each side, a projection at or above that league's average, and a live streak
+          of {board.min_run}+ or a chase spot hitting 4 of 5. Order is triage — take the bet
+          from the angle.
+        </p>
       )}
     </section>
   );
@@ -141,16 +163,22 @@ function FixtureRow({ f, onClick }) {
         </div>
         <div className="text-[10px] text-muted-foreground uppercase tracking-wider mt-0.5">
           {f.league_name}
+          <span className="ml-2 normal-case tracking-normal font-mono-data"
+            title="Real matches behind each side's numbers">
+            {Math.min(f.home_games ?? 0, f.away_games ?? 0)}+ games each
+          </span>
         </div>
         <div className="flex flex-wrap gap-1.5 mt-1.5">
           {f.angles.map((a, i) => {
             const meta = KIND[a.kind] || KIND.chase;
             const { Icon } = meta;
+            // strong angles are what got the fixture here; the rest is supporting detail
             return (
-              <span key={i} title={`${a.team} — ${a.detail}`}
-                className={`inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded border font-mono-data ${meta.cls}`}>
+              <span key={i} title={`${a.team} — ${a.detail}${a.strong ? "" : " (supporting, not what qualified it)"}`}
+                className={`inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded border font-mono-data ${
+                  a.strong ? meta.cls : "border-border bg-secondary text-muted-foreground opacity-70"}`}>
                 <Icon className="h-2.5 w-2.5" />
-                <span className="font-sans text-foreground/90">{a.team}</span> {a.label}
+                <span className={`font-sans ${a.strong ? "text-foreground/90" : ""}`}>{a.team}</span> {a.label}
               </span>
             );
           })}

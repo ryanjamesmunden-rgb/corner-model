@@ -2012,13 +2012,53 @@ async def chase_board(within_days: int = 7, limit: int = 25, league_id: Optional
 # with the chase board by construction (both are driven by the same lambda), so the
 # angle count is corroboration, not independent confirmation.
 
-FIXTURE_BOARD_PER_DAY = 3          # the user's cap: 2-3 a day, never a wall of fixtures
+FIXTURE_BOARD_PER_DAY = 5          # how many a day may show, IF they earn it
 FIXTURE_BOARD_ANGLES = 6           # angles listed per fixture before it stops being readable
+
+# The bar below is ABSOLUTE, and that is the whole point. `per_day` is a ceiling, not a
+# quota: a quiet Tuesday with one fixture shows that fixture only if it would also have
+# made a Saturday of ten. Ranking alone cannot do this — sort-and-take-N always promotes
+# something, so the only game on gets crowned by default.
+BOARD_MIN_GAMES = 6                # real matches behind EACH side before its numbers mean anything
+BOARD_MIN_RUN = 3                  # a streak must be a run; 2 is merely the floor for being one
+BOARD_MIN_CONSISTENCY = 0.8        # a chase spot must have hit 4 of its last 5
+BOARD_MIN_EDGE = 1.0               # the model must expect an at-or-above-par corner game
 
 
 def _angle_rank(a: dict) -> tuple:
-    """Best angle first: longest live run, then most hits, then the tighter line."""
-    return (a.get("streak_len") or 0, a.get("hits") or 0, -(a.get("line") or 0))
+    """Best angle first: strong ones above weak, then longest live run, most hits,
+    tighter line."""
+    return (1 if a.get("strong") else 0, a.get("streak_len") or 0,
+            a.get("hits") or 0, -(a.get("line") or 0))
+
+
+def angle_is_strong(a: dict, min_run: int = BOARD_MIN_RUN,
+                    min_consistency: float = BOARD_MIN_CONSISTENCY) -> bool:
+    """Is this angle evidence, or just a row that cleared a minimum?
+
+    A chase spot is judged on how reliably the team has actually hit the line — the
+    game-state catalyst (opponent scoring first-half goals) is what put it on the chase
+    board, but reliability is what makes it worth acting on. A streak is judged on the
+    run that is ALIVE, not on the window's hit count, because a 4/5 whose most recent
+    game was the miss is a broken streak wearing a good record."""
+    if a.get("kind") == "chase":
+        return (a.get("consistency_rate") or 0.0) >= min_consistency
+    return (a.get("streak_len") or 0) >= min_run
+
+
+def fixture_qualifies(row: dict, min_games: int = BOARD_MIN_GAMES,
+                      min_edge: float = BOARD_MIN_EDGE) -> bool:
+    """Three hurdles, all absolute — nothing here depends on the rest of the day's card.
+
+      CONTEXT    both sides have enough real matches for their averages to mean anything
+      PROJECTION the model expects an at-or-above-par corner game for that league
+      EVIDENCE   at least one angle that is actually strong, not merely present
+    """
+    if min(row.get("home_games", 0), row.get("away_games", 0)) < min_games:
+        return False
+    if (row.get("corner_edge") or 0) < min_edge:
+        return False
+    return any(a.get("strong") for a in row.get("angles") or [])
 
 
 def board_days(rows: List[dict], per_day: int) -> List[dict]:
@@ -2041,9 +2081,14 @@ def board_days(rows: List[dict], per_day: int) -> List[dict]:
 
 
 async def _fixture_board(days: int = 7, per_day: int = FIXTURE_BOARD_PER_DAY,
-                         league_id: Optional[str] = None, user: dict = None) -> dict:
-    per_day = max(1, min(int(per_day), 10))
+                         league_id: Optional[str] = None, user: dict = None,
+                         min_games: int = BOARD_MIN_GAMES, min_run: int = BOARD_MIN_RUN,
+                         min_edge: float = BOARD_MIN_EDGE) -> dict:
+    per_day = max(1, min(int(per_day), 20))
     days = max(1, min(int(days), 14))
+    min_games = max(0, min(int(min_games), 30))
+    min_run = max(1, min(int(min_run), 20))
+    min_edge = max(0.0, min(float(min_edge), 3.0))
     lid = league_id or "all"
     q = {} if lid == "all" else {"league_id": lid}
 
@@ -2085,6 +2130,9 @@ async def _fixture_board(days: int = 7, per_day: int = FIXTURE_BOARD_PER_DAY,
             "lambda_home": lam["home"], "lambda_away": lam["away"], "lambda_total": lam["total"],
             "league_avg_total": round(avg, 2),
             "corner_edge": round(lam["total"] / avg, 3) if avg else 1.0,
+            # sample behind each side — the CONTEXT hurdle, and shown so a thin row is
+            # visibly thin rather than quietly thin
+            "home_games": len(_src(home)), "away_games": len(_src(away)),
             "angles": [],
         }
     if not rows:
@@ -2097,11 +2145,13 @@ async def _fixture_board(days: int = 7, per_day: int = FIXTURE_BOARD_PER_DAY,
 
     for c in await _chase_board(within_days=days, limit=500, league_id=lid):
         nf = c.get("next_fixture") or {}
+        rate = (c["consistency"] / c["consistency_of"]) if c.get("consistency_of") else 0.0
         add(nf.get("fixture_id"), {
             "kind": "chase", "team": c["name"], "label": f"{c['line']}+ corners",
             "detail": f"λ {c['lambda']} · hit {c['consistency']}/{c['consistency_of']}"
                       f" · opp scores 1H {c['opp_fh_rate']}%",
             "line": c["line"], "hits": c["consistency"], "streak_len": 0,
+            "consistency_rate": round(rate, 3), "opp_fh_rate": c["opp_fh_rate"],
             "prob": c["prob"], "fair_odds": c["fair_odds"], "ev": c.get("ev")})
 
     # the same four grids the streaks export walks, so the board cannot disagree with it
@@ -2123,29 +2173,52 @@ async def _fixture_board(days: int = 7, per_day: int = FIXTURE_BOARD_PER_DAY,
                 "fair_odds": (s.get("projection") or {}).get("fair_odds"),
                 "ev": (s.get("projection") or {}).get("ev")})
 
-    # a fixture with no angle is a projection, not a pick
-    live = [r for r in rows.values() if r["angles"]]
-    for r in live:
+    for r in rows.values():
+        for a in r["angles"]:
+            a["strong"] = angle_is_strong(a, min_run, BOARD_MIN_CONSISTENCY)
         r["angles"].sort(key=_angle_rank, reverse=True)
         r["angle_count"] = len(r["angles"])
+        r["strong_angles"] = sum(1 for a in r["angles"] if a["strong"])
         r["angles"] = r["angles"][:FIXTURE_BOARD_ANGLES]
-        r["best_angle"] = r["angles"][0]
+        r["best_angle"] = r["angles"][0] if r["angles"] else None
 
+    # The bar, applied BEFORE the per-day ceiling — so a thin day shows fewer games, or
+    # none, rather than promoting whatever happened to be on.
+    live = [r for r in rows.values() if fixture_qualifies(r, min_games, min_edge)]
     out_days = board_days(live, per_day)
+    seen = {d["day"] for d in out_days}
+    # days that had fixtures but nothing that cleared the bar are reported, not hidden:
+    # "nothing qualified" is information, an absent day looks like missing data
+    for r in rows.values():
+        day = (r.get("date") or "")[:10]
+        if day and day not in seen:
+            out_days.append({"day": day, "considered": 0, "fixtures": []})
+            seen.add(day)
+    for d in out_days:
+        d["scanned"] = sum(1 for r in rows.values() if (r.get("date") or "")[:10] == d["day"])
+    out_days.sort(key=lambda d: d["day"])
     return {"days": out_days, "per_day": per_day, "within_days": days,
+            "min_games": min_games, "min_run": min_run, "min_edge": min_edge,
             "fixtures": sum(len(d["fixtures"]) for d in out_days)}
 
 
 @api_router.get("/fixture-board")
 async def fixture_board(days: int = 7, per_day: int = FIXTURE_BOARD_PER_DAY,
                         league_id: Optional[str] = None,
+                        min_games: int = BOARD_MIN_GAMES, min_run: int = BOARD_MIN_RUN,
+                        min_edge: float = BOARD_MIN_EDGE,
                         user: dict = Depends(get_current_user)):
-    """The best upcoming fixtures, grouped by kickoff day and capped at `per_day`.
+    """The best upcoming fixtures, grouped by kickoff day, fixture-first.
 
-    Fixture-first, unlike every other board here. See the notes above `_fixture_board`
-    for exactly how "best" is decided — and for what that ranking has NOT been shown
-    to be."""
-    return await _fixture_board(days, per_day, league_id, user)
+    `per_day` is a CEILING, not a quota. Every fixture must clear an absolute bar first
+    — sample behind both sides, an at-or-above-par projection, and at least one angle
+    that is strong rather than merely present — so a day with one fixture on shows it
+    only if it would have made a busy day too. A day where nothing clears comes back
+    with an empty list rather than being dropped.
+
+    min_games / min_run / min_edge loosen or tighten that bar. See the notes above
+    `_fixture_board` for how "best" is decided, and for what it has NOT been shown to be."""
+    return await _fixture_board(days, per_day, league_id, user, min_games, min_run, min_edge)
 
 
 @api_router.get("/top-corner-teams")

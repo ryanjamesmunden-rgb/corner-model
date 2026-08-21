@@ -139,6 +139,52 @@ def _blocked_form(team: dict, venue: str) -> Optional[float]:
     return sum(vals) / len(vals)
 
 
+def _blocked_covered(team: dict, venue: str) -> int:
+    """Games on this venue that carry blocked shots — the count `_blocked_form` tests."""
+    rms = (team or {}).get("real_matches") or []
+    if venue == "home":
+        pool = [m for m in rms if m["home"]]
+    elif venue == "away":
+        pool = [m for m in rms if not m["home"]]
+    else:
+        pool = rms
+    if not pool:
+        pool = rms
+    return sum(1 for m in pool if m.get("blocked_shots_for") is not None)
+
+
+def intent_breakdown(team: dict, venue: str, league_shots: float,
+                     league_blocked: float = 0.0) -> dict:
+    """Which intent term the live model applies to this team here, and why.
+
+    `live_lambda` is DEFINED in terms of this, so a panel built on it cannot claim one
+    thing while pricing quietly does another.
+
+    source: blocked (v3) | shots (v2 fallback) | none (no shot history at all)"""
+    sf, fh = _shots_form(team, venue)
+    covered = _blocked_covered(team, venue)
+    flat = {"source": "none", "multiplier": 1.0, "form": 1.0, "value": None,
+            "league_avg": None, "weight": None, "covered": covered,
+            "min_games": MIN_BLOCKED_GAMES, "fh_rate": None, "reason": "no shot data yet"}
+    if sf is None:
+        return flat
+    form = 1.0 + 0.03 * (fh - 0.5)
+    blocked = _blocked_form(team, venue)
+    if blocked is not None and league_blocked:
+        return {"source": "blocked", "multiplier": _intent(blocked, league_blocked, V3_BLOCKED_WEIGHT),
+                "form": form, "value": round(blocked, 2), "league_avg": round(league_blocked, 2),
+                "weight": V3_BLOCKED_WEIGHT, "covered": covered, "min_games": MIN_BLOCKED_GAMES,
+                "fh_rate": round(fh, 3), "reason": None}
+    if not league_shots:
+        return {**flat, "reason": "league has no shot average"}
+    reason = ("league has no blocked-shots data" if not league_blocked
+              else f"only {covered} game(s) here carry blocked shots — needs {MIN_BLOCKED_GAMES}")
+    return {"source": "shots", "multiplier": _intent(sf, league_shots, 0.10), "form": form,
+            "value": round(sf, 2), "league_avg": round(league_shots, 2), "weight": 0.10,
+            "covered": covered, "min_games": MIN_BLOCKED_GAMES, "fh_rate": round(fh, 3),
+            "reason": reason}
+
+
 def live_lambda(base: float, team: dict, venue: str, league_shots: float,
                 league_blocked: float = 0.0) -> float:
     """Production corner-lambda (v3): blocked-shots intent x first-half-goal form.
@@ -146,16 +192,8 @@ def live_lambda(base: float, team: dict, venue: str, league_shots: float,
     Falls back to v2's shots intent for any team without enough blocked-shots history,
     so a thinly-covered team prices exactly as it does today rather than worse. Both
     branches are the same shape; only the stat driving the intent differs."""
-    sf, fh = _shots_form(team, venue)
-    if sf is None:
-        return round(base, 2)
-    form = 1.0 + 0.03 * (fh - 0.5)
-    blocked = _blocked_form(team, venue)
-    if blocked is not None and league_blocked:
-        return round(base * _intent(blocked, league_blocked, V3_BLOCKED_WEIGHT) * form, 2)
-    if not league_shots:
-        return round(base, 2)
-    return round(base * _intent(sf, league_shots, 0.10) * form, 2)
+    b = intent_breakdown(team, venue, league_shots, league_blocked)
+    return round(base * b["multiplier"] * b["form"], 2)
 
 
 def _league_shots_map(teams: list) -> dict:
@@ -313,6 +351,70 @@ def team_state_splits(matches: List[dict], split: str = "overall", window: int =
         out[phase] = buckets
     out["played"] = len(pool)
     return out
+
+
+GOAL_WINDOWS = [(0, 15), (16, 30), (31, 45), (46, 60), (61, 75), (76, 90)]
+
+
+def _goal_window(minute: int) -> str:
+    for lo, hi in GOAL_WINDOWS:
+        if minute <= hi:
+            return f"{lo or 1}-{hi}"
+    return "76-90"                      # 90+ stoppage time belongs to the last window
+
+
+def goal_profile(matches: List[dict], split: str = "overall", window: int = 0) -> dict:
+    """Who scores, when, and how long this team spends chasing.
+
+    Built from `/fixtures/events`, which — unlike the corner data — does carry minutes.
+    `minutes_trailing` is the reason this exists: the game-state split classifies a match
+    by its half-time score, so a team a goal down from the 10th minute and one that
+    conceded on 43 land in the same bucket. Minutes separate them.
+
+    Only matches the goal backfill has reached carry these keys, so `games` is the count
+    of COVERED matches, not of matches played."""
+    if split == "home":
+        pool = [m for m in matches if m["home"]]
+    elif split == "away":
+        pool = [m for m in matches if not m["home"]]
+    else:
+        pool = list(matches)
+    pool = pool[-window:] if window else pool
+    covered = [m for m in pool if m.get("minutes_trailing") is not None]
+    n = len(covered)
+    if not n:
+        return {"games": 0, "played": len(pool), "scorers": [], "windows": {},
+                "minutes": {}, "first_goal": {}}
+
+    def avg(key):
+        return round(sum(m.get(key) or 0 for m in covered) / n, 1)
+
+    tally: Dict[str, dict] = {}
+    windows = {f"{lo or 1}-{hi}": 0 for lo, hi in GOAL_WINDOWS}
+    for m in covered:
+        for g in m.get("scorers") or []:
+            name = g.get("player") or "unknown"
+            row = tally.setdefault(name, {"player": name, "goals": 0, "minutes": []})
+            row["goals"] += 1
+            row["minutes"].append(g.get("minute"))
+            windows[_goal_window(int(g.get("minute") or 0))] += 1
+
+    scored_first = [m for m in covered if m.get("scored_first") is not None]
+    firsts = [m["first_goal_min"] for m in covered if m.get("first_goal_min") is not None]
+    conceded = [m["opp_first_goal_min"] for m in covered if m.get("opp_first_goal_min") is not None]
+    return {
+        "games": n, "played": len(pool),
+        "scorers": sorted(tally.values(), key=lambda r: (-r["goals"], r["player"]))[:12],
+        "windows": windows,
+        "minutes": {"trailing": avg("minutes_trailing"), "level": avg("minutes_level"),
+                    "leading": avg("minutes_leading")},
+        "first_goal": {
+            "scored_first_pct": round(sum(1 for m in scored_first if m["scored_first"])
+                                      / len(scored_first) * 100, 1) if scored_first else None,
+            "avg_first_scored_min": round(sum(firsts) / len(firsts), 1) if firsts else None,
+            "avg_first_conceded_min": round(sum(conceded) / len(conceded), 1) if conceded else None,
+        },
+    }
 
 
 def _src(team: dict) -> list:
@@ -834,12 +936,12 @@ TOOLS_TOKEN = os.environ.get("TOOLS_TOKEN")
 TOOL_SCRIPTS = {"backfill_shots": "backfill_shots.py", "measure_features": "measure_features.py",
                 "measure_chase_board": "measure_chase_board.py",
                 "backfill_fh": "backfill_fh.py",
+                "backfill_goal_events": "backfill_goal_events.py",
                 "probe_corner_halves": "probe_corner_halves.py"}
 TOOL_COOLDOWN = {"backfill_shots": 600, "measure_features": 120,
                  "measure_chase_board": 120, "backfill_fh": 120,
+                 "backfill_goal_events": 600,
                  "probe_corner_halves": 600}                       # seconds
-# mode -> (script, fixed argv). Modes are an enum precisely so nothing user-supplied
-# ever reaches argv; --league is appended only after validation.
 # mode -> (script, fixed argv, accepts --league). Modes are an enum precisely so
 # nothing user-supplied ever reaches argv; --league is appended only after validation
 # AND only for the scripts that actually take it — backfill_fh.py does not, and passing
@@ -937,6 +1039,33 @@ async def tool_backfill_shots(token: Optional[str] = None, league_id: Optional[s
         argv.append("--project-only")
         parts.append("project-only")
     return await _start_tool("backfill_shots", argv, " ".join(parts) or "all leagues")
+
+
+@api_router.post("/tools/backfill-goals")
+async def tool_backfill_goals(token: Optional[str] = None, league_id: Optional[str] = None,
+                              limit: int = 120, project_only: bool = False,
+                              user: dict = Depends(get_current_user)):
+    """Fill goal detail — scorers, minutes, and minutes spent trailing — onto cached
+    fixtures, then project it onto team history.
+
+    SPENDS API CREDITS on the fetch half: one `/fixtures/events` call per fixture not yet
+    done, capped by `limit` per league and resumable, so the spend is yours to pace.
+    `project_only` re-runs the cache -> teams half for free, which is what you want after
+    a sync has added matches the cache already covers."""
+    _check_tools_token(token)
+    argv, parts = [], []
+    if league_id and league_id != "all":
+        if league_id not in MANAGED_LEAGUE_IDS:
+            raise HTTPException(status_code=400, detail=f"unknown league_id {league_id}")
+        argv.append(league_id)
+        parts.append(league_id)
+    capped = max(1, min(int(limit), 500))
+    argv += ["--limit", str(capped)]
+    parts.append(f"limit={capped}")
+    if project_only:
+        argv.append("--project-only")
+        parts.append("project-only")
+    return await _start_tool("backfill_goal_events", argv, " ".join(parts) or "all leagues")
 
 
 @api_router.post("/tools/measure")
@@ -1175,6 +1304,18 @@ async def fixture_detail(fixture_id: str, user: dict = Depends(get_current_user)
         return {sp: team_state_splits(team.get("real_matches") or [], sp)
                 for sp in ["home", "away", "overall"]}
 
+    def goals(team):
+        return {sp: goal_profile(team.get("real_matches") or [], sp)
+                for sp in ["home", "away", "overall"]}
+
+    # Why the live model nudges this team's lambda, per split — the same call pricing
+    # makes, so the panel and the price cannot disagree.
+    league = await db.leagues.find_one({"league_id": fx["league_id"]}, {"_id": 0}) or {}
+    ls, lb = league.get("avg_shots") or REF_SHOTS, league.get("avg_blocked") or 0.0
+
+    def intent(team):
+        return {sp: intent_breakdown(team, sp, ls, lb) for sp in ["home", "away", "overall"]}
+
     def recent(team):
         rms = team.get("real_matches") or []
         return [{"date": m["date"], "opponent": m["opponent"], "home": m["home"],
@@ -1184,17 +1325,24 @@ async def fixture_detail(fixture_id: str, user: dict = Depends(get_current_user)
                  "fh": (m["fh_goals_for"] >= 1) if m.get("fh_goals_for") is not None else None,
                  "ht_state": HT_LABELS.get(_match_state(m, "ht")),
                  "ft_state": FT_LABELS.get(_match_state(m, "ft")),
+                 # goal detail — present only on matches the goal backfill has reached
+                 "scorers": m.get("scorers"), "minutes_trailing": m.get("minutes_trailing"),
+                 "first_goal_min": m.get("first_goal_min"),
+                 "opp_first_goal_min": m.get("opp_first_goal_min"),
+                 "scored_first": m.get("scored_first"),
                  **{f: m.get(f) for f in ("shots_for", "shots_on_target_for",
                                           "blocked_shots_for", "dangerous_attacks_for")}}
                 for m in reversed(rms)]
 
     return {"fixture": fx, "model": model,
             "home_team": {"name": home["name"], "splits": splits(home), "features": features(home),
-                          "state_splits": states(home),
-                          "recent": recent(home), "real_samples": home.get("real_samples", 0)},
+                          "state_splits": states(home), "goal_profile": goals(home),
+                          "intent": intent(home), "recent": recent(home),
+                          "real_samples": home.get("real_samples", 0)},
             "away_team": {"name": away["name"], "splits": splits(away), "features": features(away),
-                          "state_splits": states(away),
-                          "recent": recent(away), "real_samples": away.get("real_samples", 0)}}
+                          "state_splits": states(away), "goal_profile": goals(away),
+                          "intent": intent(away), "recent": recent(away),
+                          "real_samples": away.get("real_samples", 0)}}
 
 
 class OddsBody(BaseModel):
@@ -1247,6 +1395,13 @@ async def scanner(league_id: Optional[str] = None, market: Optional[str] = None,
     return results
 
 
+# A venue split needs this many games before it is trusted on its own. Below it the
+# full history is used instead: a team promoted mid-table with one home game on record
+# was previously handed a "home average" of that single match, and that number then
+# drove its lambda, its projection and its place on every board.
+MIN_VENUE_GAMES = 3
+
+
 def _real_avg(team, side, field):
     rms = (team or {}).get("real_matches") or []
     if side == "home":
@@ -1255,8 +1410,8 @@ def _real_avg(team, side, field):
         pool = [m for m in rms if not m["home"]]
     else:
         pool = rms
-    if not pool:
-        pool = rms
+    if len(pool) < MIN_VENUE_GAMES:
+        pool = rms                      # too thin to mean anything — fall back to everything
     if not pool:
         return None
     return sum(m[field] for m in pool) / len(pool)
@@ -1292,6 +1447,12 @@ WIN, VOID, LOSS = "win", "void", "loss"
 
 # Laddered lines the auto-picker walks. Team corners top out far lower than match totals.
 STREAK_LADDERS = {"team": list(range(1, 16)), "match": list(range(1, 31))}
+# A run of one game is a result, not a streak. Two things could put one on the board:
+#   - a line carried by VOIDS — four exact-line pushes and a single win cleared the old
+#     `hits >= 1 and hits + voids >= min_hits` test, and showed as "streak: 1"
+#   - a team with barely any history, so its whole record is one or two games
+# Both are the same complaint: the row claims a pattern the sample cannot support.
+MIN_STREAK_LEN = 2
 # Default ceiling for under streaks: above these a line is true so often it says nothing.
 UNDER_LINE_CAP = {"team": 8, "match": 12}
 
@@ -1344,6 +1505,17 @@ def streak_runs(legs: List[dict]) -> dict:
                "status": "active" if length else "broken"}
     longest["is_current"] = bool(length) and longest["length"] == length and longest["end_date"] == end
     return {"current": current, "longest": longest}
+
+
+def streak_qualifies(hits: int, voids: int, run_length: int, min_hits: int, floor: int) -> bool:
+    """Is this a streak, or just a result that happened to fall the right way?
+
+    Three separate hurdles, and a row has to clear all of them:
+      - `hits >= floor`      — real WINS in the window, so voids can't carry a line
+      - `hits + voids >= min_hits` — the coverage the user asked for, voids allowed
+      - `run_length >= floor` — the run alive right now is actually a run
+    The last one is what removes single-game streaks from a team with almost no history."""
+    return hits >= floor and hits + voids >= min_hits and run_length >= floor
 
 
 def streak_line_label(line: int, direction: str) -> str:
@@ -1418,12 +1590,14 @@ async def streaks(league_id: Optional[str] = None, side: str = "overall", window
                   min_hits: int = 5, threshold: Optional[int] = None, min_line: int = 3,
                   within_days: Optional[int] = None, direction: str = "over",
                   subject: str = "team", max_line: Optional[int] = None,
+                  min_streak: int = MIN_STREAK_LEN,
                   user: dict = Depends(get_current_user)):
     """Teams that keep landing the same side of a corner line over recent REAL games —
     e.g. 4+ team corners in 5/5 home games, or the match total under 10 in 8 of the last 10.
 
-    direction: over (line+) | under (below the line, exact line voids)
-    subject:   team (team corners) | match (match total corners)"""
+    direction:  over (line+) | under (below the line, exact line voids)
+    subject:    team (team corners) | match (match total corners)
+    min_streak: shortest run that counts as a streak (default 2 — one game is not one)"""
     q = {} if not league_id or league_id == "all" else {"league_id": league_id}
     teams = await db.teams.find(q, {"_id": 0}).to_list(5000)
     teams_by_id = {t["team_id"]: t for t in teams}
@@ -1451,6 +1625,8 @@ async def streaks(league_id: Optional[str] = None, side: str = "overall", window
     direction = "under" if direction == "under" else "over"
     subject = "match" if subject == "match" else "team"
     cap = max_line if max_line is not None else UNDER_LINE_CAP[subject]
+    # never demand more wins than the window can supply, and never drop below 1
+    floor = max(1, min(int(min_streak), min_hits))
 
     results = []
     for t in teams:
@@ -1478,10 +1654,9 @@ async def streaks(league_id: Optional[str] = None, side: str = "overall", window
         hits = sum(1 for lg in legs if lg["result"] == WIN)
         voids = sum(1 for lg in legs if lg["result"] == VOID)
         misses = len(legs) - hits - voids
-        # voids are stake-back, so they neither count as hits nor break the run
-        if hits < 1 or hits + voids < min_hits:
-            continue
         runs = streak_runs(streak_legs(history, line, direction, subject))
+        if not streak_qualifies(hits, voids, runs["current"]["length"], min_hits, floor):
+            continue
         recent = [{"corners": lg["value"], "value": lg["value"], "result": lg["result"],
                    "opponent": m["opponent"], "home": m["home"], "date": m["date"]}
                   for m, lg in zip(reversed(pool), reversed(legs))]
@@ -1541,22 +1716,25 @@ async def feature_coverage(league_id: Optional[str] = None, user: dict = Depends
     for d in docs:
         lid = d.get("league_id", "")
         row = per_league.setdefault(lid, {"league_id": lid, "league_name": leagues.get(lid, lid),
-                                          "fixtures": 0, "sides": 0,
+                                          "fixtures": 0, "sides": 0, "goal_events": 0,
                                           **{f: 0 for f in SHOT_FEATURES}})
         row["fixtures"] += 1
         row["sides"] += 2
+        # goal detail is per FIXTURE, not per side — one events call fills both teams
+        row["goal_events"] += 2 if d.get("events_at") else 0
         for f in SHOT_FEATURES:
             row[f] += sum(1 for side in ("home", "away") if d.get(f"{side}_{f}") is not None)
+    cols = list(SHOT_FEATURES) + ["goal_events"]
     for row in per_league.values():
         row["pct"] = {f: round(row[f] / row["sides"] * 100, 1) if row["sides"] else 0.0
-                      for f in SHOT_FEATURES}
+                      for f in cols}
     totals = {"fixtures": sum(r["fixtures"] for r in per_league.values()),
               "sides": sum(r["sides"] for r in per_league.values())}
-    for f in SHOT_FEATURES:
+    for f in cols:
         totals[f] = sum(r[f] for r in per_league.values())
     totals["pct"] = {f: round(totals[f] / totals["sides"] * 100, 1) if totals["sides"] else 0.0
-                     for f in SHOT_FEATURES}
-    return {"features": list(SHOT_FEATURES), "totals": totals,
+                     for f in cols}
+    return {"features": cols, "totals": totals,
             "leagues": sorted(per_league.values(), key=lambda r: r["league_name"])}
 
 

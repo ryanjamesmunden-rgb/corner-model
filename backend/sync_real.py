@@ -55,7 +55,13 @@ LEAGUE_META = {
     "jpn-j1":  {"api": 98,  "name": "J1 League",        "country": "Japan"},
     "arg-lp":  {"api": 128, "name": "Liga Profesional", "country": "Argentina"},
 }
-STATS_CAP = 120  # max per-fixture statistics calls per league
+# Fixtures per league whose statistics we pull. This is what decides HISTORY DEPTH:
+# a 20-team league plays 10 fixtures a round, so 120 fixtures was only ~12 rounds and
+# every team topped out at ~12-13 games no matter how long the season had run. 400
+# covers roughly 20 games per team, which is what team.real_matches stores anyway.
+# Past results never change, so each fixture costs one statistics call ONCE and is
+# cached forever — raising this is a one-off spend, not a recurring one.
+STATS_CAP = int(os.environ.get("STATS_CAP", "400"))
 # Upcoming fixtures stored per league. These come out of the /fixtures call the sync
 # already makes, so a bigger number costs NOTHING extra in API calls — and the old
 # value of 10 was silently capping every downstream "next N days" view: a league
@@ -186,8 +192,11 @@ async def sync_league(hc, my_lid):
     fixtures = await af_get(hc, "/fixtures", {"league": api_id, "season": season})
     ft = [f for f in fixtures if f["fixture"]["status"]["short"] == "FT"]
     ns = [f for f in fixtures if f["fixture"]["status"]["short"] in ("NS", "TBD")]
-    # if the current season has too few finished matches, pull last season for corner form
-    if len(ft) < 40:
+    # Top up from last season whenever this one has not yet produced enough finished
+    # matches to fill the pool. The old trigger was `< 40`, which only ever fired in the
+    # opening weeks of a season — a league 12 rounds in had 120 games, cleared the bar,
+    # and every team was still stuck on ~12 matches of history.
+    if len(ft) < STATS_CAP:
         try:
             prev = await af_get(hc, "/fixtures", {"league": api_id, "season": season - 1})
             ft += [f for f in prev if f["fixture"]["status"]["short"] == "FT"]

@@ -300,6 +300,9 @@ function TeamBreakdown({ team, title, highlight }) {
         </tbody>
       </table>
 
+      <ShotBlock feats={team.features?.[split]} intent={team.intent?.[split]}
+        highlight={highlight} split={split} />
+
       {/* Per-game breakdown */}
       <div className="px-4 py-2.5 border-t border-border flex items-center gap-3">
         <span className="text-[10px] uppercase tracking-wider text-muted-foreground flex-1">Recent games ({split})</span>
@@ -342,8 +345,13 @@ function TeamBreakdown({ team, title, highlight }) {
               <td className="px-2 py-1.5 text-center">
                 <span className={`text-[9px] px-1 py-0.5 rounded ${m.home ? "bg-primary/15 text-primary" : "bg-zinc-500/15 text-zinc-400"}`}>{m.home ? "H" : "A"}</span>
               </td>
-              <td className={`px-2 py-1.5 text-center text-xs font-semibold ${m.gf != null ? resultTone(m) : "text-muted-foreground"}`}>
+              <td className={`px-2 py-1.5 text-center text-xs font-semibold ${m.gf != null ? resultTone(m) : "text-muted-foreground"}`}
+                title={scorerNote(m)}>
                 {m.gf != null ? `${m.gf}-${m.ga}` : "—"}
+                {m.minutes_trailing > 0 && (
+                  <span className="ml-1 text-[9px] text-amber-400 font-normal"
+                    title={`Spent ${m.minutes_trailing} minutes behind`}>{m.minutes_trailing}'</span>
+                )}
               </td>
               <td className="px-2 py-1.5 text-center text-xs">
                 {m.fh == null ? <span className="text-muted-foreground">—</span>
@@ -357,6 +365,166 @@ function TeamBreakdown({ team, title, highlight }) {
           ))}
         </tbody>
       </table>
+      <GoalDetail profile={team.goal_profile?.[split]} highlight={highlight} split={split} />
+    </div>
+  );
+}
+
+// Shot volume, and the intent term the LIVE model derives from it. The backend builds
+// `intent` with the same call pricing makes, so this panel cannot describe one thing
+// while the price does another — including which branch fired (v3 blocked shots, or the
+// v2 shots fallback for a team without enough blocked history).
+const SHOT_COLS = [
+  ["shots", "Shots"],
+  ["shots_on_target", "On target"],
+  ["blocked_shots", "Blocked"],
+  // dangerous_attacks is deliberately absent: the provider returns it empty for these
+  // leagues (0/40 on the coverage check), so a column for it would only ever read "—"
+];
+
+function ShotBlock({ feats, intent, highlight, split }) {
+  if (!feats) return null;
+  const covered = feats.covered?.shots ?? 0;
+  if (!covered) {
+    return (
+      <div className="px-4 py-2.5 border-t border-border text-[11px] text-muted-foreground"
+        data-testid={`bd-shots-empty-${highlight}`}>
+        No shot data on this split yet — run the shots backfill in Tools.
+      </div>
+    );
+  }
+  const pct = intent ? (intent.multiplier * intent.form - 1) * 100 : 0;
+  const dir = pct >= 0.05 ? "lifts" : pct <= -0.05 ? "cuts" : "leaves";
+  const tone = pct >= 0.05 ? "text-emerald-400" : pct <= -0.05 ? "text-red-400" : "text-muted-foreground";
+  return (
+    <div className="px-4 py-3 border-t border-border space-y-2.5" data-testid={`bd-shots-${highlight}`}>
+      <div className="flex items-center gap-2">
+        <span className="text-[10px] uppercase tracking-wider text-muted-foreground flex-1">
+          Shot volume ({split})
+        </span>
+        <span className="text-[10px] text-muted-foreground font-mono-data"
+          title="Games on this split that actually carry the stat">
+          {covered}/{feats.played} covered
+        </span>
+      </div>
+
+      <div className="flex flex-wrap gap-2">
+        {SHOT_COLS.map(([key, label]) => (
+          <Metric key={key} label={label}
+            value={feats[`${key}_for`] != null ? feats[`${key}_for`].toFixed(1) : "—"}
+            accent={key === "blocked_shots" && intent?.source === "blocked"} />
+        ))}
+      </div>
+
+      {intent && (
+        <div className="rounded-md border border-border bg-secondary/50 px-3 py-2"
+          data-testid={`bd-intent-${highlight}`}>
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="text-[10px] uppercase tracking-wider text-muted-foreground">
+              {intent.source === "blocked" ? "v3 intent · blocked shots"
+                : intent.source === "shots" ? "v2 fallback · shots"
+                : "no intent applied"}
+            </span>
+            <span className={`ml-auto font-mono-data text-sm font-semibold ${tone}`}>
+              ×{(intent.multiplier * intent.form).toFixed(3)}
+            </span>
+          </div>
+          <p className="text-[11px] text-muted-foreground mt-1">
+            {intent.source === "none" ? (
+              <>Not enough history to move this team's λ — it prices at the raw corner average.</>
+            ) : (
+              <>
+                <span className="font-mono-data text-foreground">{intent.value?.toFixed(2)}</span>
+                {" vs league "}
+                <span className="font-mono-data text-foreground">{intent.league_avg?.toFixed(2)}</span>
+                {" at weight "}
+                <span className="font-mono-data">{intent.weight}</span>
+                {" — "}
+                {dir === "leaves" ? "leaves λ where it is" : (
+                  <>{dir} λ by <span className={`font-mono-data ${tone}`}>{Math.abs(pct).toFixed(1)}%</span></>
+                )}
+              </>
+            )}
+          </p>
+          {intent.reason && (
+            <p className="text-[10px] text-amber-400/80 mt-1">Why not v3: {intent.reason}</p>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Scorers and minutes come from /fixtures/events, which the goal backfill fills in.
+// Matches it hasn't reached carry no goal keys at all — those read as "not covered"
+// rather than as zero, because "never trailed" and "we don't know" are not the same claim.
+function scorerNote(m) {
+  if (!m.scorers?.length) return undefined;
+  return m.scorers.map((g) => `${g.minute}' ${g.player || "?"}${g.kind === "Own Goal" ? " (og)" : ""}`).join(", ");
+}
+
+function GoalDetail({ profile, highlight, split }) {
+  if (!profile || !profile.games) {
+    return (
+      <div className="px-4 py-2.5 border-t border-border text-[11px] text-muted-foreground"
+        data-testid={`bd-goals-empty-${highlight}`}>
+        No goal detail on this split yet — run the goal backfill in Tools to fill scorers and minutes.
+      </div>
+    );
+  }
+  const { minutes, first_goal: fg, windows, scorers, games, played } = profile;
+  const peak = Math.max(1, ...Object.values(windows));
+  return (
+    <div className="px-4 py-3 border-t border-border space-y-3" data-testid={`bd-goals-${highlight}`}>
+      <div className="flex items-center gap-2">
+        <span className="text-[10px] uppercase tracking-wider text-muted-foreground flex-1">
+          Goal detail ({split})
+        </span>
+        <span className="text-[10px] text-muted-foreground font-mono-data"
+          title="Matches the goal backfill has reached, out of matches played on this split">
+          {games}/{played} covered
+        </span>
+      </div>
+
+      <div className="flex flex-wrap gap-2">
+        <GoalChip label={`${minutes.trailing}′ behind/g`} strong={minutes.trailing >= 30} />
+        <GoalChip label={`${minutes.leading}′ ahead/g`} strong={minutes.leading >= 30} />
+        {fg.scored_first_pct != null && (
+          <GoalChip label={`Scored first ${fg.scored_first_pct}%`} strong={fg.scored_first_pct >= 60} />
+        )}
+        {fg.avg_first_scored_min != null && (
+          <GoalChip label={`1st goal ${fg.avg_first_scored_min}′`} strong={fg.avg_first_scored_min <= 30} />
+        )}
+        {fg.avg_first_conceded_min != null && (
+          <GoalChip label={`1st conceded ${fg.avg_first_conceded_min}′`} strong={fg.avg_first_conceded_min >= 55} />
+        )}
+      </div>
+
+      <div>
+        <p className="text-[10px] uppercase tracking-wider text-muted-foreground mb-1">When they score</p>
+        <div className="flex items-end gap-1 h-12">
+          {Object.entries(windows).map(([label, n]) => (
+            <div key={label} className="flex-1 flex flex-col items-center gap-0.5" title={`${n} goals, ${label} min`}>
+              <div className="w-full rounded-t bg-primary/60" style={{ height: `${(n / peak) * 100}%` }} />
+              <span className="text-[8px] text-muted-foreground whitespace-nowrap">{label}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {scorers.length > 0 && (
+        <div>
+          <p className="text-[10px] uppercase tracking-wider text-muted-foreground mb-1">Scorers</p>
+          <div className="flex flex-wrap gap-1.5">
+            {scorers.map((s) => (
+              <span key={s.player} title={`${s.minutes.filter((x) => x != null).join("′, ")}′`}
+                className="text-[11px] px-2 py-0.5 rounded border border-border bg-secondary font-sans">
+                {s.player} <span className="font-mono-data text-primary">{s.goals}</span>
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

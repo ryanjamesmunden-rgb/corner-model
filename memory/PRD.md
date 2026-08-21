@@ -23,9 +23,9 @@ Multi-league corner value betting web app. Rebuilds a spreadsheet corner model i
 
 ## Key API endpoints
 - Auth: POST /api/auth/session, GET /api/auth/me, POST /api/auth/logout
-- GET /api/scanner (market: team|all|total|home|away; `team`=home+away combined), /api/best-bets, /api/top-mismatches, /api/streaks (direction=over|under, subject=team|match, side, window, min_hits, threshold, min_line, max_line, within_days), /api/trends
+- GET /api/scanner (market: team|all|total|home|away; `team`=home+away combined), /api/best-bets, /api/top-mismatches, /api/streaks (direction=over|under, subject=team|match, side, window, min_hits, min_streak, threshold, min_line, max_line, within_days), /api/trends
 - GET /api/leagues, /api/leagues/{id}/teams|fixtures|matchups|corner-table, /api/fixtures/{id}, POST /api/fixtures/{id}/odds
-- GET /api/features/coverage?league_id — fill rate of the shot-volume features per league (see changelog; these are captured but NOT yet in the projection)
+- GET /api/features/coverage?league_id — fill rate per league of the shot-volume features and of `goal_events` (goal detail). Captured data, NOT in the projection.
 - GET /api/picks (record incl. profit/staked/roi/unpriced_wins + per-pick profit), POST /api/picks/settle
 - POST /api/explain (Claude Sonnet 4.6 via Emergent LLM key, server-side cache + throttle)
 - GET /api/backtest?model=v1|v2|v3&blocked_weight (v3 = candidate, backtest-only; a v3 run also returns `v2_same_sample` scored on identical rows), /api/sync/runs, POST /api/sync/refresh-all, /api/leagues/{id}/refresh
@@ -33,6 +33,78 @@ Multi-league corner value betting web app. Rebuilds a spreadsheet corner model i
 - Bets/bankroll (built, frontend deferred): GET/PUT /api/bankroll, CRUD /api/bets, GET /api/bets/stats
 
 ## Changelog (recent, newest first)
+
+### Shot block on the fixture page — why v3 nudges a team's λ (2026-08-21)
+The shot data has been in **pricing** since v3 went live (PR #5), but nowhere on the
+site showed the numbers. Only shots/game in the corner league table was ever rendered;
+`features` was served on `/api/leagues/{id}/teams` and `/api/fixtures/{id}` and the
+frontend ignored all of it. That was a scoping omission — every PR from #2 on was framed
+as "does this improve accuracy", so the data and the measurement shipped and the display
+never did.
+- **`intent_breakdown(team, venue, league_shots, league_blocked)`** reports which intent
+  term the live model applies and why: `source` (blocked = v3 | shots = v2 fallback |
+  none), the multiplier, the team value, the league average, the weight, the covered-game
+  count, and a `reason` when v3 did **not** fire.
+- **`live_lambda` is now DEFINED in terms of it** (`base × multiplier × form`). That is
+  the point of the refactor: a panel built on a parallel reimplementation would drift and
+  start describing a price the site does not charge. Behaviour is unchanged — pinned by a
+  test that walks every branch and reproduces the priced λ to the cent.
+- Served as `intent` per split on `/api/fixtures/{id}`; rendered under the corner splits
+  as shots / on target / blocked per game, the coverage behind them, the resulting
+  multiplier as a ±% on λ, and the fallback reason where relevant.
+- **`dangerous_attacks` is deliberately not shown.** The provider returns it empty for
+  these leagues (0/40 on the coverage check), so the column would only ever read "—".
+
+### Goal detail, deeper history, and no more one-game streaks (2026-08-21)
+
+**1. History depth — the "some teams only go back 13 games" complaint.**
+`STATS_CAP` in `sync_real.py` was **120**: the number of fixtures per league whose
+statistics the sync pulls. A 20-team league plays **10 fixtures a round**, so 120 fixtures
+was only ~12 rounds and every team topped out at ~12-13 matches no matter how long the
+season had run. Raised to **400** (~20 games a team, which is what `real_matches` holds
+anyway) and made overridable with the `STATS_CAP` env var.
+The last-season top-up had the same shape of bug: it fired on `len(ft) < 40`, i.e. only in
+the opening weeks of a season. A league 12 rounds in cleared that bar with 120 games and
+was never topped up — so teams promoted or newly covered had *no* last-season history at
+all. The trigger is now `len(ft) < STATS_CAP`, so the pool fills from last season whenever
+this season has not yet supplied enough.
+**Cost:** up to ~280 extra statistics calls per league, **once**. Past results never
+change and `fixture_stats` is cached permanently, so this is a one-off spend, not a
+recurring one.
+
+**2. One-game streaks removed** (`MIN_STREAK_LEN = 2`, `streak_qualifies()`).
+The old test was `hits >= 1 and hits + voids >= min_hits`. Two ways a single game reached
+the board under it:
+  - a line carried by **voids** — four exact-line pushes and one win passed, and displayed
+    as "streak: 1";
+  - a team with barely any history, whose entire record is one or two matches.
+There are now three hurdles, all of which must clear: real wins ≥ floor, wins + voids ≥
+`min_hits` (voids still count towards coverage — they are stake-back, not misses), and the
+**currently live run** ≥ floor. Tunable per request via `min_streak`, default 2.
+
+**3. A single game no longer sets a venue average** (`MIN_VENUE_GAMES = 3`).
+`_real_avg` fell back to the full record only when a venue split was *completely* empty. A
+team with one home game got a "home average" of that single match, and that number drove
+its λ, its projection and its place on every board. Below three games the full record is
+used instead. This moves numbers app-wide (scanner, mismatches, chase board, streak
+projections) — deliberately, and always towards the larger sample.
+
+**4. Goal detail — who scores and when.** `/fixtures/events` *does* carry minutes (unlike
+the corner data, which the 1H/2H probe was built to confirm). New `goal_events.py` (pure,
+14 unit tests) parses it: goals sorted, **missed penalties excluded** (API-Football files
+them as type `Goal`), **own goals credited to the side that benefits** while keeping the
+scorer's name. `backfill_goal_events.py` fetches and stores it, then projects onto
+`team.real_matches`; it is capped, resumable (`events_at` marks a done fixture) and its
+projection half is free. Surfaced as `goal_profile` on `/api/fixtures/{id}`: scorers,
+goal-minute windows, first-goal timings, and **minutes spent leading/level/trailing**.
+Coverage per league lands in `/api/features/coverage` as `goal_events`.
+The point of the minutes: the game-state split classifies a match by its **half-time
+score**, so a team a goal down from the 10th minute and one that conceded on 43 sit in the
+same bucket. Minutes separate them — this is the honest version of the chase measure the
+null game-state result deserved. It does **not** fix the other half (corners are still
+full-match only), so it is exposed as data, **not** wired into pricing.
+**Cost:** one `/fixtures/events` call per fixture, same profile as the shots backfill.
+Both new tools are in the Tools panel (`POST /api/tools/backfill-goals`), so no shell.
 
 ### Tools panel covers the last two shell-only scripts (2026-08-18)
 - `backfill_fh.py` (fills `fh_goals_against` — required before the corners-by-state splits show anything but `unknown_games`) is now a `measure` mode: **DB-only, no API calls**.

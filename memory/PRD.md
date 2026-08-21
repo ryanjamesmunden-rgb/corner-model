@@ -34,6 +34,27 @@ Multi-league corner value betting web app. Rebuilds a spreadsheet corner model i
 
 ## Changelog (recent, newest first)
 
+### Shot block on the fixture page — why v3 nudges a team's λ (2026-08-21)
+The shot data has been in **pricing** since v3 went live (PR #5), but nowhere on the
+site showed the numbers. Only shots/game in the corner league table was ever rendered;
+`features` was served on `/api/leagues/{id}/teams` and `/api/fixtures/{id}` and the
+frontend ignored all of it. That was a scoping omission — every PR from #2 on was framed
+as "does this improve accuracy", so the data and the measurement shipped and the display
+never did.
+- **`intent_breakdown(team, venue, league_shots, league_blocked)`** reports which intent
+  term the live model applies and why: `source` (blocked = v3 | shots = v2 fallback |
+  none), the multiplier, the team value, the league average, the weight, the covered-game
+  count, and a `reason` when v3 did **not** fire.
+- **`live_lambda` is now DEFINED in terms of it** (`base × multiplier × form`). That is
+  the point of the refactor: a panel built on a parallel reimplementation would drift and
+  start describing a price the site does not charge. Behaviour is unchanged — pinned by a
+  test that walks every branch and reproduces the priced λ to the cent.
+- Served as `intent` per split on `/api/fixtures/{id}`; rendered under the corner splits
+  as shots / on target / blocked per game, the coverage behind them, the resulting
+  multiplier as a ±% on λ, and the fallback reason where relevant.
+- **`dangerous_attacks` is deliberately not shown.** The provider returns it empty for
+  these leagues (0/40 on the coverage check), so the column would only ever read "—".
+
 ### Goal detail, deeper history, and no more one-game streaks (2026-08-21)
 
 **1. History depth — the "some teams only go back 13 games" complaint.**

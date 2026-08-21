@@ -139,6 +139,52 @@ def _blocked_form(team: dict, venue: str) -> Optional[float]:
     return sum(vals) / len(vals)
 
 
+def _blocked_covered(team: dict, venue: str) -> int:
+    """Games on this venue that carry blocked shots — the count `_blocked_form` tests."""
+    rms = (team or {}).get("real_matches") or []
+    if venue == "home":
+        pool = [m for m in rms if m["home"]]
+    elif venue == "away":
+        pool = [m for m in rms if not m["home"]]
+    else:
+        pool = rms
+    if not pool:
+        pool = rms
+    return sum(1 for m in pool if m.get("blocked_shots_for") is not None)
+
+
+def intent_breakdown(team: dict, venue: str, league_shots: float,
+                     league_blocked: float = 0.0) -> dict:
+    """Which intent term the live model applies to this team here, and why.
+
+    `live_lambda` is DEFINED in terms of this, so a panel built on it cannot claim one
+    thing while pricing quietly does another.
+
+    source: blocked (v3) | shots (v2 fallback) | none (no shot history at all)"""
+    sf, fh = _shots_form(team, venue)
+    covered = _blocked_covered(team, venue)
+    flat = {"source": "none", "multiplier": 1.0, "form": 1.0, "value": None,
+            "league_avg": None, "weight": None, "covered": covered,
+            "min_games": MIN_BLOCKED_GAMES, "fh_rate": None, "reason": "no shot data yet"}
+    if sf is None:
+        return flat
+    form = 1.0 + 0.03 * (fh - 0.5)
+    blocked = _blocked_form(team, venue)
+    if blocked is not None and league_blocked:
+        return {"source": "blocked", "multiplier": _intent(blocked, league_blocked, V3_BLOCKED_WEIGHT),
+                "form": form, "value": round(blocked, 2), "league_avg": round(league_blocked, 2),
+                "weight": V3_BLOCKED_WEIGHT, "covered": covered, "min_games": MIN_BLOCKED_GAMES,
+                "fh_rate": round(fh, 3), "reason": None}
+    if not league_shots:
+        return {**flat, "reason": "league has no shot average"}
+    reason = ("league has no blocked-shots data" if not league_blocked
+              else f"only {covered} game(s) here carry blocked shots — needs {MIN_BLOCKED_GAMES}")
+    return {"source": "shots", "multiplier": _intent(sf, league_shots, 0.10), "form": form,
+            "value": round(sf, 2), "league_avg": round(league_shots, 2), "weight": 0.10,
+            "covered": covered, "min_games": MIN_BLOCKED_GAMES, "fh_rate": round(fh, 3),
+            "reason": reason}
+
+
 def live_lambda(base: float, team: dict, venue: str, league_shots: float,
                 league_blocked: float = 0.0) -> float:
     """Production corner-lambda (v3): blocked-shots intent x first-half-goal form.
@@ -146,16 +192,8 @@ def live_lambda(base: float, team: dict, venue: str, league_shots: float,
     Falls back to v2's shots intent for any team without enough blocked-shots history,
     so a thinly-covered team prices exactly as it does today rather than worse. Both
     branches are the same shape; only the stat driving the intent differs."""
-    sf, fh = _shots_form(team, venue)
-    if sf is None:
-        return round(base, 2)
-    form = 1.0 + 0.03 * (fh - 0.5)
-    blocked = _blocked_form(team, venue)
-    if blocked is not None and league_blocked:
-        return round(base * _intent(blocked, league_blocked, V3_BLOCKED_WEIGHT) * form, 2)
-    if not league_shots:
-        return round(base, 2)
-    return round(base * _intent(sf, league_shots, 0.10) * form, 2)
+    b = intent_breakdown(team, venue, league_shots, league_blocked)
+    return round(base * b["multiplier"] * b["form"], 2)
 
 
 def _league_shots_map(teams: list) -> dict:
@@ -1270,6 +1308,14 @@ async def fixture_detail(fixture_id: str, user: dict = Depends(get_current_user)
         return {sp: goal_profile(team.get("real_matches") or [], sp)
                 for sp in ["home", "away", "overall"]}
 
+    # Why the live model nudges this team's lambda, per split — the same call pricing
+    # makes, so the panel and the price cannot disagree.
+    league = await db.leagues.find_one({"league_id": fx["league_id"]}, {"_id": 0}) or {}
+    ls, lb = league.get("avg_shots") or REF_SHOTS, league.get("avg_blocked") or 0.0
+
+    def intent(team):
+        return {sp: intent_breakdown(team, sp, ls, lb) for sp in ["home", "away", "overall"]}
+
     def recent(team):
         rms = team.get("real_matches") or []
         return [{"date": m["date"], "opponent": m["opponent"], "home": m["home"],
@@ -1291,10 +1337,12 @@ async def fixture_detail(fixture_id: str, user: dict = Depends(get_current_user)
     return {"fixture": fx, "model": model,
             "home_team": {"name": home["name"], "splits": splits(home), "features": features(home),
                           "state_splits": states(home), "goal_profile": goals(home),
-                          "recent": recent(home), "real_samples": home.get("real_samples", 0)},
+                          "intent": intent(home), "recent": recent(home),
+                          "real_samples": home.get("real_samples", 0)},
             "away_team": {"name": away["name"], "splits": splits(away), "features": features(away),
                           "state_splits": states(away), "goal_profile": goals(away),
-                          "recent": recent(away), "real_samples": away.get("real_samples", 0)}}
+                          "intent": intent(away), "recent": recent(away),
+                          "real_samples": away.get("real_samples", 0)}}
 
 
 class OddsBody(BaseModel):

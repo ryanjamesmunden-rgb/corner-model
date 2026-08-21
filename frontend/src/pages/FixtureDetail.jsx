@@ -300,6 +300,9 @@ function TeamBreakdown({ team, title, highlight }) {
         </tbody>
       </table>
 
+      <ShotBlock feats={team.features?.[split]} intent={team.intent?.[split]}
+        highlight={highlight} split={split} />
+
       {/* Per-game breakdown */}
       <div className="px-4 py-2.5 border-t border-border flex items-center gap-3">
         <span className="text-[10px] uppercase tracking-wider text-muted-foreground flex-1">Recent games ({split})</span>
@@ -363,6 +366,91 @@ function TeamBreakdown({ team, title, highlight }) {
         </tbody>
       </table>
       <GoalDetail profile={team.goal_profile?.[split]} highlight={highlight} split={split} />
+    </div>
+  );
+}
+
+// Shot volume, and the intent term the LIVE model derives from it. The backend builds
+// `intent` with the same call pricing makes, so this panel cannot describe one thing
+// while the price does another — including which branch fired (v3 blocked shots, or the
+// v2 shots fallback for a team without enough blocked history).
+const SHOT_COLS = [
+  ["shots", "Shots"],
+  ["shots_on_target", "On target"],
+  ["blocked_shots", "Blocked"],
+  // dangerous_attacks is deliberately absent: the provider returns it empty for these
+  // leagues (0/40 on the coverage check), so a column for it would only ever read "—"
+];
+
+function ShotBlock({ feats, intent, highlight, split }) {
+  if (!feats) return null;
+  const covered = feats.covered?.shots ?? 0;
+  if (!covered) {
+    return (
+      <div className="px-4 py-2.5 border-t border-border text-[11px] text-muted-foreground"
+        data-testid={`bd-shots-empty-${highlight}`}>
+        No shot data on this split yet — run the shots backfill in Tools.
+      </div>
+    );
+  }
+  const pct = intent ? (intent.multiplier * intent.form - 1) * 100 : 0;
+  const dir = pct >= 0.05 ? "lifts" : pct <= -0.05 ? "cuts" : "leaves";
+  const tone = pct >= 0.05 ? "text-emerald-400" : pct <= -0.05 ? "text-red-400" : "text-muted-foreground";
+  return (
+    <div className="px-4 py-3 border-t border-border space-y-2.5" data-testid={`bd-shots-${highlight}`}>
+      <div className="flex items-center gap-2">
+        <span className="text-[10px] uppercase tracking-wider text-muted-foreground flex-1">
+          Shot volume ({split})
+        </span>
+        <span className="text-[10px] text-muted-foreground font-mono-data"
+          title="Games on this split that actually carry the stat">
+          {covered}/{feats.played} covered
+        </span>
+      </div>
+
+      <div className="flex flex-wrap gap-2">
+        {SHOT_COLS.map(([key, label]) => (
+          <Metric key={key} label={label}
+            value={feats[`${key}_for`] != null ? feats[`${key}_for`].toFixed(1) : "—"}
+            accent={key === "blocked_shots" && intent?.source === "blocked"} />
+        ))}
+      </div>
+
+      {intent && (
+        <div className="rounded-md border border-border bg-secondary/50 px-3 py-2"
+          data-testid={`bd-intent-${highlight}`}>
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="text-[10px] uppercase tracking-wider text-muted-foreground">
+              {intent.source === "blocked" ? "v3 intent · blocked shots"
+                : intent.source === "shots" ? "v2 fallback · shots"
+                : "no intent applied"}
+            </span>
+            <span className={`ml-auto font-mono-data text-sm font-semibold ${tone}`}>
+              ×{(intent.multiplier * intent.form).toFixed(3)}
+            </span>
+          </div>
+          <p className="text-[11px] text-muted-foreground mt-1">
+            {intent.source === "none" ? (
+              <>Not enough history to move this team's λ — it prices at the raw corner average.</>
+            ) : (
+              <>
+                <span className="font-mono-data text-foreground">{intent.value?.toFixed(2)}</span>
+                {" vs league "}
+                <span className="font-mono-data text-foreground">{intent.league_avg?.toFixed(2)}</span>
+                {" at weight "}
+                <span className="font-mono-data">{intent.weight}</span>
+                {" — "}
+                {dir === "leaves" ? "leaves λ where it is" : (
+                  <>{dir} λ by <span className={`font-mono-data ${tone}`}>{Math.abs(pct).toFixed(1)}%</span></>
+                )}
+              </>
+            )}
+          </p>
+          {intent.reason && (
+            <p className="text-[10px] text-amber-400/80 mt-1">Why not v3: {intent.reason}</p>
+          )}
+        </div>
+      )}
     </div>
   );
 }

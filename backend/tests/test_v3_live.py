@@ -18,7 +18,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from server import (  # noqa: E402
     MIN_BLOCKED_GAMES, V3_BLOCKED_WEIGHT, _blocked_form, _intent, _league_blocked_map,
-    expected_lambdas, live_lambda, model_lambda,
+    expected_lambdas, intent_breakdown, live_lambda, model_lambda,
 )
 
 LG_SHOTS, LG_BLOCKED = 12.0, 2.5
@@ -136,3 +136,44 @@ def test_expected_lambdas_moves_when_blocked_average_is_supplied():
 
 def test_intent_neutral_at_league_average():
     assert _intent(LG_BLOCKED, LG_BLOCKED, V3_BLOCKED_WEIGHT) == pytest.approx(1.0)
+
+
+# --- the breakdown the fixture panel reads ---
+# live_lambda is defined in terms of intent_breakdown, so the panel cannot describe one
+# thing while the price does another. These pin that the reported branch is the real one.
+def test_breakdown_reproduces_the_priced_lambda_exactly():
+    for t, venue, ls, lb in [(team(), "home", LG_SHOTS, LG_BLOCKED),
+                             (team(blocked=None), "home", LG_SHOTS, LG_BLOCKED),
+                             (team(n=2), "home", LG_SHOTS, LG_BLOCKED),
+                             (team(), "home", LG_SHOTS, 0.0),
+                             (team(n=0), "home", LG_SHOTS, LG_BLOCKED)]:
+        b = intent_breakdown(t, venue, ls, lb)
+        assert live_lambda(5.0, t, venue, ls, lb) == pytest.approx(
+            round(5.0 * b["multiplier"] * b["form"], 2))
+
+
+def test_breakdown_names_the_blocked_branch_when_v3_actually_fires():
+    b = intent_breakdown(team(blocked=4.0), "home", LG_SHOTS, LG_BLOCKED)
+    assert b["source"] == "blocked"
+    assert b["weight"] == V3_BLOCKED_WEIGHT
+    assert (b["value"], b["league_avg"]) == (4.0, LG_BLOCKED)
+    assert b["multiplier"] == pytest.approx(_intent(4.0, LG_BLOCKED, V3_BLOCKED_WEIGHT))
+    assert b["reason"] is None                 # nothing to explain — v3 applied
+
+
+def test_breakdown_explains_a_thin_sample_fallback():
+    b = intent_breakdown(team(n=MIN_BLOCKED_GAMES - 1), "home", LG_SHOTS, LG_BLOCKED)
+    assert b["source"] == "shots" and b["weight"] == 0.10
+    assert b["covered"] == MIN_BLOCKED_GAMES - 1
+    assert str(MIN_BLOCKED_GAMES) in b["reason"] and "blocked" in b["reason"]
+
+
+def test_breakdown_explains_a_league_with_no_blocked_data():
+    b = intent_breakdown(team(), "home", LG_SHOTS, 0.0)
+    assert b["source"] == "shots" and b["reason"] == "league has no blocked-shots data"
+
+
+def test_breakdown_reports_no_shot_history_as_neutral_not_as_a_nudge():
+    b = intent_breakdown(team(n=0), "home", LG_SHOTS, LG_BLOCKED)
+    assert b["source"] == "none"
+    assert b["multiplier"] == 1.0 and b["form"] == 1.0

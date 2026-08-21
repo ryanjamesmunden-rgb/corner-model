@@ -1993,6 +1993,161 @@ async def chase_board(within_days: int = 7, limit: int = 25, league_id: Optional
     return {"within_days": within_days, "count": len(board), "board": board}
 
 
+# ----------------------------- Fixture board (home page) -----------------------------
+# Every other board on this site is TEAM-first: a row is a team, and the fixture rides
+# along as `next_fixture`. That is the wrong shape for "what should I look at tonight",
+# where the unit is the match. This one is fixture-first.
+#
+# HOW A FIXTURE IS RANKED, stated plainly because it matters:
+#   - It must carry at least one live ANGLE (a chase spot or a streak). A big projected
+#     total with nothing to bet on is not a pick, it is trivia.
+#   - Those angles are then ordered by CORNER EDGE: the model's projected match total
+#     divided by that league's actual average match total. Both halves are production
+#     numbers — the projection is `expected_lambdas`, the same call the fixture page and
+#     every price uses — so this ranks by model conviction, not by a new invented score.
+#
+# What it is NOT: a measured edge. Nothing here has been through the backtester as a
+# ranking, so treat the order as triage — which matches to open first — and take the
+# actual bet from the angle, which has been priced. `corner_edge` is also correlated
+# with the chase board by construction (both are driven by the same lambda), so the
+# angle count is corroboration, not independent confirmation.
+
+FIXTURE_BOARD_PER_DAY = 3          # the user's cap: 2-3 a day, never a wall of fixtures
+FIXTURE_BOARD_ANGLES = 6           # angles listed per fixture before it stops being readable
+
+
+def _angle_rank(a: dict) -> tuple:
+    """Best angle first: longest live run, then most hits, then the tighter line."""
+    return (a.get("streak_len") or 0, a.get("hits") or 0, -(a.get("line") or 0))
+
+
+def board_days(rows: List[dict], per_day: int) -> List[dict]:
+    """Group scored fixtures by kickoff day, keep the best `per_day` of each, and read
+    each day back in KICKOFF order rather than in score order.
+
+    The cap is the whole point of this board, so it is pure and tested: dropping the
+    wrong fixture is silent — you would just never see the game you wanted."""
+    by_day: Dict[str, List[dict]] = defaultdict(list)
+    for r in rows:
+        by_day[(r.get("date") or "")[:10]].append(r)
+    out = []
+    for day in sorted(k for k in by_day if k):
+        ranked = sorted(by_day[day],
+                        key=lambda r: (r["corner_edge"], r.get("angle_count") or 0),
+                        reverse=True)
+        picked = sorted(ranked[:per_day], key=lambda r: r.get("date") or "")
+        out.append({"day": day, "considered": len(by_day[day]), "fixtures": picked})
+    return out
+
+
+async def _fixture_board(days: int = 7, per_day: int = FIXTURE_BOARD_PER_DAY,
+                         league_id: Optional[str] = None, user: dict = None) -> dict:
+    per_day = max(1, min(int(per_day), 10))
+    days = max(1, min(int(days), 14))
+    lid = league_id or "all"
+    q = {} if lid == "all" else {"league_id": lid}
+
+    teams = await db.teams.find(q, {"_id": 0}).to_list(5000)
+    teams_by_id = {t["team_id"]: t for t in teams}
+    leagues = {l["league_id"]: l for l in await db.leagues.find({}, {"_id": 0}).to_list(200)}
+    # what a normal match in this league actually produces, to judge the projection against
+    league_totals = defaultdict(list)
+    for t in teams:
+        for m in _src(t):
+            league_totals[t["league_id"]].append(m["corners_for"] + m["corners_against"])
+    league_avg = {k: (sum(v) / len(v) if v else 10.0) for k, v in league_totals.items()}
+
+    now = datetime.now(timezone.utc)
+    horizon = now + timedelta(days=days)
+    fixtures = await db.fixtures.find(q, {"_id": 0}).to_list(5000)
+
+    rows: Dict[str, dict] = {}
+    for fx in fixtures:
+        try:
+            dt = datetime.fromisoformat((fx.get("date") or "").replace("Z", "+00:00"))
+        except Exception:
+            continue
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        if dt < now or dt > horizon:
+            continue
+        home, away = teams_by_id.get(fx["home_team_id"]), teams_by_id.get(fx["away_team_id"])
+        if not home or not away:
+            continue
+        lg = leagues.get(fx["league_id"], {})
+        lam = expected_lambdas(home, away, lg.get("avg_shots") or REF_SHOTS,
+                               lg.get("avg_blocked") or 0.0)
+        avg = league_avg.get(fx["league_id"]) or 10.0
+        rows[fx["fixture_id"]] = {
+            "fixture_id": fx["fixture_id"], "date": fx["date"], "round": fx.get("round"),
+            "league_id": fx["league_id"], "league_name": lg.get("name", fx["league_id"]),
+            "home": fx["home_name"], "away": fx["away_name"],
+            "lambda_home": lam["home"], "lambda_away": lam["away"], "lambda_total": lam["total"],
+            "league_avg_total": round(avg, 2),
+            "corner_edge": round(lam["total"] / avg, 3) if avg else 1.0,
+            "angles": [],
+        }
+    if not rows:
+        return {"days": [], "per_day": per_day, "within_days": days, "fixtures": 0}
+
+    def add(fid, angle):
+        row = rows.get(fid)
+        if row is not None:
+            row["angles"].append(angle)
+
+    for c in await _chase_board(within_days=days, limit=500, league_id=lid):
+        nf = c.get("next_fixture") or {}
+        add(nf.get("fixture_id"), {
+            "kind": "chase", "team": c["name"], "label": f"{c['line']}+ corners",
+            "detail": f"λ {c['lambda']} · hit {c['consistency']}/{c['consistency_of']}"
+                      f" · opp scores 1H {c['opp_fh_rate']}%",
+            "line": c["line"], "hits": c["consistency"], "streak_len": 0,
+            "prob": c["prob"], "fair_odds": c["fair_odds"], "ev": c.get("ev")})
+
+    # the same four grids the streaks export walks, so the board cannot disagree with it
+    for direction, subject, min_line in (("over", "team", 3), ("under", "team", 3),
+                                         ("over", "match", 7), ("under", "match", 3)):
+        for s in await streaks(league_id=lid, side="overall", window=5, min_hits=5,
+                               threshold=None, min_line=min_line, within_days=days,
+                               direction=direction, subject=subject, user=user):
+            nf = s.get("next_fixture") or {}
+            run = (s.get("streak") or {}).get("length") or 0
+            what = "match total" if subject == "match" else "corners"
+            add(nf.get("fixture_id"), {
+                "kind": f"{direction}_{subject}", "team": s["name"],
+                "label": f"{s['line_label']} {what}",
+                "detail": f"{s['hits']}/{s['settled'] or s['window']} · run {run}"
+                          + (f" · {s['voids']} void" if s.get("voids") else ""),
+                "line": s["line"], "hits": s["hits"], "streak_len": run,
+                "prob": (s.get("projection") or {}).get("prob"),
+                "fair_odds": (s.get("projection") or {}).get("fair_odds"),
+                "ev": (s.get("projection") or {}).get("ev")})
+
+    # a fixture with no angle is a projection, not a pick
+    live = [r for r in rows.values() if r["angles"]]
+    for r in live:
+        r["angles"].sort(key=_angle_rank, reverse=True)
+        r["angle_count"] = len(r["angles"])
+        r["angles"] = r["angles"][:FIXTURE_BOARD_ANGLES]
+        r["best_angle"] = r["angles"][0]
+
+    out_days = board_days(live, per_day)
+    return {"days": out_days, "per_day": per_day, "within_days": days,
+            "fixtures": sum(len(d["fixtures"]) for d in out_days)}
+
+
+@api_router.get("/fixture-board")
+async def fixture_board(days: int = 7, per_day: int = FIXTURE_BOARD_PER_DAY,
+                        league_id: Optional[str] = None,
+                        user: dict = Depends(get_current_user)):
+    """The best upcoming fixtures, grouped by kickoff day and capped at `per_day`.
+
+    Fixture-first, unlike every other board here. See the notes above `_fixture_board`
+    for exactly how "best" is decided — and for what that ranking has NOT been shown
+    to be."""
+    return await _fixture_board(days, per_day, league_id, user)
+
+
 @api_router.get("/top-corner-teams")
 async def top_corner_teams(side: str = "overall", window: int = 0, limit: int = 40,
                            league_id: Optional[str] = None, user: dict = Depends(get_current_user)):

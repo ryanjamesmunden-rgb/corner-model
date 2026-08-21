@@ -121,6 +121,18 @@ export default function ToolsPanel() {
               className="text-xs px-3 py-1.5 rounded border border-border bg-secondary hover:bg-white/5 disabled:opacity-50">
               Project only (free)
             </button>
+            <button disabled={busy} data-testid="tools-backfill-goals"
+              title="Scorers, goal minutes and minutes spent trailing — one /fixtures/events call per fixture"
+              onClick={() => fire(() => api.toolBackfillGoals(token, { limit }))}
+              className="text-xs px-3 py-1.5 rounded border border-amber-500/40 bg-amber-500/10 text-amber-300 hover:bg-amber-500/20 disabled:opacity-50 flex items-center gap-1.5">
+              <Play className="h-3 w-3" /> Goal detail
+            </button>
+            <button disabled={busy} data-testid="tools-backfill-goals-project"
+              title="Re-copy goal detail from the fixture cache onto team history — no API calls"
+              onClick={() => fire(() => api.toolBackfillGoals(token, { project_only: true }))}
+              className="text-xs px-3 py-1.5 rounded border border-border bg-secondary hover:bg-white/5 disabled:opacity-50">
+              Goals: project only (free)
+            </button>
             <button disabled={busy} data-testid="tools-probe-halves"
               title="Can API-Football give corners split by half? ~6 calls on one fixture"
               onClick={() => fire(() => api.toolProbeHalves(token))}

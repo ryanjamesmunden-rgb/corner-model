@@ -342,8 +342,13 @@ function TeamBreakdown({ team, title, highlight }) {
               <td className="px-2 py-1.5 text-center">
                 <span className={`text-[9px] px-1 py-0.5 rounded ${m.home ? "bg-primary/15 text-primary" : "bg-zinc-500/15 text-zinc-400"}`}>{m.home ? "H" : "A"}</span>
               </td>
-              <td className={`px-2 py-1.5 text-center text-xs font-semibold ${m.gf != null ? resultTone(m) : "text-muted-foreground"}`}>
+              <td className={`px-2 py-1.5 text-center text-xs font-semibold ${m.gf != null ? resultTone(m) : "text-muted-foreground"}`}
+                title={scorerNote(m)}>
                 {m.gf != null ? `${m.gf}-${m.ga}` : "—"}
+                {m.minutes_trailing > 0 && (
+                  <span className="ml-1 text-[9px] text-amber-400 font-normal"
+                    title={`Spent ${m.minutes_trailing} minutes behind`}>{m.minutes_trailing}'</span>
+                )}
               </td>
               <td className="px-2 py-1.5 text-center text-xs">
                 {m.fh == null ? <span className="text-muted-foreground">—</span>
@@ -357,6 +362,81 @@ function TeamBreakdown({ team, title, highlight }) {
           ))}
         </tbody>
       </table>
+      <GoalDetail profile={team.goal_profile?.[split]} highlight={highlight} split={split} />
+    </div>
+  );
+}
+
+// Scorers and minutes come from /fixtures/events, which the goal backfill fills in.
+// Matches it hasn't reached carry no goal keys at all — those read as "not covered"
+// rather than as zero, because "never trailed" and "we don't know" are not the same claim.
+function scorerNote(m) {
+  if (!m.scorers?.length) return undefined;
+  return m.scorers.map((g) => `${g.minute}' ${g.player || "?"}${g.kind === "Own Goal" ? " (og)" : ""}`).join(", ");
+}
+
+function GoalDetail({ profile, highlight, split }) {
+  if (!profile || !profile.games) {
+    return (
+      <div className="px-4 py-2.5 border-t border-border text-[11px] text-muted-foreground"
+        data-testid={`bd-goals-empty-${highlight}`}>
+        No goal detail on this split yet — run the goal backfill in Tools to fill scorers and minutes.
+      </div>
+    );
+  }
+  const { minutes, first_goal: fg, windows, scorers, games, played } = profile;
+  const peak = Math.max(1, ...Object.values(windows));
+  return (
+    <div className="px-4 py-3 border-t border-border space-y-3" data-testid={`bd-goals-${highlight}`}>
+      <div className="flex items-center gap-2">
+        <span className="text-[10px] uppercase tracking-wider text-muted-foreground flex-1">
+          Goal detail ({split})
+        </span>
+        <span className="text-[10px] text-muted-foreground font-mono-data"
+          title="Matches the goal backfill has reached, out of matches played on this split">
+          {games}/{played} covered
+        </span>
+      </div>
+
+      <div className="flex flex-wrap gap-2">
+        <GoalChip label={`${minutes.trailing}′ behind/g`} strong={minutes.trailing >= 30} />
+        <GoalChip label={`${minutes.leading}′ ahead/g`} strong={minutes.leading >= 30} />
+        {fg.scored_first_pct != null && (
+          <GoalChip label={`Scored first ${fg.scored_first_pct}%`} strong={fg.scored_first_pct >= 60} />
+        )}
+        {fg.avg_first_scored_min != null && (
+          <GoalChip label={`1st goal ${fg.avg_first_scored_min}′`} strong={fg.avg_first_scored_min <= 30} />
+        )}
+        {fg.avg_first_conceded_min != null && (
+          <GoalChip label={`1st conceded ${fg.avg_first_conceded_min}′`} strong={fg.avg_first_conceded_min >= 55} />
+        )}
+      </div>
+
+      <div>
+        <p className="text-[10px] uppercase tracking-wider text-muted-foreground mb-1">When they score</p>
+        <div className="flex items-end gap-1 h-12">
+          {Object.entries(windows).map(([label, n]) => (
+            <div key={label} className="flex-1 flex flex-col items-center gap-0.5" title={`${n} goals, ${label} min`}>
+              <div className="w-full rounded-t bg-primary/60" style={{ height: `${(n / peak) * 100}%` }} />
+              <span className="text-[8px] text-muted-foreground whitespace-nowrap">{label}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {scorers.length > 0 && (
+        <div>
+          <p className="text-[10px] uppercase tracking-wider text-muted-foreground mb-1">Scorers</p>
+          <div className="flex flex-wrap gap-1.5">
+            {scorers.map((s) => (
+              <span key={s.player} title={`${s.minutes.filter((x) => x != null).join("′, ")}′`}
+                className="text-[11px] px-2 py-0.5 rounded border border-border bg-secondary font-sans">
+                {s.player} <span className="font-mono-data text-primary">{s.goals}</span>
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

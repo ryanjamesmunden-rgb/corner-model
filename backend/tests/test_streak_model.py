@@ -11,8 +11,8 @@ os.environ.setdefault("DB_NAME", "test_corner_model")
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from server import (  # noqa: E402
-    LOSS, VOID, WIN, _streak_projection, pick_streak_line, settle_streak_leg,
-    streak_legs, streak_line_label, streak_runs, streak_value,
+    LOSS, VOID, WIN, _real_avg, _streak_projection, pick_streak_line, settle_streak_leg,
+    streak_legs, streak_line_label, streak_qualifies, streak_runs, streak_value,
 )
 
 
@@ -168,3 +168,49 @@ def test_match_projection_uses_the_total_market(matchup):
 def test_projection_needs_both_sides(matchup):
     team, _ = matchup
     assert _streak_projection(team, None, "home", "away", 5, "under", "team", 12.0, {}) is None
+
+
+# --- what counts as a streak at all ---
+# A run of one game is a result, not a pattern. Two ways one used to reach the board:
+# a line carried by exact-line voids, and a team with almost no history behind it.
+def test_a_single_win_is_not_a_streak():
+    assert streak_qualifies(hits=1, voids=4, run_length=1, min_hits=5, floor=2) is False
+
+
+def test_four_voids_and_one_win_no_longer_clears_the_window():
+    """Old rule was `hits >= 1 and hits + voids >= min_hits`, which this passed."""
+    legs = streak_legs([game(f"2025-01-0{i}", 8) for i in range(1, 5)] + [game("2025-01-05", 3)],
+                       8, "under", "team")
+    hits = sum(1 for lg in legs if lg["result"] == WIN)
+    voids = sum(1 for lg in legs if lg["result"] == VOID)
+    assert (hits, voids) == (1, 4)
+    run = streak_runs(legs)["current"]["length"]
+    assert run == 1
+    assert streak_qualifies(hits, voids, run, min_hits=5, floor=2) is False
+    assert streak_qualifies(hits, voids, run, min_hits=5, floor=1) is True   # old behaviour
+
+
+def test_a_genuine_run_still_qualifies():
+    legs = streak_legs([game(f"2025-01-0{i}", 2) for i in range(1, 6)], 8, "under", "team")
+    hits = sum(1 for lg in legs if lg["result"] == WIN)
+    assert streak_qualifies(hits, 0, streak_runs(legs)["current"]["length"], 5, 2) is True
+
+
+def test_voids_may_still_pad_the_window_around_a_real_run():
+    """Voids are stake-back, not misses — they should keep counting towards coverage."""
+    legs = streak_legs([game("2025-01-01", 2), game("2025-01-02", 8), game("2025-01-03", 2),
+                        game("2025-01-04", 8), game("2025-01-05", 2)], 8, "under", "team")
+    hits = sum(1 for lg in legs if lg["result"] == WIN)
+    voids = sum(1 for lg in legs if lg["result"] == VOID)
+    assert (hits, voids) == (3, 2)
+    assert streak_qualifies(hits, voids, streak_runs(legs)["current"]["length"], 5, 2) is True
+
+
+def test_thin_venue_history_no_longer_sets_the_average_on_its_own():
+    """One home game used to become the team's whole 'home average'."""
+    team = {"real_matches": [game("2025-01-01", 12, 4, home=True)]
+            + [game(f"2025-02-0{i}", 2, 2, home=False) for i in range(1, 6)]}
+    # 1 home game is below MIN_VENUE_GAMES, so the full record is used instead
+    assert _real_avg(team, "home", "corners_for") == pytest.approx((12 + 2 * 5) / 6)
+    # 5 away games clear it, so the away split stands on its own
+    assert _real_avg(team, "away", "corners_for") == pytest.approx(2.0)

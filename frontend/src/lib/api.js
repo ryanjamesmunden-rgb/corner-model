@@ -37,6 +37,7 @@ export const api = {
   toolRuns: (token, script) => axios.get(`${API}/tools/runs`, { params: { token, script } }).then((r) => r.data),
   toolMeasure: (token, mode, leagueId) => axios.post(`${API}/tools/measure`, null, { params: { token, mode, league_id: leagueId } }).then((r) => r.data),
   toolBackfill: (token, { limit, leagueId, project_only } = {}) => axios.post(`${API}/tools/backfill-shots`, null, { params: { token, limit, league_id: leagueId, project_only } }).then((r) => r.data),
+  toolBackfillGoals: (token, { limit, leagueId, project_only } = {}) => axios.post(`${API}/tools/backfill-goals`, null, { params: { token, limit, league_id: leagueId, project_only } }).then((r) => r.data),
   toolProbeHalves: (token) => axios.post(`${API}/tools/probe-halves`, null, { params: { token } }).then((r) => r.data),
 };
 

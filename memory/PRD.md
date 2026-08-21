@@ -26,6 +26,7 @@ Multi-league corner value betting web app. Rebuilds a spreadsheet corner model i
 - GET /api/scanner (market: team|all|total|home|away; `team`=home+away combined), /api/best-bets, /api/top-mismatches, /api/streaks (direction=over|under, subject=team|match, side, window, min_hits, min_streak, threshold, min_line, max_line, within_days), /api/trends
 - GET /api/leagues, /api/leagues/{id}/teams|fixtures|matchups|corner-table, /api/fixtures/{id}, POST /api/fixtures/{id}/odds
 - GET /api/features/coverage?league_id — fill rate per league of the shot-volume features and of `goal_events` (goal detail). Captured data, NOT in the projection.
+- GET /api/fixture-board?days&per_day&league_id — best upcoming FIXTURES (not teams), grouped by kickoff day, capped per day. Home page (/scanner).
 - GET /api/picks (record incl. profit/staked/roi/unpriced_wins + per-pick profit), POST /api/picks/settle
 - POST /api/explain (Claude Sonnet 4.6 via Emergent LLM key, server-side cache + throttle)
 - GET /api/backtest?model=v1|v2|v3&blocked_weight (v3 = candidate, backtest-only; a v3 run also returns `v2_same_sample` scored on identical rows), /api/sync/runs, POST /api/sync/refresh-all, /api/leagues/{id}/refresh
@@ -33,6 +34,31 @@ Multi-league corner value betting web app. Rebuilds a spreadsheet corner model i
 - Bets/bankroll (built, frontend deferred): GET/PUT /api/bankroll, CRUD /api/bets, GET /api/bets/stats
 
 ## Changelog (recent, newest first)
+
+### Fixture board on the home page — best upcoming games, 2-3 a day (2026-08-21)
+Every other board here is **team-first**: a row is a team and the fixture rides along as
+`next_fixture`. That is the wrong shape for "what should I look at tonight", where the
+unit is the match. `GET /api/fixture-board?days&per_day&league_id` is fixture-first.
+- **What "best" means, stated plainly.** A fixture must carry at least one live **angle**
+  (a chase spot or a streak) — a big projected total with nothing to bet on is trivia,
+  not a pick. Qualifying fixtures are then ordered by **corner edge**: the projected match
+  total ÷ that league's *actual* average match total. The projection is `expected_lambdas`,
+  the same production call the fixture page and every price use, so this ranks by model
+  conviction rather than by a new invented score.
+- **What it is NOT.** Nothing here has been through the backtester *as a ranking*, so the
+  order is **triage** — which games to open first — and the bet itself comes from the
+  angle, which has been priced. `corner_edge` is also correlated with the chase board by
+  construction (same λ), so the angle count is corroboration, not independent
+  confirmation. The chase-board rank test is still the outstanding way to check this.
+- **`board_days()` is pure and tested** (14 tests). The per-day cap is the whole
+  requirement and dropping the wrong fixture is a silent failure, so it is pinned:
+  narrowing 3→2 must be a strict subset, days read in calendar order, fixtures within a
+  day read in **kickoff** order rather than score order, and `considered` reports the full
+  day so the UI can honestly say "3 of 9".
+- Angles are gathered from `_chase_board` plus the same four streak grids the streaks
+  export walks, so the board cannot disagree with the export.
+- Cost profile matches `/best-bets`, which the home page already calls — several passes
+  over teams. It loads async behind skeletons, so it never blocks the rest of the page.
 
 ### Shot block on the fixture page — why v3 nudges a team's λ (2026-08-21)
 The shot data has been in **pricing** since v3 went live (PR #5), but nowhere on the

@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Trophy, Flame, TrendingUp, Target } from "lucide-react";
 import { useLeague } from "@/context/LeagueContext";
 import HomeInsights from "@/components/HomeInsights";
+import FixtureBoard from "@/components/FixtureBoard";
 import IntroBanner from "@/components/IntroBanner";
 import BestTeams from "@/components/BestTeams";
 import TrendFinder from "@/components/TrendFinder";
@@ -36,6 +37,8 @@ export default function Scanner() {
       <IntroBanner />
 
       <HomeInsights />
+
+      <FixtureBoard leagueId="all" />
 
       <Tabs value={view} onValueChange={setView}>
         <TabsList className="bg-secondary h-10 flex-wrap">

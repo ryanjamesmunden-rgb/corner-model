@@ -57,11 +57,20 @@ LEAGUE_META = {
 }
 # Fixtures per league whose statistics we pull. This is what decides HISTORY DEPTH:
 # a 20-team league plays 10 fixtures a round, so 120 fixtures was only ~12 rounds and
-# every team topped out at ~12-13 games no matter how long the season had run. 400
-# covers roughly 20 games per team, which is what team.real_matches stores anyway.
-# Past results never change, so each fixture costs one statistics call ONCE and is
-# cached forever — raising this is a one-off spend, not a recurring one.
-STATS_CAP = int(os.environ.get("STATS_CAP", "400"))
+# every team topped out at ~12-13 games no matter how long the season had run. 250
+# covers roughly 12-13 rounds beyond that — about 25 games a team, comfortably past the
+# 20 that team.real_matches keeps.
+#
+# WHY 250 AND NOT MORE: only UNCACHED fixtures cost a call (see the fixture_stats lookup
+# below), so the one-off spend of raising this is (new cap - what is already cached) per
+# league. From the old 120 that is ~130 calls a league, ~3.5k across 27 leagues — which
+# fits inside a day's quota on API-Football's Pro plan. At 400 it was ~7.6k, which would
+# have run the quota dry mid-sync and left the job half done.
+#
+# Past results never change and fixture_stats is cached permanently, so this is a one-off
+# spend, not a recurring one, and a run that stops early RESUMES rather than repeats.
+# Raise it with the STATS_CAP env var once the first pass has settled — no deploy needed.
+STATS_CAP = int(os.environ.get("STATS_CAP", "250"))
 # Upcoming fixtures stored per league. These come out of the /fixtures call the sync
 # already makes, so a bigger number costs NOTHING extra in API calls — and the old
 # value of 10 was silently capping every downstream "next N days" view: a league

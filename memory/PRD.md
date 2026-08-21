@@ -35,6 +35,21 @@ Multi-league corner value betting web app. Rebuilds a spreadsheet corner model i
 
 ## Changelog (recent, newest first)
 
+### STATS_CAP 400 → 250: fit the first sync inside a day's quota (2026-08-21)
+Only **uncached** fixtures cost an API call, so raising `STATS_CAP` costs
+`(new cap − what is already cached)` per league, once. From the old 120 that is:
+- at **400** — ~280 calls/league, **~7.6k** across 27 leagues
+- at **250** — ~130 calls/league, **~3.5k**
+
+API-Football's Pro plan allows on the order of 7,500 requests a day, so the 400 version
+would have run the quota dry mid-sync and left the job half done. 250 still gives ~25
+games a team — comfortably past the 20 that `team.real_matches` keeps, and roughly double
+the old ~12-13 — while fitting inside one day's allowance.
+A run that stops early **resumes** rather than repeats, because the cache is permanent.
+`STATS_CAP` is an env var, so it can go back up once the first pass has settled — no
+deploy needed. `backfill_goal_events.py` takes its default `--limit` from the same
+constant, so its per-league cap drops with it, which is the same quota argument.
+
 ### Fixture board: an absolute bar, and more games a day (2026-08-21)
 The first version was a **top-N per day**, which is not the same as a quality board.
 Sort-and-take-N *always* promotes something, so a Tuesday with one fixture on crowned that
@@ -110,15 +125,16 @@ never did.
 `STATS_CAP` in `sync_real.py` was **120**: the number of fixtures per league whose
 statistics the sync pulls. A 20-team league plays **10 fixtures a round**, so 120 fixtures
 was only ~12 rounds and every team topped out at ~12-13 matches no matter how long the
-season had run. Raised to **400** (~20 games a team, which is what `real_matches` holds
-anyway) and made overridable with the `STATS_CAP` env var.
+season had run. Raised to **250** (~25 games a team, past the 20 `real_matches` keeps) and
+made overridable with the `STATS_CAP` env var. *(Shipped at 400 first; see the quota entry
+at the top of this changelog for why it came down.)*
 The last-season top-up had the same shape of bug: it fired on `len(ft) < 40`, i.e. only in
 the opening weeks of a season. A league 12 rounds in cleared that bar with 120 games and
 was never topped up — so teams promoted or newly covered had *no* last-season history at
 all. The trigger is now `len(ft) < STATS_CAP`, so the pool fills from last season whenever
 this season has not yet supplied enough.
-**Cost:** up to ~280 extra statistics calls per league, **once**. Past results never
-change and `fixture_stats` is cached permanently, so this is a one-off spend, not a
+**Cost:** ~130 extra statistics calls per league at the revised cap, **once**. Past results
+never change and `fixture_stats` is cached permanently, so this is a one-off spend, not a
 recurring one.
 
 **2. One-game streaks removed** (`MIN_STREAK_LEN = 2`, `streak_qualifies()`).

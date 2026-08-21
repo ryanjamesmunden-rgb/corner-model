@@ -35,6 +35,29 @@ Multi-league corner value betting web app. Rebuilds a spreadsheet corner model i
 
 ## Changelog (recent, newest first)
 
+### Fixture board: an absolute bar, and more games a day (2026-08-21)
+The first version was a **top-N per day**, which is not the same as a quality board.
+Sort-and-take-N *always* promotes something, so a Tuesday with one fixture on crowned that
+fixture by default — "best of the day" out of one. Fixed by putting an **absolute bar**
+in front of the per-day ceiling.
+- `fixture_qualifies()` — three hurdles, none of which depend on the rest of the card, so
+  the same fixture passes or fails identically on a quiet Tuesday and a ten-game Saturday:
+  **CONTEXT** (`BOARD_MIN_GAMES = 6` real matches behind *each* side), **PROJECTION**
+  (`BOARD_MIN_EDGE = 1.0` — at or above that league's actual average), **EVIDENCE** (at
+  least one angle that is strong, not merely present).
+- `angle_is_strong()` — a streak needs a **live run** of `BOARD_MIN_RUN = 3` (the
+  post-#13 minimum of 2 only makes it *a* streak); a chase spot needs to have hit
+  **4 of its last 5** (`BOARD_MIN_CONSISTENCY = 0.8`). A streak is judged on the run
+  that is alive, not the window's hit count — a 4/5 whose latest game was the miss is a
+  broken streak wearing a good record.
+- `per_day` raised to a ceiling of 20; UI offers **3 / 5 / 8 / All**, default 5.
+- **Days where nothing qualifies are reported, not dropped** ("Nothing cleared the bar —
+  4 fixtures on, none with enough behind them"). An absent day reads as missing data.
+- `min_games` / `min_run` / `min_edge` are query params, so the bar is loosenable for a
+  thin week without a deploy.
+- Angle chips are dimmed when they are supporting rather than qualifying, so it is visible
+  which one actually earned the fixture its place.
+
 ### Fixture board on the home page — best upcoming games, 2-3 a day (2026-08-21)
 Every other board here is **team-first**: a row is a team and the fixture rides along as
 `next_fixture`. That is the wrong shape for "what should I look at tonight", where the

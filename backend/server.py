@@ -2,6 +2,7 @@ from fastapi import FastAPI, APIRouter, HTTPException, Depends, Request, Respons
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
+import asyncio
 import os
 import logging
 import math
@@ -66,17 +67,42 @@ def tier_for_ev(ev: float) -> str:
 NB_R = 11          # dispersion param tuned via backtester (Brier 0.2226, calibration gap 0.80%)
 REF_SHOTS = 12.0   # fallback league avg shots when unknown
 
+# v3 (live): the shots-intent term is driven by BLOCKED shots instead. Chosen on the
+# backtester — 0.15 beat 0.10 on Brier (0.2219 -> 0.2214) and on calibration
+# (0.71 -> 0.68) — after the offline harness showed the swap beating both the live
+# model and adding blocked shots alongside shots (the two are largely collinear).
+V3_BLOCKED_WEIGHT = 0.15
+# a team needs this many games carrying the stat before it moves a price; below it,
+# pricing falls back to v2's shots intent rather than trusting a thin sample
+MIN_BLOCKED_GAMES = 5
+
+
+def _intent(value: float, league_avg: float, weight: float) -> float:
+    """Intent multiplier: +/- `weight` on lambda, clamped to 0.6-1.5x the league average."""
+    return (1.0 - weight) + weight * max(0.6, min(1.5, value / league_avg))
+
+
+
+def nb_pmf(k: int, lam: float, r: float = NB_R) -> float:
+    """P(X == k) under a Negative Binomial with mean lam."""
+    if lam <= 0:
+        return 1.0 if k == 0 else 0.0
+    k = int(k)
+    if k < 0:
+        return 0.0
+    p = r / (r + lam)
+    return math.exp(math.lgamma(k + r) - math.lgamma(r) - math.lgamma(k + 1)
+                    + r * math.log(p) + k * math.log(1.0 - p))
+
 
 def nb_ge(k: int, lam: float, r: float = NB_R) -> float:
     """P(X >= k) under a Negative Binomial with mean lam (better tail fit than Poisson)."""
     if lam <= 0:
         return 0.0
     k = int(k)
-    p = r / (r + lam)
     cum = 0.0
     for i in range(k):
-        cum += math.exp(math.lgamma(i + r) - math.lgamma(r) - math.lgamma(i + 1)
-                        + r * math.log(p) + i * math.log(1.0 - p))
+        cum += nb_pmf(i, lam, r)
     return max(0.0, min(1.0, 1.0 - cum))
 
 
@@ -97,14 +123,42 @@ def _shots_form(team: dict, venue: str):
     return sf, fh
 
 
-def v2_lambda(base: float, team: dict, venue: str, league_shots: float) -> float:
-    """Nudge base corner-lambda by shots-intent (+/-~10%) and first-half-goal form (+/-3%)."""
+def _blocked_form(team: dict, venue: str) -> Optional[float]:
+    """Team's blocked-shots average on this venue, or None where the backfill hasn't
+    reached far enough. A missing stat is never read as zero, and a handful of games
+    is not enough to move a price — under MIN_BLOCKED_GAMES we say we don't know."""
+    rms = (team or {}).get("real_matches") or []
+    if venue == "home":
+        pool = [m for m in rms if m["home"]]
+    elif venue == "away":
+        pool = [m for m in rms if not m["home"]]
+    else:
+        pool = rms
+    if not pool:
+        pool = rms
+    vals = [m["blocked_shots_for"] for m in pool if m.get("blocked_shots_for") is not None]
+    if len(vals) < MIN_BLOCKED_GAMES:
+        return None
+    return sum(vals) / len(vals)
+
+
+def live_lambda(base: float, team: dict, venue: str, league_shots: float,
+                league_blocked: float = 0.0) -> float:
+    """Production corner-lambda (v3): blocked-shots intent x first-half-goal form.
+
+    Falls back to v2's shots intent for any team without enough blocked-shots history,
+    so a thinly-covered team prices exactly as it does today rather than worse. Both
+    branches are the same shape; only the stat driving the intent differs."""
     sf, fh = _shots_form(team, venue)
-    if sf is None or not league_shots:
+    if sf is None:
         return round(base, 2)
-    intent = 0.90 + 0.10 * max(0.6, min(1.5, sf / league_shots))
     form = 1.0 + 0.03 * (fh - 0.5)
-    return round(base * intent * form, 2)
+    blocked = _blocked_form(team, venue)
+    if blocked is not None and league_blocked:
+        return round(base * _intent(blocked, league_blocked, V3_BLOCKED_WEIGHT) * form, 2)
+    if not league_shots:
+        return round(base, 2)
+    return round(base * _intent(sf, league_shots, 0.10) * form, 2)
 
 
 def _league_shots_map(teams: list) -> dict:
@@ -113,6 +167,18 @@ def _league_shots_map(teams: list) -> dict:
         for m in (t.get("real_matches") or []):
             agg[t["league_id"]].append(m.get("shots_for", 0))
     return {lid: (sum(v) / len(v) if v else REF_SHOTS) for lid, v in agg.items()}
+
+
+def _league_blocked_map(teams: list) -> dict:
+    """League average blocked shots, over the fixtures that actually carry the stat.
+    A league missing from the map has no blocked data and falls back to shots intent."""
+    agg = defaultdict(list)
+    for t in teams:
+        for m in (t.get("real_matches") or []):
+            v = m.get("blocked_shots_for")
+            if v is not None:
+                agg[t["league_id"]].append(v)
+    return {lid: sum(v) / len(v) for lid, v in agg.items() if v}
 
 
 TOTAL_LINES = [6.5, 7.5, 8.5, 9.5, 10.5, 11.5, 12.5, 13.5]
@@ -161,12 +227,104 @@ def team_split(matches: List[dict], split: str, window: int) -> dict:
     return {"played": n, "for_avg": round(cf / n, 2), "against_avg": round(ca / n, 2), "total_avg": round((cf + ca) / n, 2)}
 
 
+# ----------------------------- Shot-volume features -----------------------------
+# Captured per team per fixture by sync_real.py alongside corners. These are NOT wired
+# into the projection — they are exposed so their predictive value can be measured
+# before anything depends on them. A fixture the provider didn't cover carries None,
+# so every average travels with the sample size it was actually computed from.
+
+SHOT_FEATURES = ("shots", "shots_on_target", "blocked_shots", "dangerous_attacks")
+
+
+def _feature_avg(pool: List[dict], key: str) -> Optional[float]:
+    vals = [m[key] for m in pool if m.get(key) is not None]
+    return round(sum(vals) / len(vals), 2) if vals else None
+
+
+def team_features(matches: List[dict], split: str = "overall", window: int = 0) -> dict:
+    """Per-game feature averages for a team, with the coverage behind each one.
+
+    `covered` counts the games in the pool that actually carried the stat: an average
+    over 3 of 12 games is not the same evidence as one over 12, and the caller has to
+    be able to tell the difference."""
+    if split == "home":
+        pool = [m for m in matches if m["home"]]
+    elif split == "away":
+        pool = [m for m in matches if not m["home"]]
+    else:
+        pool = list(matches)
+    pool = pool[-window:] if window else pool
+    out = {"played": len(pool), "covered": {}}
+    for f in SHOT_FEATURES:
+        out[f"{f}_for"] = _feature_avg(pool, f"{f}_for")
+        out[f"{f}_against"] = _feature_avg(pool, f"{f}_against")
+        out["covered"][f] = sum(1 for m in pool if m.get(f"{f}_for") is not None)
+    return out
+
+
+# ----------------------------- Corners by match state -----------------------------
+# Corners grouped by the state the team was in. NOTE the limitation this carries:
+# API-Football gives corner totals for the whole match only — there are no corner
+# timings and no half split — so these are the team's FULL-MATCH corners in games
+# where it was, say, behind at half-time. That is not the same as "corners won while
+# behind", and a chase effect concentrated in the second half will read diluted here.
+# probe_corner_halves.py checks whether a real half split is obtainable.
+
+HT_LABELS = {-1: "trailing", 0: "level", 1: "leading"}
+FT_LABELS = {-1: "lost", 0: "drew", 1: "won"}
+
+
+def _match_state(m: dict, phase: str) -> Optional[int]:
+    """-1 behind, 0 level, +1 ahead — at half-time or at full-time."""
+    if phase == "ht":
+        f, a = m.get("fh_goals_for"), m.get("fh_goals_against")
+    else:
+        f, a = m.get("goals_for"), m.get("goals_against")
+    if f is None or a is None:
+        return None
+    return (f > a) - (f < a)
+
+
+def team_state_splits(matches: List[dict], split: str = "overall", window: int = 0) -> dict:
+    """Corners won/conceded per game, grouped by half-time state and by final result.
+
+    `games` travels with every bucket: a 6.8 average over three matches is not the
+    same evidence as one over twenty, and these buckets get thin fast."""
+    if split == "home":
+        pool = [m for m in matches if m["home"]]
+    elif split == "away":
+        pool = [m for m in matches if not m["home"]]
+    else:
+        pool = list(matches)
+    pool = pool[-window:] if window else pool
+
+    out = {}
+    for phase, labels in (("ht", HT_LABELS), ("ft", FT_LABELS)):
+        buckets, covered = {}, 0
+        for state, label in labels.items():
+            rows = [m for m in pool if _match_state(m, phase) == state]
+            covered += len(rows)
+            n = len(rows)
+            buckets[label] = {
+                "games": n,
+                "won": round(sum(m["corners_for"] for m in rows) / n, 2) if n else None,
+                "conceded": round(sum(m["corners_against"] for m in rows) / n, 2) if n else None,
+                "total": round(sum(m["corners_for"] + m["corners_against"] for m in rows) / n, 2) if n else None,
+            }
+        # games the provider left without the goals needed to classify them
+        buckets["unknown_games"] = len(pool) - covered
+        out[phase] = buckets
+    out["played"] = len(pool)
+    return out
+
+
 def _src(team: dict) -> list:
     """Prefer real match data; fall back to (synthetic) matches only if no real games."""
     return team.get("real_matches") or team.get("matches") or []
 
 
-def expected_lambdas(home: dict, away: dict, league_shots: float = REF_SHOTS) -> dict:
+def expected_lambdas(home: dict, away: dict, league_shots: float = REF_SHOTS,
+                     league_blocked: float = 0.0) -> dict:
     h_home = team_split(_src(home), "home", 0)
     a_away = team_split(_src(away), "away", 0)
     # fall back to overall if a team has no games on that venue
@@ -174,8 +332,10 @@ def expected_lambdas(home: dict, away: dict, league_shots: float = REF_SHOTS) ->
         h_home = team_split(_src(home), "overall", 0)
     if a_away["played"] == 0:
         a_away = team_split(_src(away), "overall", 0)
-    lam_home = v2_lambda((h_home["for_avg"] + a_away["against_avg"]) / 2, home, "home", league_shots)
-    lam_away = v2_lambda((a_away["for_avg"] + h_home["against_avg"]) / 2, away, "away", league_shots)
+    lam_home = live_lambda((h_home["for_avg"] + a_away["against_avg"]) / 2, home, "home",
+                           league_shots, league_blocked)
+    lam_away = live_lambda((a_away["for_avg"] + h_home["against_avg"]) / 2, away, "away",
+                           league_shots, league_blocked)
     return {"home": lam_home, "away": lam_away, "total": round(lam_home + lam_away, 2)}
 
 
@@ -297,7 +457,8 @@ async def get_fixture_model(fixture: dict, odds: Dict[str, float]) -> dict:
     away = await db.teams.find_one({"team_id": fixture["away_team_id"]}, {"_id": 0})
     league = await db.leagues.find_one({"league_id": fixture["league_id"]}, {"_id": 0}) or {}
     ls = league.get("avg_shots") or REF_SHOTS
-    lambdas = expected_lambdas(home, away, ls)
+    lb = league.get("avg_blocked") or 0.0
+    lambdas = expected_lambdas(home, away, ls, lb)
     return {"lambdas": lambdas, "markets": build_markets(lambdas, odds), "confidence": confidence_for(home, away)}
 
 
@@ -643,78 +804,286 @@ async def explain_pick(req: ExplainReq, user: dict = Depends(get_current_user)):
 
 
 def model_lambda(model: str, team_for: float, opp_against: float,
-                 team_shots: float = 0.0, league_shots: float = 0.0, team_fh: float = 0.5) -> float:
-    """Expected team corners. v1 = corner form only. v2 = + shots-intent x first-half-goal form
-    (matches the tuned production formula)."""
+                 team_shots: float = 0.0, league_shots: float = 0.0, team_fh: float = 0.5,
+                 team_blocked: float = 0.0, league_blocked: float = 0.0,
+                 blocked_weight: float = V3_BLOCKED_WEIGHT) -> float:
+    """Expected team corners.
+    v1 = corner form only.
+    v2 = + shots-intent x first-half-goal form (matches the tuned production formula).
+    v3 = v2 with the shots-intent term SWAPPED for blocked-shots intent (candidate).
+
+    v3 FALLS BACK TO v2 when a team has no blocked-shots history. Blocked shots only
+    exist as far back as the backfill reached, while shots are on every cached fixture,
+    so without this a team short on blocked data would price off bare corner form —
+    losing the first-half-goal term too, and coming out WORSE than the model it is
+    meant to replace. The backtester skips those rows, so it would never show it."""
     base = (team_for + opp_against) / 2.0
-    if model == "v2" and league_shots > 0 and team_shots > 0:
-        intent = 0.90 + 0.10 * max(0.6, min(1.5, team_shots / league_shots))
-        form = 1.0 + 0.03 * (team_fh - 0.5)
-        base = base * intent * form
+    form = 1.0 + 0.03 * (team_fh - 0.5)
+    if model == "v3" and league_blocked > 0 and team_blocked > 0:
+        return base * _intent(team_blocked, league_blocked, blocked_weight) * form
+    if model in ("v2", "v3") and league_shots > 0 and team_shots > 0:
+        return base * _intent(team_shots, league_shots, 0.10) * form
     return base
+
+
+def _backtest_summary(stats: dict, lines: List[int]) -> dict:
+    out_lines, total_brier, total_n, gaps = [], 0.0, 0, []
+    for L in lines:
+        s = stats[L]
+        if s["n"] == 0:
+            continue
+        gap = round(abs(s["pred"] - s["hit"]) / s["n"] * 100, 1)
+        gaps.append(gap)
+        out_lines.append({"line": L, "n": s["n"],
+                          "model_prob": round(s["pred"] / s["n"] * 100, 1),
+                          "actual_hit_rate": round(s["hit"] / s["n"] * 100, 1),
+                          "calibration_gap": gap,
+                          "brier": round(s["brier"] / s["n"], 4)})
+        total_brier += s["brier"]; total_n += s["n"]
+    return {"overall_brier": round(total_brier / total_n, 4) if total_n else None,
+            "avg_calibration_gap": round(sum(gaps) / len(gaps), 2) if gaps else None,
+            "lines": out_lines}
+
+
+# ----------------------------- Tool runners (phone-operable) -----------------------------
+# The analysis scripts are the one part of the workflow that needs a shell. These run them
+# as subprocesses and store the output so the whole loop works from a browser.
+#
+# The app is PUBLIC (auth was removed), and backfill_shots.py spends API-Football credits,
+# so these are gated behind TOOLS_TOKEN and are DISABLED unless that env var is set.
+# Arguments are built from validated values only — never from raw user strings.
+
+TOOLS_TOKEN = os.environ.get("TOOLS_TOKEN")
+TOOL_SCRIPTS = {"backfill_shots": "backfill_shots.py", "measure_features": "measure_features.py",
+                "measure_chase_board": "measure_chase_board.py"}
+TOOL_COOLDOWN = {"backfill_shots": 600, "measure_features": 120,
+                 "measure_chase_board": 120}                       # seconds
+# mode -> (script, fixed argv). Modes are an enum precisely so nothing user-supplied
+# ever reaches argv; --league is appended only after validation.
+MEASURE_MODES = {
+    "features": ("measure_features", []),
+    "sweep": ("measure_features", ["--sweep"]),
+    "game_state": ("measure_features", ["--game-state"]),
+    "chase_board": ("measure_chase_board", []),
+}
+TOOL_OUTPUT_CAP = 60000                                            # chars kept per run
+
+
+def _check_tools_token(token: Optional[str]):
+    import secrets
+    if not TOOLS_TOKEN:
+        raise HTTPException(status_code=503,
+                            detail="Tool endpoints are disabled — set TOOLS_TOKEN in the backend env")
+    if not token or not secrets.compare_digest(token, TOOLS_TOKEN):
+        raise HTTPException(status_code=403, detail="Bad or missing token")
+
+
+async def _tool_guard(script: str):
+    """One run of a script at a time, and not more often than its cooldown."""
+    running = await db.script_runs.find_one({"script": script, "status": "running"}, {"_id": 1})
+    if running:
+        raise HTTPException(status_code=409, detail=f"{script} is already running")
+    last = await db.script_runs.find({"script": script}, {"_id": 0, "started_at": 1}) \
+        .sort("started_at", -1).limit(1).to_list(1)
+    if last and last[0].get("started_at"):
+        try:
+            age = (datetime.now(timezone.utc)
+                   - datetime.fromisoformat(last[0]["started_at"])).total_seconds()
+        except Exception:
+            age = 1e9
+        cd = TOOL_COOLDOWN[script]
+        if age < cd:
+            raise HTTPException(status_code=429,
+                                detail=f"{script} ran {int(age)}s ago — wait {int(cd - age)}s")
+
+
+async def _run_tool(run_id: str, script: str, argv: List[str]):
+    import sys as _sys
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            _sys.executable, str(ROOT_DIR / TOOL_SCRIPTS[script]), *argv, cwd=str(ROOT_DIR),
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
+        out, _ = await proc.communicate()
+        text = out.decode("utf-8", "replace")
+        await db.script_runs.update_one({"_id": run_id}, {"$set": {
+            "status": "success" if proc.returncode == 0 else "failed",
+            "exit_code": proc.returncode, "output": text[-TOOL_OUTPUT_CAP:],
+            "truncated": len(text) > TOOL_OUTPUT_CAP,
+            "finished_at": datetime.now(timezone.utc).isoformat()}})
+    except Exception as e:
+        logger.exception("tool %s failed", script)
+        await db.script_runs.update_one({"_id": run_id}, {"$set": {
+            "status": "failed", "exit_code": -1, "output": f"runner error: {e}",
+            "finished_at": datetime.now(timezone.utc).isoformat()}})
+
+
+async def _start_tool(script: str, argv: List[str], label: str) -> dict:
+    await _tool_guard(script)
+    run_id = f"run_{uuid.uuid4().hex[:12]}"
+    doc = {"_id": run_id, "script": script, "label": label, "argv": argv, "status": "running",
+           "started_at": datetime.now(timezone.utc).isoformat(), "finished_at": None,
+           "output": "", "exit_code": None}
+    await db.script_runs.insert_one(dict(doc))
+    asyncio.create_task(_run_tool(run_id, script, argv))
+    # keep the last 30 runs only
+    old = await db.script_runs.find({}, {"_id": 1}).sort("started_at", -1).skip(30).to_list(500)
+    if old:
+        await db.script_runs.delete_many({"_id": {"$in": [o["_id"] for o in old]}})
+    doc.pop("output", None)
+    return {"started": True, **doc}
+
+
+@api_router.post("/tools/backfill-shots")
+async def tool_backfill_shots(token: Optional[str] = None, league_id: Optional[str] = None,
+                              limit: int = 120, project_only: bool = False,
+                              user: dict = Depends(get_current_user)):
+    """Fill shot-volume features on this season's cached fixtures. SPENDS API CREDITS —
+    one statistics call per un-filled fixture, capped by `limit` per league."""
+    _check_tools_token(token)
+    argv, parts = [], []
+    if league_id and league_id != "all":
+        if league_id not in MANAGED_LEAGUE_IDS:
+            raise HTTPException(status_code=400, detail=f"unknown league_id {league_id}")
+        argv.append(league_id)
+        parts.append(league_id)
+    argv += ["--limit", str(max(1, min(int(limit), 500)))]
+    parts.append(f"limit={max(1, min(int(limit), 500))}")
+    if project_only:
+        argv.append("--project-only")
+        parts.append("project-only")
+    return await _start_tool("backfill_shots", argv, " ".join(parts) or "all leagues")
+
+
+@api_router.post("/tools/measure")
+async def tool_measure(token: Optional[str] = None, mode: str = "features",
+                       league_id: Optional[str] = None, user: dict = Depends(get_current_user)):
+    """Run an offline measurement harness. Read-only against the DB, no API calls.
+    mode: features (blocked shots) | sweep (weights) | game_state (chase thesis)
+        | chase_board (does the board's ranking pick better spots?)"""
+    _check_tools_token(token)
+    if mode not in MEASURE_MODES:
+        raise HTTPException(status_code=400,
+                            detail=f"mode must be one of {'|'.join(MEASURE_MODES)}")
+    script, fixed = MEASURE_MODES[mode]
+    argv, parts = list(fixed), [mode]
+    if league_id and league_id != "all":
+        if league_id not in MANAGED_LEAGUE_IDS:
+            raise HTTPException(status_code=400, detail=f"unknown league_id {league_id}")
+        argv += ["--league", league_id]
+        parts.append(league_id)
+    return await _start_tool(script, argv, " ".join(parts))
+
+
+@api_router.get("/tools/runs")
+async def tool_runs(token: Optional[str] = None, script: Optional[str] = None, limit: int = 5,
+                    user: dict = Depends(get_current_user)):
+    _check_tools_token(token)
+    q = {"script": script} if script in TOOL_SCRIPTS else {}
+    runs = await db.script_runs.find(q, {"_id": 0, "argv": 0}).sort("started_at", -1) \
+        .limit(max(1, min(limit, 20))).to_list(20)
+    return {"enabled": True, "runs": runs}
 
 
 @api_router.get("/backtest")
 async def backtest(league_id: str = "all", window: int = 10, min_games: int = 5,
-                   model: str = "v1", user: dict = Depends(get_current_user)):
+                   model: str = "v1", blocked_weight: float = V3_BLOCKED_WEIGHT,
+                   only_covered: bool = False, user: dict = Depends(get_current_user)):
     """Walk-forward backtest over cached fixture stats: for each past match we predict
-    team-corner probabilities from prior form only, then compare to what actually happened."""
+    team-corner probabilities from prior form only, then compare to what actually happened.
+
+    A v3 run always also returns v2 scored on the SAME rows (`v2_same_sample`) —
+    comparing a v3 run against a separate v2 run would compare two different samples.
+
+    Two v3 questions, two modes:
+    - default: every row is scored, v3 falling back to v2 where a team has no
+      blocked-shots history. This is the SHIPPING question — how the model would
+      behave in production, uneven coverage included. `rows_using_blocked` says how
+      many rows actually got the new term.
+    - only_covered=true: rows without blocked history are skipped instead. This is the
+      FEATURE question — how much the blocked term is worth where it applies."""
     q = {} if league_id == "all" else {"league_id": league_id}
     matches = await db.fixture_stats.find(q, {"_id": 0}).to_list(30000)
     matches.sort(key=lambda m: m["date"])
-    # league average shots (for v2 intent scaling)
+    # league averages for the intent terms (blocked shots is None where uncovered)
     all_shots = [m.get("home_shots", 0) for m in matches] + [m.get("away_shots", 0) for m in matches]
     league_shots = (sum(all_shots) / len(all_shots)) if all_shots else 0.0
+    all_blocked = [m[f"{side}_blocked_shots"] for m in matches for side in ("home", "away")
+                   if m.get(f"{side}_blocked_shots") is not None]
+    league_blocked = (sum(all_blocked) / len(all_blocked)) if all_blocked else 0.0
 
     hist_for = defaultdict(lambda: deque(maxlen=window))
     hist_against = defaultdict(lambda: deque(maxlen=window))
     hist_shots = defaultdict(lambda: deque(maxlen=window))
     hist_fh = defaultdict(lambda: deque(maxlen=window))
+    hist_blocked = defaultdict(lambda: deque(maxlen=window))
     lines = [4, 5, 6, 7]
     stats = {L: {"n": 0, "pred": 0.0, "hit": 0, "brier": 0.0} for L in lines}
-    preds = 0
+    alt_stats = {L: {"n": 0, "pred": 0.0, "hit": 0, "brier": 0.0} for L in lines}
+    preds = skipped_no_blocked = fell_back = 0
 
     def avg(d):
         return sum(d) / len(d) if d else 0.0
 
-    prob_fn = nb_ge if model == "v2" else poisson_ge
+    prob_fn = nb_ge if model in ("v2", "v3") else poisson_ge
     for m in matches:
         h, a = m["home_id"], m["away_id"]
         sides = [
-            ("home", hist_for[h], hist_against[a], hist_shots[h], hist_fh[h], m["home_corners"],
-             len(hist_for[h]) >= min_games and len(hist_against[a]) >= min_games),
-            ("away", hist_for[a], hist_against[h], hist_shots[a], hist_fh[a], m["away_corners"],
-             len(hist_for[a]) >= min_games and len(hist_against[h]) >= min_games),
+            ("home", hist_for[h], hist_against[a], hist_shots[h], hist_fh[h], hist_blocked[h],
+             m["home_corners"], len(hist_for[h]) >= min_games and len(hist_against[a]) >= min_games),
+            ("away", hist_for[a], hist_against[h], hist_shots[a], hist_fh[a], hist_blocked[a],
+             m["away_corners"], len(hist_for[a]) >= min_games and len(hist_against[h]) >= min_games),
         ]
-        for _side, tf_d, oa_d, ts_d, fh_d, actual, can in sides:
+        for _side, tf_d, oa_d, ts_d, fh_d, bl_d, actual, can in sides:
             if not can:
                 continue
-            lam = model_lambda(model, avg(tf_d), avg(oa_d), avg(ts_d), league_shots, avg(fh_d))
+            has_blocked = len(bl_d) >= min_games
+            if model == "v3" and not has_blocked:
+                if only_covered:
+                    skipped_no_blocked += 1
+                    continue
+                fell_back += 1               # thin history -> v3 prices as v2 would
+            # a too-short window is passed as 0 so the fallback fires, rather than
+            # letting two games of blocked data masquerade as form
+            lam = model_lambda(model, avg(tf_d), avg(oa_d), avg(ts_d), league_shots, avg(fh_d),
+                               avg(bl_d) if has_blocked else 0.0, league_blocked, blocked_weight)
             preds += 1
             for L in lines:
                 p = prob_fn(L, lam)
                 hit = 1 if actual >= L else 0
                 s = stats[L]
                 s["n"] += 1; s["pred"] += p; s["hit"] += hit; s["brier"] += (p - hit) ** 2
+            if model == "v3":               # same rows, live model, for a fair comparison
+                lam2 = model_lambda("v2", avg(tf_d), avg(oa_d), avg(ts_d), league_shots, avg(fh_d))
+                for L in lines:
+                    p = nb_ge(L, lam2)
+                    hit = 1 if actual >= L else 0
+                    s = alt_stats[L]
+                    s["n"] += 1; s["pred"] += p; s["hit"] += hit; s["brier"] += (p - hit) ** 2
         # update rolling form AFTER predicting (no leakage)
         hist_for[h].append(m["home_corners"]); hist_against[h].append(m["away_corners"]); hist_shots[h].append(m.get("home_shots", 0)); hist_fh[h].append(1 if m.get("home_fh_goals", 0) >= 1 else 0)
         hist_for[a].append(m["away_corners"]); hist_against[a].append(m["home_corners"]); hist_shots[a].append(m.get("away_shots", 0)); hist_fh[a].append(1 if m.get("away_fh_goals", 0) >= 1 else 0)
+        for tid, side in ((h, "home"), (a, "away")):
+            bl = m.get(f"{side}_blocked_shots")
+            if bl is not None:              # uncovered fixtures never enter the window
+                hist_blocked[tid].append(bl)
 
-    out_lines, total_brier, total_n = [], 0.0, 0
-    for L in lines:
-        s = stats[L]
-        if s["n"] == 0:
-            continue
-        out_lines.append({"line": L, "n": s["n"],
-                          "model_prob": round(s["pred"] / s["n"] * 100, 1),
-                          "actual_hit_rate": round(s["hit"] / s["n"] * 100, 1),
-                          "calibration_gap": round(abs(s["pred"] - s["hit"]) / s["n"] * 100, 1),
-                          "brier": round(s["brier"] / s["n"], 4)})
-        total_brier += s["brier"]; total_n += s["n"]
-    return {"league_id": league_id, "model": model, "window": window, "min_games": min_games,
-            "matches": len(matches), "predictions": preds,
-            "overall_brier": round(total_brier / total_n, 4) if total_n else None,
-            "lines": out_lines}
+    out = {"league_id": league_id, "model": model, "window": window, "min_games": min_games,
+           "matches": len(matches), "predictions": preds, **_backtest_summary(stats, lines)}
+    if model == "v3":
+        out["blocked_weight"] = blocked_weight
+        out["only_covered"] = only_covered
+        out["skipped_no_blocked_history"] = skipped_no_blocked
+        out["rows_using_blocked"] = preds - fell_back
+        out["rows_fell_back_to_v2"] = fell_back
+        out["v2_same_sample"] = _backtest_summary(alt_stats, lines)
+        out["note"] = ("v3 is a candidate, not live pricing. Compare against v2_same_sample, "
+                       "not against a separate v2 run — that would be a different sample. "
+                       + ("only_covered=true: scored only where blocked history exists (what the "
+                          "feature is worth where it applies)."
+                          if only_covered else
+                          "Default mode: every row scored, falling back to v2 where blocked "
+                          "history is short (what shipping this would actually do)."))
+    return out
 
 
 @api_router.get("/leagues/{league_id}/teams")
@@ -727,7 +1096,8 @@ async def get_teams(league_id: str, split: str = "overall", window: int = 5, use
         overall = team_split(src, "overall", 0)
         out.append({"team_id": t["team_id"], "name": t["name"], "played": s["played"],
                     "for_avg": s["for_avg"], "against_avg": s["against_avg"],
-                    "total_avg": s["total_avg"], "season_total_avg": overall["total_avg"]})
+                    "total_avg": s["total_avg"], "season_total_avg": overall["total_avg"],
+                    "features": team_features(src, split, window)})
     out.sort(key=lambda x: x["for_avg"], reverse=True)
     return out
 
@@ -747,9 +1117,14 @@ async def corner_table(league_id: str, user: dict = Depends(get_current_user)):
             won = sum(m["corners_for"] for m in real) / n
             concd = sum(m["corners_against"] for m in real) / n
             shots = sum(m.get("shots_for", 0) for m in real) / n
+        feats = team_features(real)
         out.append({"team_id": t["team_id"], "name": t["name"], "games": n,
                     "corners_won": round(won, 2), "corners_conceded": round(concd, 2),
-                    "shots": round(shots, 1), "real_samples": t.get("real_samples", 0)})
+                    "shots": round(shots, 1), "real_samples": t.get("real_samples", 0),
+                    "shots_on_target": feats["shots_on_target_for"],
+                    "blocked_shots": feats["blocked_shots_for"],
+                    "dangerous_attacks": feats["dangerous_attacks_for"],
+                    "features": feats})
     out.sort(key=lambda x: x["corners_won"], reverse=True)
     return {"league_id": league_id, "league_name": league.get("name", league_id),
             "country": league.get("country", ""), "teams": out}
@@ -790,19 +1165,32 @@ async def fixture_detail(fixture_id: str, user: dict = Depends(get_current_user)
     def splits(team):
         return {sp: {str(w): team_split(_src(team), sp, w) for w in [3, 5, 10, 0]} for sp in ["home", "away", "overall"]}
 
+    def features(team):
+        return {sp: team_features(team.get("real_matches") or [], sp) for sp in ["home", "away", "overall"]}
+
+    def states(team):
+        return {sp: team_state_splits(team.get("real_matches") or [], sp)
+                for sp in ["home", "away", "overall"]}
+
     def recent(team):
         rms = team.get("real_matches") or []
         return [{"date": m["date"], "opponent": m["opponent"], "home": m["home"],
                  "won": m["corners_for"], "conceded": m["corners_against"],
                  "total": m["corners_for"] + m["corners_against"],
                  "gf": m.get("goals_for"), "ga": m.get("goals_against"),
-                 "fh": (m["fh_goals_for"] >= 1) if m.get("fh_goals_for") is not None else None}
+                 "fh": (m["fh_goals_for"] >= 1) if m.get("fh_goals_for") is not None else None,
+                 "ht_state": HT_LABELS.get(_match_state(m, "ht")),
+                 "ft_state": FT_LABELS.get(_match_state(m, "ft")),
+                 **{f: m.get(f) for f in ("shots_for", "shots_on_target_for",
+                                          "blocked_shots_for", "dangerous_attacks_for")}}
                 for m in reversed(rms)]
 
     return {"fixture": fx, "model": model,
-            "home_team": {"name": home["name"], "splits": splits(home),
+            "home_team": {"name": home["name"], "splits": splits(home), "features": features(home),
+                          "state_splits": states(home),
                           "recent": recent(home), "real_samples": home.get("real_samples", 0)},
-            "away_team": {"name": away["name"], "splits": splits(away),
+            "away_team": {"name": away["name"], "splits": splits(away), "features": features(away),
+                          "state_splits": states(away),
                           "recent": recent(away), "real_samples": away.get("real_samples", 0)}}
 
 
@@ -885,17 +1273,159 @@ async def _next_fixtures(q):
     return nf
 
 
+# ----------------------------- Streak model -----------------------------
+# One model, two directions. A streak is always described by a whole-number line
+# plus a DIRECTION:
+#   over  — the historic behaviour: "line+" corners, i.e. value >= line (= Over line-0.5).
+#           A half-line can't land exactly, so an over leg never voids.
+#   under — a laddered whole line: below it wins, EXACTLY on it is a void (stake back,
+#           as books settle a whole corner line) and above it loses.
+# A void is neutral: it neither extends nor breaks a run, and it is excluded from the
+# hit-rate denominator instead of counting as a miss.
+# SUBJECT picks what the line is measured against: the team's own corners, or the
+# match total (team + opponent). Same model, same rows — no parallel collection.
+
+WIN, VOID, LOSS = "win", "void", "loss"
+
+# Laddered lines the auto-picker walks. Team corners top out far lower than match totals.
+STREAK_LADDERS = {"team": list(range(1, 16)), "match": list(range(1, 31))}
+# Default ceiling for under streaks: above these a line is true so often it says nothing.
+UNDER_LINE_CAP = {"team": 8, "match": 12}
+
+
+def settle_streak_leg(value: int, line: int, direction: str) -> str:
+    """Settle one game against a streak line. Exact-line results void on unders."""
+    if direction == "under":
+        if value < line:
+            return WIN
+        return VOID if value == line else LOSS
+    return WIN if value >= line else LOSS
+
+
+def streak_value(match: dict, subject: str) -> int:
+    """The number a streak line is measured against for one played match."""
+    if subject == "match":
+        return match["corners_for"] + match["corners_against"]
+    return match["corners_for"]
+
+
+def streak_legs(matches: List[dict], line: int, direction: str, subject: str) -> List[dict]:
+    return [{"date": m.get("date"), "value": streak_value(m, subject),
+             "result": settle_streak_leg(streak_value(m, subject), line, direction)}
+            for m in matches]
+
+
+def streak_runs(legs: List[dict]) -> dict:
+    """Current and longest run over chronological (oldest-first) settled legs.
+
+    The current run is the one still alive at the newest game — its length, the date it
+    started and whether it is still active. Voids are skipped, so a run that goes
+    win-win-void-win is three long and unbroken."""
+    longest = {"length": 0, "start_date": None, "end_date": None, "voids": 0}
+    length, voids, start, end = 0, 0, None, None
+    for leg in legs:
+        if leg["result"] == VOID:
+            if length:
+                voids += 1
+            continue
+        if leg["result"] == WIN:
+            length += 1
+            if length == 1:
+                start, voids = leg["date"], 0
+            end = leg["date"]
+            if length > longest["length"]:
+                longest = {"length": length, "start_date": start, "end_date": end, "voids": voids}
+        else:
+            length, start, end, voids = 0, None, None, 0
+    current = {"length": length, "start_date": start, "last_date": end, "voids": voids,
+               "status": "active" if length else "broken"}
+    longest["is_current"] = bool(length) and longest["length"] == length and longest["end_date"] == end
+    return {"current": current, "longest": longest}
+
+
+def streak_line_label(line: int, direction: str) -> str:
+    return f"under {line}" if direction == "under" else f"{line}+"
+
+
+def pick_streak_line(values: List[int], direction: str, subject: str, min_hits: int) -> int:
+    """Best laddered line for this run: the highest line still cleared on an over,
+    the tightest line still held on an under. Voids count towards min_hits (they are
+    not misses) but a line carried entirely by voids is not a streak."""
+    ladder = STREAK_LADDERS.get(subject, STREAK_LADDERS["team"])
+
+    def qualifies(line: int) -> bool:
+        legs = [settle_streak_leg(v, line, direction) for v in values]
+        wins = legs.count(WIN)
+        return wins >= 1 and wins + legs.count(VOID) >= min_hits
+
+    hits = [x for x in ladder if qualifies(x)]
+    if not hits:
+        return 0
+    return min(hits) if direction == "under" else max(hits)
+
+
+def _streak_projection(team: dict, opp: Optional[dict], team_venue: str, opp_venue: str,
+                       line: int, direction: str, subject: str, league_shots: float,
+                       odds: Dict[str, float], league_blocked: float = 0.0) -> Optional[dict]:
+    """Price the streak's own market on the team's next fixture.
+
+    A whole-line under can push, so the fair price is taken over SETTLED outcomes
+    (p_win / (p_win + p_loss)) and EV credits the void back at stake."""
+    t_for = _real_avg(team, team_venue, "corners_for")
+    o_against = _real_avg(opp, opp_venue, "corners_against") if opp else None
+    if t_for is None or o_against is None:
+        return None
+    lam = live_lambda((t_for + o_against) / 2, team, team_venue, league_shots, league_blocked)
+    ge, pmf, group = nb_ge, nb_pmf, team_venue
+    extra = {}
+    if subject == "match":
+        o_for = _real_avg(opp, opp_venue, "corners_for")
+        t_against = _real_avg(team, team_venue, "corners_against")
+        if o_for is None or t_against is None:
+            return None
+        lam_opp = live_lambda((o_for + t_against) / 2, opp, opp_venue, league_shots, league_blocked)
+        extra = {"opp_for": round(o_for, 2), "team_conceded": round(t_against, 2),
+                 "lambda_team": lam, "lambda_opp": lam_opp}
+        lam = round(lam + lam_opp, 2)
+        ge, pmf, group = poisson_ge, poisson_pmf, "total"
+    if direction == "under":
+        p_void = pmf(line, lam)
+        p = max(0.0, 1.0 - ge(line, lam))          # P(X <= line - 1)
+        p_loss = max(0.0, 1.0 - p - p_void)
+        settled = p + p_loss
+        fo = fair_odds(p / settled) if settled > 0 else None
+        mkey = f"{group}_under_{line}"
+        book = odds.get(mkey)
+        ev = round((book * p + p_void - 1) * 100, 2) if book else None
+    else:
+        p, p_void = ge(line, lam), 0.0
+        fo = fair_odds(p)
+        mkey = f"{group}_over_{line - 0.5}"
+        book = odds.get(mkey)
+        ev = round((book * p - 1) * 100, 2) if book else None
+    return {"team_for": round(t_for, 2), "opp_conceded": round(o_against, 2), **extra,
+            "lambda": lam, "line": line, "direction": direction, "subject": subject,
+            "prob": round(p * 100, 1), "void_prob": round(p_void * 100, 1),
+            "fair_odds": fo, "market_key": mkey, "book_odds": book, "ev": ev,
+            "tier": tier_for_ev(ev) if ev is not None else None}
+
+
 @api_router.get("/streaks")
 async def streaks(league_id: Optional[str] = None, side: str = "overall", window: int = 5,
                   min_hits: int = 5, threshold: Optional[int] = None, min_line: int = 3,
-                  within_days: Optional[int] = None,
+                  within_days: Optional[int] = None, direction: str = "over",
+                  subject: str = "team", max_line: Optional[int] = None,
                   user: dict = Depends(get_current_user)):
-    """Teams that hit a team-corner threshold consistently over recent REAL games
-    (e.g. 4+ corners in 5/5 home games, or 8/10 last 10)."""
+    """Teams that keep landing the same side of a corner line over recent REAL games —
+    e.g. 4+ team corners in 5/5 home games, or the match total under 10 in 8 of the last 10.
+
+    direction: over (line+) | under (below the line, exact line voids)
+    subject:   team (team corners) | match (match total corners)"""
     q = {} if not league_id or league_id == "all" else {"league_id": league_id}
     teams = await db.teams.find(q, {"_id": 0}).to_list(1000)
     teams_by_id = {t["team_id"]: t for t in teams}
     ls_map = _league_shots_map(teams)
+    bl_map = _league_blocked_map(teams)
     leagues = {l["league_id"]: l["name"] for l in await db.leagues.find({}, {"_id": 0}).to_list(100)}
 
     # earliest upcoming fixture per team
@@ -915,29 +1445,43 @@ async def streaks(league_id: Optional[str] = None, side: str = "overall", window
     odds_map = {o["fixture_id"]: o.get("odds", {}) for o in odds_docs}
     now = datetime.now(timezone.utc)
 
+    direction = "under" if direction == "under" else "over"
+    subject = "match" if subject == "match" else "team"
+    cap = max_line if max_line is not None else UNDER_LINE_CAP[subject]
+
     results = []
     for t in teams:
         rms = t.get("real_matches") or []
         if side == "home":
-            pool = [m for m in rms if m["home"]]
+            history = [m for m in rms if m["home"]]
         elif side == "away":
-            pool = [m for m in rms if not m["home"]]
+            history = [m for m in rms if not m["home"]]
         else:
-            pool = list(rms)
-        pool = pool[-window:]
+            history = list(rms)
+        pool = history[-window:]
         if len(pool) < window:
             continue
-        wons = [m["corners_for"] for m in pool]
-        if threshold is not None:
-            line = int(threshold)
-            hits = sum(1 for w in wons if w >= line)
-        else:
-            line = max((x for x in range(1, 16) if sum(1 for w in wons if w >= x) >= min_hits), default=0)
-            hits = sum(1 for w in wons if w >= line)
-        if line < min_line or hits < min_hits:
+        values = [streak_value(m, subject) for m in pool]
+        line = int(threshold) if threshold is not None else pick_streak_line(values, direction, subject, min_hits)
+        if line <= 0:
             continue
-        recent = [{"corners": m["corners_for"], "opponent": m["opponent"], "home": m["home"], "date": m["date"]}
-                  for m in reversed(pool)]
+        # An under is impressive when the line is LOW, an over when it is HIGH.
+        if direction == "under":
+            if line > cap:
+                continue
+        elif line < min_line:
+            continue
+        legs = streak_legs(pool, line, direction, subject)
+        hits = sum(1 for lg in legs if lg["result"] == WIN)
+        voids = sum(1 for lg in legs if lg["result"] == VOID)
+        misses = len(legs) - hits - voids
+        # voids are stake-back, so they neither count as hits nor break the run
+        if hits < 1 or hits + voids < min_hits:
+            continue
+        runs = streak_runs(streak_legs(history, line, direction, subject))
+        recent = [{"corners": lg["value"], "value": lg["value"], "result": lg["result"],
+                   "opponent": m["opponent"], "home": m["home"], "date": m["date"]}
+                  for m, lg in zip(reversed(pool), reversed(legs))]
         nf = next_fx.get(t["team_id"])
         if within_days is not None:
             if not nf:
@@ -955,28 +1499,86 @@ async def streaks(league_id: Optional[str] = None, side: str = "overall", window
             opp = teams_by_id.get(nf["opponent_team_id"])
             team_venue = "home" if nf["is_home"] else "away"
             opp_venue = "away" if nf["is_home"] else "home"
-            t_for = _real_avg(t, team_venue, "corners_for")
-            o_against = _real_avg(opp, opp_venue, "corners_against")
-            if t_for is not None and o_against is not None:
-                lam = v2_lambda((t_for + o_against) / 2, t, team_venue, ls_map.get(t["league_id"], REF_SHOTS))
-                p = nb_ge(line, lam)
-                mkey = f"{team_venue}_over_{line - 0.5}"
-                book = odds_map.get(nf["fixture_id"], {}).get(mkey)
-                ev = round((book * p - 1) * 100, 2) if book else None
-                projection = {"team_for": round(t_for, 2), "opp_conceded": round(o_against, 2),
-                              "lambda": lam, "prob": round(p * 100, 1), "fair_odds": fair_odds(p),
-                              "market_key": mkey, "book_odds": book, "ev": ev,
-                              "tier": tier_for_ev(ev) if ev is not None else None}
+            projection = _streak_projection(t, opp, team_venue, opp_venue, line, direction, subject,
+                                            ls_map.get(t["league_id"], REF_SHOTS),
+                                            odds_map.get(nf["fixture_id"], {}),
+                                            bl_map.get(t["league_id"], 0.0))
         results.append({
             "team_id": t["team_id"], "name": t["name"], "league_id": t["league_id"],
             "league_name": leagues.get(t["league_id"], ""), "side": side, "window": window,
-            "min_hits": min_hits, "hits": hits, "line": line,
-            "avg": round(sum(wons) / len(wons), 2), "min_won": min(wons), "max_won": max(wons),
+            "direction": direction, "subject": subject,
+            "min_hits": min_hits, "hits": hits, "voids": voids, "misses": misses,
+            "settled": hits + misses, "line": line,
+            "line_label": streak_line_label(line, direction),
+            "hit_rate": round(hits / (hits + misses) * 100, 1) if (hits + misses) else 0.0,
+            "avg": round(sum(values) / len(values), 2), "min_won": min(values), "max_won": max(values),
+            "streak": runs["current"], "longest": runs["longest"],
             "real_samples": t.get("real_samples", 0), "recent": recent,
             "next_fixture": nf, "projection": projection,
         })
-    results.sort(key=lambda x: (x["line"], x["hits"], x["avg"]), reverse=True)
+    # tightest under / highest over first, then the most reliable and longest runs
+    if direction == "under":
+        results.sort(key=lambda x: (-x["line"], x["hits"], x["streak"]["length"], -x["avg"]), reverse=True)
+    else:
+        results.sort(key=lambda x: (x["line"], x["hits"], x["streak"]["length"], x["avg"]), reverse=True)
     return results
+
+
+@api_router.get("/features/coverage")
+async def feature_coverage(league_id: Optional[str] = None, user: dict = Depends(get_current_user)):
+    """How much of the shot-volume data actually landed, per league.
+
+    Providers cover these unevenly (dangerous attacks especially), so before reading
+    anything into these features you need to know what fraction of fixtures carry them.
+    Counts are over team-sides — two per cached fixture."""
+    q = {} if not league_id or league_id == "all" else {"league_id": league_id}
+    docs = await db.fixture_stats.find(q, {"_id": 0}).to_list(50000)
+    leagues = {l["league_id"]: l["name"] for l in await db.leagues.find({}, {"_id": 0}).to_list(200)}
+    per_league = {}
+    for d in docs:
+        lid = d.get("league_id", "")
+        row = per_league.setdefault(lid, {"league_id": lid, "league_name": leagues.get(lid, lid),
+                                          "fixtures": 0, "sides": 0,
+                                          **{f: 0 for f in SHOT_FEATURES}})
+        row["fixtures"] += 1
+        row["sides"] += 2
+        for f in SHOT_FEATURES:
+            row[f] += sum(1 for side in ("home", "away") if d.get(f"{side}_{f}") is not None)
+    for row in per_league.values():
+        row["pct"] = {f: round(row[f] / row["sides"] * 100, 1) if row["sides"] else 0.0
+                      for f in SHOT_FEATURES}
+    totals = {"fixtures": sum(r["fixtures"] for r in per_league.values()),
+              "sides": sum(r["sides"] for r in per_league.values())}
+    for f in SHOT_FEATURES:
+        totals[f] = sum(r[f] for r in per_league.values())
+    totals["pct"] = {f: round(totals[f] / totals["sides"] * 100, 1) if totals["sides"] else 0.0
+                     for f in SHOT_FEATURES}
+    return {"features": list(SHOT_FEATURES), "totals": totals,
+            "leagues": sorted(per_league.values(), key=lambda r: r["league_name"])}
+
+
+@api_router.get("/leagues/{league_id}/state-splits")
+async def league_state_splits(league_id: str, split: str = "overall",
+                              user: dict = Depends(get_current_user)):
+    """Corners won/conceded per team, grouped by half-time state and by final result.
+
+    CAVEAT worth repeating at every call site: API-Football reports corners for the
+    whole match only, so these are full-match corners in games where the team was in
+    that state — not corners won while in it. A chase effect that lives in the second
+    half reads diluted here. See probe_corner_halves.py."""
+    teams = await db.teams.find({"league_id": league_id}, {"_id": 0}).to_list(200)
+    league = await db.leagues.find_one({"league_id": league_id}, {"_id": 0}) or {}
+    rows = []
+    for t in teams:
+        rows.append({"team_id": t["team_id"], "name": t["name"],
+                     "real_samples": t.get("real_samples", 0),
+                     **team_state_splits(t.get("real_matches") or [], split)})
+    # league baseline: every team-game pooled, so a team's bucket has something to beat
+    pooled = [m for t in teams for m in (t.get("real_matches") or [])]
+    rows.sort(key=lambda r: (r["ht"]["trailing"]["won"] or 0), reverse=True)
+    return {"league_id": league_id, "league_name": league.get("name", league_id),
+            "split": split, "league_baseline": team_state_splits(pooled, split),
+            "teams": rows}
 
 
 @api_router.get("/leagues/{league_id}/matchups")
@@ -985,6 +1587,7 @@ async def matchups(league_id: str, side: str = "overall", user: dict = Depends(g
     teams = await db.teams.find({"league_id": league_id}, {"_id": 0}).to_list(200)
     teams_by_id = {t["team_id"]: t for t in teams}
     ls = _league_shots_map(teams).get(league_id, REF_SHOTS)
+    lb = _league_blocked_map(teams).get(league_id, 0.0)
     next_fx = await _next_fixtures({"league_id": league_id})
     all_won = [m["corners_for"] for t in teams for m in (_src(t))]
     avg = (sum(all_won) / len(all_won)) if all_won else 5.0
@@ -1002,7 +1605,7 @@ async def matchups(league_id: str, side: str = "overall", user: dict = Depends(g
             opp = teams_by_id.get(nf["opponent_team_id"])
             opp_conc = (_real_avg(opp, opp_venue, "corners_against") if opp else None)
             if opp_conc is not None:
-                lam = v2_lambda((team_for + opp_conc) / 2, t, venue, ls)
+                lam = live_lambda((team_for + opp_conc) / 2, t, venue, ls, lb)
                 line = max(3, round(lam) - 1)
                 p = nb_ge(line, lam)
                 projection = {"team_for": round(team_for, 2), "opp_conceded": round(opp_conc, 2),
@@ -1064,6 +1667,7 @@ async def _all_mismatches(within_days: Optional[int] = None, limit: int = 20):
     teams = await db.teams.find({}, {"_id": 0}).to_list(2000)
     teams_by_id = {t["team_id"]: t for t in teams}
     ls_map = _league_shots_map(teams)
+    bl_map = _league_blocked_map(teams)
     leagues = {l["league_id"]: l["name"] for l in await db.leagues.find({}, {"_id": 0}).to_list(100)}
     next_fx = await _next_fixtures({})
     # per-league average corners won
@@ -1097,7 +1701,8 @@ async def _all_mismatches(within_days: Optional[int] = None, limit: int = 20):
         avg = league_avgs.get(t["league_id"], 5.0)
         if not (team_for >= avg * 1.1 and opp_conc >= avg * 1.1):
             continue
-        lam = v2_lambda((team_for + opp_conc) / 2, t, venue, ls_map.get(t["league_id"], REF_SHOTS))
+        lam = live_lambda((team_for + opp_conc) / 2, t, venue,
+                          ls_map.get(t["league_id"], REF_SHOTS), bl_map.get(t["league_id"], 0.0))
         line = max(3, round(lam) - 1)
         p = nb_ge(line, lam)
         out.append({"team_id": t["team_id"], "name": t["name"], "league_id": t["league_id"],
@@ -1135,6 +1740,7 @@ async def _chase_board(within_days: int = 7, limit: int = 25, league_id: Optiona
     teams = await db.teams.find(q, {"_id": 0}).to_list(2000)
     teams_by_id = {t["team_id"]: t for t in teams}
     ls_map = _league_shots_map(teams)
+    bl_map = _league_blocked_map(teams)
     leagues = {l["league_id"]: l["name"] for l in await db.leagues.find({}, {"_id": 0}).to_list(200)}
     next_fx = await _next_fixtures(q)
     league_avgs = {}
@@ -1170,7 +1776,8 @@ async def _chase_board(within_days: int = 7, limit: int = 25, league_id: Optiona
             continue
         opp_conc = sum(m["corners_against"] for m in opp_pool) / len(opp_pool)
         opp_fh = sum(1 for m in opp_pool if m.get("fh_goals_for", 0) >= 1) / len(opp_pool)
-        lam = v2_lambda((team_for + opp_conc) / 2, t, venue, ls_map.get(t["league_id"], REF_SHOTS))
+        lam = live_lambda((team_for + opp_conc) / 2, t, venue,
+                          ls_map.get(t["league_id"], REF_SHOTS), bl_map.get(t["league_id"], 0.0))
         line = max(3, round(lam) - 1)
         last5 = pool[-5:]
         hit = sum(1 for m in last5 if m["corners_for"] >= line)
@@ -1307,11 +1914,25 @@ async def export_report(user: dict = Depends(get_current_user)):
     strk = await streaks(league_id="all", side="overall", window=5, min_hits=5,
                          threshold=None, min_line=3, within_days=None, user=user)
     lines.append("\n## Consistency streaks — hit a team-corner line in all of last 5 games")
-    lines.append("| Team | League | Line | Avg | Recent (won) |")
-    lines.append("|---|---|---|---|---|")
+    lines.append("| Team | League | Line | Avg | Current | Longest | Recent (won) |")
+    lines.append("|---|---|---|---|---|---|---|")
     for r in strk[:60]:
         rec = ",".join(str(m["corners"]) for m in r["recent"])
-        lines.append(f"| {r['name']} | {r['league_name']} | {r['line']}+ (5/5) | {r['avg']} | {rec} |")
+        lines.append(f"| {r['name']} | {r['league_name']} | {r['line']}+ (5/5) | {r['avg']} | "
+                     f"{r['streak']['length']} | {r['longest']['length']} | {rec} |")
+
+    for subj, title, unit in (("team", "team corners", "won"), ("match", "match total corners", "total")):
+        unders = await streaks(league_id="all", side="overall", window=5, min_hits=5,
+                               threshold=None, min_line=3, within_days=None,
+                               direction="under", subject=subj, user=user)
+        lines.append(f"\n## Under streaks — {title} stayed under the line in all of last 5 games")
+        lines.append(f"| Team | League | Line | Avg | Current | Longest | Recent ({unit}) |")
+        lines.append("|---|---|---|---|---|---|---|")
+        for r in unders[:60]:
+            rec = ",".join(str(m["corners"]) for m in r["recent"])
+            voids = f" ({r['voids']} void)" if r["voids"] else ""
+            lines.append(f"| {r['name']} | {r['league_name']} | under {r['line']} ({r['hits']}/{r['settled']}{voids}) | "
+                         f"{r['avg']} | {r['streak']['length']} | {r['longest']['length']} | {rec} |")
 
     return PlainTextResponse("\n".join(lines))
 

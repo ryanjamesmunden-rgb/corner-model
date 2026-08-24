@@ -57,6 +57,68 @@ LEAGUE_META = {
 }
 STATS_CAP = 120  # max per-fixture statistics calls per league
 
+# Shot-volume stats pulled out of /fixtures/statistics alongside corners. The provider
+# labels these inconsistently across leagues (and "Dangerous Attacks" is only present
+# where the coverage includes it), so each feature matches on a set of normalised
+# aliases. A stat the provider did NOT report is stored as None, never 0 — a blank
+# must not read as "zero blocked shots" when this data is later fitted on.
+STAT_TYPES = {
+    "shots": ("total shots", "shots total"),
+    "shots_on_target": ("shots on goal", "shots on target"),
+    "blocked_shots": ("blocked shots", "shots blocked"),
+    "dangerous_attacks": ("dangerous attacks", "attacks dangerous"),
+}
+
+
+def _feature_sample(own: dict, opp: dict) -> dict:
+    """Feature keys for one side of one fixture, as stored on team.real_matches.
+
+    `shots_*` are coerced to ints because the live v2 lambda already consumes them and
+    must not start seeing None; the new features keep None so an uncovered fixture stays
+    distinguishable from a genuine zero."""
+    out = {}
+    for f in STAT_TYPES:
+        mine, theirs = own.get(f), opp.get(f)
+        if f == "shots":
+            mine, theirs = mine or 0, theirs or 0
+        out[f"{f}_for"], out[f"{f}_against"] = mine, theirs
+    return out
+
+
+def _norm_stat(name) -> str:
+    return str(name or "").strip().lower().replace("_", " ").replace("-", " ")
+
+
+def _stat_int(value):
+    """API-Football values arrive as ints, numeric strings, "45%" or null."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    if isinstance(value, str):
+        v = value.strip().rstrip("%")
+        if v.lstrip("-").isdigit():
+            return int(v)
+    return None
+
+
+def parse_team_stats(statistics) -> dict:
+    """One team's statistics block -> {feature: int|None} for every STAT_TYPES entry."""
+    by_type = {_norm_stat(s.get("type")): s.get("value") for s in (statistics or [])}
+    out = {}
+    for feature, aliases in STAT_TYPES.items():
+        val = None
+        for alias in aliases:
+            if alias in by_type:
+                val = _stat_int(by_type[alias])
+                if val is not None:
+                    break
+        out[feature] = val
+    out["corners"] = _stat_int(by_type.get("corner kicks"))
+    return out
+
 
 async def af_get(hc, path, params=None, retries=6):
     for attempt in range(retries):
@@ -144,6 +206,8 @@ async def sync_league(hc, my_lid):
     async for c in db.fixture_stats.find({"_id": {"$in": recent_ids}}):
         cached[c["_id"]] = c
     fetched = 0
+    coverage = {f: 0 for f in STAT_TYPES}
+    coverage["fixtures"] = 0
     for f in recent:
         fid = f["fixture"]["id"]
         hid = f["teams"]["home"]["id"]
@@ -159,6 +223,10 @@ async def sync_league(hc, my_lid):
         c = cached.get(fid)
         if c:
             hc_, ac_, hs_, as_ = c["home_corners"], c["away_corners"], c["home_shots"], c["away_shots"]
+            # shot-volume features can't be self-healed from the fixture object — they need a
+            # statistics call, so older cache docs read None here until backfill_shots.py runs
+            home_feat = {f: c.get(f"home_{f}") for f in STAT_TYPES}
+            away_feat = {f: c.get(f"away_{f}") for f in STAT_TYPES}
             # self-heal: backfill goals onto older cache docs that predate goal capture
             if c.get("home_goals") is None:
                 await db.fixture_stats.update_one({"_id": fid}, {"$set": {
@@ -168,33 +236,43 @@ async def sync_league(hc, my_lid):
                 st = await af_get(hc, "/fixtures/statistics", {"fixture": fid})
             except Exception as e:
                 print(f"  stat {fid} err {e}"); continue
-            corners = {}
-            shots = {}
-            for t in st:
-                cc = next((s["value"] for s in t["statistics"] if s["type"] == "Corner Kicks"), None)
-                corners[t["team"]["id"]] = cc if isinstance(cc, int) else 0
-                sh = next((s["value"] for s in t["statistics"] if s["type"] == "Total Shots"), None)
-                shots[t["team"]["id"]] = sh if isinstance(sh, int) else 0
-            if hid not in corners or aid not in corners:
+            per_team = {t["team"]["id"]: parse_team_stats(t.get("statistics")) for t in st}
+            if hid not in per_team or aid not in per_team:
                 continue
-            hc_, ac_ = corners.get(hid, 0), corners.get(aid, 0)
-            hs_, as_ = shots.get(hid, 0), shots.get(aid, 0)
+            home_feat, away_feat = per_team[hid], per_team[aid]
+            if home_feat["corners"] is None or away_feat["corners"] is None:
+                continue
+            hc_, ac_ = home_feat["corners"], away_feat["corners"]
+            hs_, as_ = home_feat["shots"] or 0, away_feat["shots"] or 0
             fetched += 1
+            for feat in STAT_TYPES:
+                coverage[feat] += sum(1 for side in (home_feat, away_feat) if side[feat] is not None)
+            coverage["fixtures"] += 1
             await db.fixture_stats.update_one({"_id": fid}, {"$set": {
                 "_id": fid, "league_id": my_lid, "date": fdate,
                 "home_id": hid, "away_id": aid,
                 "home_corners": hc_, "away_corners": ac_,
                 "home_shots": hs_, "away_shots": as_,
+                **{f"home_{f}": home_feat[f] for f in STAT_TYPES},
+                **{f"away_{f}": away_feat[f] for f in STAT_TYPES},
+                "features_at": datetime.now(timezone.utc).isoformat(),
                 "home_goals": hg, "away_goals": ag,
                 "home_fh_goals": hfg, "away_fh_goals": afg}}, upsert=True)
         league_corners += [hc_, ac_]
         if hid in samples:
             samples[hid].append({"home": True, "corners_for": hc_, "corners_against": ac_, "shots_for": hs_,
-                                 "goals_for": hg, "goals_against": ag, "fh_goals_for": hfg, "date": fdate, "opponent": aname})
+                                 "goals_for": hg, "goals_against": ag, "fh_goals_for": hfg,
+                                 "fh_goals_against": afg, "date": fdate,
+                                 "opponent": aname, **_feature_sample(home_feat, away_feat)})
         if aid in samples:
             samples[aid].append({"home": False, "corners_for": ac_, "corners_against": hc_, "shots_for": as_,
-                                 "goals_for": ag, "goals_against": hg, "fh_goals_for": afg, "date": fdate, "opponent": hname})
+                                 "goals_for": ag, "goals_against": hg, "fh_goals_for": afg,
+                                 "fh_goals_against": hfg, "date": fdate,
+                                 "opponent": hname, **_feature_sample(away_feat, home_feat)})
     print(f"[{my_lid}] stats cache_hit={len(cached)} api_fetched={fetched}")
+    if coverage["fixtures"]:
+        cov = " ".join(f"{f}={coverage[f]}/{coverage['fixtures'] * 2}" for f in STAT_TYPES)
+        print(f"[{my_lid}] feature coverage (team-sides on newly fetched fixtures): {cov}")
 
     league_avg = (sum(league_corners) / len(league_corners)) if league_corners else 5.0
     print(f"[{my_lid}] league avg corners/team/game = {league_avg:.2f}")
@@ -270,15 +348,21 @@ async def sync_league(hc, my_lid):
 
     all_shots = [m.get("shots_for", 0) for t in team_docs for m in (t.get("real_matches") or [])]
     avg_shots = round(sum(all_shots) / len(all_shots), 2) if all_shots else None
+    # league blocked-shots average drives the v3 intent term; None where the backfill
+    # hasn't reached this league, which makes its teams price off shots intent instead
+    all_blocked = [m["blocked_shots_for"] for t in team_docs for m in (t.get("real_matches") or [])
+                   if m.get("blocked_shots_for") is not None]
+    avg_blocked = round(sum(all_blocked) / len(all_blocked), 2) if all_blocked else None
     await db.leagues.update_one({"league_id": my_lid},
                                 {"$set": {"league_id": my_lid, "name": meta["name"],
                                           "country": meta["country"], "data_source": "real",
                                           "season": season, "avg_shots": avg_shots,
+                                          "avg_blocked": avg_blocked,
                                           "synced_at": datetime.now(timezone.utc).isoformat()}},
                                 upsert=True)
     print(f"[{my_lid}] DONE teams={len(team_docs)} fixtures={len(fixture_docs)} odds={len(odds_docs)}")
     return {"teams": len(team_docs), "fixtures": len(fixture_docs),
-            "cache_hit": len(cached), "api_fetched": fetched}
+            "cache_hit": len(cached), "api_fetched": fetched, "feature_coverage": coverage}
 
 
 async def main():

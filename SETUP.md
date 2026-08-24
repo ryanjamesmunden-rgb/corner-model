@@ -95,8 +95,10 @@ Then remove `from emergentintegrations.llm.chat import LlmChat, UserMessage`, dr
 - `seed_picks.py` / `seed_manual_picks.py` — seed the Picks board.
 - `settle_picks.py` — auto-settles picks Win/Loss from real results.
 - `backfill_fh.py` / `backfill_goals.py` / `backfill_rounds.py` — one-off DB backfills (no API calls).
+- `backfill_shots.py` — fills shot-volume features (shots, shots on target, blocked shots, dangerous attacks) onto this season's cached fixtures, then projects them onto `teams.real_matches`. **Spends one statistics call per un-filled fixture**, so it is capped per league (`--limit N`) and resumable; `--project-only` re-runs the DB half with no API calls.
 - `reseed_odds.py` / `seed_team_odds.py` — placeholder-odds generators (optional; not needed since the app now leads with averages/streaks).
 - `tune_model.py` / `probe_leagues.py` — analysis helpers.
+- `measure_features.py` — offline walk-forward test of whether the shot-volume features (blocked shots, shots on target) improve corner prediction against the live v2 model. DB-only, no API calls, changes nothing. Guards against the three ways this measurement lies to you: same-sample scoring, mean-neutral intent terms, and a shuffled-feature placebo.
 
 ## 6. Auth note (important for independent hosting)
 This build authenticates via **Emergent-managed Google OAuth** (`EMERGENT_SESSION_URL` in `server.py`). That endpoint is Emergent-only. For your own site, replace `/api/auth/session` with your own OAuth/JWT flow and keep the existing session-cookie pattern (`session_token` httpOnly cookie, `user_sessions` collection). Everything downstream reads the user from `get_current_user`, so only that one function + the login page need changing.

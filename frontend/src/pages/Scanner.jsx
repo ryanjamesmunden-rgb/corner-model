@@ -29,7 +29,7 @@ export default function Scanner() {
         </div>
         <h1 className="font-head text-3xl sm:text-4xl font-bold tracking-tight">Best Corner Teams & Streaks</h1>
         <p className="text-muted-foreground text-sm mt-1">
-          Highest corner averages, hottest recent form and the most consistent home/away streaks — across every league.
+          Highest corner averages, hottest recent form and the most consistent home/away streaks — over or under, team corners or match totals, across every league.
         </p>
       </div>
 

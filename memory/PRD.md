@@ -314,6 +314,6 @@ Both new tools are in the Tools panel (`POST /api/tools/backfill-goals`), so no 
 
 ## Notes for next agent
 - API-Football: use cache; never re-fetch historical stats. Pro plan (renew before expiry). Env: API_FOOTBALL_KEY, API_FOOTBALL_SEASON.
-- Emergent LLM key (`EMERGENT_LLM_KEY`) powers /api/explain (Claude Sonnet 4.6). Rate-limited + cached.
+- `ANTHROPIC_API_KEY` powers /api/explain via the official Anthropic SDK (`claude-opus-5`, low effort). Rate-limited + cached. Returns 503 when unset.
 - QA session for tests: `session_token = qa-test-token-123` (see /app/memory/test_credentials.md). Screenshot authed pages by injecting this cookie via page.context.add_cookies.
 - Production deployed — do NOT mention preview URLs to user; tell them to redeploy for changes to reach production.

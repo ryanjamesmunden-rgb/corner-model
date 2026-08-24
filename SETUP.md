@@ -20,8 +20,9 @@ This is everything needed to run the app on your own hosting after exporting the
 | `API_FOOTBALL_KEY` | ✅ | Your API-Football key (see §3). Without it, no real data syncs. |
 | `API_FOOTBALL_SEASON` | ✅ | Season year the sync should target (e.g. `2026`). |
 | `CORS_ORIGINS` | ✅ | Comma-separated list of allowed frontend origins, e.g. `https://your-site.com`. Use `*` only for quick testing. |
-| `ANTHROPIC_API_KEY` | optional | Only if you keep the "Why this angle?" explainer (see §4). Replaces the Emergent key. |
-| `EMERGENT_LLM_KEY` | ❌ (drop it) | Emergent-platform-only key. **Does not work off-platform** — remove and use `ANTHROPIC_API_KEY` instead. |
+| `ANTHROPIC_API_KEY` | optional | Enables the "Why this angle?" explainer (see §4). Without it that one endpoint returns 503. |
+
+> Deployment (Railway + Vercel), the scheduled jobs, and the `/api/health` check are documented in [DEPLOY.md](DEPLOY.md).
 
 ### `frontend/.env`
 | Key | Required | What it is |
@@ -64,29 +65,25 @@ cd backend && python sync_real.py eng-pl      # one league
 
 ## 4. External dependency #2 — Claude explainer (OPTIONAL)
 
-The "Why this angle?" button on Quick Scan uses Claude. On this platform it goes through the **Emergent LLM key** via the `emergentintegrations` library — **that library and key only work inside Emergent.** Off-platform you have two choices:
+The "Why this angle?" button on Quick Scan uses Claude, through the **official Anthropic
+SDK** (`anthropic`, already in `requirements.txt`). Set `ANTHROPIC_API_KEY` to enable it —
+get a key at https://console.anthropic.com/.
 
-**Option A — Drop the feature.** The explainer is not core; everything else (Best Teams, Streaks, Chase Board, Picks) works without it. Just leave `/api/explain` unused / remove the button.
+Without the key the endpoint returns 503 and nothing else is affected: Best Teams,
+Streaks, Chase Board, Picks and the Daily 2 ledger all work without it.
 
-**Option B — Swap to the official Anthropic SDK.** In `backend/server.py`, replace the emergentintegrations call inside `explain_pick` with:
+Implementation notes (`explain_pick` in `backend/server.py`): one shared
+`AsyncAnthropic` client, `claude-opus-5` at `effort: "low"` (the answer is two
+sentences, so low effort keeps a per-pick endpoint cheap), server-side refusal
+fallbacks enabled, responses cached in `db.explanations` by a server-derived stats
+hash, and a 20/minute per-user throttle on uncached calls.
 
-```python
-# requirements.txt: add  anthropic
-import anthropic
-client = anthropic.AsyncAnthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
+> The Emergent LLM key and the `emergentintegrations` library are gone — they only ever
+> worked inside Emergent, and the library was never in `requirements.txt`, so this
+> endpoint was failing on any independent host.
 
-msg = await client.messages.create(
-    model="claude-sonnet-4-5",          # use a current Claude model your account has
-    max_tokens=300,
-    system="You are a sharp, concise football corners betting analyst. You only use the numbers provided.",
-    messages=[{"role": "user", "content": prompt}],
-)
-text = msg.content[0].text.strip()
-```
-
-Then remove `from emergentintegrations.llm.chat import LlmChat, UserMessage`, drop `emergentintegrations` from `requirements.txt`, and set `ANTHROPIC_API_KEY` in `.env`. Get a key at https://console.anthropic.com/.
-
-> There is **no other Emergent dependency** in the app. Auth in this build uses Emergent Google OAuth (`/api/auth/session` hits an Emergent session endpoint). If you host independently you'll want to replace that with your own auth (e.g. standard Google OAuth or a JWT login) — see §6.
+> Emergent auth has also been removed: the app is public, with no sign-in. See §6 if you
+> want to reintroduce accounts.
 
 ---
 

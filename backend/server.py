@@ -622,6 +622,26 @@ async def root():
     return {"message": "Corner Model 2.0 API"}
 
 
+@api_router.get("/health")
+async def health():
+    """Liveness + scheduler visibility. Used by the platform healthcheck and by any
+    external uptime ping; reports the scheduler because a dead scheduler is the
+    failure mode that would otherwise go unnoticed."""
+    jobs = []
+    scheduler = getattr(app.state, "scheduler", None)
+    if scheduler:
+        jobs = [{"id": j.id, "next_run": j.next_run_time.isoformat() if j.next_run_time else None}
+                for j in scheduler.get_jobs()]
+    try:
+        await db.command("ping")
+        db_ok = True
+    except Exception:                                         # noqa: BLE001
+        db_ok = False
+    return {"status": "ok" if db_ok else "degraded", "db": db_ok,
+            "scheduler_running": bool(scheduler and scheduler.running), "jobs": jobs,
+            "explainer": bool(_llm()), "time": datetime.now(timezone.utc).isoformat()}
+
+
 @api_router.get("/leagues")
 async def get_leagues(user: dict = Depends(get_current_user)):
     return await db.leagues.find({}, {"_id": 0}).to_list(100)
@@ -825,14 +845,25 @@ async def ledger(user: dict = Depends(get_current_user)):
             "rows": rows}
 
 
-# ---- Phase 3: Claude explainer — justify a model-flagged corner pick ----
+# ---- Claude explainer — justify a model-flagged corner pick ----
 try:
-    from emergentintegrations.llm.chat import LlmChat, UserMessage
-except ImportError:
-    LlmChat = None
-    UserMessage = None
+    import anthropic
+except ImportError:  # keep the app importable; the endpoint reports 503 instead
+    anthropic = None
 
-EMERGENT_LLM_KEY = os.environ.get("EMERGENT_LLM_KEY")
+ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY")
+EXPLAIN_MODEL = "claude-opus-5"
+_anthropic_client = None
+
+
+def _llm():
+    """One shared async client, built on first use. None when unconfigured."""
+    global _anthropic_client
+    if _anthropic_client is None and anthropic and ANTHROPIC_API_KEY:
+        _anthropic_client = anthropic.AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
+    return _anthropic_client
+
+
 _explain_calls = defaultdict(deque)  # per-user timestamps for LLM rate limiting
 
 
@@ -861,8 +892,9 @@ async def explain_pick(req: ExplainReq, user: dict = Depends(get_current_user)):
     cached = await db.explanations.find_one({"_id": ckey}, {"_id": 0})
     if cached:
         return {"explanation": cached["text"], "cached": True}
-    if not EMERGENT_LLM_KEY:
-        raise HTTPException(status_code=503, detail="LLM key not configured")
+    client = _llm()
+    if client is None:
+        raise HTTPException(status_code=503, detail="Explainer not configured (set ANTHROPIC_API_KEY)")
     # light per-user throttle on uncached (paid) calls
     now_ts = datetime.now(timezone.utc).timestamp()
     bucket = _explain_calls[user["user_id"]]
@@ -887,17 +919,35 @@ async def explain_pick(req: ExplainReq, user: dict = Depends(get_current_user)):
         f"Explain in 2 short sentences WHY this is a strong corner angle, in plain punter language. "
         f"Reference the concrete numbers. Do not invent stats, injuries or news. No preamble, no disclaimer."
     )
-    chat = LlmChat(
-        api_key=EMERGENT_LLM_KEY,
-        session_id=f"explain-{req.key}",
-        system_message="You are a sharp, concise football corners betting analyst. You only use the numbers provided.",
-    ).with_model("anthropic", "claude-sonnet-4-6")
     try:
-        resp = await chat.send_message(UserMessage(text=prompt))
-    except Exception as e:
-        logger.error("explain LLM error: %s", e)
+        resp = await client.beta.messages.create(
+            model=EXPLAIN_MODEL,
+            # deliberately short answer; low effort keeps a per-pick endpoint cheap
+            max_tokens=2000,
+            output_config={"effort": "low"},
+            # on a policy decline, the API re-runs the request on a fallback model
+            betas=["server-side-fallback-2026-07-01"],
+            fallbacks="default",
+            system="You are a sharp, concise football corners betting analyst. "
+                   "You only use the numbers provided.",
+            messages=[{"role": "user", "content": prompt}],
+        )
+    except anthropic.RateLimitError:
+        raise HTTPException(status_code=429, detail="Explainer busy — try again shortly.")
+    except anthropic.APIStatusError as e:
+        logger.error("explain LLM error %s: %s", e.status_code, e.message)
         raise HTTPException(status_code=502, detail="Could not generate explanation")
-    text = (resp if isinstance(resp, str) else str(resp)).strip()
+    except anthropic.APIConnectionError as e:
+        logger.error("explain LLM connection error: %s", e)
+        raise HTTPException(status_code=502, detail="Could not generate explanation")
+
+    if resp.stop_reason == "refusal":
+        logger.warning("explain refused (%s)", getattr(resp.stop_details, "category", None))
+        raise HTTPException(status_code=502, detail="Could not generate explanation")
+    text = "".join(b.text for b in resp.content if b.type == "text").strip()
+    if not text:
+        logger.error("explain returned no text (stop_reason=%s)", resp.stop_reason)
+        raise HTTPException(status_code=502, detail="Could not generate explanation")
     await db.explanations.update_one(
         {"_id": ckey},
         {"$set": {"_id": ckey, "text": text, "created_at": datetime.now(timezone.utc).isoformat()}},

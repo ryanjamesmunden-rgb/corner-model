@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { toast } from "sonner";
-import { Download, Copy, FileText, Table, Loader2 } from "lucide-react";
+import { Download, Copy, FileText, Table, Loader2, Flame } from "lucide-react";
 import { api } from "@/lib/api";
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel,
@@ -31,6 +31,11 @@ export default function ExportMenu() {
     await navigator.clipboard.writeText(md);
     toast.success("All stats copied — paste into Claude");
   });
+  const copyStreaks = (days) => run(async () => {
+    const md = await api.exportStreaks(days);
+    await navigator.clipboard.writeText(md);
+    toast.success(`Next ${days} days of streaks copied — paste into Claude`);
+  });
   const dlMd = () => run(async () => {
     download(await api.exportMarkdown(), "corner-model-export.md", "text/markdown");
     toast.success("Markdown downloaded");
@@ -56,6 +61,14 @@ export default function ExportMenu() {
         <DropdownMenuSeparator className="bg-border" />
         <DropdownMenuItem data-testid="export-copy-md" onClick={copyMd} className="text-sm gap-2 cursor-pointer">
           <Copy className="h-4 w-4" /> Copy for Claude (markdown)
+        </DropdownMenuItem>
+        <DropdownMenuSeparator className="bg-border" />
+        <DropdownMenuLabel className="text-xs text-muted-foreground">Streaks by fixture (overs + unders)</DropdownMenuLabel>
+        <DropdownMenuItem data-testid="export-streaks-7" onClick={() => copyStreaks(7)} className="text-sm gap-2 cursor-pointer">
+          <Flame className="h-4 w-4" /> Copy this week's streaks
+        </DropdownMenuItem>
+        <DropdownMenuItem data-testid="export-streaks-3" onClick={() => copyStreaks(3)} className="text-sm gap-2 cursor-pointer">
+          <Flame className="h-4 w-4" /> Copy next 3 days
         </DropdownMenuItem>
         <DropdownMenuItem data-testid="export-dl-md" onClick={dlMd} className="text-sm gap-2 cursor-pointer">
           <FileText className="h-4 w-4" /> Download .md

@@ -142,6 +142,52 @@ def _blocked_form(team: dict, venue: str) -> Optional[float]:
     return sum(vals) / len(vals)
 
 
+def _blocked_covered(team: dict, venue: str) -> int:
+    """Games on this venue that carry blocked shots — the count `_blocked_form` tests."""
+    rms = (team or {}).get("real_matches") or []
+    if venue == "home":
+        pool = [m for m in rms if m["home"]]
+    elif venue == "away":
+        pool = [m for m in rms if not m["home"]]
+    else:
+        pool = rms
+    if not pool:
+        pool = rms
+    return sum(1 for m in pool if m.get("blocked_shots_for") is not None)
+
+
+def intent_breakdown(team: dict, venue: str, league_shots: float,
+                     league_blocked: float = 0.0) -> dict:
+    """Which intent term the live model applies to this team here, and why.
+
+    `live_lambda` is DEFINED in terms of this, so a panel built on it cannot claim one
+    thing while pricing quietly does another.
+
+    source: blocked (v3) | shots (v2 fallback) | none (no shot history at all)"""
+    sf, fh = _shots_form(team, venue)
+    covered = _blocked_covered(team, venue)
+    flat = {"source": "none", "multiplier": 1.0, "form": 1.0, "value": None,
+            "league_avg": None, "weight": None, "covered": covered,
+            "min_games": MIN_BLOCKED_GAMES, "fh_rate": None, "reason": "no shot data yet"}
+    if sf is None:
+        return flat
+    form = 1.0 + 0.03 * (fh - 0.5)
+    blocked = _blocked_form(team, venue)
+    if blocked is not None and league_blocked:
+        return {"source": "blocked", "multiplier": _intent(blocked, league_blocked, V3_BLOCKED_WEIGHT),
+                "form": form, "value": round(blocked, 2), "league_avg": round(league_blocked, 2),
+                "weight": V3_BLOCKED_WEIGHT, "covered": covered, "min_games": MIN_BLOCKED_GAMES,
+                "fh_rate": round(fh, 3), "reason": None}
+    if not league_shots:
+        return {**flat, "reason": "league has no shot average"}
+    reason = ("league has no blocked-shots data" if not league_blocked
+              else f"only {covered} game(s) here carry blocked shots — needs {MIN_BLOCKED_GAMES}")
+    return {"source": "shots", "multiplier": _intent(sf, league_shots, 0.10), "form": form,
+            "value": round(sf, 2), "league_avg": round(league_shots, 2), "weight": 0.10,
+            "covered": covered, "min_games": MIN_BLOCKED_GAMES, "fh_rate": round(fh, 3),
+            "reason": reason}
+
+
 def live_lambda(base: float, team: dict, venue: str, league_shots: float,
                 league_blocked: float = 0.0) -> float:
     """Production corner-lambda (v3): blocked-shots intent x first-half-goal form.
@@ -149,16 +195,8 @@ def live_lambda(base: float, team: dict, venue: str, league_shots: float,
     Falls back to v2's shots intent for any team without enough blocked-shots history,
     so a thinly-covered team prices exactly as it does today rather than worse. Both
     branches are the same shape; only the stat driving the intent differs."""
-    sf, fh = _shots_form(team, venue)
-    if sf is None:
-        return round(base, 2)
-    form = 1.0 + 0.03 * (fh - 0.5)
-    blocked = _blocked_form(team, venue)
-    if blocked is not None and league_blocked:
-        return round(base * _intent(blocked, league_blocked, V3_BLOCKED_WEIGHT) * form, 2)
-    if not league_shots:
-        return round(base, 2)
-    return round(base * _intent(sf, league_shots, 0.10) * form, 2)
+    b = intent_breakdown(team, venue, league_shots, league_blocked)
+    return round(base * b["multiplier"] * b["form"], 2)
 
 
 def _league_shots_map(teams: list) -> dict:
@@ -316,6 +354,70 @@ def team_state_splits(matches: List[dict], split: str = "overall", window: int =
         out[phase] = buckets
     out["played"] = len(pool)
     return out
+
+
+GOAL_WINDOWS = [(0, 15), (16, 30), (31, 45), (46, 60), (61, 75), (76, 90)]
+
+
+def _goal_window(minute: int) -> str:
+    for lo, hi in GOAL_WINDOWS:
+        if minute <= hi:
+            return f"{lo or 1}-{hi}"
+    return "76-90"                      # 90+ stoppage time belongs to the last window
+
+
+def goal_profile(matches: List[dict], split: str = "overall", window: int = 0) -> dict:
+    """Who scores, when, and how long this team spends chasing.
+
+    Built from `/fixtures/events`, which — unlike the corner data — does carry minutes.
+    `minutes_trailing` is the reason this exists: the game-state split classifies a match
+    by its half-time score, so a team a goal down from the 10th minute and one that
+    conceded on 43 land in the same bucket. Minutes separate them.
+
+    Only matches the goal backfill has reached carry these keys, so `games` is the count
+    of COVERED matches, not of matches played."""
+    if split == "home":
+        pool = [m for m in matches if m["home"]]
+    elif split == "away":
+        pool = [m for m in matches if not m["home"]]
+    else:
+        pool = list(matches)
+    pool = pool[-window:] if window else pool
+    covered = [m for m in pool if m.get("minutes_trailing") is not None]
+    n = len(covered)
+    if not n:
+        return {"games": 0, "played": len(pool), "scorers": [], "windows": {},
+                "minutes": {}, "first_goal": {}}
+
+    def avg(key):
+        return round(sum(m.get(key) or 0 for m in covered) / n, 1)
+
+    tally: Dict[str, dict] = {}
+    windows = {f"{lo or 1}-{hi}": 0 for lo, hi in GOAL_WINDOWS}
+    for m in covered:
+        for g in m.get("scorers") or []:
+            name = g.get("player") or "unknown"
+            row = tally.setdefault(name, {"player": name, "goals": 0, "minutes": []})
+            row["goals"] += 1
+            row["minutes"].append(g.get("minute"))
+            windows[_goal_window(int(g.get("minute") or 0))] += 1
+
+    scored_first = [m for m in covered if m.get("scored_first") is not None]
+    firsts = [m["first_goal_min"] for m in covered if m.get("first_goal_min") is not None]
+    conceded = [m["opp_first_goal_min"] for m in covered if m.get("opp_first_goal_min") is not None]
+    return {
+        "games": n, "played": len(pool),
+        "scorers": sorted(tally.values(), key=lambda r: (-r["goals"], r["player"]))[:12],
+        "windows": windows,
+        "minutes": {"trailing": avg("minutes_trailing"), "level": avg("minutes_level"),
+                    "leading": avg("minutes_leading")},
+        "first_goal": {
+            "scored_first_pct": round(sum(1 for m in scored_first if m["scored_first"])
+                                      / len(scored_first) * 100, 1) if scored_first else None,
+            "avg_first_scored_min": round(sum(firsts) / len(firsts), 1) if firsts else None,
+            "avg_first_conceded_min": round(sum(conceded) / len(conceded), 1) if conceded else None,
+        },
+    }
 
 
 def _src(team: dict) -> list:
@@ -855,16 +957,24 @@ def _backtest_summary(stats: dict, lines: List[int]) -> dict:
 
 TOOLS_TOKEN = os.environ.get("TOOLS_TOKEN")
 TOOL_SCRIPTS = {"backfill_shots": "backfill_shots.py", "measure_features": "measure_features.py",
-                "measure_chase_board": "measure_chase_board.py"}
+                "measure_chase_board": "measure_chase_board.py",
+                "backfill_fh": "backfill_fh.py",
+                "backfill_goal_events": "backfill_goal_events.py",
+                "probe_corner_halves": "probe_corner_halves.py"}
 TOOL_COOLDOWN = {"backfill_shots": 600, "measure_features": 120,
-                 "measure_chase_board": 120}                       # seconds
-# mode -> (script, fixed argv). Modes are an enum precisely so nothing user-supplied
-# ever reaches argv; --league is appended only after validation.
+                 "measure_chase_board": 120, "backfill_fh": 120,
+                 "backfill_goal_events": 600,
+                 "probe_corner_halves": 600}                       # seconds
+# mode -> (script, fixed argv, accepts --league). Modes are an enum precisely so
+# nothing user-supplied ever reaches argv; --league is appended only after validation
+# AND only for the scripts that actually take it — backfill_fh.py does not, and passing
+# it would kill the run with an unrecognised-argument error.
 MEASURE_MODES = {
-    "features": ("measure_features", []),
-    "sweep": ("measure_features", ["--sweep"]),
-    "game_state": ("measure_features", ["--game-state"]),
-    "chase_board": ("measure_chase_board", []),
+    "features": ("measure_features", [], True),
+    "sweep": ("measure_features", ["--sweep"], True),
+    "game_state": ("measure_features", ["--game-state"], True),
+    "chase_board": ("measure_chase_board", [], True),
+    "backfill_fh": ("backfill_fh", [], False),
 }
 TOOL_OUTPUT_CAP = 60000                                            # chars kept per run
 
@@ -954,24 +1064,69 @@ async def tool_backfill_shots(token: Optional[str] = None, league_id: Optional[s
     return await _start_tool("backfill_shots", argv, " ".join(parts) or "all leagues")
 
 
+@api_router.post("/tools/backfill-goals")
+async def tool_backfill_goals(token: Optional[str] = None, league_id: Optional[str] = None,
+                              limit: int = 120, project_only: bool = False,
+                              user: dict = Depends(get_current_user)):
+    """Fill goal detail — scorers, minutes, and minutes spent trailing — onto cached
+    fixtures, then project it onto team history.
+
+    SPENDS API CREDITS on the fetch half: one `/fixtures/events` call per fixture not yet
+    done, capped by `limit` per league and resumable, so the spend is yours to pace.
+    `project_only` re-runs the cache -> teams half for free, which is what you want after
+    a sync has added matches the cache already covers."""
+    _check_tools_token(token)
+    argv, parts = [], []
+    if league_id and league_id != "all":
+        if league_id not in MANAGED_LEAGUE_IDS:
+            raise HTTPException(status_code=400, detail=f"unknown league_id {league_id}")
+        argv.append(league_id)
+        parts.append(league_id)
+    capped = max(1, min(int(limit), 500))
+    argv += ["--limit", str(capped)]
+    parts.append(f"limit={capped}")
+    if project_only:
+        argv.append("--project-only")
+        parts.append("project-only")
+    return await _start_tool("backfill_goal_events", argv, " ".join(parts) or "all leagues")
+
+
 @api_router.post("/tools/measure")
 async def tool_measure(token: Optional[str] = None, mode: str = "features",
                        league_id: Optional[str] = None, user: dict = Depends(get_current_user)):
-    """Run an offline measurement harness. Read-only against the DB, no API calls.
+    """Run an offline tool. All of these touch the DATABASE ONLY — no API calls, so
+    they cost nothing to run. (The one tool that does spend API credits, the half-split
+    probe, has its own endpoint below so this promise stays true.)
+
     mode: features (blocked shots) | sweep (weights) | game_state (chase thesis)
-        | chase_board (does the board's ranking pick better spots?)"""
+        | chase_board (does the board's ranking pick better spots?)
+        | backfill_fh (fill half-time goals onto team history from the fixture cache)"""
     _check_tools_token(token)
     if mode not in MEASURE_MODES:
         raise HTTPException(status_code=400,
                             detail=f"mode must be one of {'|'.join(MEASURE_MODES)}")
-    script, fixed = MEASURE_MODES[mode]
+    script, fixed, takes_league = MEASURE_MODES[mode]
     argv, parts = list(fixed), [mode]
     if league_id and league_id != "all":
         if league_id not in MANAGED_LEAGUE_IDS:
             raise HTTPException(status_code=400, detail=f"unknown league_id {league_id}")
+        if not takes_league:
+            raise HTTPException(status_code=400,
+                                detail=f"mode {mode} runs across all leagues; drop league_id")
         argv += ["--league", league_id]
         parts.append(league_id)
     return await _start_tool(script, argv, " ".join(parts))
+
+
+@api_router.post("/tools/probe-halves")
+async def tool_probe_halves(token: Optional[str] = None,
+                            user: dict = Depends(get_current_user)):
+    """Probe whether API-Football can give corners split by half.
+
+    SPENDS API CREDITS — a handful of calls on a single fixture. Deliberately not a
+    `measure` mode, because that endpoint promises no API calls and this one breaks it."""
+    _check_tools_token(token)
+    return await _start_tool("probe_corner_halves", [], "1H/2H availability")
 
 
 @api_router.get("/tools/runs")
@@ -1172,6 +1327,18 @@ async def fixture_detail(fixture_id: str, user: dict = Depends(get_current_user)
         return {sp: team_state_splits(team.get("real_matches") or [], sp)
                 for sp in ["home", "away", "overall"]}
 
+    def goals(team):
+        return {sp: goal_profile(team.get("real_matches") or [], sp)
+                for sp in ["home", "away", "overall"]}
+
+    # Why the live model nudges this team's lambda, per split — the same call pricing
+    # makes, so the panel and the price cannot disagree.
+    league = await db.leagues.find_one({"league_id": fx["league_id"]}, {"_id": 0}) or {}
+    ls, lb = league.get("avg_shots") or REF_SHOTS, league.get("avg_blocked") or 0.0
+
+    def intent(team):
+        return {sp: intent_breakdown(team, sp, ls, lb) for sp in ["home", "away", "overall"]}
+
     def recent(team):
         rms = team.get("real_matches") or []
         return [{"date": m["date"], "opponent": m["opponent"], "home": m["home"],
@@ -1181,17 +1348,24 @@ async def fixture_detail(fixture_id: str, user: dict = Depends(get_current_user)
                  "fh": (m["fh_goals_for"] >= 1) if m.get("fh_goals_for") is not None else None,
                  "ht_state": HT_LABELS.get(_match_state(m, "ht")),
                  "ft_state": FT_LABELS.get(_match_state(m, "ft")),
+                 # goal detail — present only on matches the goal backfill has reached
+                 "scorers": m.get("scorers"), "minutes_trailing": m.get("minutes_trailing"),
+                 "first_goal_min": m.get("first_goal_min"),
+                 "opp_first_goal_min": m.get("opp_first_goal_min"),
+                 "scored_first": m.get("scored_first"),
                  **{f: m.get(f) for f in ("shots_for", "shots_on_target_for",
                                           "blocked_shots_for", "dangerous_attacks_for")}}
                 for m in reversed(rms)]
 
     return {"fixture": fx, "model": model,
             "home_team": {"name": home["name"], "splits": splits(home), "features": features(home),
-                          "state_splits": states(home),
-                          "recent": recent(home), "real_samples": home.get("real_samples", 0)},
+                          "state_splits": states(home), "goal_profile": goals(home),
+                          "intent": intent(home), "recent": recent(home),
+                          "real_samples": home.get("real_samples", 0)},
             "away_team": {"name": away["name"], "splits": splits(away), "features": features(away),
-                          "state_splits": states(away),
-                          "recent": recent(away), "real_samples": away.get("real_samples", 0)}}
+                          "state_splits": states(away), "goal_profile": goals(away),
+                          "intent": intent(away), "recent": recent(away),
+                          "real_samples": away.get("real_samples", 0)}}
 
 
 class OddsBody(BaseModel):
@@ -1244,6 +1418,13 @@ async def scanner(league_id: Optional[str] = None, market: Optional[str] = None,
     return results
 
 
+# A venue split needs this many games before it is trusted on its own. Below it the
+# full history is used instead: a team promoted mid-table with one home game on record
+# was previously handed a "home average" of that single match, and that number then
+# drove its lambda, its projection and its place on every board.
+MIN_VENUE_GAMES = 3
+
+
 def _real_avg(team, side, field):
     rms = (team or {}).get("real_matches") or []
     if side == "home":
@@ -1252,8 +1433,8 @@ def _real_avg(team, side, field):
         pool = [m for m in rms if not m["home"]]
     else:
         pool = rms
-    if not pool:
-        pool = rms
+    if len(pool) < MIN_VENUE_GAMES:
+        pool = rms                      # too thin to mean anything — fall back to everything
     if not pool:
         return None
     return sum(m[field] for m in pool) / len(pool)
@@ -1289,6 +1470,12 @@ WIN, VOID, LOSS = "win", "void", "loss"
 
 # Laddered lines the auto-picker walks. Team corners top out far lower than match totals.
 STREAK_LADDERS = {"team": list(range(1, 16)), "match": list(range(1, 31))}
+# A run of one game is a result, not a streak. Two things could put one on the board:
+#   - a line carried by VOIDS — four exact-line pushes and a single win cleared the old
+#     `hits >= 1 and hits + voids >= min_hits` test, and showed as "streak: 1"
+#   - a team with barely any history, so its whole record is one or two games
+# Both are the same complaint: the row claims a pattern the sample cannot support.
+MIN_STREAK_LEN = 2
 # Default ceiling for under streaks: above these a line is true so often it says nothing.
 UNDER_LINE_CAP = {"team": 8, "match": 12}
 
@@ -1341,6 +1528,17 @@ def streak_runs(legs: List[dict]) -> dict:
                "status": "active" if length else "broken"}
     longest["is_current"] = bool(length) and longest["length"] == length and longest["end_date"] == end
     return {"current": current, "longest": longest}
+
+
+def streak_qualifies(hits: int, voids: int, run_length: int, min_hits: int, floor: int) -> bool:
+    """Is this a streak, or just a result that happened to fall the right way?
+
+    Three separate hurdles, and a row has to clear all of them:
+      - `hits >= floor`      — real WINS in the window, so voids can't carry a line
+      - `hits + voids >= min_hits` — the coverage the user asked for, voids allowed
+      - `run_length >= floor` — the run alive right now is actually a run
+    The last one is what removes single-game streaks from a team with almost no history."""
+    return hits >= floor and hits + voids >= min_hits and run_length >= floor
 
 
 def streak_line_label(line: int, direction: str) -> str:
@@ -1415,21 +1613,23 @@ async def streaks(league_id: Optional[str] = None, side: str = "overall", window
                   min_hits: int = 5, threshold: Optional[int] = None, min_line: int = 3,
                   within_days: Optional[int] = None, direction: str = "over",
                   subject: str = "team", max_line: Optional[int] = None,
+                  min_streak: int = MIN_STREAK_LEN,
                   user: dict = Depends(get_current_user)):
     """Teams that keep landing the same side of a corner line over recent REAL games —
     e.g. 4+ team corners in 5/5 home games, or the match total under 10 in 8 of the last 10.
 
-    direction: over (line+) | under (below the line, exact line voids)
-    subject:   team (team corners) | match (match total corners)"""
+    direction:  over (line+) | under (below the line, exact line voids)
+    subject:    team (team corners) | match (match total corners)
+    min_streak: shortest run that counts as a streak (default 2 — one game is not one)"""
     q = {} if not league_id or league_id == "all" else {"league_id": league_id}
-    teams = await db.teams.find(q, {"_id": 0}).to_list(1000)
+    teams = await db.teams.find(q, {"_id": 0}).to_list(5000)
     teams_by_id = {t["team_id"]: t for t in teams}
     ls_map = _league_shots_map(teams)
     bl_map = _league_blocked_map(teams)
     leagues = {l["league_id"]: l["name"] for l in await db.leagues.find({}, {"_id": 0}).to_list(100)}
 
     # earliest upcoming fixture per team
-    fixtures = await db.fixtures.find(q, {"_id": 0}).to_list(1000)
+    fixtures = await db.fixtures.find(q, {"_id": 0}).to_list(5000)
     fixtures.sort(key=lambda f: f["date"])
     next_fx = {}
     for fx in fixtures:
@@ -1448,6 +1648,8 @@ async def streaks(league_id: Optional[str] = None, side: str = "overall", window
     direction = "under" if direction == "under" else "over"
     subject = "match" if subject == "match" else "team"
     cap = max_line if max_line is not None else UNDER_LINE_CAP[subject]
+    # never demand more wins than the window can supply, and never drop below 1
+    floor = max(1, min(int(min_streak), min_hits))
 
     results = []
     for t in teams:
@@ -1475,10 +1677,9 @@ async def streaks(league_id: Optional[str] = None, side: str = "overall", window
         hits = sum(1 for lg in legs if lg["result"] == WIN)
         voids = sum(1 for lg in legs if lg["result"] == VOID)
         misses = len(legs) - hits - voids
-        # voids are stake-back, so they neither count as hits nor break the run
-        if hits < 1 or hits + voids < min_hits:
-            continue
         runs = streak_runs(streak_legs(history, line, direction, subject))
+        if not streak_qualifies(hits, voids, runs["current"]["length"], min_hits, floor):
+            continue
         recent = [{"corners": lg["value"], "value": lg["value"], "result": lg["result"],
                    "opponent": m["opponent"], "home": m["home"], "date": m["date"]}
                   for m, lg in zip(reversed(pool), reversed(legs))]
@@ -1538,22 +1739,25 @@ async def feature_coverage(league_id: Optional[str] = None, user: dict = Depends
     for d in docs:
         lid = d.get("league_id", "")
         row = per_league.setdefault(lid, {"league_id": lid, "league_name": leagues.get(lid, lid),
-                                          "fixtures": 0, "sides": 0,
+                                          "fixtures": 0, "sides": 0, "goal_events": 0,
                                           **{f: 0 for f in SHOT_FEATURES}})
         row["fixtures"] += 1
         row["sides"] += 2
+        # goal detail is per FIXTURE, not per side — one events call fills both teams
+        row["goal_events"] += 2 if d.get("events_at") else 0
         for f in SHOT_FEATURES:
             row[f] += sum(1 for side in ("home", "away") if d.get(f"{side}_{f}") is not None)
+    cols = list(SHOT_FEATURES) + ["goal_events"]
     for row in per_league.values():
         row["pct"] = {f: round(row[f] / row["sides"] * 100, 1) if row["sides"] else 0.0
-                      for f in SHOT_FEATURES}
+                      for f in cols}
     totals = {"fixtures": sum(r["fixtures"] for r in per_league.values()),
               "sides": sum(r["sides"] for r in per_league.values())}
-    for f in SHOT_FEATURES:
+    for f in cols:
         totals[f] = sum(r[f] for r in per_league.values())
     totals["pct"] = {f: round(totals[f] / totals["sides"] * 100, 1) if totals["sides"] else 0.0
-                     for f in SHOT_FEATURES}
-    return {"features": list(SHOT_FEATURES), "totals": totals,
+                     for f in cols}
+    return {"features": cols, "totals": totals,
             "leagues": sorted(per_league.values(), key=lambda r: r["league_name"])}
 
 
@@ -1812,6 +2016,234 @@ async def chase_board(within_days: int = 7, limit: int = 25, league_id: Optional
     return {"within_days": within_days, "count": len(board), "board": board}
 
 
+# ----------------------------- Fixture board (home page) -----------------------------
+# Every other board on this site is TEAM-first: a row is a team, and the fixture rides
+# along as `next_fixture`. That is the wrong shape for "what should I look at tonight",
+# where the unit is the match. This one is fixture-first.
+#
+# HOW A FIXTURE IS RANKED, stated plainly because it matters:
+#   - It must carry at least one live ANGLE (a chase spot or a streak). A big projected
+#     total with nothing to bet on is not a pick, it is trivia.
+#   - Those angles are then ordered by CORNER EDGE: the model's projected match total
+#     divided by that league's actual average match total. Both halves are production
+#     numbers — the projection is `expected_lambdas`, the same call the fixture page and
+#     every price uses — so this ranks by model conviction, not by a new invented score.
+#
+# What it is NOT: a measured edge. Nothing here has been through the backtester as a
+# ranking, so treat the order as triage — which matches to open first — and take the
+# actual bet from the angle, which has been priced. `corner_edge` is also correlated
+# with the chase board by construction (both are driven by the same lambda), so the
+# angle count is corroboration, not independent confirmation.
+
+FIXTURE_BOARD_PER_DAY = 5          # how many a day may show, IF they earn it
+FIXTURE_BOARD_ANGLES = 6           # angles listed per fixture before it stops being readable
+
+# The bar below is ABSOLUTE, and that is the whole point. `per_day` is a ceiling, not a
+# quota: a quiet Tuesday with one fixture shows that fixture only if it would also have
+# made a Saturday of ten. Ranking alone cannot do this — sort-and-take-N always promotes
+# something, so the only game on gets crowned by default.
+BOARD_MIN_GAMES = 6                # real matches behind EACH side before its numbers mean anything
+BOARD_MIN_RUN = 3                  # a streak must be a run; 2 is merely the floor for being one
+BOARD_MIN_CONSISTENCY = 0.8        # a chase spot must have hit 4 of its last 5
+BOARD_MIN_EDGE = 1.0               # the model must expect an at-or-above-par corner game
+
+
+def _angle_rank(a: dict) -> tuple:
+    """Best angle first: strong ones above weak, then longest live run, most hits,
+    tighter line."""
+    return (1 if a.get("strong") else 0, a.get("streak_len") or 0,
+            a.get("hits") or 0, -(a.get("line") or 0))
+
+
+def angle_is_strong(a: dict, min_run: int = BOARD_MIN_RUN,
+                    min_consistency: float = BOARD_MIN_CONSISTENCY) -> bool:
+    """Is this angle evidence, or just a row that cleared a minimum?
+
+    A chase spot is judged on how reliably the team has actually hit the line — the
+    game-state catalyst (opponent scoring first-half goals) is what put it on the chase
+    board, but reliability is what makes it worth acting on. A streak is judged on the
+    run that is ALIVE, not on the window's hit count, because a 4/5 whose most recent
+    game was the miss is a broken streak wearing a good record."""
+    if a.get("kind") == "chase":
+        return (a.get("consistency_rate") or 0.0) >= min_consistency
+    return (a.get("streak_len") or 0) >= min_run
+
+
+def fixture_qualifies(row: dict, min_games: int = BOARD_MIN_GAMES,
+                      min_edge: float = BOARD_MIN_EDGE) -> bool:
+    """Three hurdles, all absolute — nothing here depends on the rest of the day's card.
+
+      CONTEXT    both sides have enough real matches for their averages to mean anything
+      PROJECTION the model expects an at-or-above-par corner game for that league
+      EVIDENCE   at least one angle that is actually strong, not merely present
+    """
+    if min(row.get("home_games", 0), row.get("away_games", 0)) < min_games:
+        return False
+    if (row.get("corner_edge") or 0) < min_edge:
+        return False
+    return any(a.get("strong") for a in row.get("angles") or [])
+
+
+def board_days(rows: List[dict], per_day: int) -> List[dict]:
+    """Group scored fixtures by kickoff day, keep the best `per_day` of each, and read
+    each day back in KICKOFF order rather than in score order.
+
+    The cap is the whole point of this board, so it is pure and tested: dropping the
+    wrong fixture is silent — you would just never see the game you wanted."""
+    by_day: Dict[str, List[dict]] = defaultdict(list)
+    for r in rows:
+        by_day[(r.get("date") or "")[:10]].append(r)
+    out = []
+    for day in sorted(k for k in by_day if k):
+        ranked = sorted(by_day[day],
+                        key=lambda r: (r["corner_edge"], r.get("angle_count") or 0),
+                        reverse=True)
+        picked = sorted(ranked[:per_day], key=lambda r: r.get("date") or "")
+        out.append({"day": day, "considered": len(by_day[day]), "fixtures": picked})
+    return out
+
+
+async def _fixture_board(days: int = 7, per_day: int = FIXTURE_BOARD_PER_DAY,
+                         league_id: Optional[str] = None, user: dict = None,
+                         min_games: int = BOARD_MIN_GAMES, min_run: int = BOARD_MIN_RUN,
+                         min_edge: float = BOARD_MIN_EDGE) -> dict:
+    per_day = max(1, min(int(per_day), 20))
+    days = max(1, min(int(days), 14))
+    min_games = max(0, min(int(min_games), 30))
+    min_run = max(1, min(int(min_run), 20))
+    min_edge = max(0.0, min(float(min_edge), 3.0))
+    lid = league_id or "all"
+    q = {} if lid == "all" else {"league_id": lid}
+
+    teams = await db.teams.find(q, {"_id": 0}).to_list(5000)
+    teams_by_id = {t["team_id"]: t for t in teams}
+    leagues = {l["league_id"]: l for l in await db.leagues.find({}, {"_id": 0}).to_list(200)}
+    # what a normal match in this league actually produces, to judge the projection against
+    league_totals = defaultdict(list)
+    for t in teams:
+        for m in _src(t):
+            league_totals[t["league_id"]].append(m["corners_for"] + m["corners_against"])
+    league_avg = {k: (sum(v) / len(v) if v else 10.0) for k, v in league_totals.items()}
+
+    now = datetime.now(timezone.utc)
+    horizon = now + timedelta(days=days)
+    fixtures = await db.fixtures.find(q, {"_id": 0}).to_list(5000)
+
+    rows: Dict[str, dict] = {}
+    for fx in fixtures:
+        try:
+            dt = datetime.fromisoformat((fx.get("date") or "").replace("Z", "+00:00"))
+        except Exception:
+            continue
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        if dt < now or dt > horizon:
+            continue
+        home, away = teams_by_id.get(fx["home_team_id"]), teams_by_id.get(fx["away_team_id"])
+        if not home or not away:
+            continue
+        lg = leagues.get(fx["league_id"], {})
+        lam = expected_lambdas(home, away, lg.get("avg_shots") or REF_SHOTS,
+                               lg.get("avg_blocked") or 0.0)
+        avg = league_avg.get(fx["league_id"]) or 10.0
+        rows[fx["fixture_id"]] = {
+            "fixture_id": fx["fixture_id"], "date": fx["date"], "round": fx.get("round"),
+            "league_id": fx["league_id"], "league_name": lg.get("name", fx["league_id"]),
+            "home": fx["home_name"], "away": fx["away_name"],
+            "lambda_home": lam["home"], "lambda_away": lam["away"], "lambda_total": lam["total"],
+            "league_avg_total": round(avg, 2),
+            "corner_edge": round(lam["total"] / avg, 3) if avg else 1.0,
+            # sample behind each side — the CONTEXT hurdle, and shown so a thin row is
+            # visibly thin rather than quietly thin
+            "home_games": len(_src(home)), "away_games": len(_src(away)),
+            "angles": [],
+        }
+    if not rows:
+        return {"days": [], "per_day": per_day, "within_days": days, "fixtures": 0}
+
+    def add(fid, angle):
+        row = rows.get(fid)
+        if row is not None:
+            row["angles"].append(angle)
+
+    for c in await _chase_board(within_days=days, limit=500, league_id=lid):
+        nf = c.get("next_fixture") or {}
+        rate = (c["consistency"] / c["consistency_of"]) if c.get("consistency_of") else 0.0
+        add(nf.get("fixture_id"), {
+            "kind": "chase", "team": c["name"], "label": f"{c['line']}+ corners",
+            "detail": f"λ {c['lambda']} · hit {c['consistency']}/{c['consistency_of']}"
+                      f" · opp scores 1H {c['opp_fh_rate']}%",
+            "line": c["line"], "hits": c["consistency"], "streak_len": 0,
+            "consistency_rate": round(rate, 3), "opp_fh_rate": c["opp_fh_rate"],
+            "prob": c["prob"], "fair_odds": c["fair_odds"], "ev": c.get("ev")})
+
+    # the same four grids the streaks export walks, so the board cannot disagree with it
+    for direction, subject, min_line in (("over", "team", 3), ("under", "team", 3),
+                                         ("over", "match", 7), ("under", "match", 3)):
+        for s in await streaks(league_id=lid, side="overall", window=5, min_hits=5,
+                               threshold=None, min_line=min_line, within_days=days,
+                               direction=direction, subject=subject, user=user):
+            nf = s.get("next_fixture") or {}
+            run = (s.get("streak") or {}).get("length") or 0
+            what = "match total" if subject == "match" else "corners"
+            add(nf.get("fixture_id"), {
+                "kind": f"{direction}_{subject}", "team": s["name"],
+                "label": f"{s['line_label']} {what}",
+                "detail": f"{s['hits']}/{s['settled'] or s['window']} · run {run}"
+                          + (f" · {s['voids']} void" if s.get("voids") else ""),
+                "line": s["line"], "hits": s["hits"], "streak_len": run,
+                "prob": (s.get("projection") or {}).get("prob"),
+                "fair_odds": (s.get("projection") or {}).get("fair_odds"),
+                "ev": (s.get("projection") or {}).get("ev")})
+
+    for r in rows.values():
+        for a in r["angles"]:
+            a["strong"] = angle_is_strong(a, min_run, BOARD_MIN_CONSISTENCY)
+        r["angles"].sort(key=_angle_rank, reverse=True)
+        r["angle_count"] = len(r["angles"])
+        r["strong_angles"] = sum(1 for a in r["angles"] if a["strong"])
+        r["angles"] = r["angles"][:FIXTURE_BOARD_ANGLES]
+        r["best_angle"] = r["angles"][0] if r["angles"] else None
+
+    # The bar, applied BEFORE the per-day ceiling — so a thin day shows fewer games, or
+    # none, rather than promoting whatever happened to be on.
+    live = [r for r in rows.values() if fixture_qualifies(r, min_games, min_edge)]
+    out_days = board_days(live, per_day)
+    seen = {d["day"] for d in out_days}
+    # days that had fixtures but nothing that cleared the bar are reported, not hidden:
+    # "nothing qualified" is information, an absent day looks like missing data
+    for r in rows.values():
+        day = (r.get("date") or "")[:10]
+        if day and day not in seen:
+            out_days.append({"day": day, "considered": 0, "fixtures": []})
+            seen.add(day)
+    for d in out_days:
+        d["scanned"] = sum(1 for r in rows.values() if (r.get("date") or "")[:10] == d["day"])
+    out_days.sort(key=lambda d: d["day"])
+    return {"days": out_days, "per_day": per_day, "within_days": days,
+            "min_games": min_games, "min_run": min_run, "min_edge": min_edge,
+            "fixtures": sum(len(d["fixtures"]) for d in out_days)}
+
+
+@api_router.get("/fixture-board")
+async def fixture_board(days: int = 7, per_day: int = FIXTURE_BOARD_PER_DAY,
+                        league_id: Optional[str] = None,
+                        min_games: int = BOARD_MIN_GAMES, min_run: int = BOARD_MIN_RUN,
+                        min_edge: float = BOARD_MIN_EDGE,
+                        user: dict = Depends(get_current_user)):
+    """The best upcoming fixtures, grouped by kickoff day, fixture-first.
+
+    `per_day` is a CEILING, not a quota. Every fixture must clear an absolute bar first
+    — sample behind both sides, an at-or-above-par projection, and at least one angle
+    that is strong rather than merely present — so a day with one fixture on shows it
+    only if it would have made a busy day too. A day where nothing clears comes back
+    with an empty list rather than being dropped.
+
+    min_games / min_run / min_edge loosen or tighten that bar. See the notes above
+    `_fixture_board` for how "best" is decided, and for what it has NOT been shown to be."""
+    return await _fixture_board(days, per_day, league_id, user, min_games, min_run, min_edge)
+
+
 @api_router.get("/top-corner-teams")
 async def top_corner_teams(side: str = "overall", window: int = 0, limit: int = 40,
                            league_id: Optional[str] = None, user: dict = Depends(get_current_user)):
@@ -1844,6 +2276,175 @@ async def best_bets(user: dict = Depends(get_current_user)):
     return {"chase": chase[0] if chase else None,
             "streak": strk[0] if strk else None,
             "mismatch": mism[0] if mism else None}
+
+
+# Rows per section in the full markdown report. The old 40/60 caps silently dropped
+# whole leagues off the bottom of globally-sorted tables.
+EXPORT_ROWS = 250
+
+
+def _streak_line_label(row: dict) -> str:
+    """How the angle reads on a betting slip.
+
+    A match-total angle is derived from ONE team's recent games, not from this
+    fixture, so the source team is named. Without it the same fixture can show an
+    over and an under total — each true of a different side — and read as the model
+    contradicting itself."""
+    if row["subject"] == "match":
+        side = "match total"
+    else:
+        side = f"{row['name']} team corners"
+    line = f"under {row['line']}" if row["direction"] == "under" else f"{row['line']}+"
+    if row["subject"] == "match":
+        return f"{side} {line} (via {row['name']}'s games)"
+    return f"{side} {line}"
+
+
+def _streak_record(row: dict) -> str:
+    voids = f" +{row['voids']} void" if row.get("voids") else ""
+    return f"{row['hits']}/{row.get('settled', row['window'])}{voids}"
+
+
+@api_router.get("/export/streaks")
+async def export_streaks(days: int = 7, window: int = 5, min_hits: int = 5,
+                         side: str = "overall", league_id: Optional[str] = None,
+                         user: dict = Depends(get_current_user)):
+    """Every streak angle — overs and unders, team corners and match totals — on the
+    fixtures kicking off in the next `days`, grouped by fixture. Markdown, built to be
+    pasted straight into a chat.
+
+    The main report (/api/export) also carries streak tables, but they are not tied to
+    a fixture window and carry no kickoff or opponent, so you cannot tell which game an
+    angle belongs to. This one is fixture-first."""
+    from fastapi.responses import PlainTextResponse
+    lid = league_id or "all"
+    # match-total overs need a higher floor or every fixture qualifies at line 3
+    grid = [("over", "team", 3), ("under", "team", 3),
+            ("over", "match", 7), ("under", "match", 3)]
+    by_fixture: Dict[str, dict] = {}
+    counts = {f"{d}/{s}": 0 for d, s, _ in grid}
+
+    for direction, subject, min_line in grid:
+        rows = await streaks(league_id=lid, side=side, window=window, min_hits=min_hits,
+                             threshold=None, min_line=min_line, within_days=days,
+                             direction=direction, subject=subject, user=user)
+        for r in rows:
+            nf = r.get("next_fixture")
+            if not nf:
+                continue
+            counts[f"{direction}/{subject}"] += 1
+            slot = by_fixture.setdefault(nf["fixture_id"], {
+                "date": nf["date"], "league": r["league_name"],
+                "home": r["name"] if nf["is_home"] else nf["opponent"],
+                "away": nf["opponent"] if nf["is_home"] else r["name"],
+                "angles": [], "totals": []})
+            entry = {**r, "is_home": nf["is_home"]}
+            # a match total is the same bet from either team's side, so keep only the
+            # strongest reading of it rather than printing two contradictory lines
+            if subject == "match":
+                slot["totals"].append(entry)
+            else:
+                slot["angles"].append(entry)
+
+    for slot in by_fixture.values():
+        best = {}
+        for t in slot["totals"]:
+            key = t["direction"]
+            cur = best.get(key)
+            better = cur is None or (
+                (t["line"] < cur["line"]) if key == "under" else (t["line"] > cur["line"]))
+            if better or (cur and t["line"] == cur["line"] and t["hits"] > cur["hits"]):
+                best[key] = t
+        slot["angles"] += list(best.values())
+        slot["angles"].sort(key=lambda a: (a["subject"] != "team", a["direction"]))
+
+    fixtures = sorted(by_fixture.values(), key=lambda f: f["date"])
+    now = datetime.now(timezone.utc)
+    out = [f"# Corner streaks — fixtures in the next {days} days",
+           f"Generated {now.strftime('%Y-%m-%d %H:%M UTC')} · window {min_hits}/{window} · "
+           f"side {side} · league {lid}",
+           "",
+           "Every team/match angle whose streak is live going into the fixture. Model prices are "
+           "this app's own (v3); book odds and edge appear only where odds have been pasted in.",
+           "An UNDER line is a whole number — landing exactly on it is a void, which does not "
+           "break the streak and is excluded from the hit count.",
+           "A match-total angle comes from one team's own recent games, so a fixture can show "
+           "both an over and an under total — they describe the two sides' different histories, "
+           "not a contradiction. The team is named on each.",
+           "",
+           f"**{len(fixtures)} fixtures** · " + " · ".join(f"{k} {v}" for k, v in counts.items()),
+           ""]
+
+    # Coverage, so "where are my other leagues?" is answerable from the export itself.
+    # A league can be absent for two very different reasons and they need telling
+    # apart: no fixtures stored in the window, or fixtures but nothing qualified.
+    # Only the first is a data problem.
+    all_leagues = {l["league_id"]: l["name"]
+                   for l in await db.leagues.find({}, {"_id": 0}).to_list(500)}
+    all_fx = await db.fixtures.find({} if lid == "all" else {"league_id": lid},
+                                    {"_id": 0}).to_list(5000)
+    horizon = now + timedelta(days=days)
+    fx_by_league = defaultdict(int)
+    for f in all_fx:
+        try:
+            dt = datetime.fromisoformat(f["date"].replace("Z", "+00:00"))
+        except Exception:
+            continue
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        if now <= dt <= horizon:
+            fx_by_league[f["league_id"]] += 1
+    with_angles = {f["league"] for f in fixtures}
+    quiet = sorted(all_leagues.get(k, k) for k in fx_by_league
+                   if all_leagues.get(k, k) not in with_angles)
+    none_stored = sorted(n for k, n in all_leagues.items() if not fx_by_league.get(k))
+    out += [f"Coverage: {sum(fx_by_league.values())} fixtures in this window across "
+            f"{len(fx_by_league)} leagues; angles found in {len(with_angles)} of them.", ""]
+    if quiet:
+        out.append(f"- Fixtures but no qualifying streak ({len(quiet)}): {', '.join(quiet)}")
+    if none_stored:
+        out.append(f"- No fixtures stored in this window ({len(none_stored)}): "
+                   f"{', '.join(none_stored)}")
+        out.append("  (a league playing this week that appears here has not synced — "
+                   "run a refresh)")
+    out.append("")
+    if not fixtures:
+        out.append("_No streaks match this window. Try more days, a lower min_hits, or a wider "
+                   "window._")
+        return PlainTextResponse("\n".join(out))
+
+    day = None
+    for fx in fixtures:
+        d = fx["date"][:10]
+        if d != day:
+            day = d
+            try:
+                pretty = datetime.fromisoformat(fx["date"].replace("Z", "+00:00")).strftime("%a %d %b")
+            except Exception:
+                pretty = d
+            out.append(f"\n## {pretty}")
+        out.append(f"\n### {fx['date'][11:16]} · {fx['league']} · {fx['home']} v {fx['away']}")
+        for a in fx["angles"]:
+            proj = a.get("projection") or {}
+            bits = [f"{a['direction']}/{a['subject']}", _streak_record(a),
+                    f"avg {a['avg']}",
+                    f"streak {a['streak']['length']}" + (
+                        f" since {a['streak']['start_date'][:10]}" if a['streak'].get('start_date') else ""),
+                    f"best {a['longest']['length']}"]
+            venue = "" if a["subject"] == "match" else f" ({'H' if a['is_home'] else 'A'})"
+            out.append(f"- **{_streak_line_label(a)}**{venue} — " + " · ".join(bits))
+            recent = ",".join(str(m["corners"]) for m in a["recent"])
+            detail = [f"recent {recent}"]
+            if proj.get("fair_odds"):
+                detail.append(f"model {proj['fair_odds']} ({proj['prob']}%)")
+            if proj.get("void_prob"):
+                detail.append(f"void {proj['void_prob']}%")
+            if proj.get("book_odds"):
+                detail.append(f"book {proj['book_odds']} · edge {proj.get('ev')}%")
+            if a["subject"] == "team" and proj.get("opp_conceded") is not None:
+                detail.append(f"opp concedes {proj['opp_conceded']}")
+            out.append(f"  {' · '.join(detail)}")
+    return PlainTextResponse("\n".join(out))
 
 
 @api_router.get("/export")
@@ -1895,7 +2496,7 @@ async def export_report(user: dict = Depends(get_current_user)):
             lines.append(f"| {name} | {rs} | {ov['for_avg']}/{ov['against_avg']} | {hm['for_avg']}/{hm['against_avg']} | {aw['for_avg']}/{aw['against_avg']} | {l5['for_avg']}/{l5['against_avg']} | {ov['total_avg']} |")
 
     # Cross-league sections
-    mism = await _all_mismatches(within_days=None, limit=40)
+    mism = await _all_mismatches(within_days=None, limit=EXPORT_ROWS)
     lines.append("\n\n## Top corner mismatches (strong team vs leaky defence, all leagues)")
     lines.append("| Team | League | Next | Team/g | Opp conc | Proj λ | Model line |")
     lines.append("|---|---|---|---|---|---|---|")
@@ -1908,7 +2509,9 @@ async def export_report(user: dict = Depends(get_current_user)):
     lines.append("\n## Hot form — averaging more total corners than season baseline (Last 5)")
     lines.append("| Team | League | Recent avg | Season avg | Δ |")
     lines.append("|---|---|---|---|---|")
-    for r in trend[:40]:
+    if len(trend) > EXPORT_ROWS:
+        lines.append(f"_Showing the top {EXPORT_ROWS} of {len(trend)}._")
+    for r in trend[:EXPORT_ROWS]:
         lines.append(f"| {r['name']} | {r['league_name']} | {r['recent_total']} | {r['season_total']} | +{r['delta']} |")
 
     strk = await streaks(league_id="all", side="overall", window=5, min_hits=5,
@@ -1916,7 +2519,9 @@ async def export_report(user: dict = Depends(get_current_user)):
     lines.append("\n## Consistency streaks — hit a team-corner line in all of last 5 games")
     lines.append("| Team | League | Line | Avg | Current | Longest | Recent (won) |")
     lines.append("|---|---|---|---|---|---|---|")
-    for r in strk[:60]:
+    if len(strk) > EXPORT_ROWS:
+        lines.append(f"_Showing the top {EXPORT_ROWS} of {len(strk)}._")
+    for r in strk[:EXPORT_ROWS]:
         rec = ",".join(str(m["corners"]) for m in r["recent"])
         lines.append(f"| {r['name']} | {r['league_name']} | {r['line']}+ (5/5) | {r['avg']} | "
                      f"{r['streak']['length']} | {r['longest']['length']} | {rec} |")
@@ -1928,7 +2533,9 @@ async def export_report(user: dict = Depends(get_current_user)):
         lines.append(f"\n## Under streaks — {title} stayed under the line in all of last 5 games")
         lines.append(f"| Team | League | Line | Avg | Current | Longest | Recent ({unit}) |")
         lines.append("|---|---|---|---|---|---|---|")
-        for r in unders[:60]:
+        if len(unders) > EXPORT_ROWS:
+            lines.append(f"_Showing the top {EXPORT_ROWS} of {len(unders)}._")
+        for r in unders[:EXPORT_ROWS]:
             rec = ",".join(str(m["corners"]) for m in r["recent"])
             voids = f" ({r['voids']} void)" if r["voids"] else ""
             lines.append(f"| {r['name']} | {r['league_name']} | under {r['line']} ({r['hits']}/{r['settled']}{voids}) | "

@@ -23,16 +23,172 @@ Multi-league corner value betting web app. Rebuilds a spreadsheet corner model i
 
 ## Key API endpoints
 - Auth: POST /api/auth/session, GET /api/auth/me, POST /api/auth/logout
-- GET /api/scanner (market: team|all|total|home|away; `team`=home+away combined), /api/best-bets, /api/top-mismatches, /api/streaks (direction=over|under, subject=team|match, side, window, min_hits, threshold, min_line, max_line, within_days), /api/trends
+- GET /api/scanner (market: team|all|total|home|away; `team`=home+away combined), /api/best-bets, /api/top-mismatches, /api/streaks (direction=over|under, subject=team|match, side, window, min_hits, min_streak, threshold, min_line, max_line, within_days), /api/trends
 - GET /api/leagues, /api/leagues/{id}/teams|fixtures|matchups|corner-table, /api/fixtures/{id}, POST /api/fixtures/{id}/odds
-- GET /api/features/coverage?league_id — fill rate of the shot-volume features per league (see changelog; these are captured but NOT yet in the projection)
+- GET /api/features/coverage?league_id — fill rate per league of the shot-volume features and of `goal_events` (goal detail). Captured data, NOT in the projection.
+- GET /api/fixture-board?days&per_day&league_id — best upcoming FIXTURES (not teams), grouped by kickoff day, capped per day. Home page (/scanner).
 - GET /api/picks (record incl. profit/staked/roi/unpriced_wins + per-pick profit), POST /api/picks/settle
 - POST /api/explain (Claude Sonnet 4.6 via Emergent LLM key, server-side cache + throttle)
 - GET /api/backtest?model=v1|v2|v3&blocked_weight (v3 = candidate, backtest-only; a v3 run also returns `v2_same_sample` scored on identical rows), /api/sync/runs, POST /api/sync/refresh-all, /api/leagues/{id}/refresh
-- GET /api/export, /api/export/csv?type=teams|fixtures
+- GET /api/export, /api/export/csv?type=teams|fixtures, /api/export/streaks?days&window&min_hits&side&league_id (fixture-first streak markdown, overs + unders, team + match)
 - Bets/bankroll (built, frontend deferred): GET/PUT /api/bankroll, CRUD /api/bets, GET /api/bets/stats
 
 ## Changelog (recent, newest first)
+
+### STATS_CAP 400 → 250: fit the first sync inside a day's quota (2026-08-21)
+Only **uncached** fixtures cost an API call, so raising `STATS_CAP` costs
+`(new cap − what is already cached)` per league, once. From the old 120 that is:
+- at **400** — ~280 calls/league, **~7.6k** across 27 leagues
+- at **250** — ~130 calls/league, **~3.5k**
+
+API-Football's Pro plan allows on the order of 7,500 requests a day, so the 400 version
+would have run the quota dry mid-sync and left the job half done. 250 still gives ~25
+games a team — comfortably past the 20 that `team.real_matches` keeps, and roughly double
+the old ~12-13 — while fitting inside one day's allowance.
+A run that stops early **resumes** rather than repeats, because the cache is permanent.
+`STATS_CAP` is an env var, so it can go back up once the first pass has settled — no
+deploy needed. `backfill_goal_events.py` takes its default `--limit` from the same
+constant, so its per-league cap drops with it, which is the same quota argument.
+
+### Fixture board: an absolute bar, and more games a day (2026-08-21)
+The first version was a **top-N per day**, which is not the same as a quality board.
+Sort-and-take-N *always* promotes something, so a Tuesday with one fixture on crowned that
+fixture by default — "best of the day" out of one. Fixed by putting an **absolute bar**
+in front of the per-day ceiling.
+- `fixture_qualifies()` — three hurdles, none of which depend on the rest of the card, so
+  the same fixture passes or fails identically on a quiet Tuesday and a ten-game Saturday:
+  **CONTEXT** (`BOARD_MIN_GAMES = 6` real matches behind *each* side), **PROJECTION**
+  (`BOARD_MIN_EDGE = 1.0` — at or above that league's actual average), **EVIDENCE** (at
+  least one angle that is strong, not merely present).
+- `angle_is_strong()` — a streak needs a **live run** of `BOARD_MIN_RUN = 3` (the
+  post-#13 minimum of 2 only makes it *a* streak); a chase spot needs to have hit
+  **4 of its last 5** (`BOARD_MIN_CONSISTENCY = 0.8`). A streak is judged on the run
+  that is alive, not the window's hit count — a 4/5 whose latest game was the miss is a
+  broken streak wearing a good record.
+- `per_day` raised to a ceiling of 20; UI offers **3 / 5 / 8 / All**, default 5.
+- **Days where nothing qualifies are reported, not dropped** ("Nothing cleared the bar —
+  4 fixtures on, none with enough behind them"). An absent day reads as missing data.
+- `min_games` / `min_run` / `min_edge` are query params, so the bar is loosenable for a
+  thin week without a deploy.
+- Angle chips are dimmed when they are supporting rather than qualifying, so it is visible
+  which one actually earned the fixture its place.
+
+### Fixture board on the home page — best upcoming games, 2-3 a day (2026-08-21)
+Every other board here is **team-first**: a row is a team and the fixture rides along as
+`next_fixture`. That is the wrong shape for "what should I look at tonight", where the
+unit is the match. `GET /api/fixture-board?days&per_day&league_id` is fixture-first.
+- **What "best" means, stated plainly.** A fixture must carry at least one live **angle**
+  (a chase spot or a streak) — a big projected total with nothing to bet on is trivia,
+  not a pick. Qualifying fixtures are then ordered by **corner edge**: the projected match
+  total ÷ that league's *actual* average match total. The projection is `expected_lambdas`,
+  the same production call the fixture page and every price use, so this ranks by model
+  conviction rather than by a new invented score.
+- **What it is NOT.** Nothing here has been through the backtester *as a ranking*, so the
+  order is **triage** — which games to open first — and the bet itself comes from the
+  angle, which has been priced. `corner_edge` is also correlated with the chase board by
+  construction (same λ), so the angle count is corroboration, not independent
+  confirmation. The chase-board rank test is still the outstanding way to check this.
+- **`board_days()` is pure and tested** (14 tests). The per-day cap is the whole
+  requirement and dropping the wrong fixture is a silent failure, so it is pinned:
+  narrowing 3→2 must be a strict subset, days read in calendar order, fixtures within a
+  day read in **kickoff** order rather than score order, and `considered` reports the full
+  day so the UI can honestly say "3 of 9".
+- Angles are gathered from `_chase_board` plus the same four streak grids the streaks
+  export walks, so the board cannot disagree with the export.
+- Cost profile matches `/best-bets`, which the home page already calls — several passes
+  over teams. It loads async behind skeletons, so it never blocks the rest of the page.
+
+### Shot block on the fixture page — why v3 nudges a team's λ (2026-08-21)
+The shot data has been in **pricing** since v3 went live (PR #5), but nowhere on the
+site showed the numbers. Only shots/game in the corner league table was ever rendered;
+`features` was served on `/api/leagues/{id}/teams` and `/api/fixtures/{id}` and the
+frontend ignored all of it. That was a scoping omission — every PR from #2 on was framed
+as "does this improve accuracy", so the data and the measurement shipped and the display
+never did.
+- **`intent_breakdown(team, venue, league_shots, league_blocked)`** reports which intent
+  term the live model applies and why: `source` (blocked = v3 | shots = v2 fallback |
+  none), the multiplier, the team value, the league average, the weight, the covered-game
+  count, and a `reason` when v3 did **not** fire.
+- **`live_lambda` is now DEFINED in terms of it** (`base × multiplier × form`). That is
+  the point of the refactor: a panel built on a parallel reimplementation would drift and
+  start describing a price the site does not charge. Behaviour is unchanged — pinned by a
+  test that walks every branch and reproduces the priced λ to the cent.
+- Served as `intent` per split on `/api/fixtures/{id}`; rendered under the corner splits
+  as shots / on target / blocked per game, the coverage behind them, the resulting
+  multiplier as a ±% on λ, and the fallback reason where relevant.
+- **`dangerous_attacks` is deliberately not shown.** The provider returns it empty for
+  these leagues (0/40 on the coverage check), so the column would only ever read "—".
+
+### Goal detail, deeper history, and no more one-game streaks (2026-08-21)
+
+**1. History depth — the "some teams only go back 13 games" complaint.**
+`STATS_CAP` in `sync_real.py` was **120**: the number of fixtures per league whose
+statistics the sync pulls. A 20-team league plays **10 fixtures a round**, so 120 fixtures
+was only ~12 rounds and every team topped out at ~12-13 matches no matter how long the
+season had run. Raised to **250** (~25 games a team, past the 20 `real_matches` keeps) and
+made overridable with the `STATS_CAP` env var. *(Shipped at 400 first; see the quota entry
+at the top of this changelog for why it came down.)*
+The last-season top-up had the same shape of bug: it fired on `len(ft) < 40`, i.e. only in
+the opening weeks of a season. A league 12 rounds in cleared that bar with 120 games and
+was never topped up — so teams promoted or newly covered had *no* last-season history at
+all. The trigger is now `len(ft) < STATS_CAP`, so the pool fills from last season whenever
+this season has not yet supplied enough.
+**Cost:** ~130 extra statistics calls per league at the revised cap, **once**. Past results
+never change and `fixture_stats` is cached permanently, so this is a one-off spend, not a
+recurring one.
+
+**2. One-game streaks removed** (`MIN_STREAK_LEN = 2`, `streak_qualifies()`).
+The old test was `hits >= 1 and hits + voids >= min_hits`. Two ways a single game reached
+the board under it:
+  - a line carried by **voids** — four exact-line pushes and one win passed, and displayed
+    as "streak: 1";
+  - a team with barely any history, whose entire record is one or two matches.
+There are now three hurdles, all of which must clear: real wins ≥ floor, wins + voids ≥
+`min_hits` (voids still count towards coverage — they are stake-back, not misses), and the
+**currently live run** ≥ floor. Tunable per request via `min_streak`, default 2.
+
+**3. A single game no longer sets a venue average** (`MIN_VENUE_GAMES = 3`).
+`_real_avg` fell back to the full record only when a venue split was *completely* empty. A
+team with one home game got a "home average" of that single match, and that number drove
+its λ, its projection and its place on every board. Below three games the full record is
+used instead. This moves numbers app-wide (scanner, mismatches, chase board, streak
+projections) — deliberately, and always towards the larger sample.
+
+**4. Goal detail — who scores and when.** `/fixtures/events` *does* carry minutes (unlike
+the corner data, which the 1H/2H probe was built to confirm). New `goal_events.py` (pure,
+14 unit tests) parses it: goals sorted, **missed penalties excluded** (API-Football files
+them as type `Goal`), **own goals credited to the side that benefits** while keeping the
+scorer's name. `backfill_goal_events.py` fetches and stores it, then projects onto
+`team.real_matches`; it is capped, resumable (`events_at` marks a done fixture) and its
+projection half is free. Surfaced as `goal_profile` on `/api/fixtures/{id}`: scorers,
+goal-minute windows, first-goal timings, and **minutes spent leading/level/trailing**.
+Coverage per league lands in `/api/features/coverage` as `goal_events`.
+The point of the minutes: the game-state split classifies a match by its **half-time
+score**, so a team a goal down from the 10th minute and one that conceded on 43 sit in the
+same bucket. Minutes separate them — this is the honest version of the chase measure the
+null game-state result deserved. It does **not** fix the other half (corners are still
+full-match only), so it is exposed as data, **not** wired into pricing.
+**Cost:** one `/fixtures/events` call per fixture, same profile as the shots backfill.
+Both new tools are in the Tools panel (`POST /api/tools/backfill-goals`), so no shell.
+
+### Tools panel covers the last two shell-only scripts (2026-08-18)
+- `backfill_fh.py` (fills `fh_goals_against` — required before the corners-by-state splits show anything but `unknown_games`) is now a `measure` mode: **DB-only, no API calls**.
+- `probe_corner_halves.py` gets its **own** endpoint `POST /api/tools/probe-halves` rather than a measure mode, because `/tools/measure` promises no API calls and the probe spends about six. Keeping that promise true matters more than the tidiness of one dispatch table.
+- `MEASURE_MODES` entries gain an **accepts-`--league`** flag. `backfill_fh.py` takes no such argument, and appending it would have killed the run with an unrecognised-argument error; a mode that cannot take a league now returns 400 rather than failing at the subprocess. Covered by a test that walks every mode.
+- With these two, nothing in the workflow needs a shell any more.
+
+### Fixture-first streaks export + truncation fixes (2026-08-12)
+- **Why leagues were missing from exports — three separate caps, all silent:**
+  1. `sync_real.py` stored only the **next 10 upcoming fixtures per league** (`ns[:10]`). Every "next N days" view was capped by this at the data layer — a league with a weekend round plus a midweek round could not fit. Now `UPCOMING_FIXTURES = 40`, which costs **nothing extra in API calls** (they come from the `/fixtures` call the sync already makes).
+  2. `/api/export` sliced its tables at `[:40]`/`[:60]` on globally-sorted lists, so entire lower-ranked leagues fell off the bottom. Now `EXPORT_ROWS = 250`, and any section that still truncates **says so** (`Showing the top 250 of N`).
+  3. `streaks()` capped its team/fixture queries at `to_list(1000)`; 27 leagues x ~20 teams was already over half of it. Raised to 5000.
+- The streaks export now reports **coverage**: fixtures in the window per league, which leagues produced angles, which had fixtures but nothing qualifying, and which have **no fixtures stored at all** (the last being the only one that is a data problem — it means that league has not synced).
+- `GET /api/export/streaks?days=7` — every streak angle on the fixtures kicking off in the window, **grouped by day then fixture**, as markdown built to paste into a chat. Covers the full grid: over/under × team-corners/match-total. Each angle carries the record (with voids), average, current streak + start date, longest, the recent sequence, the model price, and book odds/edge where they exist.
+- The main `/api/export` already had streak tables but they were **not tied to a fixture window and carried no kickoff or opponent**, so you could not tell which game an angle belonged to. Match-total OVERS were missing entirely.
+- **Match-total angles name their source team** (`match total under 6 (via Bores's games)`). A match total is derived from ONE team's recent games, not from the fixture, so the same fixture can legitimately show an over from one side and an under from the other. Unlabelled, that reads as the model contradicting itself — caught in the first end-to-end run. The header explains it too.
+- Match totals are deduped per fixture per direction (tightest under / highest over), since both teams otherwise generate near-duplicate rows.
+- Match-total overs use a `min_line` floor of 7; at 3 every fixture qualifies and the export is noise.
+- `ExportMenu` gains "Copy this week's streaks" and "Copy next 3 days" alongside the existing full export.
 
 ### Corners by match state — and the 1H/2H blocker (2026-08-12)
 - `team_state_splits()` groups a team's corners won/conceded by **half-time state** (trailing/level/leading) and by **final result** (won/drew/lost), per venue, each bucket carrying its `games` count. Exposed on `/api/fixtures/{id}` (`state_splits` per split, plus `ht_state`/`ft_state` on each recent row) and a new `GET /api/leagues/{id}/state-splits?split=` with a pooled `league_baseline` to compare against.

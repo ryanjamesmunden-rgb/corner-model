@@ -20,9 +20,11 @@ export const api = {
   trends: (params) => axios.get(`${API}/trends`, { params }).then((r) => r.data),
   bestBets: () => axios.get(`${API}/best-bets`).then((r) => r.data),
   chaseBoard: (params) => axios.get(`${API}/chase-board`, { params }).then((r) => r.data),
+  fixtureBoard: (params) => axios.get(`${API}/fixture-board`, { params }).then((r) => r.data),
   topCornerTeams: (params) => axios.get(`${API}/top-corner-teams`, { params }).then((r) => r.data),
   topMismatches: (params) => axios.get(`${API}/top-mismatches`, { params }).then((r) => r.data),
   exportMarkdown: () => axios.get(`${API}/export`, { responseType: "text" }).then((r) => r.data),
+  exportStreaks: (days = 7) => axios.get(`${API}/export/streaks`, { params: { days }, responseType: "text" }).then((r) => r.data),
   exportCsv: (type) => axios.get(`${API}/export/csv`, { params: { type }, responseType: "text" }).then((r) => r.data),
   refresh: (id) => axios.post(`${API}/leagues/${id}/refresh`).then((r) => r.data),
   refreshAll: () => axios.post(`${API}/sync/refresh-all`).then((r) => r.data),
@@ -36,6 +38,8 @@ export const api = {
   toolRuns: (token, script) => axios.get(`${API}/tools/runs`, { params: { token, script } }).then((r) => r.data),
   toolMeasure: (token, mode, leagueId) => axios.post(`${API}/tools/measure`, null, { params: { token, mode, league_id: leagueId } }).then((r) => r.data),
   toolBackfill: (token, { limit, leagueId, project_only } = {}) => axios.post(`${API}/tools/backfill-shots`, null, { params: { token, limit, league_id: leagueId, project_only } }).then((r) => r.data),
+  toolBackfillGoals: (token, { limit, leagueId, project_only } = {}) => axios.post(`${API}/tools/backfill-goals`, null, { params: { token, limit, league_id: leagueId, project_only } }).then((r) => r.data),
+  toolProbeHalves: (token) => axios.post(`${API}/tools/probe-halves`, null, { params: { token } }).then((r) => r.data),
 };
 
 export const tierMeta = {

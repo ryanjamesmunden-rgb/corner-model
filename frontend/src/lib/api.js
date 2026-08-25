@@ -40,6 +40,7 @@ export const api = {
   toolBackfill: (token, { limit, leagueId, project_only } = {}) => axios.post(`${API}/tools/backfill-shots`, null, { params: { token, limit, league_id: leagueId, project_only } }).then((r) => r.data),
   toolBackfillGoals: (token, { limit, leagueId, project_only } = {}) => axios.post(`${API}/tools/backfill-goals`, null, { params: { token, limit, league_id: leagueId, project_only } }).then((r) => r.data),
   toolProbeHalves: (token) => axios.post(`${API}/tools/probe-halves`, null, { params: { token } }).then((r) => r.data),
+  toolProbeStatTypes: (token) => axios.post(`${API}/tools/probe-stat-types`, null, { params: { token } }).then((r) => r.data),
 };
 
 export const tierMeta = {

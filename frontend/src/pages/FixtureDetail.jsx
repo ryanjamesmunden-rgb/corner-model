@@ -330,14 +330,16 @@ function TeamBreakdown({ team, title, highlight }) {
             <th className="text-center font-medium px-2 py-1.5">V</th>
             <th className="text-center font-medium px-2 py-1.5" title="Final score (goals for-against)">Score</th>
             <th className="text-center font-medium px-2 py-1.5" title="Scored a first-half goal">FHG</th>
-            <th className="text-right font-medium px-4 py-1.5">Won</th>
-            <th className="text-right font-medium px-4 py-1.5">Conc</th>
+            <th className="text-center font-medium px-2 py-1.5"
+              title="Shots taken by this team vs shots faced. A high corner count against a side that concedes a lot of shots is a different signal from one earned against a solid defence.">Shots F–A</th>
+            <th className="text-right font-medium px-4 py-1.5" title="Corners won">Won</th>
+            <th className="text-right font-medium px-4 py-1.5" title="Corners conceded">Conc</th>
             <th className="text-right font-medium px-4 py-1.5">Total</th>
           </tr>
         </thead>
         <tbody className="font-mono-data text-sm" data-testid={`bd-recent-${highlight}`}>
           {games.length === 0 ? (
-            <tr><td colSpan={8} className="px-4 py-4 text-center text-muted-foreground text-xs">No real games on this split</td></tr>
+            <tr><td colSpan={9} className="px-4 py-4 text-center text-muted-foreground text-xs">No real games on this split</td></tr>
           ) : games.map((m, i) => (
             <tr key={i} className="border-b border-border/50 hover:bg-white/5 transition-colors duration-150">
               <td className="px-4 py-1.5 text-muted-foreground text-xs">{fmtDate(m.date)}</td>
@@ -357,6 +359,19 @@ function TeamBreakdown({ team, title, highlight }) {
                 {m.fh == null ? <span className="text-muted-foreground">—</span>
                   : m.fh ? <span className="text-emerald-400">✓</span>
                   : <span className="text-zinc-600">·</span>}
+              </td>
+              <td className="px-2 py-1.5 text-center text-xs">
+                {m.shots_for == null && m.shots_against == null ? (
+                  <span className="text-muted-foreground">—</span>
+                ) : (
+                  <span title={m.shots_on_target_for != null
+                    ? `${m.shots_on_target_for} on target, ${m.blocked_shots_for ?? "?"} blocked`
+                    : "on-target detail not reported for this fixture"}>
+                    <span className="text-foreground">{m.shots_for ?? "?"}</span>
+                    <span className="text-muted-foreground">–</span>
+                    <span className="text-muted-foreground">{m.shots_against ?? "?"}</span>
+                  </span>
+                )}
               </td>
               <td className="px-4 py-1.5 text-right text-emerald-400 font-semibold">{m.won}</td>
               <td className="px-4 py-1.5 text-right text-red-400">{m.conceded}</td>

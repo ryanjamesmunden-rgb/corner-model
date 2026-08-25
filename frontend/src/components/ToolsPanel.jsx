@@ -139,6 +139,12 @@ export default function ToolsPanel() {
               className="text-xs px-3 py-1.5 rounded border border-amber-500/40 bg-amber-500/10 text-amber-300 hover:bg-amber-500/20 disabled:opacity-50 flex items-center gap-1.5">
               <Play className="h-3 w-3" /> Probe 1H/2H
             </button>
+            <button disabled={busy} data-testid="tools-probe-stat-types"
+              title="Which statistics does API-Football actually return? Answers whether crosses are available. ~12 calls"
+              onClick={() => fire(() => api.toolProbeStatTypes(token))}
+              className="text-xs px-3 py-1.5 rounded border border-amber-500/40 bg-amber-500/10 text-amber-300 hover:bg-amber-500/20 disabled:opacity-50 flex items-center gap-1.5">
+              <Play className="h-3 w-3" /> Probe stat types
+            </button>
           </div>
         </div>
 

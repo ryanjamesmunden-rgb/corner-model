@@ -1174,11 +1174,13 @@ TOOL_SCRIPTS = {"backfill_shots": "backfill_shots.py", "measure_features": "meas
                 "measure_chase_board": "measure_chase_board.py",
                 "backfill_fh": "backfill_fh.py",
                 "backfill_goal_events": "backfill_goal_events.py",
-                "probe_corner_halves": "probe_corner_halves.py"}
+                "probe_corner_halves": "probe_corner_halves.py",
+                "probe_stat_types": "probe_stat_types.py"}
 TOOL_COOLDOWN = {"backfill_shots": 600, "measure_features": 120,
                  "measure_chase_board": 120, "backfill_fh": 120,
                  "backfill_goal_events": 600,
-                 "probe_corner_halves": 600}                       # seconds
+                 "probe_corner_halves": 600,
+                 "probe_stat_types": 600}                         # seconds
 # mode -> (script, fixed argv, accepts --league). Modes are an enum precisely so
 # nothing user-supplied ever reaches argv; --league is appended only after validation
 # AND only for the scripts that actually take it — backfill_fh.py does not, and passing
@@ -1341,6 +1343,17 @@ async def tool_probe_halves(token: Optional[str] = None,
     `measure` mode, because that endpoint promises no API calls and this one breaks it."""
     _check_tools_token(token)
     return await _start_tool("probe_corner_halves", [], "1H/2H availability")
+
+
+@api_router.post("/tools/probe-stat-types")
+async def tool_probe_stat_types(token: Optional[str] = None,
+                                user: dict = Depends(get_current_user)):
+    """List every statistic API-Football actually returns for our leagues.
+
+    Answers "can we add crosses?" with evidence instead of a guess. SPENDS API CREDITS —
+    roughly a dozen calls across a few leagues."""
+    _check_tools_token(token)
+    return await _start_tool("probe_stat_types", [], "available statistic types")
 
 
 @api_router.get("/tools/runs")
@@ -1567,8 +1580,12 @@ async def fixture_detail(fixture_id: str, user: dict = Depends(get_current_user)
                  "first_goal_min": m.get("first_goal_min"),
                  "opp_first_goal_min": m.get("opp_first_goal_min"),
                  "scored_first": m.get("scored_first"),
-                 **{f: m.get(f) for f in ("shots_for", "shots_on_target_for",
-                                          "blocked_shots_for", "dangerous_attacks_for")}}
+                 # both sides of each feature: sync stores _for and _against, and the
+                 # conceded half is what tells you whether a shot count was earned
+                 # against a leaky defence or a solid one
+                 **{f"{feat}_{side}": m.get(f"{feat}_{side}")
+                    for feat in ("shots", "shots_on_target", "blocked_shots", "dangerous_attacks")
+                    for side in ("for", "against")}}
                 for m in reversed(rms)]
 
     return {"fixture": fx, "model": model,

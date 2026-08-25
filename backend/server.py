@@ -3,6 +3,7 @@ from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 import asyncio
+import contextvars
 import os
 import logging
 import math
@@ -637,8 +638,17 @@ async def health():
         db_ok = True
     except Exception:                                         # noqa: BLE001
         db_ok = False
+    screens = {}
+    if db_ok:
+        try:
+            built = {d["_id"]: d for d in await db.screens.find({}, {"payload": 0}).to_list(50)}
+            screens = {name: bool(built.get(name)) and not await _screen_is_stale(built[name])
+                       for name in SCREENS}
+        except Exception:                                     # noqa: BLE001
+            screens = {}
     return {"status": "ok" if db_ok else "degraded", "db": db_ok,
             "scheduler_running": bool(scheduler and scheduler.running), "jobs": jobs,
+            "screens_fresh": screens,
             "explainer": bool(_llm()), "time": datetime.now(timezone.utc).isoformat()}
 
 
@@ -703,7 +713,11 @@ def _record(picks: List[dict]) -> dict:
     only those with a real price, since a win at an unknown price has no return."""
     graded = [p for p in picks if p.get("status") in _GRADED]
     voided = [p for p in picks if p.get("status") == settlement.VOID]
-    priced = [p for p in graded if _pick_profit(p) is not None]
+    # A pick counts toward profit only when its PRICE is known. Testing profit-is-not-None
+    # instead would silently keep every unpriced loss (a loss costs 1u whatever the price)
+    # while dropping every unpriced win, which forces ROI to -100% no matter how well the
+    # picks actually did. Both sides must be priced or neither is counted.
+    priced = [p for p in graded if p.get("odds")]
     won = sum(1 for p in graded if p["status"] in _WIN_STATUSES)
     profit = round(sum(_pick_profit(p) for p in priced), 2)
     return {"picks": len(picks), "settled": len(graded), "void": len(voided),
@@ -712,6 +726,7 @@ def _record(picks: List[dict]) -> dict:
             "win_rate": round(won / len(graded) * 100, 1) if graded else 0.0,
             "staked": len(priced), "profit": profit,
             "roi": round(profit / len(priced) * 100, 1) if priced else 0.0,
+            "unpriced": sum(1 for p in graded if not p.get("odds")),
             "unpriced_wins": sum(1 for p in picks
                                  if p.get("status") in _WIN_STATUSES and not p.get("odds"))}
 
@@ -843,6 +858,151 @@ async def ledger(user: dict = Depends(get_current_user)):
             "by_venue": {v: _ledger_agg([p for p in picks if p.get("venue") == v]) for v in ("home", "away")},
             "by_signal": {s: _ledger_agg([p for p in picks if (p.get("signal") or "chase") == s]) for s in signals},
             "rows": rows}
+
+
+# ----------------------------- Precomputed screens -----------------------------
+# Every scanner screen scans the whole team collection. Doing that once per visitor is
+# what would take a free-tier Atlas down, so each screen's default payload is built once
+# per sync and served from a single document. A request whose parameters differ from the
+# canonical set still computes live — this is an optimisation, never a limit on what the
+# API can answer.
+#
+# `_building_screen` is a ContextVar rather than a plain flag so it is visible only to
+# the task doing the build: a builder calls the same endpoint functions the cache fronts,
+# and must reach the live path without concurrent requests also being pushed onto it.
+
+SCREEN_STALE_HOURS = 13  # a little over the 12h sync cadence
+_building_screen = contextvars.ContextVar("building_screen", default=False)
+_screen_locks: Dict[str, asyncio.Lock] = {}
+
+
+def _cache_ok() -> bool:
+    return not _building_screen.get()
+
+
+async def _screen_chase():
+    return await chase_board(within_days=7, limit=25, league_id="all", user={})
+
+
+async def _screen_mismatches():
+    return await top_mismatches(within_days=7, limit=30, user={})
+
+
+async def _screen_streaks():
+    return await streaks(league_id="all", side="home", window=5, min_hits=5,
+                         min_line=3, direction="over", subject="team", user={})
+
+
+async def _screen_top_teams():
+    return await top_corner_teams(side="overall", window=0, limit=40,
+                                  league_id="all", user={})
+
+
+async def _screen_best_bets():
+    return await best_bets(user={})
+
+
+async def _screen_fixture_board():
+    return await fixture_board(user={})
+
+
+# Canonical payloads — these mirror what the frontend requests on first paint.
+SCREENS = {
+    "best_bets": _screen_best_bets,
+    "fixture_board": _screen_fixture_board,
+    "chase": _screen_chase,
+    "mismatches": _screen_mismatches,
+    "streaks": _screen_streaks,
+    "top_teams": _screen_top_teams,
+}
+
+
+def _iso_to_dt(value) -> Optional[datetime]:
+    try:
+        dt = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    return dt.replace(tzinfo=timezone.utc) if dt.tzinfo is None else dt
+
+
+async def _data_version() -> Optional[str]:
+    """Newest league sync timestamp — what a screen's contents actually depend on."""
+    newest = await db.leagues.find({}, {"_id": 0, "synced_at": 1}) \
+        .sort("synced_at", -1).limit(1).to_list(1)
+    return (newest[0].get("synced_at") if newest else None) or None
+
+
+async def _screen_is_stale(doc: dict) -> bool:
+    version = await _data_version()
+    if version and doc.get("data_version") != version:
+        return True
+    built = _iso_to_dt(doc.get("built_at"))
+    if not built:
+        return True
+    return (datetime.now(timezone.utc) - built).total_seconds() > SCREEN_STALE_HOURS * 3600
+
+
+async def _build_screen(name: str) -> dict:
+    token = _building_screen.set(True)
+    try:
+        payload = await SCREENS[name]()
+    finally:
+        _building_screen.reset(token)
+    doc = {"_id": name, "payload": payload,
+           "built_at": datetime.now(timezone.utc).isoformat(),
+           "data_version": await _data_version()}
+    await db.screens.update_one({"_id": name}, {"$set": doc}, upsert=True)
+    return doc
+
+
+async def _screen(name: str):
+    """Cached payload, rebuilt when missing or out of date.
+
+    The per-screen lock matters: without it the first visitors after a sync would all
+    miss together and each kick off the same full scan."""
+    cached = await db.screens.find_one({"_id": name})
+    if cached and not await _screen_is_stale(cached):
+        return cached["payload"]
+    lock = _screen_locks.setdefault(name, asyncio.Lock())
+    async with lock:
+        cached = await db.screens.find_one({"_id": name})  # may have been rebuilt while waiting
+        if cached and not await _screen_is_stale(cached):
+            return cached["payload"]
+        try:
+            return (await _build_screen(name))["payload"]
+        except Exception:                                     # noqa: BLE001
+            logger.exception("screen rebuild failed: %s", name)
+            if cached:
+                return cached["payload"]                      # stale beats nothing
+            raise
+
+
+async def _rebuild_screens() -> dict:
+    out = {}
+    for name in SCREENS:
+        try:
+            await _build_screen(name)
+            out[name] = "ok"
+        except Exception as exc:                              # noqa: BLE001
+            logger.exception("screen build failed: %s", name)
+            out[name] = f"error: {exc}"
+    logger.info("screens rebuilt: %s", out)
+    return {"rebuilt": out, "at": datetime.now(timezone.utc).isoformat()}
+
+
+@api_router.post("/screens/rebuild")
+async def screens_rebuild(user: dict = Depends(get_current_user)):
+    return await _rebuild_screens()
+
+
+@api_router.get("/screens/status")
+async def screens_status(user: dict = Depends(get_current_user)):
+    version = await _data_version()
+    docs = {d["_id"]: d for d in await db.screens.find({}, {"payload": 0}).to_list(50)}
+    return {"data_version": version,
+            "screens": {name: {"built_at": (docs.get(name) or {}).get("built_at"),
+                               "fresh": bool(docs.get(name)) and not await _screen_is_stale(docs[name])}
+                        for name in SCREENS}}
 
 
 # ---- Claude explainer — justify a model-flagged corner pick ----
@@ -1671,6 +1831,11 @@ async def streaks(league_id: Optional[str] = None, side: str = "overall", window
     direction:  over (line+) | under (below the line, exact line voids)
     subject:    team (team corners) | match (match total corners)
     min_streak: shortest run that counts as a streak (default 2 — one game is not one)"""
+    if (_cache_ok() and league_id in (None, "all") and side == "home" and window == 5
+            and min_hits == 5 and threshold is None and min_line == 3
+            and within_days is None and direction == "over" and subject == "team"
+            and max_line is None and min_streak == MIN_STREAK_LEN):
+        return await _screen("streaks")
     q = {} if not league_id or league_id == "all" else {"league_id": league_id}
     teams = await db.teams.find(q, {"_id": 0}).to_list(5000)
     teams_by_id = {t["team_id"]: t for t in teams}
@@ -1971,6 +2136,8 @@ async def _all_mismatches(within_days: Optional[int] = None, limit: int = 20):
 @api_router.get("/top-mismatches")
 async def top_mismatches(within_days: Optional[int] = None, limit: int = 20,
                          user: dict = Depends(get_current_user)):
+    if _cache_ok() and within_days == 7 and limit == 30:
+        return await _screen("mismatches")
     return await _all_mismatches(within_days, limit)
 
 
@@ -2062,6 +2229,8 @@ async def _chase_board(within_days: int = 7, limit: int = 25, league_id: Optiona
 @api_router.get("/chase-board")
 async def chase_board(within_days: int = 7, limit: int = 25, league_id: Optional[str] = None,
                       user: dict = Depends(get_current_user)):
+    if _cache_ok() and within_days == 7 and limit == 25 and league_id in (None, "all"):
+        return await _screen("chase")
     board = await _chase_board(within_days, min(max(limit, 1), 100), league_id)
     return {"within_days": within_days, "count": len(board), "board": board}
 
@@ -2283,6 +2452,9 @@ async def fixture_board(days: int = 7, per_day: int = FIXTURE_BOARD_PER_DAY,
                         user: dict = Depends(get_current_user)):
     """The best upcoming fixtures, grouped by kickoff day, fixture-first.
 
+    Served from the precomputed screen when called with defaults (the home page's
+    request); any tuned parameter set computes live.
+
     `per_day` is a CEILING, not a quota. Every fixture must clear an absolute bar first
     — sample behind both sides, an at-or-above-par projection, and at least one angle
     that is strong rather than merely present — so a day with one fixture on shows it
@@ -2291,6 +2463,10 @@ async def fixture_board(days: int = 7, per_day: int = FIXTURE_BOARD_PER_DAY,
 
     min_games / min_run / min_edge loosen or tighten that bar. See the notes above
     `_fixture_board` for how "best" is decided, and for what it has NOT been shown to be."""
+    if (_cache_ok() and days == 7 and per_day == FIXTURE_BOARD_PER_DAY
+            and league_id in (None, "all") and min_games == BOARD_MIN_GAMES
+            and min_run == BOARD_MIN_RUN and min_edge == BOARD_MIN_EDGE):
+        return await _screen("fixture_board")
     return await _fixture_board(days, per_day, league_id, user, min_games, min_run, min_edge)
 
 
@@ -2298,6 +2474,9 @@ async def fixture_board(days: int = 7, per_day: int = FIXTURE_BOARD_PER_DAY,
 async def top_corner_teams(side: str = "overall", window: int = 0, limit: int = 40,
                            league_id: Optional[str] = None, user: dict = Depends(get_current_user)):
     """Best corner teams across leagues, ranked by average corners WON on a venue/window (real games)."""
+    if (_cache_ok() and side == "overall" and window == 0 and limit == 40
+            and league_id in (None, "all")):
+        return await _screen("top_teams")
     limit = min(max(limit, 1), 100)
     q = {} if not league_id or league_id == "all" else {"league_id": league_id}
     teams = await db.teams.find(q, {"_id": 0}).to_list(2000)
@@ -2319,6 +2498,9 @@ async def top_corner_teams(side: str = "overall", window: int = 0, limit: int = 
 
 @api_router.get("/best-bets")
 async def best_bets(user: dict = Depends(get_current_user)):
+    # takes no parameters and runs three full team scans, so it is always served cached
+    if _cache_ok():
+        return await _screen("best_bets")
     chase = await _chase_board(within_days=7, limit=1)
     strk = await streaks(league_id="all", side="overall", window=5, min_hits=5,
                          threshold=None, min_line=3, within_days=None, user=user)
@@ -2800,6 +2982,11 @@ async def on_startup():
                       id="daily_picks", replace_existing=True)
     # settle hourly — most fixtures finish well after the twice-daily sync
     scheduler.add_job(_run_settlement, CronTrigger(minute=20), id="settle", replace_existing=True)
+    # warm the screen cache after each sync has had time to finish. This is only a
+    # warm-up: a screen also rebuilds on read once its data_version no longer matches,
+    # so a sync that overruns self-heals on the next request rather than serving stale.
+    scheduler.add_job(_rebuild_screens, CronTrigger(hour="8,20", minute=15),
+                      id="screens", replace_existing=True)
     scheduler.start()
     app.state.scheduler = scheduler
     logger.info("Auto-refresh scheduler started (07:00 & 19:00 UTC daily; Daily 2 lock-in 07:30 UTC)")

@@ -2,6 +2,7 @@ import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { Flame, ArrowRight, Target, TrendingDown, History } from "lucide-react";
 import { api } from "@/lib/api";
+import ShareButtons from "@/components/ShareButtons";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 
@@ -9,17 +10,26 @@ const SIDES = [{ v: "home", l: "Home" }, { v: "away", l: "Away" }, { v: "overall
 // One model, two directions: overs clear the line, unders stay below it (exact line = void).
 const DIRECTIONS = [{ v: "over", l: "Over" }, { v: "under", l: "Under" }];
 const SUBJECTS = [{ v: "team", l: "Team corners" }, { v: "match", l: "Match total" }];
+// Ordered loosest-first: the looser presets surface more teams (good for a wide
+// screenshot), the longer windows demand more history and return fewer but
+// better-evidenced runs. A team needs at least `window` real games to appear at all.
 const PRESETS = [
+  { v: "4-5", l: "4 / 5", window: 5, min_hits: 4 },
   { v: "5-5", l: "5 / 5", window: 5, min_hits: 5 },
+  { v: "7-10", l: "7 / 10", window: 10, min_hits: 7 },
   { v: "8-10", l: "8 / 10", window: 10, min_hits: 8 },
   { v: "9-10", l: "9 / 10", window: 10, min_hits: 9 },
   { v: "10-10", l: "10 / 10", window: 10, min_hits: 10 },
+  { v: "11-15", l: "11 / 15", window: 15, min_hits: 11 },
+  { v: "15-20", l: "15 / 20", window: 20, min_hits: 15 },
 ];
 const TIMEFRAMES = [
   { v: "all", l: "Any upcoming" },
   { v: "3", l: "Next 3 days" },
   { v: "7", l: "Next 7 days" },
   { v: "14", l: "Next 14 days" },
+  { v: "21", l: "Next 21 days" },
+  { v: "30", l: "Next 30 days" },
 ];
 // Laddered lines per direction/subject — team corners run far lower than match totals.
 const LADDERS = {
@@ -75,6 +85,22 @@ export default function StreakFinder({ leagueId }) {
     loss: "bg-red-500/15 text-red-400",
   };
 
+  // A postable summary of what's on screen: the headline filter plus the top few runs.
+  const presetMeta = PRESETS.find((x) => x.v === preset);
+  const shareText = (() => {
+    if (!rows.length) return "";
+    const what = subject === "match" ? "match total corners" : "team corners";
+    const head = `${isUnder ? "Under" : "Over"} ${what} — hit in ${presetMeta?.l || ""} `
+      + `${side === "overall" ? "" : side + " "}games:`;
+    const lines = rows.slice(0, 6).map((r) => {
+      const fx = r.next_fixture;
+      const vs = fx ? ` ${fx.is_home ? "vs" : "@"} ${fx.opponent}` : "";
+      return `• ${r.name} ${isUnder ? "U" : ""}${r.line}${isUnder ? "" : "+"}${vs} (${r.hits}/${r.window})`;
+    });
+    const more = rows.length > 6 ? `\n+${rows.length - 6} more on the site` : "";
+    return `${head}\n${lines.join("\n")}${more}`;
+  })();
+
   return (
     <section className="bg-card border border-border rounded-lg" data-testid="streak-finder">
       <div className="flex flex-col lg:flex-row lg:items-center gap-3 px-4 py-3 border-b border-border">
@@ -86,7 +112,13 @@ export default function StreakFinder({ leagueId }) {
               ? "teams staying under the line (exact line = void, streak survives)"
               : "consistent corner-winners (real games only)"}
           </span>
+          {rows.length > 0 && (
+            <span className="font-mono-data text-[10px] text-muted-foreground ml-1" data-testid="streak-count">
+              {rows.length} shown
+            </span>
+          )}
         </div>
+        {rows.length > 0 && <ShareButtons text={shareText} className="lg:ml-2" />}
         <div className="lg:ml-auto flex flex-wrap items-center gap-2">
           <Tabs value={direction} onValueChange={switchTo(setDirection)}>
             <TabsList className="bg-secondary h-8">

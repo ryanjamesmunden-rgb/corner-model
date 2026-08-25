@@ -75,9 +75,12 @@ export default function DailyLedger() {
         <Stat label="picks tracked" value={s.picks || 0} cls="text-foreground" />
       </div>
 
-      {data.unpriced_wins > 0 && (
+      {s.unpriced > 0 && (
         <p className="text-[11px] text-amber-400/90 font-mono-data">
-          {data.unpriced_wins} win{data.unpriced_wins > 1 ? "s" : ""} had no bookmaker price recorded, so {data.unpriced_wins > 1 ? "they are" : "it is"} counted in the strike rate but not the balance.
+          {s.unpriced} settled pick{s.unpriced > 1 ? "s have" : " has"} no bookmaker price recorded, so
+          {s.unpriced > 1 ? " they are" : " it is"} counted in the strike rate but left out of the balance —
+          scoring unpriced losses without their matching wins would force ROI to −100%.
+          Enter odds on a fixture to bring {s.unpriced > 1 ? "them" : "it"} into the P/L.
         </p>
       )}
 

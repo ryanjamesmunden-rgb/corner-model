@@ -260,10 +260,20 @@ def team_split(matches: List[dict], split: str, window: int) -> dict:
     pool = pool[-window:] if window else pool
     n = len(pool)
     if n == 0:
-        return {"played": 0, "for_avg": 0, "against_avg": 0, "total_avg": 0}
+        return {"played": 0, "for_avg": 0, "against_avg": 0, "total_avg": 0,
+                "shots_for_avg": None, "shots_against_avg": None, "shots_games": 0}
     cf = sum(m["corners_for"] for m in pool)
     ca = sum(m["corners_against"] for m in pool)
-    return {"played": n, "for_avg": round(cf / n, 2), "against_avg": round(ca / n, 2), "total_avg": round((cf + ca) / n, 2)}
+    # Shots average over only the fixtures the provider actually covered, so a gap in
+    # coverage reads as a smaller sample rather than quietly dragging the average down.
+    shot_pool = [m for m in pool if m.get("shots_for") is not None or m.get("shots_against") is not None]
+    sf = [m["shots_for"] for m in shot_pool if m.get("shots_for") is not None]
+    sa = [m["shots_against"] for m in shot_pool if m.get("shots_against") is not None]
+    return {"played": n, "for_avg": round(cf / n, 2), "against_avg": round(ca / n, 2),
+            "total_avg": round((cf + ca) / n, 2),
+            "shots_for_avg": round(sum(sf) / len(sf), 2) if sf else None,
+            "shots_against_avg": round(sum(sa) / len(sa), 2) if sa else None,
+            "shots_games": len(shot_pool)}
 
 
 # ----------------------------- Shot-volume features -----------------------------
@@ -872,6 +882,10 @@ async def ledger(user: dict = Depends(get_current_user)):
 # and must reach the live path without concurrent requests also being pushed onto it.
 
 SCREEN_STALE_HOURS = 13  # a little over the 12h sync cadence
+# BUMP THIS whenever a screen's payload SHAPE changes. Staleness is otherwise keyed on
+# the data alone, so a deploy that adds a field would keep serving the old shape from
+# cache until the next sync happened to move data_version.
+SCREEN_SCHEMA = 2
 # Must match TOP_TEAMS_LIMIT in frontend/src/components/BestTeams.jsx, or that screen
 # misses its cache on every visit.
 TOP_TEAMS_LIMIT = 60
@@ -937,6 +951,8 @@ async def _data_version() -> Optional[str]:
 
 
 async def _screen_is_stale(doc: dict) -> bool:
+    if doc.get("schema") != SCREEN_SCHEMA:
+        return True
     version = await _data_version()
     if version and doc.get("data_version") != version:
         return True
@@ -952,7 +968,7 @@ async def _build_screen(name: str) -> dict:
         payload = await SCREENS[name]()
     finally:
         _building_screen.reset(token)
-    doc = {"_id": name, "payload": payload,
+    doc = {"_id": name, "payload": payload, "schema": SCREEN_SCHEMA,
            "built_at": datetime.now(timezone.utc).isoformat(),
            "data_version": await _data_version()}
     await db.screens.update_one({"_id": name}, {"$set": doc}, upsert=True)
@@ -2512,6 +2528,8 @@ async def top_corner_teams(side: str = "overall", window: int = 0, limit: int = 
                     "league_name": leagues.get(t["league_id"], ""), "side": side, "window": window,
                     "games": s["played"], "won_avg": s["for_avg"], "conceded_avg": s["against_avg"],
                     "total_avg": s["total_avg"], "real_samples": t.get("real_samples", 0),
+                    "shots_for_avg": s["shots_for_avg"], "shots_against_avg": s["shots_against_avg"],
+                    "shots_games": s["shots_games"],
                     "next_fixture": next_fx.get(t["team_id"])})
     out.sort(key=lambda x: x["won_avg"], reverse=True)
     return out[:limit]

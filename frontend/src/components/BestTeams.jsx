@@ -83,6 +83,10 @@ export default function BestTeams({ leagueId }) {
               <th className="text-left font-medium px-4 py-2.5 hidden md:table-cell w-[180px]">&nbsp;</th>
               <th className="text-right font-medium px-4 py-2.5">Conc/g</th>
               <th className="text-right font-medium px-4 py-2.5">Total/g</th>
+              <th className="text-right font-medium px-4 py-2.5"
+                title="Shots taken per game, over the fixtures the provider covered">Shots F</th>
+              <th className="text-right font-medium px-4 py-2.5"
+                title="Shots faced per game — a team winning corners against a side that concedes shots freely is a softer signal">Shots A</th>
               <th className="text-right font-medium px-4 py-2.5">Games</th>
               <th className="text-left font-medium px-4 py-2.5">Next</th>
               <th className="px-4 py-2.5"></th>
@@ -90,9 +94,9 @@ export default function BestTeams({ leagueId }) {
           </thead>
           <tbody className="font-mono-data text-sm">
             {loading ? (
-              <tr><td colSpan={9} className="px-4 py-12 text-center text-muted-foreground animate-pulse">Ranking corner teams…</td></tr>
+              <tr><td colSpan={11} className="px-4 py-12 text-center text-muted-foreground animate-pulse">Ranking corner teams…</td></tr>
             ) : rows.length === 0 ? (
-              <tr><td colSpan={9} className="px-4 py-12 text-center text-muted-foreground">No teams with enough games on this filter.</td></tr>
+              <tr><td colSpan={11} className="px-4 py-12 text-center text-muted-foreground">No teams with enough games on this filter.</td></tr>
             ) : rows.map((r, i) => (
               <tr
                 key={r.team_id}
@@ -114,6 +118,14 @@ export default function BestTeams({ leagueId }) {
                 </td>
                 <td className="px-4 py-2.5 text-right text-red-400">{r.conceded_avg.toFixed(2)}</td>
                 <td className="px-4 py-2.5 text-right text-foreground">{r.total_avg.toFixed(2)}</td>
+                <td className="px-4 py-2.5 text-right text-foreground"
+                  title={r.shots_games ? `from ${r.shots_games} covered game${r.shots_games === 1 ? "" : "s"}` : undefined}>
+                  {r.shots_for_avg != null ? r.shots_for_avg.toFixed(1)
+                    : <span className="text-muted-foreground">—</span>}
+                </td>
+                <td className="px-4 py-2.5 text-right text-muted-foreground">
+                  {r.shots_against_avg != null ? r.shots_against_avg.toFixed(1) : "—"}
+                </td>
                 <td className="px-4 py-2.5 text-right text-muted-foreground">{r.games}</td>
                 <td className="px-4 py-2.5 text-xs text-muted-foreground whitespace-nowrap">
                   {r.next_fixture ? `${r.next_fixture.is_home ? "vs" : "@"} ${r.next_fixture.opponent} · ${fmt(r.next_fixture.date)}` : "—"}

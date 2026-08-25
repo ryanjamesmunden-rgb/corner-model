@@ -87,6 +87,10 @@ export default function BestTeams({ leagueId }) {
                 title="Shots taken per game, over the fixtures the provider covered">Shots F</th>
               <th className="text-right font-medium px-4 py-2.5"
                 title="Shots faced per game — a team winning corners against a side that concedes shots freely is a softer signal">Shots A</th>
+              <th className="text-right font-medium px-4 py-2.5"
+                title="Shots on target per game. Reported for only about half of fixtures, so this is a thinner sample than Shots — hover a value for its count.">SoT F</th>
+              <th className="text-right font-medium px-4 py-2.5"
+                title="Shots on target faced per game. Same reduced coverage as SoT F.">SoT A</th>
               <th className="text-right font-medium px-4 py-2.5">Games</th>
               <th className="text-left font-medium px-4 py-2.5">Next</th>
               <th className="px-4 py-2.5"></th>
@@ -94,9 +98,9 @@ export default function BestTeams({ leagueId }) {
           </thead>
           <tbody className="font-mono-data text-sm">
             {loading ? (
-              <tr><td colSpan={11} className="px-4 py-12 text-center text-muted-foreground animate-pulse">Ranking corner teams…</td></tr>
+              <tr><td colSpan={13} className="px-4 py-12 text-center text-muted-foreground animate-pulse">Ranking corner teams…</td></tr>
             ) : rows.length === 0 ? (
-              <tr><td colSpan={11} className="px-4 py-12 text-center text-muted-foreground">No teams with enough games on this filter.</td></tr>
+              <tr><td colSpan={13} className="px-4 py-12 text-center text-muted-foreground">No teams with enough games on this filter.</td></tr>
             ) : rows.map((r, i) => (
               <tr
                 key={r.team_id}
@@ -125,6 +129,15 @@ export default function BestTeams({ leagueId }) {
                 </td>
                 <td className="px-4 py-2.5 text-right text-muted-foreground">
                   {r.shots_against_avg != null ? r.shots_against_avg.toFixed(1) : "—"}
+                </td>
+                <td className="px-4 py-2.5 text-right text-foreground"
+                  title={r.sot_games ? `from ${r.sot_games} covered game${r.sot_games === 1 ? "" : "s"}`
+                                     : "not reported for any of this team's fixtures"}>
+                  {r.sot_for_avg != null ? r.sot_for_avg.toFixed(1)
+                    : <span className="text-muted-foreground">—</span>}
+                </td>
+                <td className="px-4 py-2.5 text-right text-muted-foreground">
+                  {r.sot_against_avg != null ? r.sot_against_avg.toFixed(1) : "—"}
                 </td>
                 <td className="px-4 py-2.5 text-right text-muted-foreground">{r.games}</td>
                 <td className="px-4 py-2.5 text-xs text-muted-foreground whitespace-nowrap">

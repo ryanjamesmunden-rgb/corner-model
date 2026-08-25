@@ -13,8 +13,6 @@ import httpx
 from dotenv import load_dotenv
 from motor.motor_asyncio import AsyncIOMotorClient
 
-from server import expected_lambdas, poisson_ge, fair_odds, TOTAL_LINES
-
 ROOT = Path(__file__).parent
 load_dotenv(ROOT / ".env")
 
@@ -350,24 +348,15 @@ async def sync_league(hc, my_lid):
     if fixture_docs:
         await db.fixtures.insert_many(fixture_docs)
 
-    # seed bookmaker odds for ~70% of fixtures so scanner has content
+    # Clear any stored odds for these fixtures.
+    #
+    # This used to SYNTHESISE bookmaker odds — the model's own fair price multiplied by a
+    # random 0.9-1.18 — "so scanner has content". They looked real, auto-filled the odds
+    # boxes, and every EV and value tier computed from them was therefore noise: EV came
+    # out as that random multiplier minus one. Fabricated prices are worse than none, so
+    # the generation is gone and the delete stays, which clears the ones already stored.
+    # Odds now only ever come from a person entering them.
     await db.odds.delete_many({"fixture_id": {"$in": [f["fixture_id"] for f in fixture_docs]}})
-    tmap = {t["team_id"]: t for t in team_docs}
-    odds_docs = []
-    for fx in fixture_docs:
-        rng = random.Random(fx["fixture_id"])
-        if rng.random() > 0.7:
-            continue
-        lambdas = expected_lambdas(tmap[fx["home_team_id"]], tmap[fx["away_team_id"]])
-        odds = {}
-        for line in TOTAL_LINES:
-            p = poisson_ge(int(line) + 1, lambdas["total"])
-            fo = fair_odds(p)
-            if fo:
-                odds[f"total_over_{line}"] = round(fo * rng.uniform(0.9, 1.18), 2)
-        odds_docs.append({"fixture_id": fx["fixture_id"], "odds": odds})
-    if odds_docs:
-        await db.odds.insert_many(odds_docs)
 
     all_shots = [m.get("shots_for", 0) for t in team_docs for m in (t.get("real_matches") or [])]
     avg_shots = round(sum(all_shots) / len(all_shots), 2) if all_shots else None

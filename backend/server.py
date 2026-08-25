@@ -250,6 +250,24 @@ def _rng(seed_str: str) -> random.Random:
     return random.Random(hash(seed_str) & 0xffffffff)
 
 
+# Per-feature averages exposed on every team split, each with its OWN sample count.
+# Coverage differs sharply by feature — shots are reported for ~100% of fixtures but
+# on-target for only ~half — so one shared count would misdescribe the thinner ones.
+SPLIT_FEATURES = (("shots", "shots"), ("shots_on_target", "sot"))
+
+
+def _feature_avgs(pool: List[dict], field: str, prefix: str) -> dict:
+    """for/against averages over only the fixtures the provider actually covered, so a
+    coverage gap reads as a smaller sample instead of dragging the average toward zero."""
+    covered = [m for m in pool
+               if m.get(f"{field}_for") is not None or m.get(f"{field}_against") is not None]
+    fors = [m[f"{field}_for"] for m in covered if m.get(f"{field}_for") is not None]
+    againsts = [m[f"{field}_against"] for m in covered if m.get(f"{field}_against") is not None]
+    return {f"{prefix}_for_avg": round(sum(fors) / len(fors), 2) if fors else None,
+            f"{prefix}_against_avg": round(sum(againsts) / len(againsts), 2) if againsts else None,
+            f"{prefix}_games": len(covered)}
+
+
 def team_split(matches: List[dict], split: str, window: int) -> dict:
     if split == "home":
         pool = [m for m in matches if m["home"]]
@@ -259,21 +277,18 @@ def team_split(matches: List[dict], split: str, window: int) -> dict:
         pool = matches
     pool = pool[-window:] if window else pool
     n = len(pool)
+    empty_feats = {k: (0 if k.endswith("_games") else None)
+                   for field, prefix in SPLIT_FEATURES
+                   for k in (f"{prefix}_for_avg", f"{prefix}_against_avg", f"{prefix}_games")}
     if n == 0:
-        return {"played": 0, "for_avg": 0, "against_avg": 0, "total_avg": 0,
-                "shots_for_avg": None, "shots_against_avg": None, "shots_games": 0}
+        return {"played": 0, "for_avg": 0, "against_avg": 0, "total_avg": 0, **empty_feats}
     cf = sum(m["corners_for"] for m in pool)
     ca = sum(m["corners_against"] for m in pool)
-    # Shots average over only the fixtures the provider actually covered, so a gap in
-    # coverage reads as a smaller sample rather than quietly dragging the average down.
-    shot_pool = [m for m in pool if m.get("shots_for") is not None or m.get("shots_against") is not None]
-    sf = [m["shots_for"] for m in shot_pool if m.get("shots_for") is not None]
-    sa = [m["shots_against"] for m in shot_pool if m.get("shots_against") is not None]
+    feats = {}
+    for field, prefix in SPLIT_FEATURES:
+        feats.update(_feature_avgs(pool, field, prefix))
     return {"played": n, "for_avg": round(cf / n, 2), "against_avg": round(ca / n, 2),
-            "total_avg": round((cf + ca) / n, 2),
-            "shots_for_avg": round(sum(sf) / len(sf), 2) if sf else None,
-            "shots_against_avg": round(sum(sa) / len(sa), 2) if sa else None,
-            "shots_games": len(shot_pool)}
+            "total_avg": round((cf + ca) / n, 2), **feats}
 
 
 # ----------------------------- Shot-volume features -----------------------------
@@ -885,7 +900,7 @@ SCREEN_STALE_HOURS = 13  # a little over the 12h sync cadence
 # BUMP THIS whenever a screen's payload SHAPE changes. Staleness is otherwise keyed on
 # the data alone, so a deploy that adds a field would keep serving the old shape from
 # cache until the next sync happened to move data_version.
-SCREEN_SCHEMA = 2
+SCREEN_SCHEMA = 3
 # Must match TOP_TEAMS_LIMIT in frontend/src/components/BestTeams.jsx, or that screen
 # misses its cache on every visit.
 TOP_TEAMS_LIMIT = 60
@@ -2530,6 +2545,8 @@ async def top_corner_teams(side: str = "overall", window: int = 0, limit: int = 
                     "total_avg": s["total_avg"], "real_samples": t.get("real_samples", 0),
                     "shots_for_avg": s["shots_for_avg"], "shots_against_avg": s["shots_against_avg"],
                     "shots_games": s["shots_games"],
+                    "sot_for_avg": s["sot_for_avg"], "sot_against_avg": s["sot_against_avg"],
+                    "sot_games": s["sot_games"],
                     "next_fixture": next_fx.get(t["team_id"])})
     out.sort(key=lambda x: x["won_avg"], reverse=True)
     return out[:limit]

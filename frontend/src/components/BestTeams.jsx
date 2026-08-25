@@ -2,9 +2,13 @@ import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { Trophy, ArrowRight } from "lucide-react";
 import { api } from "@/lib/api";
+import ShareButtons from "@/components/ShareButtons";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 
+// Kept in step with the precomputed "top_teams" screen in server.py — a different
+// value here would miss that cache and scan every team on each visit.
+const TOP_TEAMS_LIMIT = 60;
 const SIDES = [{ v: "overall", l: "Overall" }, { v: "home", l: "Home" }, { v: "away", l: "Away" }];
 const WINDOWS = [{ v: "0", l: "Season" }, { v: "5", l: "Last 5" }, { v: "10", l: "Last 10" }];
 
@@ -21,11 +25,18 @@ export default function BestTeams({ leagueId }) {
 
   useEffect(() => {
     setLoading(true);
-    api.topCornerTeams({ league_id: scope === "current" ? leagueId : "all", side, window: win, limit: 40 })
+    api.topCornerTeams({ league_id: scope === "current" ? leagueId : "all", side, window: win, limit: TOP_TEAMS_LIMIT })
       .then(setRows).catch(() => setRows([])).finally(() => setLoading(false));
   }, [scope, side, win, leagueId]);
 
   const max = rows.length ? rows[0].won_avg : 1;
+
+  const shareText = rows.length
+    ? `Best corner teams — ${side === "overall" ? "all games" : side} `
+      + `(${WINDOWS.find((w) => w.v === win)?.l || ""}):\n`
+      + rows.slice(0, 8).map((r, i) =>
+          `${i + 1}. ${r.name} — ${r.won_avg.toFixed(2)} corners won/game`).join("\n")
+    : "";
 
   return (
     <section className="bg-card border border-border rounded-lg" data-testid="best-teams">
@@ -34,7 +45,11 @@ export default function BestTeams({ leagueId }) {
           <Trophy className="h-4 w-4 text-primary" />
           <h2 className="font-head font-semibold text-lg">Best Corner Teams</h2>
           <span className="text-xs text-muted-foreground hidden sm:inline">highest average corners won (real games)</span>
+          {rows.length > 0 && (
+            <span className="font-mono-data text-[10px] text-muted-foreground">{rows.length} shown</span>
+          )}
         </div>
+        {rows.length > 0 && <ShareButtons text={shareText} />}
         <div className="lg:ml-auto flex flex-wrap items-center gap-2">
           <Tabs value={side} onValueChange={setSide}>
             <TabsList className="bg-secondary h-8">
@@ -56,7 +71,9 @@ export default function BestTeams({ leagueId }) {
         </div>
       </div>
 
-      <div className="overflow-x-auto max-h-[520px] overflow-y-auto">
+      {/* Tall enough to screenshot a long run of the table in one go; the header row
+          stays stuck so a scrolled-down capture still shows what the columns are. */}
+      <div className="overflow-x-auto max-h-[80vh] min-h-[520px] overflow-y-auto">
         <table className="w-full">
           <thead className="sticky top-0 bg-card z-10">
             <tr className="border-b border-border text-muted-foreground text-xs uppercase tracking-wider">

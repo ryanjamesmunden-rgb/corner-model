@@ -2,6 +2,7 @@ import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { CalendarDays, ChevronRight, Flame, Target, TrendingDown } from "lucide-react";
 import { api } from "@/lib/api";
+import ShareButtons from "@/components/ShareButtons";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
 // The best upcoming games, grouped by day — a schedule you can scan, not another ranked
@@ -25,6 +26,8 @@ const PER_DAY = [
 const DAYS = [
   { v: "3", l: "3 days" },
   { v: "7", l: "Week" },
+  { v: "14", l: "2 weeks" },
+  { v: "30", l: "Month" },
 ];
 
 const KIND = {
@@ -62,6 +65,18 @@ export default function FixtureBoard({ leagueId = "all" }) {
       .finally(() => setLoading(false));
   }, [leagueId, perDay, days]);
 
+  const allFixtures = (board?.days || []).flatMap((d) => d.fixtures || []);
+  const fixtureCount = allFixtures.length;
+  const shareText = fixtureCount
+    ? `Best upcoming corner games (next ${days === "1" ? "day" : `${days} days`}):\n`
+      + allFixtures.slice(0, 8).map((f) => {
+          const angle = (f.angles || [])[0];
+          const tag = angle ? ` — ${angle.team} ${angle.label}` : "";
+          return `• ${f.home} v ${f.away} (λ ${f.lambda_total})${tag}`;
+        }).join("\n")
+      + (fixtureCount > 8 ? `\n+${fixtureCount - 8} more on the site` : "")
+    : "";
+
   return (
     <section className="bg-card border border-border rounded-lg" data-testid="fixture-board">
       <div className="flex flex-col sm:flex-row sm:items-center gap-3 px-4 py-3 border-b border-border">
@@ -71,7 +86,11 @@ export default function FixtureBoard({ leagueId = "all" }) {
           <span className="text-xs text-muted-foreground hidden md:inline truncate">
             only games that clear the bar — a quiet day shows fewer, not worse
           </span>
+          {fixtureCount > 0 && (
+            <span className="font-mono-data text-[10px] text-muted-foreground shrink-0">{fixtureCount} games</span>
+          )}
         </div>
+        {fixtureCount > 0 && <ShareButtons text={shareText} className="shrink-0" />}
         <div className="sm:ml-auto flex gap-2">
           <Tabs value={days} onValueChange={setDays}>
             <TabsList className="bg-secondary h-8">

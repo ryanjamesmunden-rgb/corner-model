@@ -872,6 +872,9 @@ async def ledger(user: dict = Depends(get_current_user)):
 # and must reach the live path without concurrent requests also being pushed onto it.
 
 SCREEN_STALE_HOURS = 13  # a little over the 12h sync cadence
+# Must match TOP_TEAMS_LIMIT in frontend/src/components/BestTeams.jsx, or that screen
+# misses its cache on every visit.
+TOP_TEAMS_LIMIT = 60
 _building_screen = contextvars.ContextVar("building_screen", default=False)
 _screen_locks: Dict[str, asyncio.Lock] = {}
 
@@ -894,7 +897,7 @@ async def _screen_streaks():
 
 
 async def _screen_top_teams():
-    return await top_corner_teams(side="overall", window=0, limit=40,
+    return await top_corner_teams(side="overall", window=0, limit=TOP_TEAMS_LIMIT,
                                   league_id="all", user={})
 
 
@@ -903,7 +906,8 @@ async def _screen_best_bets():
 
 
 async def _screen_fixture_board():
-    return await fixture_board(user={})
+    # days=3 mirrors the home page's default tab, not this endpoint's own default
+    return await fixture_board(days=3, user={})
 
 
 # Canonical payloads — these mirror what the frontend requests on first paint.
@@ -2463,7 +2467,7 @@ async def fixture_board(days: int = 7, per_day: int = FIXTURE_BOARD_PER_DAY,
 
     min_games / min_run / min_edge loosen or tighten that bar. See the notes above
     `_fixture_board` for how "best" is decided, and for what it has NOT been shown to be."""
-    if (_cache_ok() and days == 7 and per_day == FIXTURE_BOARD_PER_DAY
+    if (_cache_ok() and days == 3 and per_day == FIXTURE_BOARD_PER_DAY
             and league_id in (None, "all") and min_games == BOARD_MIN_GAMES
             and min_run == BOARD_MIN_RUN and min_edge == BOARD_MIN_EDGE):
         return await _screen("fixture_board")
@@ -2474,7 +2478,7 @@ async def fixture_board(days: int = 7, per_day: int = FIXTURE_BOARD_PER_DAY,
 async def top_corner_teams(side: str = "overall", window: int = 0, limit: int = 40,
                            league_id: Optional[str] = None, user: dict = Depends(get_current_user)):
     """Best corner teams across leagues, ranked by average corners WON on a venue/window (real games)."""
-    if (_cache_ok() and side == "overall" and window == 0 and limit == 40
+    if (_cache_ok() and side == "overall" and window == 0 and limit == TOP_TEAMS_LIMIT
             and league_id in (None, "all")):
         return await _screen("top_teams")
     limit = min(max(limit, 1), 100)

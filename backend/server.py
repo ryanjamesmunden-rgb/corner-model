@@ -1206,12 +1206,13 @@ TOOL_SCRIPTS = {"backfill_shots": "backfill_shots.py", "measure_features": "meas
                 "backfill_fh": "backfill_fh.py",
                 "backfill_goal_events": "backfill_goal_events.py",
                 "probe_corner_halves": "probe_corner_halves.py",
-                "probe_stat_types": "probe_stat_types.py"}
+                "probe_stat_types": "probe_stat_types.py",
+                "probe_leagues": "probe_leagues.py"}
 TOOL_COOLDOWN = {"backfill_shots": 600, "measure_features": 120,
                  "measure_chase_board": 120, "backfill_fh": 120,
                  "backfill_goal_events": 600,
                  "probe_corner_halves": 600,
-                 "probe_stat_types": 600}                         # seconds
+                 "probe_stat_types": 600, "probe_leagues": 120}    # seconds
 # mode -> (script, fixed argv, accepts --league). Modes are an enum precisely so
 # nothing user-supplied ever reaches argv; --league is appended only after validation
 # AND only for the scripts that actually take it — backfill_fh.py does not, and passing
@@ -1385,6 +1386,26 @@ async def tool_probe_stat_types(token: Optional[str] = None,
     roughly a dozen calls across a few leagues."""
     _check_tools_token(token)
     return await _start_tool("probe_stat_types", [], "available statistic types")
+
+
+@api_router.post("/tools/probe-leagues")
+async def tool_probe_leagues(token: Optional[str] = None, league_id: Optional[str] = None,
+                             user: dict = Depends(get_current_user)):
+    """Check a league is the competition we think it is, and that it carries corner data.
+
+    SPENDS API CREDITS — about 6 calls per league. Deliberately its own endpoint rather
+    than a `measure` mode, because that endpoint promises no API calls.
+
+    Worth running before syncing any newly added league: 250 statistics calls spent on a
+    competition with no Corner Kicks is the expensive way to find that out."""
+    _check_tools_token(token)
+    argv, label = [], "recently added leagues"
+    if league_id and league_id != "all":
+        if league_id not in MANAGED_LEAGUE_IDS:
+            raise HTTPException(status_code=400, detail=f"unknown league_id {league_id}")
+        argv.append(league_id)
+        label = league_id
+    return await _start_tool("probe_leagues", argv, label)
 
 
 @api_router.get("/tools/runs")
@@ -2971,10 +2992,10 @@ app.add_middleware(
 )
 
 
-MANAGED_LEAGUE_IDS = {"eng-pl", "eng-ch", "eng-l1", "eng-l2", "eng-nl", "aus-al", "nor-el",
-                      "ned-ere", "ned-ed", "bra-sa", "bra-sb", "ita-sa", "fra-l1", "esp-ll",
-                      "ger-bl", "ger-bl2", "por-pl", "bel-pl", "sco-pl", "tur-sl", "usa-ml",
-                      "den-sl", "sui-sl", "aut-bl", "gre-sl", "jpn-j1", "arg-lp"}
+# Derived, never re-typed. This used to be a hand-copied duplicate of sync_real's
+# LEAGUE_META, and the boot cleanup below DELETES any league not in this set — so a
+# league added to the sync alone had its data wiped on every restart, silently.
+from leagues_meta import LEAGUE_META, MANAGED_LEAGUE_IDS  # noqa: E402,F401
 
 
 STALE_HOURS = 12          # data older than this triggers a boot-time refresh

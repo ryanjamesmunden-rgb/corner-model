@@ -23,6 +23,7 @@ export default function ToolsPanel() {
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [limit, setLimit] = useState(120);
+  const [country, setCountry] = useState("");
 
   const refresh = useCallback(async (t) => {
     if (!t) return;
@@ -150,6 +151,18 @@ export default function ToolsPanel() {
               onClick={() => fire(() => api.toolProbeStatTypes(token))}
               className="text-xs px-3 py-1.5 rounded border border-amber-500/40 bg-amber-500/10 text-amber-300 hover:bg-amber-500/20 disabled:opacity-50 flex items-center gap-1.5">
               <Play className="h-3 w-3" /> Probe stat types
+            </button>
+          </div>
+          {/* Finding the right id after a MISMATCH — one call, lists a country's leagues */}
+          <div className="flex flex-wrap items-center gap-2 mt-2">
+            <input type="text" value={country} placeholder="Country, e.g. Norway"
+              onChange={(e) => setCountry(e.target.value)} data-testid="tools-country-input"
+              className="bg-[#121212] border border-border rounded px-2 py-1.5 text-sm font-mono-data w-44" />
+            <button disabled={busy || !country.trim()} data-testid="tools-probe-country"
+              title="List every league the provider has for this country, with ids — how you find the right id after a MISMATCH. 1 call."
+              onClick={() => fire(() => api.toolProbeLeagues(token, null, country.trim()))}
+              className="text-xs px-3 py-1.5 rounded border border-amber-500/40 bg-amber-500/10 text-amber-300 hover:bg-amber-500/20 disabled:opacity-50 flex items-center gap-1.5">
+              <Play className="h-3 w-3" /> List leagues by country
             </button>
           </div>
         </div>

@@ -8,6 +8,7 @@ import os
 import logging
 import math
 import random
+import re
 import uuid
 from pathlib import Path
 from pydantic import BaseModel
@@ -1388,17 +1389,34 @@ async def tool_probe_stat_types(token: Optional[str] = None,
     return await _start_tool("probe_stat_types", [], "available statistic types")
 
 
+COUNTRY_RE = re.compile(r"^[A-Za-z][A-Za-z .'-]{1,39}$")
+
+
 @api_router.post("/tools/probe-leagues")
 async def tool_probe_leagues(token: Optional[str] = None, league_id: Optional[str] = None,
+                             country: Optional[str] = None,
                              user: dict = Depends(get_current_user)):
     """Check a league is the competition we think it is, and that it carries corner data.
 
-    SPENDS API CREDITS — about 6 calls per league. Deliberately its own endpoint rather
-    than a `measure` mode, because that endpoint promises no API calls.
+    SPENDS API CREDITS — about 6 calls per league, or 1 for a `country` listing.
+    Deliberately its own endpoint rather than a `measure` mode, because that endpoint
+    promises no API calls.
+
+    `country` lists every league the provider has for that country, with ids. That is how
+    you find the RIGHT id after a MISMATCH — guessing a second time is what put a wrong
+    one in to begin with.
 
     Worth running before syncing any newly added league: 250 statistics calls spent on a
     competition with no Corner Kicks is the expensive way to find that out."""
     _check_tools_token(token)
+    if country:
+        # argv goes to create_subprocess_exec as a list — no shell, so metacharacters are
+        # inert — but keep the pattern strict anyway so nothing odd reaches the provider.
+        name = country.strip()
+        if not COUNTRY_RE.match(name):
+            raise HTTPException(status_code=400,
+                                detail="country must be letters, spaces, . ' or - (max 40)")
+        return await _start_tool("probe_leagues", ["--country", name], f"leagues in {name}")
     argv, label = [], "recently added leagues"
     if league_id and league_id != "all":
         if league_id not in MANAGED_LEAGUE_IDS:

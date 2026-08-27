@@ -10,9 +10,13 @@ second TIER is called "1. divisjon" while "2. divisjon" is the third tier — so
 prints the provider's OWN name and country next to the one we assumed, and says MISMATCH
 when they disagree.
 
+On a MISMATCH it lists every league the provider has for that country, with ids — so a
+wrong id gets corrected in the same run rather than replaced by another guess.
+
 Run: python probe_leagues.py                  (leagues not yet proven / the defaults)
-     python probe_leagues.py nor-d1 nor-d2    (by our league key)
+     python probe_leagues.py nor-d1           (by our league key)
      python probe_leagues.py --id 104 105     (by raw API-Football id)
+     python probe_leagues.py --country Norway (just list what the provider has)
 """
 import asyncio
 import os
@@ -32,7 +36,7 @@ H = {"x-apisports-key": KEY}
 
 # Probed by default: the leagues most recently added, which are the ones whose ids and
 # stat coverage have not yet been confirmed against live data.
-DEFAULT_KEYS = ["nor-d1", "nor-d2"]
+DEFAULT_KEYS = ["nor-d1"]
 
 
 async def af(hc, path, params):
@@ -63,11 +67,33 @@ async def identify(hc, api):
             "country": (resp[0].get("country") or {}).get("name"), "season": season}
 
 
+async def list_country(hc, country):
+    """Every league the provider has for a country, with ids.
+
+    This is the answer to "then what IS the right id?" — a MISMATCH used to leave you
+    guessing a second time, which is how the wrong id got in to begin with."""
+    resp = await af(hc, "/leagues", {"country": country})
+    if not resp:
+        print(f"  no leagues found for country={country!r} — check the spelling the "
+              f"provider uses")
+        return
+    print(f"  leagues the provider lists for {country} ({len(resp)}):")
+    for row in sorted(resp, key=lambda r: r["league"]["id"]):
+        lg = row["league"]
+        seasons = row.get("seasons") or []
+        cur = next((s["year"] for s in seasons if s.get("current")), None)
+        known = next((k for k, m in LEAGUE_META.items() if m["api"] == lg["id"]), None)
+        mark = f"  <- already ours as {known}" if known else ""
+        print(f"    id={lg['id']:<5} {lg.get('type', ''):<7} {lg.get('name', '')}"
+              f"{f'  (current season {cur})' if cur else '  (no current season)'}{mark}")
+
+
 async def probe(hc, lid, meta):
     api = meta["api"]
     ident = await identify(hc, api)
     if not ident:
         print(f"{lid:8} api={api:<4} NOT FOUND — the provider has no league with this id")
+        await list_country(hc, meta["country"])
         return
     assumed = f"{meta['country']} / {meta['name']}"
     actual = f"{ident['country']} / {ident['name']}"
@@ -75,6 +101,9 @@ async def probe(hc, lid, meta):
     print(f"{lid:8} api={api:<4} provider says: {actual}  ({ident['type']}, season {ident['season']})")
     if not match:
         print(f"{'':8} !! MISMATCH — we call it {assumed}. Fix leagues_meta.py before syncing.")
+        # don't make the reader guess again: show what the country actually offers
+        await list_country(hc, meta["country"])
+        return
 
     season = ident["season"]
     fx = await af(hc, "/fixtures", {"league": api, "season": season})
@@ -120,6 +149,12 @@ async def probe(hc, lid, meta):
 
 async def main():
     args = sys.argv[1:]
+    if "--country" in args:
+        i = args.index("--country")
+        country = " ".join(a for a in args[i + 1:] if not a.startswith("--")) or "Norway"
+        async with httpx.AsyncClient() as hc:
+            await list_country(hc, country)
+        return
     if "--id" in args:
         ids = [int(a) for a in args[args.index("--id") + 1:] if a.isdigit()]
         targets = {f"api-{i}": {"api": i, "name": "?", "country": "?"} for i in ids}

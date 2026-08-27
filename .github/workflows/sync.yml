@@ -1,0 +1,71 @@
+# Scheduled data sync, run from GitHub rather than from the backend.
+#
+# WHY THIS EXISTS: server.py schedules a sync at 07:00 and 19:00 UTC with APScheduler —
+# but APScheduler only fires while the process is ALIVE, and Render spins down idle
+# instances. A sleeping backend runs no cron jobs, so in practice the data refreshed only
+# when someone happened to visit after a 12-hour gap. That is what made the site go two
+# days without new results, twice.
+#
+# GitHub's scheduler cannot be spun down, so this drives the sync from outside. The
+# in-process schedule stays as a belt-and-braces second trigger; `refresh-all` ignores a
+# call within 5 minutes of the last one, so the two cannot stack.
+#
+# COST: a routine sync only fetches fixtures not already in the permanent `fixture_stats`
+# cache, so a normal run is a handful of calls, not a full backfill.
+name: Sync corner data
+
+on:
+  schedule:
+    # 07:00 and 19:00 UTC, matching the in-process schedule this replaces.
+    # GitHub cron is best-effort and can run several minutes late under load — fine here.
+    - cron: "0 7,19 * * *"
+  workflow_dispatch:        # also gives you a "sync now" button in the Actions tab
+
+# Never let two runs overlap; a late scheduled run plus a manual one would otherwise race.
+concurrency:
+  group: corner-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      # Repo variable if set, else the deployed backend. Not a secret — this URL is
+      # already baked into the public frontend bundle.
+      BACKEND: ${{ vars.BACKEND_URL || 'https://corner-model.onrender.com' }}
+    steps:
+      - uses: actions/checkout@v4      # for the reporting script below
+
+      - name: Wake the backend
+        # Render cold-starts take up to a minute, and the first request often times out.
+        # Waking it separately means the sync POST lands on a warm instance instead of
+        # being the request that gets dropped.
+        run: |
+          for i in 1 2 3 4 5 6 7 8; do
+            code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 60 "$BACKEND/api/" || true)
+            echo "attempt $i: HTTP $code"
+            [ "$code" = "200" ] && exit 0
+            sleep 15
+          done
+          echo "::warning::backend did not wake after 8 attempts — trying the sync anyway"
+
+      - name: Trigger the sync
+        run: |
+          body=$(curl -s --max-time 120 -X POST "$BACKEND/api/sync/refresh-all" || true)
+          echo "response: $body"
+          case "$body" in
+            *'"syncing"'*)         echo "sync started" ;;
+            *'"already_syncing"'*) echo "::notice::a sync was already running — nothing to do" ;;
+            *)                     echo "::error::unexpected response from refresh-all"; exit 1 ;;
+          esac
+
+      - name: Report what happened
+        # The sync runs as a detached subprocess, so this is a progress check rather than
+        # a completion check — it surfaces a failure in the log instead of leaving a
+        # silent green tick behind a sync that died. Statuses are running / success /
+        # partial / failed (see sync_real.main).
+        run: |
+          sleep 90
+          curl -s --max-time 60 "$BACKEND/api/sync/runs?limit=3" > runs.json || true
+          python3 .github/workflows/report_sync.py < runs.json

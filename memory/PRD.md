@@ -64,10 +64,15 @@ having. One rule now, everywhere:
   **icon** still carries the type (target = chase, flame = over, arrow = under), so
   nothing is lost; it just stops competing with the signal that matters. A **legend** in
   the footer states the rule rather than leaving it to be inferred.
-- **Best Bets Today** — cyan / green / amber by signal type replaced by quality, with the
-  bar stated in each card's tooltip: chase needs 4 of its last 5, streak needs 4 in every
-  5, and mismatch — which is a λ comparison with no hit-rate behind it — needs **6+ real
-  games of sample**. A 2-of-5 chase spot no longer looks as confident as a 5-of-5 one.
+- **Best Bets Today** — colour KEPT as signal identity, at the user's request: chase
+  **white**, mismatch **cyan**, streak **amber** (matching the flame). Three cards, one per
+  signal, is not the fixture board's problem — six chips on one row made colour-by-type
+  meaningless, three side-by-side cards do not. Quality moved to where it does not
+  compete: the **chip** is green when the card's evidence clears its bar and muted when it
+  does not, and a weak card's accent is **dimmed to ~35% alpha** rather than recoloured, so
+  it still reads as "the streak one", just quieter. Bars stated in each tooltip: chase
+  needs 4 of its last 5, streak needs 4 in every 5, and mismatch — a λ comparison with no
+  hit-rate behind it — needs **6+ real games of sample** instead.
 - **Streaks** — sky-vs-emerald by direction replaced by solid-vs-thin. The toggle and the
   icon already say over or under; every row previously looked identical whether it was
   5/5 or 5/10. Voids stay excluded from the denominator, as everywhere else.

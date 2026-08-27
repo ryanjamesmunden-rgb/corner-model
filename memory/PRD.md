@@ -35,6 +35,15 @@ Multi-league corner value betting web app. Rebuilds a spreadsheet corner model i
 
 ## Changelog (recent, newest first)
 
+### workflow_dispatch removed — the schedule is the only trigger (2026-08-27)
+Requested. There is now **no manual sync path at all**: the site's Refresh buttons are
+gone, both endpoints are `TOOLS_TOKEN`-gated, and the workflow has only a `schedule:`
+trigger (07:00 / 19:00 UTC).
+**Consequence, so it is not a surprise later:** a newly added league does not appear until
+the next scheduled run. Re-adding `workflow_dispatch:` under the cron is the one-line
+undo, and it sits behind GitHub auth rather than being a public button.
+
+
 ### Manual refresh removed; both sync endpoints gated (2026-08-27)
 Syncing spends API-Football credits, the app is **public with no user auth**, and the
 backend URL is in the frontend bundle — so `/api/sync/refresh-all` and

@@ -20,13 +20,16 @@ on:
     # was meant to run at. GitHub cron is best-effort and can run several minutes late
     # under load, which does not matter for a twice-daily data pull.
     - cron: "0 7,19 * * *"
-  # Kept as the ONLY way to force a sync, now that the site's Refresh buttons are gone
-  # and both endpoints are token-gated. It sits behind GitHub auth, so it is not an open
-  # door the way the public buttons were — it is for a deliberate one-off, like syncing
-  # a newly added league without waiting for the next scheduled run.
-  workflow_dispatch:
 
-# Never let two runs overlap; a late scheduled run plus a manual one would otherwise race.
+# NO workflow_dispatch, and no manual trigger anywhere: the schedule is the only thing
+# that starts a sync. Requested deliberately.
+#
+# The consequence, so it is not a surprise later: there is now no way to force a sync
+# ahead of the next scheduled run. A newly added league does not appear until 07:00 or
+# 19:00 UTC, whichever comes first. Re-adding `workflow_dispatch:` below the cron is the
+# one-line undo, and it is behind GitHub auth rather than being a public button.
+
+# Never let two runs overlap; a late scheduled run would otherwise race a slow one.
 concurrency:
   group: corner-sync
   cancel-in-progress: false

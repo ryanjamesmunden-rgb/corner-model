@@ -35,6 +35,26 @@ Multi-league corner value betting web app. Rebuilds a spreadsheet corner model i
 
 ## Changelog (recent, newest first)
 
+### Sync simplified to a wake-up ping — no secret, no config (2026-08-27)
+The previous version called the gated `refresh-all` endpoint, which meant storing a
+`SYNC_TOKEN` secret and keeping it in step with Render. Unnecessary: **the backend already
+knows how to sync itself.**
+- `_maybe_sync_on_boot` runs on **startup** and syncs when the newest data is over
+  `STALE_HOURS` (12) old. An in-process APScheduler also fires at 07:00/19:00 UTC.
+- Neither was reliable for exactly one reason: Render spins down idle instances, a
+  sleeping process runs no cron jobs, and **nothing was waking it**. The code was fine —
+  it simply was not running.
+- So the workflow now does the one thing the backend cannot do for itself: **wake it**.
+  Waking a sleeping instance is a process start, which fires the boot sync. If it is
+  already awake, its own scheduler covers the same two times. Both cases handled.
+- **No secret, nothing to configure, nothing to expire.** A plain GET cannot be abused, so
+  the sync endpoints stay `TOOLS_TOKEN`-gated without the workflow needing the token.
+- **New: a staleness alarm.** `report_sync.py` now fails the run when the newest sync is
+  over `STALE_AFTER_HOURS` (26) old — a little over one 12-hourly cycle, so a single miss
+  is tolerated. This is the signal that did not exist when the site sat two days behind,
+  twice, with a green tick and no warning anywhere.
+
+
 ### workflow_dispatch removed — the schedule is the only trigger (2026-08-27)
 Requested. There is now **no manual sync path at all**: the site's Refresh buttons are
 gone, both endpoints are `TOOLS_TOKEN`-gated, and the workflow has only a `schedule:`

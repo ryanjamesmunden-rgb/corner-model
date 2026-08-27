@@ -1458,9 +1458,25 @@ async def tool_runs(token: Optional[str] = None, script: Optional[str] = None, l
 @api_router.get("/backtest")
 async def backtest(league_id: str = "all", window: int = 10, min_games: int = 5,
                    model: str = "v1", blocked_weight: float = V3_BLOCKED_WEIGHT,
-                   only_covered: bool = False, user: dict = Depends(get_current_user)):
+                   only_covered: bool = False, venue_form: bool = True,
+                   user: dict = Depends(get_current_user)):
     """Walk-forward backtest over cached fixture stats: for each past match we predict
     team-corner probabilities from prior form only, then compare to what actually happened.
+
+    VENUE FORM (`venue_form`, default true). Production prices from venue-split form:
+    `expected_lambdas` calls `team_split(team, "home"|"away")`, and the shots and
+    blocked-shots intent terms are venue-split too. This harness POOLED both venues until
+    2026-08-27, so it was never describing production — and that gap is not academic: it
+    is what made `venue_delta` look like a +9.1 edge on the chase-board rank test, when it
+    was really correcting an error only the harness was making.
+
+    Set `venue_form=false` to reproduce the old pooled basis. When venue_form is on and
+    the model is not v3, `pooled_same_sample` returns the pooled basis scored on identical
+    rows, so one call says what the fix was worth.
+
+    Row eligibility is gated on POOLED history in both modes, deliberately: the sample
+    must not move when the flag is toggled, or the comparison would be between two
+    different sets of matches.
 
     A v3 run always also returns v2 scored on the SAME rows (`v2_same_sample`) —
     comparing a v3 run against a separate v2 run would compare two different samples.
@@ -1487,6 +1503,14 @@ async def backtest(league_id: str = "all", window: int = 10, min_games: int = 5,
     hist_shots = defaultdict(lambda: deque(maxlen=window))
     hist_fh = defaultdict(lambda: deque(maxlen=window))
     hist_blocked = defaultdict(lambda: deque(maxlen=window))
+    # ...and the same history keyed by (team, venue), because that is what production
+    # actually prices from. Kept alongside the pooled deques rather than replacing them,
+    # so both bases can be scored on identical rows in a single pass.
+    hist_for_v = defaultdict(lambda: deque(maxlen=window))
+    hist_against_v = defaultdict(lambda: deque(maxlen=window))
+    hist_shots_v = defaultdict(lambda: deque(maxlen=window))
+    hist_fh_v = defaultdict(lambda: deque(maxlen=window))
+    hist_blocked_v = defaultdict(lambda: deque(maxlen=window))
     lines = [4, 5, 6, 7]
     stats = {L: {"n": 0, "pred": 0.0, "hit": 0, "brier": 0.0} for L in lines}
     alt_stats = {L: {"n": 0, "pred": 0.0, "hit": 0, "brier": 0.0} for L in lines}
@@ -1496,18 +1520,38 @@ async def backtest(league_id: str = "all", window: int = 10, min_games: int = 5,
         return sum(d) / len(d) if d else 0.0
 
     prob_fn = nb_ge if model in ("v2", "v3") else poisson_ge
+
+    def form(pooled, by_venue):
+        """The average production would use. Venue-split, falling back to pooled when
+        this team has never played on this venue — which mirrors `expected_lambdas`,
+        where `team_split(..., venue)` falls back to overall at played == 0."""
+        if venue_form and by_venue:
+            return avg(by_venue)
+        return avg(pooled)
+
     for m in matches:
         h, a = m["home_id"], m["away_id"]
         sides = [
-            ("home", hist_for[h], hist_against[a], hist_shots[h], hist_fh[h], hist_blocked[h],
-             m["home_corners"], len(hist_for[h]) >= min_games and len(hist_against[a]) >= min_games),
-            ("away", hist_for[a], hist_against[h], hist_shots[a], hist_fh[a], hist_blocked[a],
-             m["away_corners"], len(hist_for[a]) >= min_games and len(hist_against[h]) >= min_games),
+            ("home", "away", h, a, m["home_corners"],
+             len(hist_for[h]) >= min_games and len(hist_against[a]) >= min_games),
+            ("away", "home", a, h, m["away_corners"],
+             len(hist_for[a]) >= min_games and len(hist_against[h]) >= min_games),
         ]
-        for _side, tf_d, oa_d, ts_d, fh_d, bl_d, actual, can in sides:
+        for side, opp_side, team, opp, actual, can in sides:
             if not can:
                 continue
-            has_blocked = len(bl_d) >= min_games
+            # Row eligibility stays on POOLED history on purpose: the sample must not
+            # move when venue_form is toggled, or the two modes would be scored on
+            # different rows and the comparison would mean nothing.
+            tf_d, oa_d = hist_for[team], hist_against[opp]
+            ts_d, fh_d, bl_d = hist_shots[team], hist_fh[team], hist_blocked[team]
+            vf_d, voa_d = hist_for_v[(team, side)], hist_against_v[(opp, opp_side)]
+            vts_d, vfh_d = hist_shots_v[(team, side)], hist_fh_v[(team, side)]
+            vbl_d = hist_blocked_v[(team, side)]
+
+            # blocked coverage follows whichever pool is actually being used
+            bl_used = vbl_d if (venue_form and vbl_d) else bl_d
+            has_blocked = len(bl_used) >= min_games
             if model == "v3" and not has_blocked:
                 if only_covered:
                     skipped_no_blocked += 1
@@ -1515,31 +1559,56 @@ async def backtest(league_id: str = "all", window: int = 10, min_games: int = 5,
                 fell_back += 1               # thin history -> v3 prices as v2 would
             # a too-short window is passed as 0 so the fallback fires, rather than
             # letting two games of blocked data masquerade as form
-            lam = model_lambda(model, avg(tf_d), avg(oa_d), avg(ts_d), league_shots, avg(fh_d),
-                               avg(bl_d) if has_blocked else 0.0, league_blocked, blocked_weight)
+            args = (form(tf_d, vf_d), form(oa_d, voa_d), form(ts_d, vts_d), league_shots,
+                    form(fh_d, vfh_d))
+            lam = model_lambda(model, *args, avg(bl_used) if has_blocked else 0.0,
+                               league_blocked, blocked_weight)
             preds += 1
             for L in lines:
                 p = prob_fn(L, lam)
                 hit = 1 if actual >= L else 0
                 s = stats[L]
                 s["n"] += 1; s["pred"] += p; s["hit"] += hit; s["brier"] += (p - hit) ** 2
-            if model == "v3":               # same rows, live model, for a fair comparison
-                lam2 = model_lambda("v2", avg(tf_d), avg(oa_d), avg(ts_d), league_shots, avg(fh_d))
+            # The comparison row. For v3 that is v2 on identical rows. Otherwise it is
+            # THIS model with pooled form — the old harness's basis — so one call shows
+            # what the fidelity fix was worth.
+            if model == "v3":
+                lam2 = model_lambda("v2", *args)
+                alt_fn = nb_ge
+            elif venue_form:
+                lam2 = model_lambda(model, avg(tf_d), avg(oa_d), avg(ts_d), league_shots,
+                                    avg(fh_d), avg(bl_d) if len(bl_d) >= min_games else 0.0,
+                                    league_blocked, blocked_weight)
+                alt_fn = prob_fn
+            else:
+                lam2 = alt_fn = None
+            if lam2 is not None:
                 for L in lines:
-                    p = nb_ge(L, lam2)
+                    p = alt_fn(L, lam2)
                     hit = 1 if actual >= L else 0
                     s = alt_stats[L]
                     s["n"] += 1; s["pred"] += p; s["hit"] += hit; s["brier"] += (p - hit) ** 2
         # update rolling form AFTER predicting (no leakage)
         hist_for[h].append(m["home_corners"]); hist_against[h].append(m["away_corners"]); hist_shots[h].append(m.get("home_shots", 0)); hist_fh[h].append(1 if m.get("home_fh_goals", 0) >= 1 else 0)
         hist_for[a].append(m["away_corners"]); hist_against[a].append(m["home_corners"]); hist_shots[a].append(m.get("away_shots", 0)); hist_fh[a].append(1 if m.get("away_fh_goals", 0) >= 1 else 0)
-        for tid, side in ((h, "home"), (a, "away")):
+        for tid, side, other in ((h, "home", "away"), (a, "away", "home")):
+            hist_for_v[(tid, side)].append(m[f"{side}_corners"])
+            hist_against_v[(tid, side)].append(m[f"{other}_corners"])
+            hist_shots_v[(tid, side)].append(m.get(f"{side}_shots", 0))
+            hist_fh_v[(tid, side)].append(1 if m.get(f"{side}_fh_goals", 0) >= 1 else 0)
             bl = m.get(f"{side}_blocked_shots")
             if bl is not None:              # uncovered fixtures never enter the window
                 hist_blocked[tid].append(bl)
+                hist_blocked_v[(tid, side)].append(bl)
 
     out = {"league_id": league_id, "model": model, "window": window, "min_games": min_games,
+           "venue_form": venue_form,
            "matches": len(matches), "predictions": preds, **_backtest_summary(stats, lines)}
+    if venue_form and model != "v3":
+        out["pooled_same_sample"] = _backtest_summary(alt_stats, lines)
+        out["note"] = ("venue_form=true mirrors production, which prices from venue-split "
+                       "form. pooled_same_sample is the old harness basis on identical "
+                       "rows — the difference is what the fidelity fix was worth.")
     if model == "v3":
         out["blocked_weight"] = blocked_weight
         out["only_covered"] = only_covered

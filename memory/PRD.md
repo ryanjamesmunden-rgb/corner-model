@@ -35,6 +35,48 @@ Multi-league corner value betting web app. Rebuilds a spreadsheet corner model i
 
 ## Changelog (recent, newest first)
 
+### v4 was not needed — production was already venue-split; the HARNESSES were not (2026-08-27)
+Asked to build a venue-aware λ (v4) after `venue_delta` scored **+9.1** on the rank test.
+It would have duplicated what production already does.
+
+| | base form | shots/blocked intent |
+|---|---|---|
+| **Live** (`expected_lambdas` → `team_split(team, venue)`) | **venue-split** | **venue-split** |
+| Backtester | pooled | pooled |
+| Rank harness | pooled | pooled |
+
+So `venue_delta` was measured against a λ built from **pooled** form — it corrected an
+error **only the harness was making**. The +9.1 was an artifact of harness infidelity, not
+an edge, and shipping a "v4" would have been building something already live.
+
+**Demonstrated, not just argued.** On synthetic data drawn from the model's own
+distribution (no market edge by construction) with real home/away strength built in,
+`venue_delta`'s spread fell from **+17.3 → +3.1** against a control of −6.9 once λ was
+built the way production builds it. The apparent edge collapses when the harness stops
+making the error.
+
+**What shipped instead — harness fidelity:**
+- `/api/backtest` gains `venue_form` (**default true**): venue-keyed history for corners
+  for/against, shots, first-half goals and blocked shots, falling back to pooled where a
+  team has never played that venue — mirroring production's `played == 0` fallback.
+  `venue_form=false` reproduces the old basis; `pooled_same_sample` returns it on
+  identical rows so one call says what the fix was worth.
+- **Row eligibility stays gated on pooled history** in both modes, deliberately: the
+  sample must not move when the flag is toggled, or the two bases would be scored on
+  different matches.
+- `measure_chase_board.py` builds λ the same way.
+- 9 tests pin the property, including that production is venue-split and that pooling
+  would misprice a skewed team by 3.0 corners — the size of what `venue_delta` was
+  "finding".
+
+**Consequence worth remembering:** v3's weight sweep (0.15) was chosen on the pooled
+basis. The optimum on the venue-split basis may differ — re-run the sweep before treating
+0.15 as settled.
+
+**Next:** re-run the rank test. If `venue_delta` and `consistency_only` collapse toward
+the control, the artifact explanation is confirmed and Daily 2 gets a transparent rule
+rather than a discovered one.
+
 ### Chase board ranking: measured, and it does NOT rank (2026-08-27)
 `measure_chase_board.py` replays the board walk-forward and scores each ordering by
 **residual** — actual hit rate minus the model's own probability, i.e. does the order

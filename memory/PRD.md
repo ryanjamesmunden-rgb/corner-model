@@ -35,6 +35,28 @@ Multi-league corner value betting web app. Rebuilds a spreadsheet corner model i
 
 ## Changelog (recent, newest first)
 
+### Colour now means QUALITY, not category (2026-08-27)
+Reported as "the coloured notes next to each game are confusing, there are multiple on
+every game". The cause: colour encoded the *type* of thing, so one fixture could carry
+six different colours while telling you nothing about whether any of them were worth
+having. One rule now, everywhere:
+
+> **Green = solid.** Cleared the bar. **Faded = weak.** Present, not worth acting on.
+
+- **Fixture board** — five colours by angle kind (cyan chase / emerald over / sky under /
+  amber match-over / indigo match-under) collapsed to green-or-faded on `a.strong`. The
+  **icon** still carries the type (target = chase, flame = over, arrow = under), so
+  nothing is lost; it just stops competing with the signal that matters. A **legend** in
+  the footer states the rule rather than leaving it to be inferred.
+- **Best Bets Today** — cyan / green / amber by signal type replaced by quality, with the
+  bar stated in each card's tooltip: chase needs 4 of its last 5, streak needs 4 in every
+  5, and mismatch — which is a λ comparison with no hit-rate behind it — needs **6+ real
+  games of sample**. A 2-of-5 chase spot no longer looks as confident as a 5-of-5 one.
+- **Streaks** — sky-vs-emerald by direction replaced by solid-vs-thin. The toggle and the
+  icon already say over or under; every row previously looked identical whether it was
+  5/5 or 5/10. Voids stay excluded from the denominator, as everywhere else.
+
+
 ### Sync simplified to a wake-up ping — no secret, no config (2026-08-27)
 The previous version called the gated `refresh-all` endpoint, which meant storing a
 `SYNC_TOKEN` secret and keeping it in step with Render. Unnecessary: **the backend already

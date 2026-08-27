@@ -123,6 +123,11 @@ async def build_spots(league_id=None, window=WINDOW, min_games=MIN_GAMES):
     bl = defaultdict(lambda: deque(maxlen=window))
     venue = defaultdict(lambda: deque(maxlen=5))        # last 5 corner counts on this venue
     venue_ca = defaultdict(lambda: deque(maxlen=5))     # ...and last 5 conceded there
+    # venue-split form, so lambda here is built the way production builds it
+    vcf = defaultdict(lambda: deque(maxlen=window))
+    vca = defaultdict(lambda: deque(maxlen=window))
+    vsf = defaultdict(lambda: deque(maxlen=window))
+    vfh = defaultdict(lambda: deque(maxlen=window))
 
     spots = []
     for m in matches:
@@ -139,8 +144,21 @@ async def build_spots(league_id=None, window=WINDOW, min_games=MIN_GAMES):
             if len(vpool) < MIN_VENUE_GAMES:
                 continue
             opp_vpool = list(venue_ca[(opp, "away" if side == "home" else "home")])
-            lam = model_lambda("v3", avg(cf[team]), avg(ca[opp]), avg(sf[team]), lg_shots,
-                               avg(fh[team]), avg(bl[team]) if len(bl[team]) >= min_games else 0.0,
+            # PRODUCTION PRICES FROM VENUE-SPLIT FORM (expected_lambdas ->
+            # team_split(team, venue)), and this harness pooled both venues until
+            # 2026-08-27. That gap is exactly what made `venue_delta` look like a +9.1
+            # edge: it was correcting an error only the HARNESS was making. Lambda is now
+            # built the way production builds it, so venue_delta is measured against the
+            # real model — and if its gradient collapses, that was the whole story.
+            opp_side = "away" if side == "home" else "home"
+            def vform(pooled, venue_pool):
+                return avg(venue_pool) if venue_pool else avg(pooled)
+            lam = model_lambda("v3",
+                               vform(cf[team], vcf[(team, side)]),
+                               vform(ca[opp], vca[(opp, opp_side)]),
+                               vform(sf[team], vsf[(team, side)]), lg_shots,
+                               vform(fh[team], vfh[(team, side)]),
+                               avg(bl[team]) if len(bl[team]) >= min_games else 0.0,
                                lg_blocked, V3_BLOCKED_WEIGHT)
             line = max(3, round(lam) - 1)
             consistency = sum(1 for c in vpool if c >= line) / len(vpool)
@@ -189,6 +207,10 @@ async def build_spots(league_id=None, window=WINDOW, min_games=MIN_GAMES):
                 bl[team].append(v)
             venue[(team, s)].append(corners)
             venue_ca[(team, s)].append(m.get(f"{other}_corners") or 0)
+            vcf[(team, s)].append(corners)
+            vca[(team, s)].append(m.get(f"{other}_corners") or 0)
+            vsf[(team, s)].append(m.get(f"{s}_shots") or 0)
+            vfh[(team, s)].append(1 if (m.get(f"{s}_fh_goals") or 0) >= 1 else 0)
     return spots, matches
 
 

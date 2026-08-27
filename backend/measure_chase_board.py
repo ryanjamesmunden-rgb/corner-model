@@ -19,14 +19,37 @@ residual at the top, and a gradient across the buckets. A flat residual means th
 ordering carries no information the model didn't already have — the board would be
 re-stating lambda, not adding to it.
 
-Rankings compared, to isolate every term:
-    chase_score      the live formula
-    lambda_only      lambda alone (no chase, no consistency)
-    no_opp_fh        chase_score with the falsified opponent term removed
-    no_consistency   chase_score without the last-5 term
+ALREADY MEASURED, ALL FLAT (2026-08-27): chase_score +0.02, lambda_only +0.01,
+no_opp_fh +0.03, against a FLAT control. They are kept below so a re-run reproduces
+that null rather than asking anyone to take it on trust.
+
+WHY THEY WERE FLAT, most likely: every one of them is a function of lambda and
+consistency — and lambda is already inside the model probability they are scored
+against. The ordering was re-stating the thing it was being compared to. So the new
+candidates are chosen for being ORTHOGONAL to lambda: quantities the probability does
+not already contain.
+
+Rankings compared:
+    chase_score      the live formula                        [known flat]
+    lambda_only      lambda alone                            [known flat]
+    no_opp_fh        falsified opponent term removed         [known flat]
+    no_consistency   without the last-5 term                 [known flat]
+    venue_delta      venue form vs the team's own average    CANDIDATE
+    opp_conc_delta   opponent conceding more on this venue   CANDIDATE
+    consistency_only last-5 hit rate alone                   CANDIDATE
+    depth            games behind the estimate               diagnostic — a gradient
+                     here argues for a SAMPLE BAR, not for betting the top harder
+    slack            lambda above its rounded line           anchor — the probability
+                     already captures this, so flat is EXPECTED. If slack shows a
+                     gradient, something is wrong with the harness, not with the model.
     RANDOM           control: a shuffled score. Must come out flat. If it doesn't,
                      the harness is manufacturing a gradient and nothing else here
                      can be trusted.
+
+A PERFECTLY GOOD OUTCOME IS "NOTHING RANKS". If every candidate is flat, the answer is
+not to keep hunting for a score — it is that the Daily 2 should select on a stated,
+transparent rule (a quality bar plus something readable like model probability), and
+say plainly that it is not a discovered edge.
 
 WHY A GRADIENT CAN BE REAL EVEN IF THE MODEL IS "RIGHT": lambda is ESTIMATED from a
 10-game window, so it carries error. `consistency` is a second, independent look at the
@@ -99,6 +122,7 @@ async def build_spots(league_id=None, window=WINDOW, min_games=MIN_GAMES):
     fh = defaultdict(lambda: deque(maxlen=window))
     bl = defaultdict(lambda: deque(maxlen=window))
     venue = defaultdict(lambda: deque(maxlen=5))        # last 5 corner counts on this venue
+    venue_ca = defaultdict(lambda: deque(maxlen=5))     # ...and last 5 conceded there
 
     spots = []
     for m in matches:
@@ -114,6 +138,7 @@ async def build_spots(league_id=None, window=WINDOW, min_games=MIN_GAMES):
             vpool = list(venue[(team, side)])
             if len(vpool) < MIN_VENUE_GAMES:
                 continue
+            opp_vpool = list(venue_ca[(opp, "away" if side == "home" else "home")])
             lam = model_lambda("v3", avg(cf[team]), avg(ca[opp]), avg(sf[team]), lg_shots,
                                avg(fh[team]), avg(bl[team]) if len(bl[team]) >= min_games else 0.0,
                                lg_blocked, V3_BLOCKED_WEIGHT)
@@ -128,6 +153,29 @@ async def build_spots(league_id=None, window=WINDOW, min_games=MIN_GAMES):
                 "lambda_only": lam,
                 "no_opp_fh": lam * (0.6 + 0.4 * consistency),
                 "no_consistency": lam * (1 + 0.4 * opp_fh),
+                # --- candidates ORTHOGONAL to lambda ---
+                # Everything above is a function of lambda and consistency, and lambda is
+                # already inside the model's probability — which is very likely WHY they
+                # all came out flat: the ordering was re-stating what it was scored
+                # against. These are quantities the probability does NOT already contain.
+                #
+                # venue_delta: this venue's recent corner form vs the team's own 10-game
+                # average. Lambda pools both venues, so a side that travels badly or is
+                # far stronger at home carries information lambda has averaged away.
+                "venue_delta": avg(vpool) - avg(cf[team]),
+                # opp_conc_delta: same idea on the opponent's conceding, on THIS venue.
+                "opp_conc_delta": (avg(opp_vpool) - avg(ca[opp])) if opp_vpool else 0.0,
+                # consistency alone — never tested standalone; `no_consistency` only ever
+                # removed it, which is not the same experiment.
+                "consistency_only": consistency,
+                # slack: how far lambda sits above the line it was rounded to. The
+                # probability does capture this, so a flat result is EXPECTED — it is here
+                # as a sanity anchor, not a candidate.
+                "slack": lam - line,
+                # depth: how much history is behind the estimate. Tests estimation
+                # quality rather than edge; a gradient here argues for a sample bar, not
+                # for betting the top of a list.
+                "depth": min(len(cf[team]), len(ca[opp])),
             })
 
         for team, s, other in ((h, "home", "away"), (a, "away", "home")):
@@ -140,7 +188,26 @@ async def build_spots(league_id=None, window=WINDOW, min_games=MIN_GAMES):
             if v is not None:
                 bl[team].append(v)
             venue[(team, s)].append(corners)
+            venue_ca[(team, s)].append(m.get(f"{other}_corners") or 0)
     return spots, matches
+
+
+# Every ordering scored, in both views. The first four are already falsified (all flat
+# against a flat control); they stay so a re-run reproduces the null rather than asking
+# you to take it on trust. The next four are the candidates for what Daily 2 should
+# select on, chosen for being ORTHOGONAL to lambda.
+RANKINGS = [
+    ("chase_score", "chase_score — the live board formula [known flat]"),
+    ("lambda_only", "lambda_only — no chase, no consistency [known flat]"),
+    ("no_opp_fh", "no_opp_fh — falsified opponent term removed [known flat]"),
+    ("no_consistency", "no_consistency — last-5 term removed [known flat]"),
+    ("venue_delta", "venue_delta — venue form vs the team's own average [CANDIDATE]"),
+    ("opp_conc_delta", "opp_conc_delta — opponent conceding more on this venue [CANDIDATE]"),
+    ("consistency_only", "consistency_only — last-5 hit rate alone [CANDIDATE]"),
+    ("depth", "depth — games behind the estimate [diagnostic, argues for a bar]"),
+    ("slack", "slack — lambda above the line [anchor, flat is EXPECTED]"),
+    ("RANDOM", "RANDOM — control, must be flat"),
+]
 
 
 def summarise(rows):
@@ -213,11 +280,7 @@ async def run(league_id=None, top_n=TOP_N, window=WINDOW, min_games=MIN_GAMES):
         r["RANDOM"] = rng.random()
 
     spreads = {}
-    for key, label in (("chase_score", "chase_score — the live board formula"),
-                       ("lambda_only", "lambda_only — no chase, no consistency"),
-                       ("no_opp_fh", "no_opp_fh — falsified opponent term removed"),
-                       ("no_consistency", "no_consistency — last-5 term removed"),
-                       ("RANDOM", "RANDOM — control, must be flat")):
+    for key, label in RANKINGS:
         spreads[key] = print_buckets(spots, key, label)
 
     print("\ntop-minus-bottom residual (how much the ordering separates good from bad):")
@@ -230,7 +293,7 @@ async def run(league_id=None, top_n=TOP_N, window=WINDOW, min_games=MIN_GAMES):
         print(f"  (only ~{n_days * top_n} picks across {n_days} matchdays — this view is noisy;"
               f" read it against the RANDOM row, not in absolute terms)")
     print(f"  {'ranking':16} {'n':>6} {'avg line':>9} {'model %':>8} {'actual %':>9} {'residual':>9}")
-    for key in ("chase_score", "lambda_only", "no_opp_fh", "no_consistency", "RANDOM"):
+    for key, _ in RANKINGS:
         print_top_n(spots, key, key, top_n)
 
     ctrl = abs(spreads.get("RANDOM", 0.0))

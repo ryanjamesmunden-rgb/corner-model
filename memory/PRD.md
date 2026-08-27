@@ -35,6 +35,60 @@ Multi-league corner value betting web app. Rebuilds a spreadsheet corner model i
 
 ## Changelog (recent, newest first)
 
+### Chase board ranking: measured, and it does NOT rank (2026-08-27)
+`measure_chase_board.py` replays the board walk-forward and scores each ordering by
+**residual** — actual hit rate minus the model's own probability, i.e. does the order
+find spots the model *underrates*.
+
+| ranking | rank correlation |
+|---|---|
+| `chase_score` (live) | **+0.02**, no top-vs-bottom difference |
+| `lambda_only` | +0.01 |
+| `no_opp_fh` | +0.03 |
+| `RANDOM` (control) | **flat** ✓ |
+
+All four are the same number. **The flat control is what makes that trustworthy** — the
+harness is not manufacturing gradients, which is the failure that burned `measure_features`
+early on. `no_opp_fh` scoring highest is noise, **not** evidence that dropping the term
+helped.
+
+**What changed:**
+- The opponent first-half term is **removed** from `chase_score`
+  (`lam * (1 + 0.4*opp_fh) * (0.6 + 0.4*consistency)` → `lam * (0.6 + 0.4*consistency)`).
+  Five tests have now failed to find any effect from it, and keeping a falsified
+  hypothesis in production meant the board displayed "opp scores 1H 62%" as a *reason*.
+  `opp_fh_rate` is still returned and shown as **context**. This is simplification, not
+  improvement — nothing here made the board rank better, because nothing ranks.
+- **The Chase Board panel now says so**, in the UI, with the numbers. Order is a filter
+  (teams that clear their line reliably), not a pick order.
+- The null is recorded in a comment *at the point the score is defined*, and a test
+  asserts it stays there, so nobody re-adds a term without seeing it was measured.
+- Pinned an unobvious property: consistency spans 0.6–1.0, so a 5/5 team outranks a 0/5
+  team until the latter's λ is **~67% larger**. A big lever for a factor measured as noise.
+
+**Daily 2 — rebuilding what it selects on (decision taken: rebuild, measure first).**
+- `DAILY_PICK_RULE` names the rule explicitly, so selection is a decision rather than a
+  side effect of whatever `_chase_board` happens to sort by. Currently
+  `"chase_board_order"` — a *stated* rule, not a discovered edge.
+- **Every pick is stamped `selected_by`.** This is the part that matters: when the rule
+  changes, the ledger stays interpretable instead of silently becoming a mix of two
+  strategies that look identical in the table.
+- `measure_chase_board.py` gains four candidate rankings chosen for being **orthogonal to
+  λ** — which is the likely reason the first four were flat: they were all functions of λ
+  and consistency, and λ is already inside the probability they were scored against, so
+  the ordering was re-stating the thing it was compared to.
+  - `venue_delta` — venue form vs the team's own average (λ pools both venues)
+  - `opp_conc_delta` — opponent conceding more on *this* venue
+  - `consistency_only` — never tested standalone; `no_consistency` only ever removed it
+  - `depth` — diagnostic; a gradient argues for a **sample bar**, not for betting the top
+  - `slack` — anchor; the probability already captures it, so **flat is expected**, and a
+    gradient here would mean the harness is broken rather than the model
+- The falsified four are kept so a re-run reproduces the null rather than asking anyone
+  to take it on trust.
+- **"Nothing ranks" is an acceptable outcome**, stated in the docstring: the answer would
+  then be a transparent rule (quality bar + something readable like model probability),
+  labelled as not-an-edge — not a longer hunt for a score.
+
 ### Probe result: nor-d1 confirmed, nor-d2 removed (2026-08-27)
 The probe did what it was built for. `nor-d1` (api **104**) came back **QUALIFY** with
 corners 4/4 — confirmed and staying. `nor-d2` (api 105) came back **MISMATCH**: 105 is

@@ -18,9 +18,14 @@ LEAGUE_META = {
     "aus-al":  {"api": 188, "name": "A-League",         "country": "Australia"},
     "nor-el":  {"api": 103, "name": "Eliteserien",      "country": "Norway"},
     # Norway's tiers are confusingly named: the SECOND level is called "1. divisjon"
-    # (sponsored name OBOS-ligaen), and "2. divisjon" is the THIRD level. Both are here.
+    # (sponsored name OBOS-ligaen), and "2. divisjon" is the THIRD level.
+    # 104 is CONFIRMED by probe_leagues.py — the provider agrees it is Norway, and the
+    # last four finished games carried Corner Kicks 4/4.
     "nor-d1":  {"api": 104, "name": "1. divisjon (OBOS-ligaen)", "country": "Norway"},
-    "nor-d2":  {"api": 105, "name": "2. divisjon",      "country": "Norway"},
+    # NO nor-d2 ENTRY ON PURPOSE. It was added as api 105 from memory and the probe came
+    # back MISMATCH — 105 is not Norway's 2. divisjon. Rather than ship an id that would
+    # sync some other competition under a Norwegian name, the league is out until the
+    # probe's country listing names the real one. Run: Tools -> "List leagues by country".
     "ned-ere": {"api": 88,  "name": "Eredivisie",       "country": "Netherlands"},
     "ned-ed":  {"api": 89,  "name": "Eerste Divisie",   "country": "Netherlands"},
     "bra-sa":  {"api": 71,  "name": "Série A",          "country": "Brazil"},

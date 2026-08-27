@@ -43,9 +43,14 @@ def test_league_keys_are_url_safe():
         assert all(c.isalnum() or c == "-" for c in lid), lid
 
 
-def test_norway_covers_all_three_tiers():
+def test_norway_carries_only_the_confirmed_tiers():
+    """103 and 104 are confirmed by probe_leagues.py against live data.
+
+    105 was added as "2. divisjon" from memory and the probe returned MISMATCH — it is
+    not the Norwegian third tier. It stays OUT until the country listing names the real
+    id: shipping a wrong one would sync some other competition under a Norwegian label,
+    and nothing downstream would ever flag it."""
     nor = {k: v for k, v in LEAGUE_META.items() if v["country"] == "Norway"}
-    assert set(nor) == {"nor-el", "nor-d1", "nor-d2"}
-    # tier order is not guessable from the names — 1. divisjon is the SECOND level —
-    # so pin the ids that the probe is meant to confirm against live data
-    assert [nor[k]["api"] for k in ("nor-el", "nor-d1", "nor-d2")] == [103, 104, 105]
+    assert set(nor) == {"nor-el", "nor-d1"}
+    assert [nor[k]["api"] for k in ("nor-el", "nor-d1")] == [103, 104]
+    assert 105 not in {m["api"] for m in LEAGUE_META.values()}

@@ -35,6 +35,24 @@ Multi-league corner value betting web app. Rebuilds a spreadsheet corner model i
 
 ## Changelog (recent, newest first)
 
+### Probe result: nor-d1 confirmed, nor-d2 removed (2026-08-27)
+The probe did what it was built for. `nor-d1` (api **104**) came back **QUALIFY** with
+corners 4/4 — confirmed and staying. `nor-d2` (api 105) came back **MISMATCH**: 105 is
+not Norway's 2. divisjon, my id was wrong.
+- **`nor-d2` is out of `leagues_meta.py`** rather than left in with a bad id. Shipping it
+  would sync some other competition under a Norwegian label and nothing downstream would
+  flag it — the corner numbers would simply be someone else's.
+- **The probe now answers "then what IS the right id?"** On a MISMATCH (or a NOT FOUND)
+  it lists every league the provider has for that country — id, type, name, current
+  season, and a marker on the ones already ours. A wrong id gets corrected in the same
+  run instead of being replaced by a second guess, which is exactly how 105 got in.
+- New `--country` mode plus a **"List leagues by country"** input + button in Tools
+  (1 API call). `country` is validated against `COUNTRY_RE` before reaching argv; argv
+  goes to `create_subprocess_exec` as a list, so there is no shell and metacharacters are
+  inert, but the pattern stays strict regardless.
+- The Norway test now pins the *absence* of 105 and says why, so nobody re-adds it from
+  memory later.
+
 ### Norway 2nd + 3rd tier, and one shared league list (2026-08-25)
 Added **`nor-d1`** (api 104, "1. divisjon" / OBOS-ligaen — the SECOND tier) and
 **`nor-d2`** (api 105, "2. divisjon" — the THIRD tier). Norway's naming is a trap: the

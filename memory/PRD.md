@@ -35,6 +35,22 @@ Multi-league corner value betting web app. Rebuilds a spreadsheet corner model i
 
 ## Changelog (recent, newest first)
 
+### measure_features.py made venue-split too — the last pooled harness (2026-08-27)
+Asked to run the weight sweep; checked first and found `measure_features.py` was still
+building λ from **pooled** form, like the backtester and rank harness had been. Sweeping a
+weight against a λ production does not use would have picked the optimum **for the wrong
+model** — the same class of error that made `venue_delta` look like a +9.1 edge.
+- Venue-keyed deques for corners for/against, first-half goals and every shot feature,
+  falling back to pooled where a team has never played that venue (mirrors `team_split`'s
+  `played == 0`). `opp_fh` now comes from the opponent's venue as well.
+- **Row eligibility still gated on pooled history**, so the sample does not move and the
+  new numbers stay comparable to the old ones.
+- All three harnesses now build λ the way production does: `/api/backtest`,
+  `measure_chase_board.py`, `measure_features.py`.
+**Consequence:** v3's weight of **0.15 was swept on the pooled basis and is not settled.**
+Re-run the sweep before treating it as final.
+
+
 ### Colour now means QUALITY, not category (2026-08-27)
 Reported as "the coloured notes next to each game are confusing, there are multiple on
 every game". The cause: colour encoded the *type* of thing, so one fixture could carry
@@ -48,10 +64,15 @@ having. One rule now, everywhere:
   **icon** still carries the type (target = chase, flame = over, arrow = under), so
   nothing is lost; it just stops competing with the signal that matters. A **legend** in
   the footer states the rule rather than leaving it to be inferred.
-- **Best Bets Today** — cyan / green / amber by signal type replaced by quality, with the
-  bar stated in each card's tooltip: chase needs 4 of its last 5, streak needs 4 in every
-  5, and mismatch — which is a λ comparison with no hit-rate behind it — needs **6+ real
-  games of sample**. A 2-of-5 chase spot no longer looks as confident as a 5-of-5 one.
+- **Best Bets Today** — colour KEPT as signal identity, at the user's request: chase
+  **white**, mismatch **cyan**, streak **amber** (matching the flame). Three cards, one per
+  signal, is not the fixture board's problem — six chips on one row made colour-by-type
+  meaningless, three side-by-side cards do not. Quality moved to where it does not
+  compete: the **chip** is green when the card's evidence clears its bar and muted when it
+  does not, and a weak card's accent is **dimmed to ~35% alpha** rather than recoloured, so
+  it still reads as "the streak one", just quieter. Bars stated in each tooltip: chase
+  needs 4 of its last 5, streak needs 4 in every 5, and mismatch — a λ comparison with no
+  hit-rate behind it — needs **6+ real games of sample** instead.
 - **Streaks** — sky-vs-emerald by direction replaced by solid-vs-thin. The toggle and the
   icon already say over or under; every row previously looked identical whether it was
   5/5 or 5/10. Voids stay excluded from the denominator, as everywhere else.

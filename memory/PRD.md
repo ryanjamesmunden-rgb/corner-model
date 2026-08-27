@@ -35,6 +35,22 @@ Multi-league corner value betting web app. Rebuilds a spreadsheet corner model i
 
 ## Changelog (recent, newest first)
 
+### measure_features.py made venue-split too — the last pooled harness (2026-08-27)
+Asked to run the weight sweep; checked first and found `measure_features.py` was still
+building λ from **pooled** form, like the backtester and rank harness had been. Sweeping a
+weight against a λ production does not use would have picked the optimum **for the wrong
+model** — the same class of error that made `venue_delta` look like a +9.1 edge.
+- Venue-keyed deques for corners for/against, first-half goals and every shot feature,
+  falling back to pooled where a team has never played that venue (mirrors `team_split`'s
+  `played == 0`). `opp_fh` now comes from the opponent's venue as well.
+- **Row eligibility still gated on pooled history**, so the sample does not move and the
+  new numbers stay comparable to the old ones.
+- All three harnesses now build λ the way production does: `/api/backtest`,
+  `measure_chase_board.py`, `measure_features.py`.
+**Consequence:** v3's weight of **0.15 was swept on the pooled basis and is not settled.**
+Re-run the sweep before treating it as final.
+
+
 ### Colour now means QUALITY, not category (2026-08-27)
 Reported as "the coloured notes next to each game are confusing, there are multiple on
 every game". The cause: colour encoded the *type* of thing, so one fixture could carry

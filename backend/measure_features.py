@@ -151,6 +151,16 @@ async def build_rows(league_id, window, min_games, required=None, state_window=S
     cf = defaultdict(lambda: deque(maxlen=window))
     ca = defaultdict(lambda: deque(maxlen=window))
     fhg = defaultdict(lambda: deque(maxlen=window))
+    # PRODUCTION PRICES FROM VENUE-SPLIT FORM (expected_lambdas -> team_split(team,
+    # venue)), and this harness pooled both venues until 2026-08-27. Sweeping a weight
+    # against a lambda production does not use picks the optimum for the wrong model —
+    # the same class of error that made venue_delta look like a +9.1 edge on the rank
+    # test. These mirror production; the pooled deques stay for the eligibility gate, so
+    # the row set does not move.
+    vcf = defaultdict(lambda: deque(maxlen=window))
+    vca = defaultdict(lambda: deque(maxlen=window))
+    vfhg = defaultdict(lambda: deque(maxlen=window))
+    vhist = {f: defaultdict(lambda: deque(maxlen=window)) for f in ALL_FEATURES}
     # (corners won, half-time state) per past match, for the chase-propensity trait
     state_hist = defaultdict(lambda: deque(maxlen=state_window))
     hist = {f: defaultdict(lambda: deque(maxlen=window)) for f in ALL_FEATURES}
@@ -163,19 +173,30 @@ async def build_rows(league_id, window, min_games, required=None, state_window=S
         h, a = m.get("home_id"), m.get("away_id")
         if h is None or a is None:
             continue
-        for team, opp, actual in ((h, a, m.get("home_corners")), (a, h, m.get("away_corners"))):
+        for team, opp, side, actual in ((h, a, "home", m.get("home_corners")),
+                                        (a, h, "away", m.get("away_corners"))):
             if actual is None:
                 continue
+            # eligibility stays on POOLED history so the row set is unchanged
             if len(cf[team]) < min_games or len(ca[opp]) < min_games:
                 drops["form"] += 1
                 continue
             if any(len(hist[f][team]) < min_games for f in required):
                 drops["feature"] += 1
                 continue
-            row = {"tf": avg(cf[team]), "oa": avg(ca[opp]), "fh": avg(fhg[team]),
+            opp_side = "away" if side == "home" else "home"
+
+            def vform(pooled, venue_pool):
+                """What production would use: this venue, falling back to everything
+                when the team has never played there (mirrors team_split's played == 0)."""
+                return avg(venue_pool) if venue_pool else avg(pooled)
+
+            row = {"tf": vform(cf[team], vcf[(team, side)]),
+                   "oa": vform(ca[opp], vca[(opp, opp_side)]),
+                   "fh": vform(fhg[team], vfhg[(team, side)]),
                    "actual": actual}
             for f in ALL_FEATURES:
-                row[f] = avg(hist[f][team])
+                row[f] = vform(hist[f][team], vhist[f][(team, side)])
 
             # --- game state, from prior matches only ---
             past = list(state_hist[team])
@@ -189,7 +210,7 @@ async def build_rows(league_id, window, min_games, required=None, state_window=S
             row["chase_prop"] = (n_t * ratio + GAME_STATE_K) / (n_t + GAME_STATE_K)
             row["trail_games"] = n_t
             # likelihood of being the chasing side: opponent scores in H1 and we don't
-            row["opp_fh"] = avg(fhg[opp])
+            row["opp_fh"] = vform(fhg[opp], vfhg[(opp, opp_side)])
             row["p_trail"] = row["opp_fh"] * (1.0 - row["fh"])
             # How often this team USUALLY trails. Corner form already contains the
             # average chase effect — a team that chases hard simply averages more
@@ -204,6 +225,9 @@ async def build_rows(league_id, window, min_games, required=None, state_window=S
             cf[team].append(corners)
             ca[team].append(m.get(f"{other}_corners") or 0)
             fhg[team].append(1 if (m.get(f"{side}_fh_goals") or 0) >= 1 else 0)
+            vcf[(team, side)].append(corners)
+            vca[(team, side)].append(m.get(f"{other}_corners") or 0)
+            vfhg[(team, side)].append(1 if (m.get(f"{side}_fh_goals") or 0) >= 1 else 0)
             st = _ht_state(m, side, other)
             if st is not None:
                 state_hist[team].append((corners, st))
@@ -212,6 +236,7 @@ async def build_rows(league_id, window, min_games, required=None, state_window=S
                 v = m.get(f"{side}_{f}")
                 if v is not None:               # uncovered fixtures never enter the window
                     hist[f][team].append(v)
+                    vhist[f][(team, side)].append(v)
     return rows, lg, covered, drops, matches, desc
 
 

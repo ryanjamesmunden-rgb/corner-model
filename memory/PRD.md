@@ -66,10 +66,28 @@ helped.
 - Pinned an unobvious property: consistency spans 0.6–1.0, so a 5/5 team outranks a 0/5
   team until the latter's λ is **~67% larger**. A big lever for a factor measured as noise.
 
-**OPEN, needs a decision — the Daily 2 ledger.** `_daily_shortlist` takes the top N off
-this same sorted board, so the ledger has been tracking picks selected by a ranking that
-does not rank. Removing `opp_fh` also *shifts which spots it picks*, mid-ledger. The
-selection rule and the ledger's continuity are the user's call, not a silent change.
+**Daily 2 — rebuilding what it selects on (decision taken: rebuild, measure first).**
+- `DAILY_PICK_RULE` names the rule explicitly, so selection is a decision rather than a
+  side effect of whatever `_chase_board` happens to sort by. Currently
+  `"chase_board_order"` — a *stated* rule, not a discovered edge.
+- **Every pick is stamped `selected_by`.** This is the part that matters: when the rule
+  changes, the ledger stays interpretable instead of silently becoming a mix of two
+  strategies that look identical in the table.
+- `measure_chase_board.py` gains four candidate rankings chosen for being **orthogonal to
+  λ** — which is the likely reason the first four were flat: they were all functions of λ
+  and consistency, and λ is already inside the probability they were scored against, so
+  the ordering was re-stating the thing it was compared to.
+  - `venue_delta` — venue form vs the team's own average (λ pools both venues)
+  - `opp_conc_delta` — opponent conceding more on *this* venue
+  - `consistency_only` — never tested standalone; `no_consistency` only ever removed it
+  - `depth` — diagnostic; a gradient argues for a **sample bar**, not for betting the top
+  - `slack` — anchor; the probability already captures it, so **flat is expected**, and a
+    gradient here would mean the harness is broken rather than the model
+- The falsified four are kept so a re-run reproduces the null rather than asking anyone
+  to take it on trust.
+- **"Nothing ranks" is an acceptable outcome**, stated in the docstring: the answer would
+  then be a transparent rule (quality bar + something readable like model probability),
+  labelled as not-an-edge — not a longer hunt for a score.
 
 ### Probe result: nor-d1 confirmed, nor-d2 removed (2026-08-27)
 The probe did what it was built for. `nor-d1` (api **104**) came back **QUALIFY** with

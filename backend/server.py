@@ -814,8 +814,24 @@ async def settle_picks_now(user: dict = Depends(get_current_user)):
 DAILY_PICK_COUNT = 2
 
 
+# WHAT THE DAILY 2 SELECTS ON — named, so it is a decision rather than a side effect of
+# whatever `_chase_board` happens to sort by.
+#
+# Until 2026-08-27 this was implicitly "top of the chase board", and that board's
+# ordering has since been measured and found NOT to rank (+0.02 against a flat control;
+# see measure_chase_board.py). So this is currently a stated rule, not a discovered edge,
+# and the ledger says so on every pick it stores.
+#
+# Every pick is stamped with `selected_by`. That is the part that matters: when this rule
+# changes, the ledger's history stays interpretable instead of silently becoming a mix of
+# two strategies that look identical in the table.
+DAILY_PICK_RULE = "chase_board_order"
+
+
 async def _daily_shortlist(day: str, count: int = DAILY_PICK_COUNT) -> List[dict]:
-    """Highest-ranked chase spots kicking off on `day` (UTC) that have not started."""
+    """Highest-ranked chase spots kicking off on `day` (UTC) that have not started.
+
+    NOTE the ordering here is not a measured edge — see DAILY_PICK_RULE."""
     board = await _chase_board(within_days=2, limit=500)
     now = datetime.now(timezone.utc)
     out = []
@@ -850,6 +866,9 @@ async def _snapshot_daily_picks(day: Optional[str] = None) -> dict:
                "kickoff": nf["date"], "fixture_id": nf["fixture_id"],
                "odds": c.get("book_odds"), "model_odds": c.get("fair_odds"),
                "model_prob": c.get("prob"), "chase_score": c.get("chase_score"),
+               # which rule picked this, so a later rule change leaves the ledger's
+               # history readable rather than silently mixing two strategies
+               "selected_by": DAILY_PICK_RULE,
                "status": "pending", "created_at": datetime.now(timezone.utc).isoformat()}
         await db.picks.insert_one(dict(doc))
         doc.pop("_id", None)

@@ -1,6 +1,5 @@
 import { useState, useEffect } from "react";
-import { toast } from "sonner";
-import { Flag, RefreshCw, RotateCw } from "lucide-react";
+import { Flag } from "lucide-react";
 import { api } from "@/lib/api";
 import { useLeague } from "@/context/LeagueContext";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -18,43 +17,11 @@ export default function Dashboard() {
   const [teams, setTeams] = useState([]);
   const [split, setSplit] = useState("overall");
   const [window, setWindow] = useState("5");
-  const [syncing, setSyncing] = useState(false);
-  const [syncingAll, setSyncingAll] = useState(false);
   const league = leagues.find((l) => l.league_id === leagueId);
 
-  const loadData = () => {
+  useEffect(() => {
     api.teams(leagueId, split, window).then(setTeams).catch(() => setTeams([]));
-  };
-
-  useEffect(() => { api.teams(leagueId, split, window).then(setTeams).catch(() => setTeams([])); }, [leagueId, split, window]);
-
-  const handleRefresh = async () => {
-    setSyncing(true);
-    try {
-      await api.refresh(leagueId);
-      toast.success("Live sync started — pulling latest fixtures & corner stats. Refreshing in ~90s…");
-      setTimeout(() => { loadData(); setSyncing(false); toast.success(`${league?.name} data updated`); }, 90000);
-    } catch {
-      toast.error("Could not start sync");
-      setSyncing(false);
-    }
-  };
-
-  const handleRefreshAll = async () => {
-    setSyncingAll(true);
-    try {
-      const res = await api.refreshAll();
-      if (res.status === "already_syncing") {
-        toast.info("A full sync is already running — check the Data & Sync panel below.");
-      } else {
-        toast.success("Full sync started for all leagues. Watch progress in the Data & Sync panel below.");
-      }
-    } catch {
-      toast.error("Could not start full sync");
-    } finally {
-      setTimeout(() => setSyncingAll(false), 3000);
-    }
-  };
+  }, [leagueId, split, window]);
 
   return (
     <div className="space-y-6" data-testid="dashboard-page">
@@ -67,29 +34,15 @@ export default function Dashboard() {
           <h1 className="font-head text-3xl sm:text-4xl font-bold tracking-tight">Leagues</h1>
         </div>
         <div className="flex items-center gap-3">
+          {/* No manual refresh here on purpose. Syncing spends API credits and this
+              app is public, so both refresh endpoints now require TOOLS_TOKEN. The
+              sync runs on a schedule instead — .github/workflows/sync.yml, every 12
+              hours — which is also what fixed it silently not running at all. */}
           {league?.synced_at && (
             <span className="font-mono-data text-[11px] text-muted-foreground hidden sm:inline">
               Synced {new Date(league.synced_at).toLocaleDateString()} · {league.data_source === "real" ? "LIVE" : "demo"}
             </span>
           )}
-          <button
-            data-testid="refresh-data-btn"
-            onClick={handleRefresh}
-            disabled={syncing}
-            className="flex items-center gap-2 bg-secondary hover:bg-white/10 border border-border text-sm font-medium rounded-md px-3 py-2 transition-colors duration-150 disabled:opacity-60"
-          >
-            <RefreshCw className={`h-4 w-4 ${syncing ? "animate-spin" : ""}`} />
-            {syncing ? "Syncing…" : "Refresh data"}
-          </button>
-          <button
-            data-testid="refresh-all-btn"
-            onClick={handleRefreshAll}
-            disabled={syncingAll}
-            className="flex items-center gap-2 bg-primary hover:bg-primary/90 text-black border border-primary text-sm font-medium rounded-md px-3 py-2 transition-colors duration-150 disabled:opacity-60"
-          >
-            <RotateCw className={`h-4 w-4 ${syncingAll ? "animate-spin" : ""}`} />
-            {syncingAll ? "Starting…" : "Refresh all"}
-          </button>
         </div>
       </div>
 

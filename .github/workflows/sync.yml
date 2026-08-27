@@ -16,10 +16,15 @@ name: Sync corner data
 
 on:
   schedule:
-    # 07:00 and 19:00 UTC, matching the in-process schedule this replaces.
-    # GitHub cron is best-effort and can run several minutes late under load — fine here.
+    # Every 12 hours — 07:00 and 19:00 UTC, the same cadence the in-process scheduler
+    # was meant to run at. GitHub cron is best-effort and can run several minutes late
+    # under load, which does not matter for a twice-daily data pull.
     - cron: "0 7,19 * * *"
-  workflow_dispatch:        # also gives you a "sync now" button in the Actions tab
+  # Kept as the ONLY way to force a sync, now that the site's Refresh buttons are gone
+  # and both endpoints are token-gated. It sits behind GitHub auth, so it is not an open
+  # door the way the public buttons were — it is for a deliberate one-off, like syncing
+  # a newly added league without waiting for the next scheduled run.
+  workflow_dispatch:
 
 # Never let two runs overlap; a late scheduled run plus a manual one would otherwise race.
 concurrency:
@@ -51,12 +56,30 @@ jobs:
           echo "::warning::backend did not wake after 8 attempts — trying the sync anyway"
 
       - name: Trigger the sync
+        env:
+          # refresh-all spends API credits and the app is public, so the endpoint is
+          # gated on TOOLS_TOKEN. Set this as a repo secret: Settings -> Secrets and
+          # variables -> Actions -> New repository secret, named SYNC_TOKEN, holding the
+          # same value as TOOLS_TOKEN in the Render environment.
+          SYNC_TOKEN: ${{ secrets.SYNC_TOKEN }}
         run: |
-          body=$(curl -s --max-time 120 -X POST "$BACKEND/api/sync/refresh-all" || true)
+          if [ -z "$SYNC_TOKEN" ]; then
+            echo "::error::SYNC_TOKEN secret is not set — the sync endpoint will reject this."
+            echo "Add it under Settings > Secrets and variables > Actions, matching TOOLS_TOKEN."
+            exit 1
+          fi
+          # --data-urlencode keeps the token out of the URL in any curl error output
+          body=$(curl -s --max-time 120 -X POST -G \
+                   --data-urlencode "token=$SYNC_TOKEN" \
+                   "$BACKEND/api/sync/refresh-all" || true)
           echo "response: $body"
           case "$body" in
             *'"syncing"'*)         echo "sync started" ;;
             *'"already_syncing"'*) echo "::notice::a sync was already running — nothing to do" ;;
+            *'Bad or missing token'*)
+              echo "::error::backend rejected the token — SYNC_TOKEN and TOOLS_TOKEN differ"; exit 1 ;;
+            *'disabled'*)
+              echo "::error::TOOLS_TOKEN is not set on the backend, so the endpoint is off"; exit 1 ;;
             *)                     echo "::error::unexpected response from refresh-all"; exit 1 ;;
           esac
 

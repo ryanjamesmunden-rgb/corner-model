@@ -35,6 +35,42 @@ Multi-league corner value betting web app. Rebuilds a spreadsheet corner model i
 
 ## Changelog (recent, newest first)
 
+### Chase board ranking: measured, and it does NOT rank (2026-08-27)
+`measure_chase_board.py` replays the board walk-forward and scores each ordering by
+**residual** — actual hit rate minus the model's own probability, i.e. does the order
+find spots the model *underrates*.
+
+| ranking | rank correlation |
+|---|---|
+| `chase_score` (live) | **+0.02**, no top-vs-bottom difference |
+| `lambda_only` | +0.01 |
+| `no_opp_fh` | +0.03 |
+| `RANDOM` (control) | **flat** ✓ |
+
+All four are the same number. **The flat control is what makes that trustworthy** — the
+harness is not manufacturing gradients, which is the failure that burned `measure_features`
+early on. `no_opp_fh` scoring highest is noise, **not** evidence that dropping the term
+helped.
+
+**What changed:**
+- The opponent first-half term is **removed** from `chase_score`
+  (`lam * (1 + 0.4*opp_fh) * (0.6 + 0.4*consistency)` → `lam * (0.6 + 0.4*consistency)`).
+  Five tests have now failed to find any effect from it, and keeping a falsified
+  hypothesis in production meant the board displayed "opp scores 1H 62%" as a *reason*.
+  `opp_fh_rate` is still returned and shown as **context**. This is simplification, not
+  improvement — nothing here made the board rank better, because nothing ranks.
+- **The Chase Board panel now says so**, in the UI, with the numbers. Order is a filter
+  (teams that clear their line reliably), not a pick order.
+- The null is recorded in a comment *at the point the score is defined*, and a test
+  asserts it stays there, so nobody re-adds a term without seeing it was measured.
+- Pinned an unobvious property: consistency spans 0.6–1.0, so a 5/5 team outranks a 0/5
+  team until the latter's λ is **~67% larger**. A big lever for a factor measured as noise.
+
+**OPEN, needs a decision — the Daily 2 ledger.** `_daily_shortlist` takes the top N off
+this same sorted board, so the ledger has been tracking picks selected by a ranking that
+does not rank. Removing `opp_fh` also *shifts which spots it picks*, mid-ledger. The
+selection rule and the ledger's continuity are the user's call, not a silent change.
+
 ### Probe result: nor-d1 confirmed, nor-d2 removed (2026-08-27)
 The probe did what it was built for. `nor-d1` (api **104**) came back **QUALIFY** with
 corners 4/4 — confirmed and staying. `nor-d2` (api 105) came back **MISMATCH**: 105 is

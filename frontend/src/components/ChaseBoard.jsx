@@ -35,7 +35,7 @@ export default function ChaseBoard({ leagueId = "all", withinDays = 7, limit = 2
               <th className="text-left font-medium px-4 py-3">Chase spot</th>
               <th className="text-right font-medium px-3 py-3">Won/g</th>
               <th className="text-right font-medium px-3 py-3">Opp conc</th>
-              <th className="text-right font-medium px-3 py-3" title="How often the opponent scores a first-half goal — the catalyst that puts our team behind and chasing">Opp FH</th>
+              <th className="text-right font-medium px-3 py-3" title="How often the opponent scores a first-half goal. Context only — five tests failed to find any effect from it, so it no longer influences the order.">Opp FH</th>
               <th className="text-center font-medium px-3 py-3" title="How many of the last 5 same-venue games the team hit this line">Hits</th>
               <th className="text-right font-medium px-3 py-3">Proj λ</th>
               <th className="text-left font-medium px-3 py-3">Line</th>
@@ -103,6 +103,15 @@ export default function ChaseBoard({ leagueId = "all", withinDays = 7, limit = 2
           </tbody>
         </table>
       </div>
+      {/* Measured, and it does not rank. Saying so on the panel matters more than the
+          panel looking authoritative — the row order is a filter, not a pick order. */}
+      <p className="px-4 py-2.5 border-t border-border text-[10px] text-muted-foreground">
+        The order here is <span className="text-foreground">descriptive, not a measured edge</span>.
+        Replaying this board walk-forward, its ranking scored +0.02 against a shuffled
+        control of 0.00 — it does not find spots the model underrates. Use it as a filter
+        (teams that clear their line reliably), and take the bet from the line and your own
+        price, not from a row's position.
+      </p>
     </div>
   );
 }

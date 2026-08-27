@@ -2297,8 +2297,24 @@ async def _chase_board(within_days: int = 7, limit: int = 25, league_id: Optiona
         p = nb_ge(line, lam)
         avg = league_avgs.get(t["league_id"], 5.0)
         corner_edge = round(lam / avg, 2) if avg else 1.0
-        # composite: corner projection, lifted by chase catalyst (opp FH goals) and consistency
-        chase_score = round(lam * (1 + 0.4 * opp_fh) * (0.6 + 0.4 * consistency), 3)
+        # MEASURED AND FOUND NOT TO RANK. measure_chase_board.py replays this board
+        # walk-forward and scores each ordering by residual (actual hit rate minus the
+        # model's own probability) — i.e. does the order find spots the model UNDERRATES:
+        #     chase_score  +0.02      lambda_only  +0.01
+        #     no_opp_fh    +0.03      RANDOM       flat  <- control passed
+        # All four are the same number. The control coming out flat is what makes that
+        # trustworthy: the harness is not manufacturing gradients. So this ordering
+        # carries no information the model did not already have, and no_opp_fh scoring
+        # highest is noise, NOT evidence that dropping the term helped.
+        #
+        # The opponent first-half term is gone anyway — five tests have now failed to
+        # find any effect from it, and keeping a falsified hypothesis in production code
+        # meant the board displayed "opp scores 1H 62%" as though it were a reason.
+        # `opp_fh_rate` is still returned as CONTEXT; it just no longer moves the order.
+        #
+        # This is simplification, not improvement. Ordering is still descriptive: use the
+        # board as a filter (spots that clear the line reliably), not as a ranking.
+        chase_score = round(lam * (0.6 + 0.4 * consistency), 3)
         mkey = f"{venue}_over_{line - 0.5}"
         book = odds_map.get(nf["fixture_id"], {}).get(mkey)
         ev = round((book * p - 1) * 100, 2) if book else None

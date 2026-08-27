@@ -75,12 +75,20 @@ export default function StreakFinder({ leagueId }) {
     api.streaks(params).then(setRows).catch(() => setRows([])).finally(() => setLoading(false));
   }, [scope, side, direction, subject, preset, threshold, days, leagueId, isUnder]);
 
-  const accent = isUnder ? "#38BDF8" : "#10B981";
-  const lineChip = isUnder
-    ? "bg-sky-500/15 text-sky-400 border-sky-500/30"
-    : "bg-emerald-500/15 text-emerald-400 border-emerald-500/30";
+  // COLOUR MEANS QUALITY, NOT DIRECTION — matching the fixture board and Best Bets.
+  // Every row used to be the same colour whether it was 5/5 or 5/10, because the colour
+  // encoded over-vs-under, which the toggle and the icon already tell you. Green now
+  // means the record is solid; muted means it is thin and scrolled past.
+  const SOLID = "bg-emerald-500/15 text-emerald-400 border-emerald-500/30";
+  const THIN = "border-border/60 text-muted-foreground/70";
+  // Solid = landed in at least 4 of every 5 SETTLED games (voids are stake-back, so they
+  // are excluded from the denominator rather than counted as either).
+  const isSolid = (r) => {
+    const settled = r.settled ?? r.window;
+    return settled > 0 && r.hits / settled >= 0.8;
+  };
   const resultChip = {
-    win: isUnder ? "bg-sky-500/20 text-sky-400" : "bg-emerald-500/20 text-emerald-400",
+    win: "bg-emerald-500/20 text-emerald-400",
     void: "bg-zinc-500/20 text-zinc-400",
     loss: "bg-red-500/15 text-red-400",
   };
@@ -201,20 +209,22 @@ export default function StreakFinder({ leagueId }) {
                 data-testid="streak-row"
                 onClick={() => r.next_fixture && navigate(`/fixture/${r.next_fixture.fixture_id}`)}
                 className={`border-b border-border/50 transition-colors duration-150 ${r.next_fixture ? "hover:bg-white/5 cursor-pointer" : ""}`}
-                style={{ borderLeft: `2px solid ${accent}` }}
+                style={{ borderLeft: `2px solid ${isSolid(r) ? "#10B981" : "#3F3F46"}` }}
               >
                 <td className="px-4 py-2.5">
                   <div className="text-foreground font-sans font-medium whitespace-nowrap">{r.name}</div>
                   <div className="text-[10px] text-muted-foreground uppercase tracking-wider font-sans">{r.league_name}</div>
                 </td>
                 <td className="px-4 py-2.5">
-                  <span className={`inline-flex items-center gap-1 text-xs px-2 py-1 rounded border ${lineChip}`}
-                    title={subject === "match" ? "Match total corners" : "Team corners"}>
+                  <span className={`inline-flex items-center gap-1 text-xs px-2 py-1 rounded border ${isSolid(r) ? SOLID : THIN}`}
+                    title={`${subject === "match" ? "Match total corners" : "Team corners"} — ${
+                      isSolid(r) ? "solid: landed in 4 of every 5 settled games"
+                                 : "thin: under 4 in 5, so treat it as a lead rather than a signal"}`}>
                     {isUnder ? <TrendingDown className="h-3 w-3" /> : <Target className="h-3 w-3" />} {lineLabel(r.line, r.direction)}
                   </span>
                 </td>
                 <td className="px-4 py-2.5 whitespace-nowrap">
-                  <span className={isUnder ? "text-sky-400 font-semibold" : "text-emerald-400 font-semibold"}>
+                  <span className={isSolid(r) ? "text-emerald-400 font-semibold" : "text-muted-foreground/70 font-semibold"}>
                     {r.hits}/{r.settled ?? r.window}
                   </span>
                   {r.voids > 0 && (

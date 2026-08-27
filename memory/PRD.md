@@ -35,6 +35,30 @@ Multi-league corner value betting web app. Rebuilds a spreadsheet corner model i
 
 ## Changelog (recent, newest first)
 
+### Norway 2nd + 3rd tier, and one shared league list (2026-08-25)
+Added **`nor-d1`** (api 104, "1. divisjon" / OBOS-ligaen — the SECOND tier) and
+**`nor-d2`** (api 105, "2. divisjon" — the THIRD tier). Norway's naming is a trap: the
+second level is called *1. divisjon*, so "2nd division" is ambiguous and both were added.
+29 leagues now.
+- **`leagues_meta.py` is new, and this is the important part.** `LEAGUE_META` lived in
+  `sync_real.py`, and `server.py` carried a hand-typed duplicate as `MANAGED_LEAGUE_IDS`
+  — while the boot cleanup **deletes any league not in that set**. So adding a league to
+  the sync alone would have wiped its data on every restart, silently, looking exactly
+  like "that league never appears". `MANAGED_LEAGUE_IDS` is now `set(LEAGUE_META)`,
+  derived and impossible to drift. `server.py` can import it because the new module
+  carries no env vars (`sync_real` reads `API_FOOTBALL_KEY` at import). 6 tests pin it,
+  including unique api ids and url-safe keys.
+- **`probe_leagues.py` rewritten around an IDENTITY check.** League ids are easy to get
+  wrong from memory, so it now prints the *provider's own* name/country/type next to the
+  one we assumed and reports **MISMATCH** when they disagree — then checks Corner Kicks,
+  shots and blocked-shots presence on the last four finished games, plus games/team.
+  Takes league keys or `--id`, defaults to the newly added leagues. **~6 API calls per
+  league** — its own endpoint `POST /api/tools/probe-leagues`, not a `measure` mode,
+  since that one promises no API calls. Button in the Tools panel.
+- **The 104/105 ids are unverified** — asserted from memory, corroborated only by
+  API-Football's consecutive-by-tier numbering elsewhere in the table (39-43, 78/79,
+  88/89, 71/72). Run the probe before syncing them.
+
 ### STATS_CAP 400 → 250: fit the first sync inside a day's quota (2026-08-21)
 Only **uncached** fixtures cost an API call, so raising `STATS_CAP` costs
 `(new cap − what is already cached)` per league, once. From the old 120 that is:

@@ -133,6 +133,12 @@ export default function ToolsPanel() {
               className="text-xs px-3 py-1.5 rounded border border-border bg-secondary hover:bg-white/5 disabled:opacity-50">
               Goals: project only (free)
             </button>
+            <button disabled={busy} data-testid="tools-probe-leagues"
+              title="Is a newly added league the competition we think it is, and does it carry corner data? ~6 calls per league"
+              onClick={() => fire(() => api.toolProbeLeagues(token))}
+              className="text-xs px-3 py-1.5 rounded border border-amber-500/40 bg-amber-500/10 text-amber-300 hover:bg-amber-500/20 disabled:opacity-50 flex items-center gap-1.5">
+              <Play className="h-3 w-3" /> Probe new leagues
+            </button>
             <button disabled={busy} data-testid="tools-probe-halves"
               title="Can API-Football give corners split by half? ~6 calls on one fixture"
               onClick={() => fire(() => api.toolProbeHalves(token))}

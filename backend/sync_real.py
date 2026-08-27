@@ -13,6 +13,8 @@ import httpx
 from dotenv import load_dotenv
 from motor.motor_asyncio import AsyncIOMotorClient
 
+
+from leagues_meta import LEAGUE_META
 ROOT = Path(__file__).parent
 load_dotenv(ROOT / ".env")
 
@@ -23,36 +25,9 @@ HEADERS = {"x-apisports-key": KEY}
 client = AsyncIOMotorClient(os.environ["MONGO_URL"])
 db = client[os.environ["DB_NAME"]]
 
-# my league_id -> API-Football metadata
-LEAGUE_META = {
-    "eng-pl":  {"api": 39,  "name": "Premier League",  "country": "England"},
-    "eng-ch":  {"api": 40,  "name": "Championship",     "country": "England"},
-    "eng-l1":  {"api": 41,  "name": "League One",       "country": "England"},
-    "eng-l2":  {"api": 42,  "name": "League Two",       "country": "England"},
-    "eng-nl":  {"api": 43,  "name": "National League",  "country": "England"},
-    "aus-al":  {"api": 188, "name": "A-League",         "country": "Australia"},
-    "nor-el":  {"api": 103, "name": "Eliteserien",      "country": "Norway"},
-    "ned-ere": {"api": 88,  "name": "Eredivisie",       "country": "Netherlands"},
-    "ned-ed":  {"api": 89,  "name": "Eerste Divisie",   "country": "Netherlands"},
-    "bra-sa":  {"api": 71,  "name": "Série A",          "country": "Brazil"},
-    "bra-sb":  {"api": 72,  "name": "Série B",          "country": "Brazil"},
-    "ita-sa":  {"api": 135, "name": "Serie A",          "country": "Italy"},
-    "fra-l1":  {"api": 61,  "name": "Ligue 1",          "country": "France"},
-    "esp-ll":  {"api": 140, "name": "La Liga",          "country": "Spain"},
-    "ger-bl":  {"api": 78,  "name": "Bundesliga",       "country": "Germany"},
-    "ger-bl2": {"api": 79,  "name": "2. Bundesliga",    "country": "Germany"},
-    "por-pl":  {"api": 94,  "name": "Primeira Liga",    "country": "Portugal"},
-    "bel-pl":  {"api": 144, "name": "Jupiler Pro League","country": "Belgium"},
-    "sco-pl":  {"api": 179, "name": "Premiership",      "country": "Scotland"},
-    "tur-sl":  {"api": 203, "name": "Süper Lig",        "country": "Turkey"},
-    "usa-ml":  {"api": 253, "name": "MLS",              "country": "USA"},
-    "den-sl":  {"api": 119, "name": "Superliga",        "country": "Denmark"},
-    "sui-sl":  {"api": 207, "name": "Super League",     "country": "Switzerland"},
-    "aut-bl":  {"api": 218, "name": "Bundesliga",       "country": "Austria"},
-    "gre-sl":  {"api": 197, "name": "Super League",     "country": "Greece"},
-    "jpn-j1":  {"api": 98,  "name": "J1 League",        "country": "Japan"},
-    "arg-lp":  {"api": 128, "name": "Liga Profesional", "country": "Argentina"},
-}
+# my league_id -> API-Football metadata lives in leagues_meta.py, so server.py can share
+# the same list — see the note there about the two copies silently disagreeing.
+#
 # Fixtures per league whose statistics we pull. This is what decides HISTORY DEPTH:
 # a 20-team league plays 10 fixtures a round, so 120 fixtures was only ~12 rounds and
 # every team topped out at ~12-13 games no matter how long the season had run. 250

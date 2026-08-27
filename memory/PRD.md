@@ -35,6 +35,34 @@ Multi-league corner value betting web app. Rebuilds a spreadsheet corner model i
 
 ## Changelog (recent, newest first)
 
+### Sync moved off the sleeping backend (2026-08-27)
+**Root cause of the site going stale for two days, twice.** `server.py` schedules a sync
+at 07:00/19:00 UTC with APScheduler — but APScheduler only fires **while the process is
+alive**, and Render spins down idle instances. A sleeping backend runs no cron jobs, so
+the data only ever refreshed when someone visited after a 12-hour gap (`_maybe_sync_on_boot`,
+`STALE_HOURS = 12`) or when Refresh was pressed. The twice-daily schedule was fiction.
+
+`.github/workflows/sync.yml` drives it from GitHub instead, which cannot be spun down:
+- **Wakes the backend first** (up to 8 tries, 15s apart). Render cold starts take up to a
+  minute and the first request often times out — waking it separately means the sync POST
+  lands on a warm instance rather than being the request that gets dropped.
+- **`workflow_dispatch`** as well as the cron, so the Actions tab doubles as a "sync now"
+  button that works even when the site is asleep.
+- **`concurrency: corner-sync`** so a late scheduled run and a manual one cannot race.
+- **Reports the outcome** via `report_sync.py` — a file, not an inlined one-liner,
+  because a mis-escaped `python3 -c` in YAML fails as a *silent green tick*, which is
+  exactly the failure this step exists to catch. Statuses map: `failed` → error (exit 1),
+  `partial` → warning, `running` → notice (normal, the sync is detached), unreadable
+  response → warning rather than a false pass.
+- The in-process schedule **stays** as a second trigger; `refresh-all` ignores a call
+  within 5 minutes of the last, so the two cannot stack.
+- **Cost:** a routine sync only fetches fixtures missing from the permanent
+  `fixture_stats` cache — a handful of calls, not a backfill.
+- `BACKEND_URL` repo variable overrides the default, which is the deployed URL (not a
+  secret — it is already in the public frontend bundle).
+- **Caveat:** GitHub disables scheduled workflows after **60 days of repository
+  inactivity**. If the repo goes quiet, re-enable it in the Actions tab.
+
 ### Nothing ranks: Daily 2 rebuilt on a stated rule (2026-08-27)
 The search for a ranking is **closed, and it failed**. Full result:
 

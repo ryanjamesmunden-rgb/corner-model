@@ -29,11 +29,34 @@ Multi-league corner value betting web app. Rebuilds a spreadsheet corner model i
 - GET /api/fixture-board?days&per_day&league_id — best upcoming FIXTURES (not teams), grouped by kickoff day, capped per day. Home page (/scanner).
 - GET /api/picks (record incl. profit/staked/roi/unpriced_wins + per-pick profit), POST /api/picks/settle
 - POST /api/explain (Claude Sonnet 4.6 via Emergent LLM key, server-side cache + throttle)
-- GET /api/backtest?model=v1|v2|v3&blocked_weight (v3 = candidate, backtest-only; a v3 run also returns `v2_same_sample` scored on identical rows), /api/sync/runs, POST /api/sync/refresh-all, /api/leagues/{id}/refresh
+- GET /api/backtest?model=v1|v2|v3&blocked_weight (v3 = candidate, backtest-only; a v3 run also returns `v2_same_sample` scored on identical rows), /api/sync/runs, POST /api/sync/refresh-all?token, /api/leagues/{id}/refresh?token (both TOOLS_TOKEN-gated; no UI calls them — sync runs on the 12-hourly GitHub Action)
 - GET /api/export, /api/export/csv?type=teams|fixtures, /api/export/streaks?days&window&min_hits&side&league_id (fixture-first streak markdown, overs + unders, team + match)
 - Bets/bankroll (built, frontend deferred): GET/PUT /api/bankroll, CRUD /api/bets, GET /api/bets/stats
 
 ## Changelog (recent, newest first)
+
+### Manual refresh removed; both sync endpoints gated (2026-08-27)
+Syncing spends API-Football credits, the app is **public with no user auth**, and the
+backend URL is in the frontend bundle — so `/api/sync/refresh-all` and
+`/api/leagues/{id}/refresh` were open to anyone who found them. Both now require
+`TOOLS_TOKEN`, the same gate the other credit-spending endpoints use.
+- **The Dashboard's "Refresh data" and "Refresh all" buttons are gone**, along with
+  `api.refresh` / `api.refreshAll`, so nothing on the site can trigger a sync. Removing
+  the helpers as well as the buttons is deliberate: leaving them is an invitation to wire
+  a button back up.
+- **Sync now runs only on the 12-hourly schedule** (07:00 / 19:00 UTC, GitHub Actions).
+- **`workflow_dispatch` stays as the one remaining manual path** — behind GitHub auth,
+  not a public button. It is the escape hatch for a deliberate one-off, e.g. syncing a
+  newly added league without waiting for the next run. Without it there would be no way
+  to force a sync at all.
+- The workflow reads the token from a **`SYNC_TOKEN` repo secret** and fails loudly with
+  the fix in the message when it is missing, when it mismatches `TOOLS_TOKEN` (403), or
+  when the backend has no `TOOLS_TOKEN` set at all (503) — rather than silently no-oping.
+  Passed with `curl -G --data-urlencode` so it stays out of URLs in error output.
+
+**ACTION REQUIRED:** add `SYNC_TOKEN` under Settings → Secrets and variables → Actions,
+matching `TOOLS_TOKEN` in Render. Until then the scheduled sync fails with a clear error.
+
 
 ### Sync moved off the sleeping backend (2026-08-27)
 **Root cause of the site going stale for two days, twice.** `server.py` schedules a sync

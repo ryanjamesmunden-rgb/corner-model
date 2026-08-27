@@ -26,8 +26,6 @@ export const api = {
   exportMarkdown: () => axios.get(`${API}/export`, { responseType: "text" }).then((r) => r.data),
   exportStreaks: (days = 7) => axios.get(`${API}/export/streaks`, { params: { days }, responseType: "text" }).then((r) => r.data),
   exportCsv: (type) => axios.get(`${API}/export/csv`, { params: { type }, responseType: "text" }).then((r) => r.data),
-  refresh: (id) => axios.post(`${API}/leagues/${id}/refresh`).then((r) => r.data),
-  refreshAll: () => axios.post(`${API}/sync/refresh-all`).then((r) => r.data),
   syncRuns: (limit = 8) => axios.get(`${API}/sync/runs`, { params: { limit } }).then((r) => r.data),
   picks: () => axios.get(`${API}/picks`).then((r) => r.data),
   settlePicks: () => axios.post(`${API}/picks/settle`).then((r) => r.data),

@@ -686,8 +686,18 @@ async def get_leagues(user: dict = Depends(get_current_user)):
 _last_refresh = {}
 
 
+# SYNCING SPENDS API-FOOTBALL CREDITS, and this app is public with no user auth. Both
+# refresh endpoints were open to anyone who found the URL — which is in the frontend
+# bundle, so that is everyone. They now need TOOLS_TOKEN, the same gate the other
+# credit-spending endpoints use.
+#
+# Nothing on the site calls these any more: the manual Refresh buttons are gone and the
+# sync runs on a schedule (.github/workflows/sync.yml, every 12 hours). The token is for
+# that workflow, and for a deliberate one-off — adding a league, say.
 @api_router.post("/leagues/{league_id}/refresh")
-async def refresh_league(league_id: str, user: dict = Depends(get_current_user)):
+async def refresh_league(league_id: str, token: Optional[str] = None,
+                         user: dict = Depends(get_current_user)):
+    _check_tools_token(token)
     if not await db.leagues.find_one({"league_id": league_id}):
         raise HTTPException(status_code=404, detail="League not found")
     now = datetime.now(timezone.utc)
@@ -706,7 +716,11 @@ _last_refresh_all = {"at": None}
 
 
 @api_router.post("/sync/refresh-all")
-async def refresh_all(user: dict = Depends(get_current_user)):
+async def refresh_all(token: Optional[str] = None,
+                      user: dict = Depends(get_current_user)):
+    """Full sync. Gated — see the note above `refresh_league`. Called by the scheduled
+    GitHub workflow, which holds the token as a repo secret."""
+    _check_tools_token(token)
     now = datetime.now(timezone.utc)
     last = _last_refresh_all["at"]
     if last and (now - last).total_seconds() < 300:

@@ -46,10 +46,28 @@ Rankings compared:
                      the harness is manufacturing a gradient and nothing else here
                      can be trusted.
 
-A PERFECTLY GOOD OUTCOME IS "NOTHING RANKS". If every candidate is flat, the answer is
-not to keep hunting for a score — it is that the Daily 2 should select on a stated,
-transparent rule (a quality bar plus something readable like model probability), and
-say plainly that it is not a discovered edge.
+RESULT (2026-08-27) — THE SEARCH IS CLOSED, AND IT FAILED:
+
+    venue_delta       +9.1 -> FLAT once lambda was built venue-split, the way production
+                      builds it. It had been correcting an error only THIS HARNESS made
+                      (it pooled venues; production never did). Artifact, confirmed by
+                      the collapse.
+    consistency_only  +7.9 — and synthetic validation on data with NO edge by
+                      construction already yields 7.5 from estimation error alone. 7.9
+                      against 7.5 is not a finding.
+    opp_conc_delta    flat
+    RANDOM            flat  <- control passed throughout
+
+Nothing ranks. The Daily 2 therefore selects on a STATED rule — a quality bar, then
+model probability — labelled as not-an-edge everywhere it appears. See DAILY_PICK_RULE
+in server.py. Do not re-open this with another score unless you have a candidate that is
+orthogonal to lambda AND to its dispersion; the ones that were not, all died here.
+
+NEXT HYPOTHESIS if anyone returns to it: consistency surviving where venue_delta died
+points at DISPERSION, not the mean. Lambda is a mean and NB_R is fixed at 11 for every
+team, while consistency counts how often a team CLEARED a line — shape information a
+fixed r cannot hold. Per-league or per-team dispersion is the thing to test, and it is a
+model change, not a ranking.
 
 WHY A GRADIENT CAN BE REAL EVEN IF THE MODEL IS "RIGHT": lambda is ESTIMATED from a
 10-game window, so it carries error. `consistency` is a second, independent look at the

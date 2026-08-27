@@ -35,6 +35,45 @@ Multi-league corner value betting web app. Rebuilds a spreadsheet corner model i
 
 ## Changelog (recent, newest first)
 
+### Nothing ranks: Daily 2 rebuilt on a stated rule (2026-08-27)
+The search for a ranking is **closed, and it failed**. Full result:
+
+| ranking | residual spread |
+|---|---|
+| `chase_score`, `lambda_only`, `no_opp_fh` | +0.02 / +0.01 / +0.03 — flat |
+| `venue_delta` | **+9.1 → FLAT** once λ was built venue-split |
+| `consistency_only` | +7.9, against a **known-spurious 7.5** |
+| `opp_conc_delta` | flat |
+| `RANDOM` (control) | flat ✓ throughout |
+
+- **`venue_delta` was an artifact, now confirmed.** It collapsed the moment the harness
+  stopped pooling venues — it had been correcting an error only the harness made.
+  Predicted in advance, then demonstrated: on synthetic data with no edge by construction
+  it fell +17.3 → +3.1 under the same fix.
+- **`consistency_only` at +7.9 is not a finding.** Synthetic validation on data with no
+  edge already produces **7.5** from estimation error alone.
+
+**Daily 2 now selects on `DAILY_PICK_RULE = "quality_bar_then_probability"`:**
+1. **Quality bar** — ≥4 venue games (`DAILY_MIN_VENUE_GAMES`) and cleared the line in
+   ≥4 of the last 5 (`DAILY_MIN_CONSISTENCY = 0.8`). `consistency` is used here as a
+   **reliability filter, never as a ranking** — that distinction is what the whole result
+   rests on, and a test pins the wording.
+2. **Then order by model probability.** Readable, and it makes the ledger a *calibration
+   record* — how the model's most confident calls actually land — rather than a fake edge.
+- **A thin day yields fewer than 2**, deliberately. The bar is absolute; topping up with
+  spots that failed it would defeat the point.
+- **Deliberately does NOT chase long odds.** Highest probability means lowest lines. A
+  value-seeking rule is a different rule and needs its own measurement — don't just flip
+  the sort.
+- Picks stay stamped `selected_by`, so the ledger's history spans the rule change
+  legibly.
+
+**Next hypothesis, recorded in both files:** consistency surviving where `venue_delta`
+died points at **dispersion**, not the mean. λ is a mean and `NB_R` is fixed at 11 for
+every team, while consistency counts how often a team *cleared* a line — shape
+information a fixed r cannot hold. Per-league or per-team dispersion is the test, and it
+is a model change rather than a ranking.
+
 ### v4 was not needed — production was already venue-split; the HARNESSES were not (2026-08-27)
 Asked to build a venue-aware λ (v4) after `venue_delta` scored **+9.1** on the rank test.
 It would have duplicated what production already does.

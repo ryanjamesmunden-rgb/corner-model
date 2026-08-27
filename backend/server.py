@@ -814,24 +814,59 @@ async def settle_picks_now(user: dict = Depends(get_current_user)):
 DAILY_PICK_COUNT = 2
 
 
-# WHAT THE DAILY 2 SELECTS ON — named, so it is a decision rather than a side effect of
-# whatever `_chase_board` happens to sort by.
+# WHAT THE DAILY 2 SELECTS ON.
 #
-# Until 2026-08-27 this was implicitly "top of the chase board", and that board's
-# ordering has since been measured and found NOT to rank (+0.02 against a flat control;
-# see measure_chase_board.py). So this is currently a stated rule, not a discovered edge,
-# and the ledger says so on every pick it stores.
+# THE SEARCH FOR A RANKING IS OVER, AND IT FAILED. Every candidate was replayed
+# walk-forward and scored by residual — actual hit rate minus the model's own probability,
+# i.e. does the order find spots the model UNDERRATES:
 #
-# Every pick is stamped with `selected_by`. That is the part that matters: when this rule
-# changes, the ledger's history stays interpretable instead of silently becoming a mix of
-# two strategies that look identical in the table.
-DAILY_PICK_RULE = "chase_board_order"
+#   chase_score  +0.02   lambda_only  +0.01   no_opp_fh  +0.03   RANDOM  flat
+#   venue_delta  +9.1 -> FLAT once lambda was built venue-split, as production builds it.
+#                 It was correcting an error only the HARNESS was making.
+#   consistency_only  +7.9 — but synthetic validation on data with NO edge by
+#                 construction already produces 7.5 from estimation error alone. 7.9
+#                 against 7.5 is not a finding.
+#
+# So this is a STATED rule, not a discovered edge, and it is labelled as one everywhere
+# it appears. Two parts:
+#
+#   1. A QUALITY BAR. Spots where the estimate is thin or uncorroborated are dropped.
+#      `consistency` is used here as a RELIABILITY FILTER — this team has actually cleared
+#      this line lately — NOT as a ranking. That distinction is the whole point: filtering
+#      on corroboration is defensible, claiming it beats the price is not.
+#   2. Then order by MODEL PROBABILITY. Readable, and it makes the ledger measure
+#      something meaningful: how the model's most confident calls actually land. That is a
+#      calibration record, which is worth having, rather than a fake edge.
+#
+# WHAT THIS DELIBERATELY DOES NOT DO: chase long odds. Highest probability means lowest
+# lines. If you want the ledger to chase value instead, that is a different rule and it
+# needs its own measurement — do not just flip the sort.
+#
+# NEXT HYPOTHESIS, if anyone picks this up: consistency surviving where venue_delta died
+# points at DISPERSION rather than the mean. Lambda is a mean and NB_R is fixed at 11 for
+# every team; consistency counts how often a team CLEARED a line, which carries shape
+# information a fixed r cannot. Per-league or per-team dispersion is the thing to test.
+DAILY_PICK_RULE = "quality_bar_then_probability"
+DAILY_MIN_VENUE_GAMES = 4      # the chase board's own floor; stated here so it is visible
+DAILY_MIN_CONSISTENCY = 0.8    # cleared the line in 4 of the last 5 on this venue
+
+
+def daily_pick_qualifies(c: dict, min_consistency: float = DAILY_MIN_CONSISTENCY) -> bool:
+    """The quality bar. A filter on corroboration, NOT a claim about beating the price."""
+    of = c.get("consistency_of") or 0
+    if of < DAILY_MIN_VENUE_GAMES:
+        return False
+    return (c.get("consistency") or 0) / of >= min_consistency
+
+
+def daily_pick_order(c: dict) -> float:
+    """Order among qualifying spots: the model's own confidence, nothing cleverer."""
+    return c.get("prob") or 0.0
 
 
 async def _daily_shortlist(day: str, count: int = DAILY_PICK_COUNT) -> List[dict]:
-    """Highest-ranked chase spots kicking off on `day` (UTC) that have not started.
-
-    NOTE the ordering here is not a measured edge — see DAILY_PICK_RULE."""
+    """Chase spots kicking off on `day` (UTC) that clear the quality bar, most confident
+    first. See DAILY_PICK_RULE — this ordering is stated, not discovered."""
     board = await _chase_board(within_days=2, limit=500)
     now = datetime.now(timezone.utc)
     out = []
@@ -845,7 +880,12 @@ async def _daily_shortlist(day: str, count: int = DAILY_PICK_COUNT) -> List[dict
             dt = dt.replace(tzinfo=timezone.utc)
         if dt <= now or dt.date().isoformat() != day:
             continue
+        if not daily_pick_qualifies(c):
+            continue
         out.append(c)
+    # A thin day yields fewer than `count`, deliberately: the bar is absolute, and
+    # topping up with spots that failed it would defeat the whole point.
+    out.sort(key=daily_pick_order, reverse=True)
     return out[:count]
 
 

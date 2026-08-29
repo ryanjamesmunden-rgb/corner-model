@@ -31,14 +31,27 @@ def _age_hours(iso):
 
 
 def main() -> int:
+    raw = sys.stdin.read()
     try:
-        runs = json.load(sys.stdin).get("runs", [])
+        payload = json.loads(raw)
     except Exception as e:
-        print(f"::warning::could not read /api/sync/runs ({e})")
-        return 0
+        # FAIL, do not warn. A warning here exits 0, which is a green tick over a broken
+        # check — the exact silent failure this script exists to catch. It cost four days.
+        print(f"::error::could not parse /api/sync/runs ({e}). First 300 chars:\n{raw[:300]}")
+        return 1
+    # The endpoint returns a BARE LIST. This script assumed {"runs": [...]} and swallowed
+    # the AttributeError as a warning, so every run was green while nothing was checked.
+    # Accept both shapes so a later change to either side cannot resurrect that.
+    if isinstance(payload, list):
+        runs = payload
+    elif isinstance(payload, dict):
+        runs = payload.get("runs", [])
+    else:
+        print(f"::error::unexpected /api/sync/runs shape: {type(payload).__name__}")
+        return 1
     if not runs:
-        print("::warning::no sync runs recorded — the sync may not have started")
-        return 0
+        print("::error::no sync runs recorded at all — the sync has never run")
+        return 1
 
     for r in runs:
         errs = r.get("error_count")

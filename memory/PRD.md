@@ -35,6 +35,32 @@ Multi-league corner value betting web app. Rebuilds a spreadsheet corner model i
 
 ## Changelog (recent, newest first)
 
+### Why the site went 4 days stale — three bugs, all in my own monitoring (2026-08-29)
+Green ticks on every scheduled run while the data sat four days old. The runs were
+checking nothing.
+
+**1. Wrong response shape.** `/api/sync/runs` returns a **bare list**; `report_sync.py`
+did `json.load(...).get("runs", [])`. Every run logged
+`could not read /api/sync/runs ('list' object has no attribute 'get')`.
+
+**2. That error path returned 0.** A warning, not a failure — so the run went green over a
+check that had not run. **This is the exact silent failure the script was written to
+prevent.** Unparseable, unexpected-shape and empty-list now all **exit 1**, and the parse
+error prints the first 300 chars of the response so the cause is visible. Both list and
+dict shapes are accepted so neither side can resurrect it.
+
+**3. The wake-only design never triggered anything.** The premise was that waking a
+sleeping Render instance is a process start, firing `_maybe_sync_on_boot`. The logs
+disprove it: `attempt 1: HTTP 200`, instantly — the instance was **already awake**, so no
+start, so no sync. The twice-daily ping was itself helping keep it warm. The workflow
+**explicitly calls `refresh-all` again**, which needs `SYNC_TOKEN`.
+→ **The earlier "you can ignore SYNC_TOKEN" was wrong. It is required.**
+
+**`workflow_dispatch` restored**, having been removed on request: without it there was no
+way to recover from the stall before the next 19:00 UTC tick. It needs repo access and
+the sync it triggers is token-gated, so it is not a public button.
+
+
 ### measure_features.py made venue-split too — the last pooled harness (2026-08-27)
 Asked to run the weight sweep; checked first and found `measure_features.py` was still
 building λ from **pooled** form, like the backtester and rank harness had been. Sweeping a

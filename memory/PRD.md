@@ -35,6 +35,31 @@ Multi-league corner value betting web app. Rebuilds a spreadsheet corner model i
 
 ## Changelog (recent, newest first)
 
+### `/api/sync/if-stale` — a trigger with no secret to go missing (2026-08-29)
+The token version needed a `SYNC_TOKEN` GitHub secret, and the user could not reach GitHub
+Settings to add it. Rather than leave the schedule blocked on a setup step, the trigger no
+longer needs one.
+
+**`POST /api/sync/if-stale` is UNGATED, and safe because it is self-limiting rather than
+trusted.** Two independent brakes:
+- it does nothing unless the newest data is older than `STALE_HOURS` (12) — on a healthy
+  site every call is a no-op;
+- a DB lock blocks a second sync within `SYNC_LOCK_MINUTES` (20).
+
+So the most an unlimited caller can cause is **the sync that was already due**.
+`refresh-all` stays gated, because it is unconditional and therefore genuinely abusable.
+
+- `_sync_if_stale(trigger)` is split out of `_maybe_sync_on_boot`, which is now a thin
+  wrapper — so the boot path and the HTTP path **cannot diverge**.
+- Returns `fresh` | `already_syncing` | `syncing` with the data's age, so the workflow can
+  tell **"nothing to do" from "did not work"** — a distinction the old ping could not make,
+  and the reason four days passed unnoticed.
+- **Tools panel gains "Sync now"** — token-gated, hits `refresh-all`, for forcing a sync
+  regardless of age. Uses the token the panel already holds, so it needs no GitHub access.
+
+**Net effect: no secret, no setup, and the schedule works on its own.**
+
+
 ### Why the site went 4 days stale — three bugs, all in my own monitoring (2026-08-29)
 Green ticks on every scheduled run while the data sat four days old. The runs were
 checking nothing.

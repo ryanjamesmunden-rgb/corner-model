@@ -1,20 +1,19 @@
 # Refreshes the data twice a day, every 12 hours.
 #
-# WHY THIS EXPLICITLY TRIGGERS THE SYNC, having briefly not:
+# HOW IT TRIGGERS, and the two ways this has already gone wrong:
 #
-# A previous version only PINGED the backend, on the reasoning that waking a sleeping
-# Render instance is a process start, which fires `_maybe_sync_on_boot`. That reasoning
-# had a hole, and the logs showed it: `attempt 1: HTTP 200`, instantly. The instance was
-# already awake, so there was no start, so there was no sync — and the twice-daily ping
-# was itself part of what kept it warm. Four days passed with green ticks and stale data.
+#   1. Calling the gated `refresh-all` needed a GitHub secret. A secret is a piece of
+#      setup that can be missing, and it was.
+#   2. Just PINGING the backend assumed waking a sleeping instance would fire the boot
+#      sync. The logs said `attempt 1: HTTP 200` — already awake, so no start, no sync.
+#      Four days passed with green ticks and stale data.
 #
-# So the sync is now asked for explicitly. `refresh-all` spends API credits and this app
-# is public, so it is TOOLS_TOKEN-gated, which means this workflow needs the token as a
-# repo secret. That is one piece of setup in exchange for a trigger that does not depend
-# on guessing whether the host happened to restart.
+# So it now calls `/api/sync/if-stale`, which needs no token and asks explicitly. That
+# endpoint is safe to leave open because it is SELF-LIMITING rather than trusted: it does
+# nothing unless the data is over 12h old, and a lock blocks a second sync within 20
+# minutes. The most an unlimited caller can cause is the sync that was already due.
 #
 # The in-process APScheduler stays as a second trigger for when the process IS alive.
-# `refresh-all` ignores a call within 5 minutes of the last, so the two cannot stack.
 #
 # COST: a routine sync only fetches fixtures missing from the permanent `fixture_stats`
 # cache, so a normal run is a handful of calls, not a backfill.
@@ -61,28 +60,23 @@ jobs:
           done
 
       - name: Trigger the sync
-        env:
-          # Repo secret, matching TOOLS_TOKEN in the Render environment:
-          # Settings -> Secrets and variables -> Actions -> New repository secret.
-          SYNC_TOKEN: ${{ secrets.SYNC_TOKEN }}
+        # /api/sync/if-stale needs NO TOKEN, so there is no secret to be missing. That
+        # matters: the token version needed a GitHub secret, and a missing secret is
+        # exactly how the data sat four days old behind green ticks.
+        #
+        # It is safe to leave open because it is self-limiting, not trusted: it does
+        # nothing unless the data is over 12h old, and a DB lock blocks a second sync
+        # within 20 minutes. The most anyone can trigger is the sync that was already due.
         run: |
-          if [ -z "$SYNC_TOKEN" ]; then
-            echo "::error::SYNC_TOKEN secret is not set, so no sync can be triggered."
-            echo "Add it under Settings > Secrets and variables > Actions, matching TOOLS_TOKEN in Render."
-            exit 1
-          fi
-          body=$(curl -s --max-time 120 -X POST -G \
-                   --data-urlencode "token=$SYNC_TOKEN" \
-                   "$BACKEND/api/sync/refresh-all" || true)
+          body=$(curl -s --max-time 120 -X POST "$BACKEND/api/sync/if-stale" || true)
           echo "response: $body"
           case "$body" in
             *'"syncing"'*)         echo "sync started" ;;
-            *'"already_syncing"'*) echo "::notice::a sync was already running — nothing to do" ;;
-            *'Bad or missing token'*)
-              echo "::error::backend rejected the token — SYNC_TOKEN and TOOLS_TOKEN differ"; exit 1 ;;
-            *'disabled'*)
-              echo "::error::TOOLS_TOKEN is not set on the backend, so the endpoint is off"; exit 1 ;;
-            *) echo "::error::unexpected response from refresh-all"; exit 1 ;;
+            *'"fresh"'*)           echo "::notice::data is already current — nothing to do" ;;
+            *'"already_syncing"'*) echo "::notice::a sync is already running" ;;
+            *'Not Found'*)
+              echo "::error::backend has no /api/sync/if-stale — it is running an older build"; exit 1 ;;
+            *) echo "::error::unexpected response from if-stale (backend down or erroring)"; exit 1 ;;
           esac
 
       - name: Report what happened

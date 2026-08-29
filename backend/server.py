@@ -730,6 +730,25 @@ async def refresh_all(token: Optional[str] = None,
     return {"status": "syncing", "started_at": now.isoformat()}
 
 
+@api_router.post("/sync/if-stale")
+async def sync_if_stale(user: dict = Depends(get_current_user)):
+    """Sync, but ONLY if the data is actually stale. UNGATED, deliberately.
+
+    The scheduled workflow calls this. It needs no token, which matters because a token
+    means a GitHub secret, and a secret is a piece of setup that can be missing — which is
+    exactly how the data sat four days old while every run went green.
+
+    Safe to leave open because it is self-limiting rather than trusted: it does nothing
+    unless the newest data is older than STALE_HOURS (12), and a DB lock blocks a second
+    sync within SYNC_LOCK_MINUTES (20). The most an unlimited caller can cause is the
+    sync that was already due. `refresh-all` stays gated because it is unconditional.
+
+    Returns fresh | already_syncing | syncing, with the data's age, so a caller can tell
+    "nothing to do" apart from "did not work" — a distinction the old ping could not make.
+    """
+    return await _sync_if_stale("scheduled")
+
+
 @api_router.get("/sync/runs")
 async def sync_runs(limit: int = 8, user: dict = Depends(get_current_user)):
     runs = await db.sync_runs.find({}, {"_id": 0}).sort("started_at", -1).limit(limit).to_list(limit)
@@ -3185,9 +3204,16 @@ def run_sync_all(trigger="scheduled"):
                      env={**_os.environ, "SYNC_TRIGGER": trigger})
 
 
-async def _maybe_sync_on_boot():
-    """Refresh on boot when data is missing or stale, guarded by a DB lock so
-    frequent restarts (hot-reload) don't spawn overlapping syncs."""
+async def _sync_if_stale(trigger: str) -> dict:
+    """Sync ONLY when the data is actually old. Returns what it decided and why.
+
+    Split out of the boot handler so the same self-limiting logic can be reached over
+    HTTP. That is what makes `/api/sync/if-stale` safe to leave ungated: it cannot be
+    made to spend credits on demand. Two independent brakes —
+      - it does nothing unless the newest data is older than STALE_HOURS (12), so on a
+        healthy site every call is a no-op;
+      - a DB lock stops a second sync starting within SYNC_LOCK_MINUTES (20).
+    So the worst an unlimited caller can achieve is the sync that was due anyway."""
     now = datetime.now(timezone.utc)
     real = await db.leagues.count_documents({"data_source": "real"})
     newest = await db.leagues.find({"data_source": "real"}, {"_id": 0, "synced_at": 1}) \
@@ -3199,20 +3225,34 @@ async def _maybe_sync_on_boot():
             stale = (now - last).total_seconds() > STALE_HOURS * 3600
         except Exception:
             stale = True
+    age_h = None
+    if newest and newest[0].get("synced_at"):
+        try:
+            age_h = round((now - datetime.fromisoformat(newest[0]["synced_at"])).total_seconds() / 3600, 1)
+        except Exception:
+            pass
     if real > 0 and not stale:
-        return
+        return {"status": "fresh", "synced_hours_ago": age_h, "stale_after_hours": STALE_HOURS}
     lock = await db.meta.find_one({"_id": "sync_lock"})
     if lock and lock.get("started_at"):
         try:
             started = datetime.fromisoformat(lock["started_at"])
             if (now - started).total_seconds() < SYNC_LOCK_MINUTES * 60:
-                logger.info("Boot sync skipped — a sync started %s", lock["started_at"])
-                return
+                logger.info("Sync skipped (%s) — one started %s", trigger, lock["started_at"])
+                return {"status": "already_syncing", "started_at": lock["started_at"],
+                        "synced_hours_ago": age_h}
         except Exception:
             pass
     await db.meta.update_one({"_id": "sync_lock"}, {"$set": {"started_at": now.isoformat()}}, upsert=True)
-    logger.info("Boot sync: real=%s stale=%s — launching API-Football sync", real, stale)
-    run_sync_all("boot")
+    logger.info("Sync (%s): real=%s stale=%s — launching API-Football sync", trigger, real, stale)
+    run_sync_all(trigger)
+    return {"status": "syncing", "trigger": trigger, "synced_hours_ago": age_h,
+            "stale_after_hours": STALE_HOURS}
+
+
+async def _maybe_sync_on_boot():
+    """Startup hook. Thin wrapper so the boot path and the HTTP path cannot diverge."""
+    await _sync_if_stale("boot")
 
 
 @app.on_event("startup")

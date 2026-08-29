@@ -5,6 +5,16 @@ import { ArrowLeft, ClipboardPaste, Calculator, TrendingUp } from "lucide-react"
 import { api, tierMeta, confMeta } from "@/lib/api";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 
+// Bands, not a gradient: a rate either reads as reliable, playable, thin or unlikely.
+// Shared by the match-total table and the team-corner tables so the two cannot show the
+// same number in different colours — the team tables previously had NO colour at all,
+// which made a 78% line and a 22% line look equally worth reading.
+const band = (pct) =>
+  pct >= 70 ? { text: "text-emerald-400", bar: "bg-emerald-500", chip: "bg-emerald-500/15 border-emerald-500/30", label: "reliable" }
+  : pct >= 50 ? { text: "text-primary", bar: "bg-primary", chip: "bg-primary/15 border-primary/30", label: "playable" }
+  : pct >= 30 ? { text: "text-amber-400", bar: "bg-amber-500", chip: "bg-amber-500/15 border-amber-500/30", label: "thin" }
+  : { text: "text-muted-foreground/60", bar: "bg-zinc-600", chip: "border-border/60", label: "unlikely" };
+
 const WINDOW_LABELS = { "3": "L3", "5": "L5", "10": "L10", "0": "Season" };
 
 export default function FixtureDetail() {
@@ -80,8 +90,8 @@ export default function FixtureDetail() {
   // Team-corner markets keep their odds/EV table — those prices are user-entered.
   // Total corners is shown as observed hit rates instead; see TotalCornersLanded.
   const groups = [
-    { key: "home", label: `${fixture.home_name} Corners` },
-    { key: "away", label: `${fixture.away_name} Corners` },
+    { key: "home", label: `${fixture.home_name} Corners`, team: home_team, venue: true },
+    { key: "away", label: `${fixture.away_name} Corners`, team: away_team, venue: false },
   ];
 
   return (
@@ -183,6 +193,8 @@ export default function FixtureDetail() {
               <thead>
                 <tr className="border-b border-border text-muted-foreground text-[10px] uppercase tracking-wider">
                   <th className="text-left font-medium px-3 py-2">Line</th>
+                  <th className="text-left font-medium px-3 py-2"
+                    title="How often this team ACTUALLY hit the line, in its games on this venue">Landed</th>
                   <th className="text-right font-medium px-3 py-2">Prob</th>
                   <th className="text-right font-medium px-3 py-2">Fair</th>
                   <th className="text-right font-medium px-3 py-2">Book</th>
@@ -192,9 +204,36 @@ export default function FixtureDetail() {
               <tbody className="font-mono-data text-sm">
                 {model.markets.filter((m) => m.group === g.key).map((m) => {
                   const t = m.tier ? tierMeta[m.tier] : null;
+                  // Colour by what actually happened, not by the model's own probability —
+                  // the same evidence the match-total table uses, on the same bands.
+                  // Venue-filtered, because the market is for this team at this venue and
+                  // the model prices it that way too.
+                  const played = (g.team?.recent || []).filter((x) => x.home === g.venue);
+                  const plus = Math.ceil(m.line ?? parseFloat(String(m.key).split("_").pop()));
+                  const hit = played.filter((x) => (x.won ?? -1) >= plus).length;
+                  const pct = played.length ? Math.round((hit / played.length) * 100) : null;
+                  const c = band(pct ?? 0);
+                  const dim = pct != null && pct < 30;
                   return (
-                    <tr key={m.key} data-testid={`market-row-${m.key}`} className={`border-b border-border/50 transition-colors ${flash[m.key] ? "flash-green" : ""}`}>
-                      <td className="px-3 py-2 text-foreground whitespace-nowrap">{m.label}</td>
+                    <tr key={m.key} data-testid={`market-row-${m.key}`}
+                      className={`border-b border-border/50 transition-colors ${flash[m.key] ? "flash-green" : ""} ${dim ? "opacity-60" : ""}`}>
+                      <td className="px-3 py-2 whitespace-nowrap">
+                        <span className={`text-xs px-1.5 py-0.5 rounded border ${c.chip} ${c.text}`}
+                          title={pct == null ? "no games on this venue yet" : `${c.label} — landed ${hit}/${played.length} on this venue`}>
+                          {m.label}
+                        </span>
+                      </td>
+                      <td className="px-3 py-2">
+                        {pct == null ? <span className="text-muted-foreground text-xs">—</span> : (
+                          <div className="flex items-center gap-2">
+                            <span className={`${c.text} text-xs font-semibold w-9 shrink-0`}>{hit}/{played.length}</span>
+                            <div className="h-1.5 rounded-full bg-white/5 overflow-hidden flex-1 min-w-[28px]">
+                              <div className={`h-full rounded-full ${c.bar}`} style={{ width: `${pct}%` }} />
+                            </div>
+                            <span className={`${c.text} text-xs w-8 text-right`}>{pct}%</span>
+                          </div>
+                        )}
+                      </td>
                       <td className="px-3 py-2 text-right text-muted-foreground">{m.prob.toFixed(1)}%</td>
                       <td className="px-3 py-2 text-right text-foreground">{m.fair_odds?.toFixed(2)}</td>
                       <td className="px-3 py-2 text-right">
@@ -216,6 +255,7 @@ export default function FixtureDetail() {
                 })}
               </tbody>
             </table>
+            <BandKey note="Landed = how often this team hit the line in its own games on this venue. Colour follows that, not the model's probability." />
           </div>
         ))}
       </div>
@@ -233,6 +273,24 @@ export default function FixtureDetail() {
 // This replaced a fair-odds/EV table: the "bookmaker" prices behind that table were
 // generated by the sync, not collected from a book, so every EV it showed was noise.
 // A hit rate is something the fixtures themselves can vouch for.
+// The key for the bands above. Colour is only useful if its meaning is stated — the
+// fixture board learned the same lesson.
+function BandKey({ note }) {
+  return (
+    <div className="px-3 py-2 border-t border-border flex items-center gap-2 flex-wrap text-[10px] text-muted-foreground">
+      {[70, 50, 30, 0].map((p) => {
+        const c = band(p);
+        return (
+          <span key={p} className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded border font-mono-data ${c.chip} ${c.text}`}>
+            {p === 70 ? "70%+" : p === 50 ? "50-69%" : p === 30 ? "30-49%" : "<30%"} {c.label}
+          </span>
+        );
+      })}
+      {note && <span className="w-full">{note}</span>}
+    </div>
+  );
+}
+
 function TotalCornersLanded({ markets, home, away, homeName, awayName }) {
   // Lines come from the model's own total ladder, so the two stay in step.
   // Over 9.5 is displayed as "10+", which is how the line is actually spoken.
@@ -249,13 +307,6 @@ function TotalCornersLanded({ markets, home, away, homeName, awayName }) {
   if (!lines.length || sample === 0) return null;
 
   const hits = (arr, plus) => arr.filter((t) => t >= plus).length;
-
-  // Bands, not a gradient: a rate either reads as reliable, playable, or thin.
-  const band = (pct) =>
-    pct >= 70 ? { text: "text-emerald-400", bar: "bg-emerald-500", chip: "bg-emerald-500/15 border-emerald-500/30" }
-    : pct >= 50 ? { text: "text-primary", bar: "bg-primary", chip: "bg-primary/15 border-primary/30" }
-    : pct >= 30 ? { text: "text-amber-400", bar: "bg-amber-500", chip: "bg-amber-500/15 border-amber-500/30" }
-    : { text: "text-red-400", bar: "bg-red-500", chip: "bg-red-500/15 border-red-500/30" };
 
   return (
     <div className="bg-card border border-border rounded-lg overflow-hidden lg:col-span-1"
@@ -308,6 +359,7 @@ function TotalCornersLanded({ markets, home, away, homeName, awayName }) {
           })}
         </tbody>
       </table>
+      <BandKey note="Landed in = how often both teams' recent games cleared this total." />
       <p className="px-3 py-2 text-[10px] text-muted-foreground leading-relaxed border-t border-border">
         Share of these teams' recent games that reached each line. Both sides' games count
         equally — it is a form guide, not a forecast, and takes no account of who they played.

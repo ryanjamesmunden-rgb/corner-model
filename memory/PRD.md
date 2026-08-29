@@ -35,6 +35,29 @@ Multi-league corner value betting web app. Rebuilds a spreadsheet corner model i
 
 ## Changelog (recent, newest first)
 
+### Colour keys, and team corners colour-coded like match corners (2026-08-29)
+Two reports: the fixture-board colours needed a key, and on a fixture page the **match**
+corners were colour-coded while the **team** corners were not.
+
+**The team-corner tables had no colour at all**, so a line that landed 78% of the time and
+one that landed 22% looked equally worth reading. They now carry a **Landed** column —
+how often that team actually hit the line **in its games on that venue** — with the line
+chip coloured on the same four bands the match-total table already used, and sub-30% rows
+dimmed.
+- Coloured by **what happened**, not by the model's own probability. The probability is
+  still shown next to it, so the two can be compared rather than conflated.
+- **Venue-filtered**, because the market is for that team at that venue and the model
+  prices it that way. Verified the threshold matches the backend: markets are all
+  half-lines, so `ceil(line)` equals the backend's `int(line) + 1`.
+- `band()` lifted to module scope so both tables share **one** definition and cannot show
+  the same number in different colours.
+
+**Keys added.** A `BandKey` under both fixture-page tables, and the fixture-board key
+**moved from the footer to directly under the header** — at 10px below three days of
+fixtures it went unread, which is the same as not having one. Colour is only useful where
+you meet the colour.
+
+
 ### `/api/sync/if-stale` — a trigger with no secret to go missing (2026-08-29)
 The token version needed a `SYNC_TOKEN` GitHub secret, and the user could not reach GitHub
 Settings to add it. Rather than leave the schedule blocked on a setup step, the trigger no

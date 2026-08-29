@@ -124,6 +124,28 @@ export default function FixtureBoard({ leagueId = "all" }) {
         </div>
       </div>
 
+      {/* The key. It was in the footer at 10px and went unread — colour is only useful
+          if its meaning is where you meet the colour, not 300px below it. */}
+      {!loading && board?.days?.length > 0 && (
+        <div className="px-4 py-2 border-b border-border flex items-center gap-2 flex-wrap"
+          data-testid="fb-legend">
+          <span className="text-[10px] uppercase tracking-wider text-muted-foreground">Key</span>
+          <span className={`inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded border font-mono-data ${STRONG}`}>
+            <Flame className="h-2.5 w-2.5" /> strong
+          </span>
+          <span className="text-[10px] text-muted-foreground">a real run or a 4-of-5 spot — this is what put the game here</span>
+          <span className={`inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded border font-mono-data ${WEAK}`}>
+            <TrendingDown className="h-2.5 w-2.5" /> weak
+          </span>
+          <span className="text-[10px] text-muted-foreground">present, but not worth acting on</span>
+          <span className="text-[10px] text-muted-foreground/70 w-full sm:w-auto sm:ml-auto">
+            icon = type: <Target className="h-2.5 w-2.5 inline" /> chase ·
+            <Flame className="h-2.5 w-2.5 inline mx-0.5" /> over ·
+            <TrendingDown className="h-2.5 w-2.5 inline mx-0.5" /> under
+          </span>
+        </div>
+      )}
+
       {loading ? (
         <div className="p-4 space-y-2">
           {[0, 1, 2].map((i) => <div key={i} className="h-16 rounded-md bg-secondary animate-pulse" />)}
@@ -160,26 +182,12 @@ export default function FixtureBoard({ leagueId = "all" }) {
         </div>
       )}
       {board?.days?.length > 0 && (
-        <div className="px-4 py-2.5 border-t border-border space-y-1.5">
-          {/* Say what the colour means rather than leaving it to be inferred — the old
-              five-colour-by-type scheme was guessable and wrong, which is worse. */}
-          <div className="flex items-center gap-3 flex-wrap text-[10px] text-muted-foreground">
-            <span className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded border font-mono-data ${STRONG}`}>
-              <Flame className="h-2.5 w-2.5" /> strong
-            </span>
-            <span>cleared the bar — this is what put the game here</span>
-            <span className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded border font-mono-data ${WEAK}`}>
-              <TrendingDown className="h-2.5 w-2.5" /> weak
-            </span>
-            <span>present, but not worth acting on</span>
-          </div>
-          <p className="text-[10px] text-muted-foreground">
-            A fixture qualifies on evidence, not on the day being quiet: {board.min_games}+ games
-            behind each side, a projection at or above that league's average, and a live streak
-            of {board.min_run}+ or a chase spot hitting 4 of 5. Order is triage — take the bet
-            from the angle.
-          </p>
-        </div>
+        <p className="px-4 py-2.5 border-t border-border text-[10px] text-muted-foreground">
+          A fixture qualifies on evidence, not on the day being quiet: {board.min_games}+ games
+          behind each side, a projection at or above that league's average, and a live streak
+          of {board.min_run}+ or a chase spot hitting 4 of 5. Order is triage — take the bet
+          from the angle.
+        </p>
       )}
     </section>
   );

@@ -18,8 +18,8 @@ os.environ.setdefault("DB_NAME", "test_corner_model")
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from server import (  # noqa: E402
-    _angle_rank, angle_is_strong, board_days, board_reason, dedupe_angles,
-    fixture_qualifies,
+    BOARD_MAX_DAYS, _angle_rank, angle_is_strong, board_days, board_reason,
+    dedupe_angles, fixture_qualifies, mismatch_angle,
 )
 
 
@@ -304,3 +304,69 @@ def test_dedupe_never_drops_a_non_mismatch():
     angles = [{"kind": "over_team", "team": "Barnet", "line": 6},
               {"kind": "chase", "team": "Barnet", "line": 6}]
     assert len(dedupe_angles(angles)) == 2
+
+
+# --------------------------------------------------------------------------------------
+# Looking further ahead.
+#
+# Two limits made a month-long window pointless. The board clamped days to 14 while the
+# UI offered a "Month" tab, so Month silently returned a fortnight. And every mismatch was
+# read off _next_fixtures, which keeps only each team's FIRST upcoming game — so widening
+# the window added fixtures but not one extra mismatch. Finding a strong side drawn
+# against a leaky defence three weeks out was impossible by construction.
+
+def _team(name, for_=8.0, against=8.0, n=12):
+    """A team whose home and away splits both average `for_` won and `against` conceded."""
+    ms = []
+    for i in range(n):
+        ms.append({"home": i % 2 == 0, "corners_for": for_, "corners_against": against,
+                   "shots_for": 12, "date": f"2026-0{i % 9 + 1}-01"})
+    return {"team_id": f"t-{name}", "name": name, "matches": ms, "real_matches": ms,
+            "real_samples": n}
+
+
+def test_the_board_can_look_a_month_ahead():
+    """The UI's Month tab asks for 30; the clamp has to allow it or the tab lies."""
+    assert BOARD_MAX_DAYS >= 30
+
+
+def test_a_strong_side_against_a_leaky_defence_is_a_mismatch():
+    strong, leaky = _team("Strong", for_=8.0), _team("Leaky", against=8.0)
+    a = mismatch_angle(strong, leaky, "home", 5.0, 12.0, 0.0)
+    assert a is not None
+    assert a["kind"] == "mismatch" and a["team"] == "Strong"
+    assert a["team_for"] >= 5.0 * 1.1 and a["opp_conceded"] >= 5.0 * 1.1
+
+
+def test_an_average_side_is_not_a_mismatch_however_leaky_the_opponent():
+    """Both halves have to clear the bar — a leaky defence alone is not an angle."""
+    average, leaky = _team("Average", for_=5.0), _team("Leaky", against=9.0)
+    assert mismatch_angle(average, leaky, "home", 5.0, 12.0, 0.0) is None
+
+
+def test_a_strong_side_against_a_tight_defence_is_not_a_mismatch():
+    strong, tight = _team("Strong", for_=9.0), _team("Tight", against=3.0)
+    assert mismatch_angle(strong, tight, "home", 5.0, 12.0, 0.0) is None
+
+
+def test_it_works_for_a_fixture_at_any_distance():
+    """The point of the change: nothing here reads a next-fixture map, so a game three
+    weeks out is assessed exactly like tomorrow's."""
+    strong, leaky = _team("Strong", for_=8.0), _team("Leaky", against=8.0)
+    assert mismatch_angle(strong, leaky, "away", 5.0, 12.0, 0.0) is not None
+
+
+def test_a_team_with_no_history_at_that_venue_yields_nothing_rather_than_a_guess():
+    empty = {"team_id": "t-e", "name": "Empty", "matches": [], "real_matches": [],
+             "real_samples": 0}
+    leaky = _team("Leaky", against=8.0)
+    assert mismatch_angle(empty, leaky, "home", 5.0, 12.0, 0.0) is None
+    assert mismatch_angle(leaky, empty, "home", 5.0, 12.0, 0.0) is None
+
+
+def test_the_angle_carries_what_the_reason_line_needs():
+    strong, leaky = _team("Strong", for_=8.0), _team("Leaky", against=8.0)
+    a = mismatch_angle(strong, leaky, "home", 5.0, 12.0, 0.0)
+    assert board_reason({**a, "strong": True})
+    for key in ("team_for", "opp_conceded", "real_samples", "line", "prob", "fair_odds"):
+        assert a.get(key) is not None, key

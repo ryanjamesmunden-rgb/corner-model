@@ -48,7 +48,13 @@ STATS_CAP = int(os.environ.get("STATS_CAP", "250"))
 # already makes, so a bigger number costs NOTHING extra in API calls — and the old
 # value of 10 was silently capping every downstream "next N days" view: a league
 # playing a weekend round plus a midweek round could not fit inside it.
-UPCOMING_FIXTURES = 40
+#
+# 40 was about four rounds — roughly a fortnight for a league playing midweek, which was
+# fine while the board could not look past 14 days. It now looks a month ahead, and 40
+# would have quietly truncated that window the same way 10 truncated the old one: the
+# later fixtures simply would not be in the database to find. A 20-team league plays 10
+# a round, so 80 covers a month even with two rounds a week.
+UPCOMING_FIXTURES = 80
 
 # Shot-volume stats pulled out of /fixtures/statistics alongside corners. The provider
 # labels these inconsistently across leagues (and "Dangerous Attacks" is only present

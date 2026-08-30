@@ -2538,6 +2538,48 @@ BOARD_MIN_EDGE = 1.0               # the model must expect an at-or-above-par co
 # so the only thing that can make it solid is how many real games the two averages rest
 # on. Same bar the Best Bets card already uses, so the two screens cannot disagree.
 BOARD_MIN_MISMATCH_GAMES = 6
+# How far ahead the board may look. Was 14 while the UI offered a "Month" tab, so
+# selecting Month silently returned a fortnight — no error, just fewer days than asked.
+BOARD_MAX_DAYS = 30
+# Both sides of a mismatch must be this far clear of what the league itself averages.
+# Same 1.1 the mismatch screen uses, so the two cannot disagree about what qualifies.
+MISMATCH_EDGE = 1.1
+
+
+def mismatch_angle(team: dict, opp: dict, venue: str, league_for_avg: float,
+                   league_shots: float, league_blocked: float) -> Optional[dict]:
+    """A corners-winning side drawn against a defence that concedes them, for ONE fixture.
+
+    Computed per fixture, and that is the point. Mismatches used to be borrowed from
+    _all_mismatches, which reads _next_fixtures — a map holding only each team's FIRST
+    upcoming game. So a mismatch could only ever attach to a team's very next match, and
+    widening the board's window produced no extra ones at all: the fixtures appeared, and
+    every one of them arrived with no mismatch attached. Looking a month ahead to find a
+    strong side drawn against a leaky defence was impossible by construction.
+
+    Doing the comparison here instead means it works at any horizon, for both sides of
+    every fixture in the window.
+    """
+    opp_venue = "away" if venue == "home" else "home"
+    team_for = _real_avg(team, venue, "corners_for")
+    opp_conc = _real_avg(opp, opp_venue, "corners_against")
+    if team_for is None or opp_conc is None:
+        return None
+    if not (team_for >= league_for_avg * MISMATCH_EDGE
+            and opp_conc >= league_for_avg * MISMATCH_EDGE):
+        return None
+    lam = live_lambda((team_for + opp_conc) / 2, team, venue, league_shots, league_blocked)
+    line = max(3, round(lam) - 1)
+    p = nb_ge(line, lam)
+    return {
+        "kind": "mismatch", "team": team["name"], "label": f"{line}+ corners",
+        "detail": f"wins {round(team_for, 2)}/g vs a defence conceding {round(opp_conc, 2)}/g"
+                  f" · λ {lam} · {team.get('real_samples', 0)} games",
+        "line": line, "hits": 0, "streak_len": 0,
+        "team_for": round(team_for, 2), "opp_conceded": round(opp_conc, 2),
+        "real_samples": team.get("real_samples", 0),
+        "prob": round(p * 100, 1), "fair_odds": fair_odds(p), "ev": None,
+    }
 
 
 def _angle_rank(a: dict) -> tuple:
@@ -2641,7 +2683,7 @@ async def _fixture_board(days: int = 7, per_day: int = FIXTURE_BOARD_PER_DAY,
                          min_games: int = BOARD_MIN_GAMES, min_run: int = BOARD_MIN_RUN,
                          min_edge: float = BOARD_MIN_EDGE) -> dict:
     per_day = max(1, min(int(per_day), 20))
-    days = max(1, min(int(days), 14))
+    days = max(1, min(int(days), BOARD_MAX_DAYS))
     min_games = max(0, min(int(min_games), 30))
     min_run = max(1, min(int(min_run), 20))
     min_edge = max(0.0, min(float(min_edge), 3.0))
@@ -2653,10 +2695,19 @@ async def _fixture_board(days: int = 7, per_day: int = FIXTURE_BOARD_PER_DAY,
     leagues = {l["league_id"]: l for l in await db.leagues.find({}, {"_id": 0}).to_list(200)}
     # what a normal match in this league actually produces, to judge the projection against
     league_totals = defaultdict(list)
+    league_for = defaultdict(list)
     for t in teams:
         for m in _src(t):
             league_totals[t["league_id"]].append(m["corners_for"] + m["corners_against"])
+            league_for[t["league_id"]].append(m["corners_for"])
     league_avg = {k: (sum(v) / len(v) if v else 10.0) for k, v in league_totals.items()}
+    # corners WON per team-game — what a mismatch is measured against, and a different
+    # number from the match total above
+    league_for_avg = {k: (sum(v) / len(v) if v else 5.0) for k, v in league_for.items()}
+    # same shots/blocked source the mismatch screen uses, so a mismatch shown on the board
+    # carries the same lambda it carries on Quick Scan
+    ls_map = _league_shots_map(teams)
+    bl_map = _league_blocked_map(teams)
 
     now = datetime.now(timezone.utc)
     horizon = now + timedelta(days=days)
@@ -2691,6 +2742,14 @@ async def _fixture_board(days: int = 7, per_day: int = FIXTURE_BOARD_PER_DAY,
             "home_games": len(_src(home)), "away_games": len(_src(away)),
             "angles": [],
         }
+        # Both sides, every fixture in the window — see mismatch_angle for why this is
+        # done here rather than borrowed from the next-fixture list.
+        for _t, _o, _v in ((home, away, "home"), (away, home, "away")):
+            _mm = mismatch_angle(_t, _o, _v, league_for_avg.get(fx["league_id"], 5.0),
+                                 ls_map.get(fx["league_id"], REF_SHOTS),
+                                 bl_map.get(fx["league_id"], 0.0))
+            if _mm:
+                rows[fx["fixture_id"]]["angles"].append(_mm)
     if not rows:
         return {"days": [], "per_day": per_day, "within_days": days, "fixtures": 0}
 
@@ -2709,24 +2768,6 @@ async def _fixture_board(days: int = 7, per_day: int = FIXTURE_BOARD_PER_DAY,
             "line": c["line"], "hits": c["consistency"], "streak_len": 0,
             "consistency_rate": round(rate, 3), "opp_fh_rate": c["opp_fh_rate"],
             "prob": c["prob"], "fair_odds": c["fair_odds"], "ev": c.get("ev")})
-
-    # MISMATCH — a side that wins corners drawn against a defence that concedes them.
-    # Added so a fixture can earn its place on evidence other than a streak: a strong
-    # matchup with nothing running is still a reason to open the game, and before this
-    # the board simply could not see it.
-    #
-    # Not league-filtered, and it does not need to be: add() only attaches to fixtures
-    # already in `rows`, which were filtered on the way in.
-    for mm in await _all_mismatches(within_days=days, limit=1000):
-        nf = mm.get("next_fixture") or {}
-        add(nf.get("fixture_id"), {
-            "kind": "mismatch", "team": mm["name"], "label": f"{mm['line']}+ corners",
-            "detail": f"wins {mm['team_for']}/g vs a defence conceding {mm['opp_conceded']}/g"
-                      f" · λ {mm['lambda']} · {mm.get('real_samples', 0)} games",
-            "line": mm["line"], "hits": 0, "streak_len": 0,
-            "team_for": mm["team_for"], "opp_conceded": mm["opp_conceded"],
-            "real_samples": mm.get("real_samples", 0),
-            "prob": mm["prob"], "fair_odds": mm["fair_odds"], "ev": None})
 
     # the same four grids the streaks export walks, so the board cannot disagree with it
     for direction, subject, min_line in (("over", "team", 3), ("under", "team", 3),

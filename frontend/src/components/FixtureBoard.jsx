@@ -182,6 +182,16 @@ export default function FixtureBoard({ leagueId = "all" }) {
           angle that is actually strong — a live streak of {board.min_run}+, a chase spot hitting
           4 of 5, or a mismatch with 6+ games behind both averages. The line under each fixture
           says which of those put it there. Order is triage — take the bet from the angle.
+          {/* A projection three weeks out is not the same claim as one for tomorrow, and the
+              board should not present them identically. Both sides will play several more
+              times first, and the form driving these numbers is today's. */}
+          {Number(days) > 14 && (
+            <span className="block mt-1.5 text-amber-400/80">
+              Beyond a fortnight these are built on today's form — both sides play several more
+              games before kick-off, so the numbers will move. Use this as a research list to
+              work through, not a card to bet.
+            </span>
+          )}
         </p>
       )}
     </section>

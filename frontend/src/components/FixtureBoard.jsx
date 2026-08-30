@@ -4,7 +4,7 @@ import { CalendarDays, ChevronRight, Flame, Swords, Target, TrendingDown } from 
 import { api } from "@/lib/api";
 import ShareButtons from "@/components/ShareButtons";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { TONE, toneFor } from "@/lib/angleTone";
+import { TONE, toneFor, toneLabel } from "@/lib/angleTone";
 
 // The best upcoming games, grouped by day — a schedule you can scan, not another ranked
 // list of teams. Every other board here is team-first with the fixture riding along;
@@ -120,10 +120,11 @@ export default function FixtureBoard({ leagueId = "all" }) {
           data-testid="fb-legend">
           <span className="text-[10px] uppercase tracking-wider text-muted-foreground">Key</span>
           {[
-            { t: TONE.over_solid.on, Icon: Flame, l: "solid over", d: "a real run" },
-            { t: TONE.over_live.on, Icon: Flame, l: "over", d: "running, not yet solid" },
-            { t: TONE.under.on, Icon: TrendingDown, l: "under", d: "the other direction" },
-            { t: TONE.mismatch.on, Icon: Swords, l: "mismatch", d: "leaky defence" },
+            { t: TONE.solid.on, Icon: Flame, l: "solid pick", d: "run of 6+ — back it" },
+            { t: TONE.strong.on, Icon: Flame, l: "strong streak", d: "a real run" },
+            { t: TONE.live.on, Icon: Flame, l: "live streak", d: "running, still short" },
+            { t: TONE.under.on, Icon: TrendingDown, l: "under", d: "never green" },
+            { t: TONE.mismatch.on, Icon: Swords, l: "mismatch", d: "weaker evidence" },
             { t: TONE.chase.on, Icon: Target, l: "chase", d: "hits 4 of 5" },
           ].map(({ t, Icon, l, d }) => (
             <span key={l} className="inline-flex items-center gap-1.5">
@@ -134,8 +135,9 @@ export default function FixtureBoard({ leagueId = "all" }) {
             </span>
           ))}
           <span className="text-[10px] text-muted-foreground/70 w-full">
-            Faded means the angle is present but is not what qualified the game — the colour still
-            tells you its direction, so an over and an under can never look alike.
+            Brighter means a longer live run. An UNDER stays red however strong it is — direction
+            is not a confidence level. Faded means the angle is present but is not what put the
+            game here.
           </span>
         </div>
       )}
@@ -238,10 +240,10 @@ function FixtureRow({ f, onClick }) {
         <div className="flex flex-wrap gap-1.5 mt-1.5">
           {f.angles.map((a, i) => {
             const Icon = KIND[a.kind] || Target;
-            const tone = toneFor(a.kind, a.strong);
+            const tone = toneFor(a.kind, a.strong, a.streak_len);
             return (
               <span key={i} data-testid="fb-angle" data-strong={a.strong ? "1" : "0"}
-                title={`${a.team} — ${a.detail}${a.strong ? "" : " · present, but not what qualified this fixture"}`}
+                title={`${toneLabel(a.kind, a.strong, a.streak_len)} — ${a.team} · ${a.detail}`}
                 className={`inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded border font-mono-data ${
                   a.strong ? tone.on : tone.off}`}>
                 <Icon className="h-2.5 w-2.5" />

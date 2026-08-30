@@ -739,7 +739,7 @@ async def sync_if_stale(user: dict = Depends(get_current_user)):
     exactly how the data sat four days old while every run went green.
 
     Safe to leave open because it is self-limiting rather than trusted: it does nothing
-    unless the newest data is older than STALE_HOURS (12), and a DB lock blocks a second
+    unless the newest data is older than STALE_HOURS (11), and a DB lock blocks a second
     sync within SYNC_LOCK_MINUTES (20). The most an unlimited caller can cause is the
     sync that was already due. `refresh-all` stays gated because it is unconditional.
 
@@ -3193,7 +3193,25 @@ app.add_middleware(
 from leagues_meta import LEAGUE_META, MANAGED_LEAGUE_IDS  # noqa: E402,F401
 
 
-STALE_HOURS = 12          # data older than this triggers a boot-time refresh
+# Data older than this triggers a refresh. MUST BE STRICTLY LESS than the gap between
+# scheduled runs, and that is the whole reason it is 11 rather than 12.
+#
+# The schedule fires at 07:00 and 19:00 — twelve hours apart — and the threshold was also
+# 12, so the two collided on the boundary. A sync launched at 07:02 finishes writing
+# synced_at around 07:04; at the 19:02 tick the data is 11.97h old, which is NOT "older
+# than 12", so if-stale answered "fresh" and the tick did nothing. The next tick 12h later
+# saw ~24h and ran. The result was one sync a day while the schedule, the logs and the
+# comments all said two — and it looked like the schedule failing rather than the
+# threshold rejecting it.
+#
+# 11 leaves an hour of slack for a run that starts late (GitHub cron is best-effort) or
+# takes a while, so both ticks clear the bar. The cost is that a visit landing in the hour
+# before a tick can trigger the sync early; that is one incremental sync of a handful of
+# calls, the lock below stops it stacking, and the tick it pre-empts then no-ops.
+#
+# test_sync_cadence.py reads the cron out of the workflow and fails if this ever creeps
+# back up to meet it.
+STALE_HOURS = 11
 SYNC_LOCK_MINUTES = 20     # don't relaunch a sync if one started within this window
 
 
@@ -3210,7 +3228,7 @@ async def _sync_if_stale(trigger: str) -> dict:
     Split out of the boot handler so the same self-limiting logic can be reached over
     HTTP. That is what makes `/api/sync/if-stale` safe to leave ungated: it cannot be
     made to spend credits on demand. Two independent brakes —
-      - it does nothing unless the newest data is older than STALE_HOURS (12), so on a
+      - it does nothing unless the newest data is older than STALE_HOURS (11), so on a
         healthy site every call is a no-op;
       - a DB lock stops a second sync starting within SYNC_LOCK_MINUTES (20).
     So the worst an unlimited caller can achieve is the sync that was due anyway."""

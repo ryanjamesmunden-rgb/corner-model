@@ -10,8 +10,14 @@
 #
 # So it now calls `/api/sync/if-stale`, which needs no token and asks explicitly. That
 # endpoint is safe to leave open because it is SELF-LIMITING rather than trusted: it does
-# nothing unless the data is over 12h old, and a lock blocks a second sync within 20
-# minutes. The most an unlimited caller can cause is the sync that was already due.
+# nothing unless the data is over STALE_HOURS old, and a lock blocks a second sync within
+# 20 minutes. The most an unlimited caller can cause is the sync that was already due.
+#
+# STALE_HOURS (11) must stay BELOW the 12h gap between the cron times below. When both
+# were 12 they met on the boundary: at each tick the data was ~11.97h old — not "older
+# than 12" — so every other tick was rejected as fresh and the site refreshed once a day
+# while everything here said twice. Change the cron and you must revisit that number;
+# backend/tests/test_sync_cadence.py fails if the two ever meet again.
 #
 # The in-process APScheduler stays as a second trigger for when the process IS alive.
 #
@@ -65,7 +71,7 @@ jobs:
         # exactly how the data sat four days old behind green ticks.
         #
         # It is safe to leave open because it is self-limiting, not trusted: it does
-        # nothing unless the data is over 12h old, and a DB lock blocks a second sync
+        # nothing unless the data is over 11h old, and a DB lock blocks a second sync
         # within 20 minutes. The most anyone can trigger is the sync that was already due.
         run: |
           body=$(curl -s --max-time 120 -X POST "$BACKEND/api/sync/if-stale" || true)

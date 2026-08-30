@@ -4,6 +4,7 @@ import { CornerDownRight, LayoutDashboard, Radar, Flame, Zap, ClipboardCheck } f
 import { LeagueContext } from "@/context/LeagueContext";
 import ExportMenu from "@/components/ExportMenu";
 import { api } from "@/lib/api";
+import { dataHealth, healthTitle, freshnessLabel } from "@/lib/freshness";
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from "@/components/ui/select";
@@ -27,14 +28,8 @@ export default function Layout({ children }) {
     .map((s) => new Date(s).getTime())
     .sort((a, b) => a - b)
     .slice(-1)[0];
-  const freshness = (() => {
-    if (!lastSynced) return null;
-    const mins = Math.max(0, Math.round((now - lastSynced) / 60000));
-    if (mins < 60) return `${mins}m ago`;
-    const hrs = Math.round(mins / 60);
-    if (hrs < 48) return `${hrs}h ago`;
-    return `${Math.round(hrs / 24)}d ago`;
-  })();
+  const freshness = freshnessLabel(lastSynced, now);
+  const health = dataHealth(lastSynced ? Math.max(0, (now - lastSynced) / 3600000) : null);
 
   const changeLeague = (id) => {
     setLeagueId(id);
@@ -84,18 +79,25 @@ export default function Layout({ children }) {
             </nav>
 
             <div className="ml-auto flex items-center gap-3">
-              {freshness && (
+              {freshness && health && (
                 <div
                   data-testid="data-freshness"
-                  title={`Fixtures & stats auto-refresh every 12h · last update ${new Date(lastSynced).toLocaleString()}`}
-                  className="hidden md:flex items-center gap-2 px-2.5 py-1.5 rounded-md bg-emerald-500/10 border border-emerald-500/25"
+                  data-health={health.key}
+                  title={healthTitle(health.key, lastSynced)}
+                  className={`flex items-center gap-2 px-2.5 py-1.5 rounded-md border ${health.cls} ${
+                    // A green LIVE badge is decoration and can hide on a narrow screen.
+                    // A warning that the numbers are out of date is not — that is exactly
+                    // when a phone user needs it, so only the healthy state stays hidden.
+                    health.key === "live" ? "hidden md:flex" : ""}`}
                 >
                   <span className="relative flex h-2 w-2">
-                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-60" />
-                    <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-400" />
+                    {health.pulse && (
+                      <span className={`animate-ping absolute inline-flex h-full w-full rounded-full ${health.dot} opacity-60`} />
+                    )}
+                    <span className={`relative inline-flex rounded-full h-2 w-2 ${health.dot}`} />
                   </span>
-                  <span className="font-mono-data text-[10px] text-emerald-300 tracking-wide leading-none">
-                    LIVE · {freshness}
+                  <span className={`font-mono-data text-[10px] ${health.text} tracking-wide leading-none`}>
+                    {health.label} · {freshness}
                   </span>
                 </div>
               )}

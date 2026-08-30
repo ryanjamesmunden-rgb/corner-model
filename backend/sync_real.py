@@ -347,7 +347,12 @@ async def sync_league(hc, my_lid):
                                           "avg_blocked": avg_blocked,
                                           "synced_at": datetime.now(timezone.utc).isoformat()}},
                                 upsert=True)
-    print(f"[{my_lid}] DONE teams={len(team_docs)} fixtures={len(fixture_docs)} odds={len(odds_docs)}")
+    # `odds_docs` used to be built here by the synthetic-odds generator. That generator was
+    # deleted (see the note above db.odds.delete_many) but this line kept referencing it,
+    # so the last statement of every league sync was a NameError — caught by main()'s
+    # per-league handler and recorded as an error AFTER all the writes had landed. Latent
+    # rather than fatal today only because the leagues are failing earlier than this.
+    print(f"[{my_lid}] DONE teams={len(team_docs)} fixtures={len(fixture_docs)}")
     return {"teams": len(team_docs), "fixtures": len(fixture_docs),
             "cache_hit": len(cached), "api_fetched": fetched, "feature_coverage": coverage}
 

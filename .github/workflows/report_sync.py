@@ -30,6 +30,19 @@ def _age_hours(iso):
     return (datetime.now(timezone.utc) - started).total_seconds() / 3600
 
 
+def _failures(run):
+    """{error message: [league_id, ...]} for the leagues that failed in one run.
+
+    `leagues` is written incrementally as the sync walks the list, so this reports
+    usefully on a run that is still going, not only on a finished one."""
+    out = {}
+    for lg in run.get("leagues") or []:
+        if str(lg.get("status", "")).lower() == "error":
+            out.setdefault(str(lg.get("error") or "(no message recorded)"),
+                           []).append(str(lg.get("league_id", "?")))
+    return out
+
+
 def main() -> int:
     raw = sys.stdin.read()
     try:
@@ -60,6 +73,16 @@ def main() -> int:
               f"{r.get('status', '?')}{tail}")
 
     newest = runs[0]
+
+    # WHY it failed, not just that it did. The per-league error strings ride along in this
+    # same payload and were going unprinted, so "errors=28" looked identical whether the
+    # cause was an expired provider key, a blown daily quota, or a bug in sync_real.py —
+    # and the next move is completely different in each case. Grouping by message keeps
+    # 28 identical lines down to one, which is itself the tell: one message across every
+    # league is an account-level problem, a scatter of different ones is not.
+    for msg, lids in sorted(_failures(newest).items(), key=lambda kv: -len(kv[1])):
+        where = ", ".join(lids[:4]) + (f" +{len(lids) - 4} more" if len(lids) > 4 else "")
+        print(f"  {len(lids):>2} league(s) [{where}]: {msg}")
     status = str(newest.get("status", "")).lower()
 
     age = _age_hours(newest.get("started_at"))

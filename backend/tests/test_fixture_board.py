@@ -18,7 +18,8 @@ os.environ.setdefault("DB_NAME", "test_corner_model")
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from server import (  # noqa: E402
-    _angle_rank, angle_is_strong, board_days, fixture_qualifies,
+    _angle_rank, angle_is_strong, board_days, board_reason, dedupe_angles,
+    fixture_qualifies,
 )
 
 
@@ -204,3 +205,102 @@ def test_strong_angles_sort_above_weak_ones():
     for a in angles:
         a["strong"] = angle_is_strong(a)
     assert max(angles, key=_angle_rank)["strong"] is True
+
+
+# --------------------------------------------------------------------------------------
+# Mismatches as a qualifying angle, and the reason line.
+#
+# The board could only see streaks and chase spots, so a strong matchup with nothing
+# running was invisible — a game with a real reason to open it never appeared. And every
+# fixture that DID appear left the reader to infer why from up to six chips, which is what
+# made the colours confusing in the first place.
+
+def test_a_mismatch_with_enough_sample_is_strong():
+    """A mismatch has no run and no hit rate — sample is the only thing that can carry it."""
+    assert angle_is_strong({"kind": "mismatch", "real_samples": 6})
+    assert angle_is_strong({"kind": "mismatch", "real_samples": 20})
+
+
+def test_a_mismatch_on_a_thin_sample_is_not():
+    """Two averages over three games each is not evidence, however far apart they are."""
+    assert not angle_is_strong({"kind": "mismatch", "real_samples": 3})
+    assert not angle_is_strong({"kind": "mismatch", "real_samples": 0})
+    assert not angle_is_strong({"kind": "mismatch"})
+
+
+def test_a_mismatch_is_not_judged_on_run_length():
+    """It carries streak_len 0 by construction; the streak rule would reject every one."""
+    assert angle_is_strong({"kind": "mismatch", "real_samples": 9, "streak_len": 0})
+
+
+def test_a_mismatch_alone_can_qualify_a_fixture():
+    row = {"home_games": 10, "away_games": 10, "corner_edge": 1.1,
+           "angles": [{"kind": "mismatch", "real_samples": 8, "strong": True}]}
+    assert fixture_qualifies(row)
+
+
+def test_a_thin_mismatch_alone_cannot():
+    row = {"home_games": 10, "away_games": 10, "corner_edge": 1.1,
+           "angles": [{"kind": "mismatch", "real_samples": 2, "strong": False}]}
+    assert not fixture_qualifies(row)
+
+
+def test_the_reason_names_the_signal_for_every_kind():
+    """Every fixture on the board has a reason, and it has to read as a sentence."""
+    cases = [
+        ({"kind": "chase", "team": "Barnet", "line": 6, "consistency_rate": 0.8}, "80%"),
+        ({"kind": "mismatch", "team": "Barnet", "line": 6, "team_for": 8.2,
+          "opp_conceded": 4.67, "real_samples": 12}, "conceding 4.67"),
+        ({"kind": "over_team", "team": "Barnet", "line": 6, "streak_len": 12}, "above"),
+        ({"kind": "under_team", "team": "Bahia", "line": 7, "streak_len": 4}, "below"),
+        ({"kind": "over_match", "team": "Wycombe", "line": 9, "streak_len": 7}, "match total"),
+    ]
+    for angle, fragment in cases:
+        reason = board_reason(angle)
+        assert reason and fragment in reason, (angle["kind"], reason)
+        assert angle["team"] in reason
+
+
+def test_no_strong_angle_means_no_reason_rather_than_an_invented_one():
+    assert board_reason(None) is None
+
+
+def test_an_under_reason_never_reads_as_an_over():
+    """The point of the colour change: direction must never be ambiguous, and the sentence
+    must not undo what the colour says."""
+    under = board_reason({"kind": "under_team", "team": "Bahia", "line": 7, "streak_len": 4})
+    assert "below" in under and "above" not in under
+
+
+def test_a_mismatch_duplicating_a_streak_is_dropped():
+    """Same team, same line, two chips proposing one bet — the exact confusion the colour
+    change exists to end. The streak survives: it has a hit rate, the mismatch has not."""
+    angles = [{"kind": "over_team", "team": "Barnet", "line": 6},
+              {"kind": "mismatch", "team": "Barnet", "line": 6}]
+    kept = dedupe_angles(angles)
+    assert [a["kind"] for a in kept] == ["over_team"]
+
+
+def test_a_mismatch_on_a_different_line_survives():
+    angles = [{"kind": "over_team", "team": "Barnet", "line": 6},
+              {"kind": "mismatch", "team": "Barnet", "line": 8}]
+    assert len(dedupe_angles(angles)) == 2
+
+
+def test_a_mismatch_on_the_other_team_survives():
+    angles = [{"kind": "over_team", "team": "Barnet", "line": 6},
+              {"kind": "mismatch", "team": "Exeter", "line": 6}]
+    assert len(dedupe_angles(angles)) == 2
+
+
+def test_a_lone_mismatch_is_never_dropped():
+    """Nothing else covers it, so it is the only reason the fixture is here."""
+    angles = [{"kind": "mismatch", "team": "Bradford", "line": 4}]
+    assert dedupe_angles(angles) == angles
+
+
+def test_dedupe_never_drops_a_non_mismatch():
+    """A chase and a streak on the same team and line are different bets, not duplicates."""
+    angles = [{"kind": "over_team", "team": "Barnet", "line": 6},
+              {"kind": "chase", "team": "Barnet", "line": 6}]
+    assert len(dedupe_angles(angles)) == 2

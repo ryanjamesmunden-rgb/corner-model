@@ -739,7 +739,7 @@ async def sync_if_stale(user: dict = Depends(get_current_user)):
     exactly how the data sat four days old while every run went green.
 
     Safe to leave open because it is self-limiting rather than trusted: it does nothing
-    unless the newest data is older than STALE_HOURS (12), and a DB lock blocks a second
+    unless the newest data is older than STALE_HOURS (11), and a DB lock blocks a second
     sync within SYNC_LOCK_MINUTES (20). The most an unlimited caller can cause is the
     sync that was already due. `refresh-all` stays gated because it is unconditional.
 
@@ -993,7 +993,7 @@ SCREEN_STALE_HOURS = 13  # a little over the 12h sync cadence
 # BUMP THIS whenever a screen's payload SHAPE changes. Staleness is otherwise keyed on
 # the data alone, so a deploy that adds a field would keep serving the old shape from
 # cache until the next sync happened to move data_version.
-SCREEN_SCHEMA = 3
+SCREEN_SCHEMA = 4   # 4: fixture-board angles gained `mismatch`, and rows gained `reason`
 # Must match TOP_TEAMS_LIMIT in frontend/src/components/BestTeams.jsx, or that screen
 # misses its cache on every visit.
 TOP_TEAMS_LIMIT = 60
@@ -2533,6 +2533,11 @@ BOARD_MIN_GAMES = 6                # real matches behind EACH side before its nu
 BOARD_MIN_RUN = 3                  # a streak must be a run; 2 is merely the floor for being one
 BOARD_MIN_CONSISTENCY = 0.8        # a chase spot must have hit 4 of its last 5
 BOARD_MIN_EDGE = 1.0               # the model must expect an at-or-above-par corner game
+# A mismatch is judged on SAMPLE, not on a run. It is a lambda comparison — a side that
+# wins corners against a defence that concedes them — with no hit rate behind it at all,
+# so the only thing that can make it solid is how many real games the two averages rest
+# on. Same bar the Best Bets card already uses, so the two screens cannot disagree.
+BOARD_MIN_MISMATCH_GAMES = 6
 
 
 def _angle_rank(a: dict) -> tuple:
@@ -2553,7 +2558,48 @@ def angle_is_strong(a: dict, min_run: int = BOARD_MIN_RUN,
     game was the miss is a broken streak wearing a good record."""
     if a.get("kind") == "chase":
         return (a.get("consistency_rate") or 0.0) >= min_consistency
+    # A mismatch has no run and no hit rate to judge — see BOARD_MIN_MISMATCH_GAMES.
+    if a.get("kind") == "mismatch":
+        return (a.get("real_samples") or 0) >= BOARD_MIN_MISMATCH_GAMES
     return (a.get("streak_len") or 0) >= min_run
+
+
+def dedupe_angles(angles: List[dict]) -> List[dict]:
+    """Drop a mismatch that says the same thing as an angle already on the row.
+
+    Adding mismatches to the board introduced a duplicate: a side can appear both as a
+    streak and as a mismatch on the SAME team at the SAME line, which renders as two chips
+    proposing one bet — precisely the "two tags, is that two bets?" confusion the colour
+    change is meant to end.
+
+    The mismatch is the one dropped, always, because it is the weaker evidence: a streak
+    carries a hit rate and a live run, a mismatch is two averages pointed at each other. A
+    mismatch on a DIFFERENT team or a different line is kept — that is a genuinely separate
+    reason to look at the game.
+    """
+    covered = {(a.get("team"), a.get("line")) for a in angles if a.get("kind") != "mismatch"}
+    return [a for a in angles
+            if a.get("kind") != "mismatch" or (a.get("team"), a.get("line")) not in covered]
+
+
+# What to tell the reader about why this fixture is on the board at all. Every fixture
+# shown has cleared the EVIDENCE hurdle, so one of its angles is always the reason — this
+# just names it, in words, instead of leaving the reader to infer it from six chips.
+def board_reason(a: Optional[dict]) -> Optional[str]:
+    if not a:
+        return None
+    team, line = a.get("team", "?"), a.get("line")
+    kind = a.get("kind")
+    if kind == "chase":
+        pct = round((a.get("consistency_rate") or 0) * 100)
+        return f"{team} has hit {line}+ in {pct}% of its recent games, and the opponent concedes first-half goals"
+    if kind == "mismatch":
+        return (f"{team} wins {a.get('team_for')} corners a game against a defence conceding "
+                f"{a.get('opp_conceded')}, over {a.get('real_samples')} games")
+    run, direction = a.get("streak_len") or 0, "over" if str(kind).startswith("over") else "under"
+    what = "match total" if str(kind).endswith("match") else "team corners"
+    side = "above" if direction == "over" else "below"
+    return f"{team} has stayed {side} this {what} line {run} games running"
 
 
 def fixture_qualifies(row: dict, min_games: int = BOARD_MIN_GAMES,
@@ -2664,6 +2710,24 @@ async def _fixture_board(days: int = 7, per_day: int = FIXTURE_BOARD_PER_DAY,
             "consistency_rate": round(rate, 3), "opp_fh_rate": c["opp_fh_rate"],
             "prob": c["prob"], "fair_odds": c["fair_odds"], "ev": c.get("ev")})
 
+    # MISMATCH — a side that wins corners drawn against a defence that concedes them.
+    # Added so a fixture can earn its place on evidence other than a streak: a strong
+    # matchup with nothing running is still a reason to open the game, and before this
+    # the board simply could not see it.
+    #
+    # Not league-filtered, and it does not need to be: add() only attaches to fixtures
+    # already in `rows`, which were filtered on the way in.
+    for mm in await _all_mismatches(within_days=days, limit=1000):
+        nf = mm.get("next_fixture") or {}
+        add(nf.get("fixture_id"), {
+            "kind": "mismatch", "team": mm["name"], "label": f"{mm['line']}+ corners",
+            "detail": f"wins {mm['team_for']}/g vs a defence conceding {mm['opp_conceded']}/g"
+                      f" · λ {mm['lambda']} · {mm.get('real_samples', 0)} games",
+            "line": mm["line"], "hits": 0, "streak_len": 0,
+            "team_for": mm["team_for"], "opp_conceded": mm["opp_conceded"],
+            "real_samples": mm.get("real_samples", 0),
+            "prob": mm["prob"], "fair_odds": mm["fair_odds"], "ev": None})
+
     # the same four grids the streaks export walks, so the board cannot disagree with it
     for direction, subject, min_line in (("over", "team", 3), ("under", "team", 3),
                                          ("over", "match", 7), ("under", "match", 3)):
@@ -2686,11 +2750,16 @@ async def _fixture_board(days: int = 7, per_day: int = FIXTURE_BOARD_PER_DAY,
     for r in rows.values():
         for a in r["angles"]:
             a["strong"] = angle_is_strong(a, min_run, BOARD_MIN_CONSISTENCY)
+        r["angles"] = dedupe_angles(r["angles"])
         r["angles"].sort(key=_angle_rank, reverse=True)
         r["angle_count"] = len(r["angles"])
         r["strong_angles"] = sum(1 for a in r["angles"] if a["strong"])
         r["angles"] = r["angles"][:FIXTURE_BOARD_ANGLES]
         r["best_angle"] = r["angles"][0] if r["angles"] else None
+        # The reason comes from the best STRONG angle, never merely the best one: a
+        # fixture qualifies on strong evidence, so the sentence has to name the thing
+        # that actually cleared the bar, not the chip that happened to sort first.
+        r["reason"] = board_reason(next((a for a in r["angles"] if a["strong"]), None))
 
     # The bar, applied BEFORE the per-day ceiling — so a thin day shows fewer games, or
     # none, rather than promoting whatever happened to be on.
@@ -3193,7 +3262,25 @@ app.add_middleware(
 from leagues_meta import LEAGUE_META, MANAGED_LEAGUE_IDS  # noqa: E402,F401
 
 
-STALE_HOURS = 12          # data older than this triggers a boot-time refresh
+# Data older than this triggers a refresh. MUST BE STRICTLY LESS than the gap between
+# scheduled runs, and that is the whole reason it is 11 rather than 12.
+#
+# The schedule fires at 07:00 and 19:00 — twelve hours apart — and the threshold was also
+# 12, so the two collided on the boundary. A sync launched at 07:02 finishes writing
+# synced_at around 07:04; at the 19:02 tick the data is 11.97h old, which is NOT "older
+# than 12", so if-stale answered "fresh" and the tick did nothing. The next tick 12h later
+# saw ~24h and ran. The result was one sync a day while the schedule, the logs and the
+# comments all said two — and it looked like the schedule failing rather than the
+# threshold rejecting it.
+#
+# 11 leaves an hour of slack for a run that starts late (GitHub cron is best-effort) or
+# takes a while, so both ticks clear the bar. The cost is that a visit landing in the hour
+# before a tick can trigger the sync early; that is one incremental sync of a handful of
+# calls, the lock below stops it stacking, and the tick it pre-empts then no-ops.
+#
+# test_sync_cadence.py reads the cron out of the workflow and fails if this ever creeps
+# back up to meet it.
+STALE_HOURS = 11
 SYNC_LOCK_MINUTES = 20     # don't relaunch a sync if one started within this window
 
 
@@ -3210,7 +3297,7 @@ async def _sync_if_stale(trigger: str) -> dict:
     Split out of the boot handler so the same self-limiting logic can be reached over
     HTTP. That is what makes `/api/sync/if-stale` safe to leave ungated: it cannot be
     made to spend credits on demand. Two independent brakes —
-      - it does nothing unless the newest data is older than STALE_HOURS (12), so on a
+      - it does nothing unless the newest data is older than STALE_HOURS (11), so on a
         healthy site every call is a no-op;
       - a DB lock stops a second sync starting within SYNC_LOCK_MINUTES (20).
     So the worst an unlimited caller can achieve is the sync that was due anyway."""

@@ -12,6 +12,7 @@ const Streaks = lazy(() => import("@/pages/Streaks"));
 const QuickScan = lazy(() => import("@/pages/QuickScan"));
 const Picks = lazy(() => import("@/pages/Picks"));
 const FixtureDetail = lazy(() => import("@/pages/FixtureDetail"));
+const Join = lazy(() => import("@/pages/Join"));
 
 const RouteFallback = () => (
   <div className="py-20 text-center text-muted-foreground animate-pulse font-mono-data text-sm">
@@ -38,6 +39,12 @@ function AppRouter() {
       <Route path="/picks" element={page(Picks)} />
       <Route path="/streaks" element={page(Streaks)} />
       <Route path="/fixture/:id" element={page(FixtureDetail)} />
+      {/* Deliberately OUTSIDE page(): the subscription page is for people who are not
+          members yet, so it carries no app chrome — no league switcher, no nav to
+          sections that presume you already know what this is. */}
+      <Route path="/join" element={
+        <Suspense fallback={<RouteFallback />}><Join /></Suspense>
+      } />
       <Route path="*" element={<Navigate to="/scanner" replace />} />
     </Routes>
   );

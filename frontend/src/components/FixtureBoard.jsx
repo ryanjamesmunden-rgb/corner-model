@@ -1,9 +1,10 @@
 import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
-import { CalendarDays, ChevronRight, Flame, Target, TrendingDown } from "lucide-react";
+import { CalendarDays, ChevronRight, Flame, Swords, Target, TrendingDown } from "lucide-react";
 import { api } from "@/lib/api";
 import ShareButtons from "@/components/ShareButtons";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { TONE, toneFor } from "@/lib/angleTone";
 
 // The best upcoming games, grouped by day — a schedule you can scan, not another ranked
 // list of teams. Every other board here is team-first with the fixture riding along;
@@ -30,21 +31,9 @@ const DAYS = [
   { v: "30", l: "Month" },
 ];
 
-// COLOUR MEANS QUALITY, NOT TYPE. This used to be five colours keyed to the kind of
-// angle — cyan chase, emerald over, sky under, amber match-over, indigo match-under —
-// which put up to six different colours on one fixture and told you nothing about
-// whether any of them were worth having. Colour now says one thing:
-//
-//     GREEN  = strong. Cleared the bar; this is what put the fixture on the board.
-//     FADED  = weak. Present, but not something to act on.
-//
-// The ICON still carries the type (target = chase, flame = over, arrow = under), so
-// nothing is lost — it just stops competing with the signal that matters.
-const STRONG = "text-emerald-400 border-emerald-500/40 bg-emerald-500/10";
-const WEAK = "border-border/60 bg-transparent text-muted-foreground/60";
-
 const KIND = {
   chase: Target,
+  mismatch: Swords,
   over_team: Flame,
   under_team: TrendingDown,
   over_match: Flame,
@@ -130,18 +119,23 @@ export default function FixtureBoard({ leagueId = "all" }) {
         <div className="px-4 py-2 border-b border-border flex items-center gap-2 flex-wrap"
           data-testid="fb-legend">
           <span className="text-[10px] uppercase tracking-wider text-muted-foreground">Key</span>
-          <span className={`inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded border font-mono-data ${STRONG}`}>
-            <Flame className="h-2.5 w-2.5" /> strong
-          </span>
-          <span className="text-[10px] text-muted-foreground">a real run or a 4-of-5 spot — this is what put the game here</span>
-          <span className={`inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded border font-mono-data ${WEAK}`}>
-            <TrendingDown className="h-2.5 w-2.5" /> weak
-          </span>
-          <span className="text-[10px] text-muted-foreground">present, but not worth acting on</span>
-          <span className="text-[10px] text-muted-foreground/70 w-full sm:w-auto sm:ml-auto">
-            icon = type: <Target className="h-2.5 w-2.5 inline" /> chase ·
-            <Flame className="h-2.5 w-2.5 inline mx-0.5" /> over ·
-            <TrendingDown className="h-2.5 w-2.5 inline mx-0.5" /> under
+          {[
+            { t: TONE.over_solid.on, Icon: Flame, l: "solid over", d: "a real run" },
+            { t: TONE.over_live.on, Icon: Flame, l: "over", d: "running, not yet solid" },
+            { t: TONE.under.on, Icon: TrendingDown, l: "under", d: "the other direction" },
+            { t: TONE.mismatch.on, Icon: Swords, l: "mismatch", d: "leaky defence" },
+            { t: TONE.chase.on, Icon: Target, l: "chase", d: "hits 4 of 5" },
+          ].map(({ t, Icon, l, d }) => (
+            <span key={l} className="inline-flex items-center gap-1.5">
+              <span className={`inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded border font-mono-data ${t}`}>
+                <Icon className="h-2.5 w-2.5" /> {l}
+              </span>
+              <span className="text-[10px] text-muted-foreground">{d}</span>
+            </span>
+          ))}
+          <span className="text-[10px] text-muted-foreground/70 w-full">
+            Faded means the angle is present but is not what qualified the game — the colour still
+            tells you its direction, so an over and an under can never look alike.
           </span>
         </div>
       )}
@@ -184,9 +178,10 @@ export default function FixtureBoard({ leagueId = "all" }) {
       {board?.days?.length > 0 && (
         <p className="px-4 py-2.5 border-t border-border text-[10px] text-muted-foreground">
           A fixture qualifies on evidence, not on the day being quiet: {board.min_games}+ games
-          behind each side, a projection at or above that league's average, and a live streak
-          of {board.min_run}+ or a chase spot hitting 4 of 5. Order is triage — take the bet
-          from the angle.
+          behind each side, a projection at or above that league's average, and at least one
+          angle that is actually strong — a live streak of {board.min_run}+, a chase spot hitting
+          4 of 5, or a mismatch with 6+ games behind both averages. The line under each fixture
+          says which of those put it there. Order is triage — take the bet from the angle.
         </p>
       )}
     </section>
@@ -222,16 +217,25 @@ function FixtureRow({ f, onClick }) {
             {Math.min(f.home_games ?? 0, f.away_games ?? 0)}+ games each
           </span>
         </div>
+        {/* WHY THIS GAME IS HERE, in words. Every fixture cleared the evidence hurdle, so
+            one of its angles is always the reason — before this the reader had to infer
+            it from up to six chips, which is exactly the confusion the colours caused. */}
+        {f.reason && (
+          <p className="text-[11px] text-foreground/70 mt-1 leading-snug" data-testid="fb-reason">
+            {f.reason}
+          </p>
+        )}
         <div className="flex flex-wrap gap-1.5 mt-1.5">
           {f.angles.map((a, i) => {
             const Icon = KIND[a.kind] || Target;
+            const tone = toneFor(a.kind, a.strong);
             return (
-              <span key={i}
-                title={`${a.team} — ${a.detail}${a.strong ? "" : " · weak: present, but not what qualified this fixture"}`}
+              <span key={i} data-testid="fb-angle" data-strong={a.strong ? "1" : "0"}
+                title={`${a.team} — ${a.detail}${a.strong ? "" : " · present, but not what qualified this fixture"}`}
                 className={`inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded border font-mono-data ${
-                  a.strong ? STRONG : WEAK}`}>
+                  a.strong ? tone.on : tone.off}`}>
                 <Icon className="h-2.5 w-2.5" />
-                <span className={`font-sans ${a.strong ? "text-foreground/90" : ""}`}>{a.team}</span> {a.label}
+                <span className="font-sans">{a.team}</span> {a.label}
               </span>
             );
           })}

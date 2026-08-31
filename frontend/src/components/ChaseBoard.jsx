@@ -31,8 +31,8 @@ export default function ChaseBoard({ leagueId = "all", withinDays = 7, limit = 2
         <table className="w-full">
           <thead>
             <tr className="border-b border-border text-muted-foreground text-xs uppercase tracking-wider">
-              <th className="text-left font-medium px-4 py-3">#</th>
-              <th className="text-left font-medium px-4 py-3">Chase spot</th>
+              <th className="text-left font-medium px-2 py-2 sm:px-4 sm:py-3">#</th>
+              <th className="text-left font-medium px-2 py-2 sm:px-4 sm:py-3">Chase spot</th>
               <th className="text-right font-medium px-3 py-3">Won/g</th>
               <th className="text-right font-medium px-3 py-3">Opp conc</th>
               <th className="text-right font-medium px-3 py-3" title="How often the opponent scores a first-half goal. Context only — five tests failed to find any effect from it, so it no longer influences the order.">Opp FH</th>
@@ -40,7 +40,7 @@ export default function ChaseBoard({ leagueId = "all", withinDays = 7, limit = 2
               <th className="text-right font-medium px-3 py-3">Proj λ</th>
               <th className="text-left font-medium px-3 py-3">Line</th>
               <th className="text-right font-medium px-3 py-3">Fair</th>
-              <th className="text-right font-medium px-4 py-3">Your edge</th>
+              <th className="text-right font-medium px-2 py-2 sm:px-4 sm:py-3">Your edge</th>
               <th className="px-3 py-3"></th>
             </tr>
           </thead>
@@ -57,8 +57,8 @@ export default function ChaseBoard({ leagueId = "all", withinDays = 7, limit = 2
                   onClick={() => nf.fixture_id && navigate(`/fixture/${nf.fixture_id}`)}
                   className="border-b border-border/50 hover:bg-white/5 cursor-pointer transition-colors duration-150"
                 >
-                  <td className="px-4 py-3 text-muted-foreground">{i + 1}</td>
-                  <td className="px-4 py-3">
+                  <td className="px-2 py-2 sm:px-4 sm:py-3 text-muted-foreground">{i + 1}</td>
+                  <td className="px-2 py-2 sm:px-4 sm:py-3">
                     <div className="text-foreground whitespace-nowrap font-sans font-medium">
                       {r.name} <span className="text-muted-foreground font-normal">{nf.is_home ? "vs" : "@"}</span> {nf.opponent}
                     </div>
@@ -85,7 +85,7 @@ export default function ChaseBoard({ leagueId = "all", withinDays = 7, limit = 2
                     <span className="text-[11px] px-1.5 py-0.5 rounded bg-primary/15 text-primary border border-primary/30">{r.line}+</span>
                   </td>
                   <td className="px-3 py-3 text-right text-muted-foreground">{r.fair_odds?.toFixed(2)}</td>
-                  <td className="px-4 py-3 text-right">
+                  <td className="px-2 py-2 sm:px-4 sm:py-3 text-right">
                     {r.ev != null ? (
                       <span className={`inline-flex items-center gap-1 text-xs px-2 py-1 rounded border ${t ? t.chip : ""}`} data-testid="chase-ev">
                         {r.ev > 0 ? "+" : ""}{r.ev.toFixed(1)}% @ {r.book_odds}
@@ -105,7 +105,7 @@ export default function ChaseBoard({ leagueId = "all", withinDays = 7, limit = 2
       </div>
       {/* Measured, and it does not rank. Saying so on the panel matters more than the
           panel looking authoritative — the row order is a filter, not a pick order. */}
-      <p className="px-4 py-2.5 border-t border-border text-[10px] text-muted-foreground">
+      <p className="px-2 py-1.5 sm:px-4 sm:py-2.5 border-t border-border text-[10px] text-muted-foreground">
         The order here is <span className="text-foreground">descriptive, not a measured edge</span>.
         Replaying this board walk-forward, its ranking scored +0.02 against a shuffled
         control of 0.00 — it does not find spots the model underrates. Use it as a filter

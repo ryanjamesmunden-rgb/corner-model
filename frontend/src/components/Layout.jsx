@@ -121,7 +121,7 @@ export default function Layout({ children }) {
             </div>
           </div>
         </header>
-        <main className="max-w-[1600px] mx-auto px-4 sm:px-6 py-6 fade-in">{children}</main>
+        <main className="max-w-[1600px] mx-auto px-3 sm:px-6 py-3 sm:py-6 fade-in">{children}</main>
       </div>
     </LeagueContext.Provider>
   );

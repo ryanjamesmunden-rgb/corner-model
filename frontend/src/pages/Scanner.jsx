@@ -22,7 +22,7 @@ export default function Scanner() {
   const [view, setView] = useState("best");
 
   return (
-    <div className="space-y-6" data-testid="scanner-page">
+    <div className="space-y-3 sm:space-y-6" data-testid="scanner-page">
       <div>
         <div className="flex items-center gap-2 text-primary mb-1">
           <Trophy className="h-4 w-4" />

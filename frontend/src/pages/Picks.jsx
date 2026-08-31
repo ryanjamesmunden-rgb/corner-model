@@ -54,7 +54,7 @@ export default function Picks() {
   });
 
   return (
-    <div className="space-y-6" data-testid="picks-page">
+    <div className="space-y-3 sm:space-y-6" data-testid="picks-page">
       <DailyLedger />
 
       <div className="border-t border-border pt-6 flex flex-col sm:flex-row sm:items-end justify-between gap-4">
@@ -90,7 +90,7 @@ export default function Picks() {
       ) : dates.length === 0 ? (
         <div className="bg-card border border-border rounded-lg py-20 text-center text-muted-foreground text-sm">No picks tracked yet.</div>
       ) : (
-        <div className="space-y-6">
+        <div className="space-y-3 sm:space-y-6">
           {dates.map((date) => (
             <div key={date}>
               <div className="flex items-center gap-2 mb-2">

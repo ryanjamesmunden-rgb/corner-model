@@ -29,7 +29,7 @@ export default function MatchupTable({ leagueId }) {
 
   return (
     <section className="bg-card border border-border rounded-lg" data-testid="matchup-table">
-      <div className="flex flex-col sm:flex-row sm:items-center gap-3 px-4 py-3 border-b border-border">
+      <div className="flex flex-col sm:flex-row sm:items-center gap-3 px-2 py-2 sm:px-4 sm:py-3 border-b border-border">
         <div className="flex items-center gap-2">
           <Trophy className="h-4 w-4 text-primary" />
           <h2 className="font-head font-semibold text-lg">Top Corner Teams &amp; Next Matchup</h2>
@@ -47,14 +47,14 @@ export default function MatchupTable({ leagueId }) {
         <table className="w-full">
           <thead className="sticky top-0 bg-card z-10">
             <tr className="border-b border-border text-muted-foreground text-xs uppercase tracking-wider">
-              <th className="text-left font-medium px-4 py-2.5">#</th>
-              <th className="text-left font-medium px-4 py-2.5">Team</th>
-              <th className="text-right font-medium px-4 py-2.5">{sideLabel}</th>
-              <th className="text-left font-medium px-4 py-2.5">Next fixture</th>
-              <th className="text-right font-medium px-4 py-2.5">Opp concedes</th>
-              <th className="text-right font-medium px-4 py-2.5">Proj λ</th>
-              <th className="text-right font-medium px-4 py-2.5">Model ({"\u2265"}line)</th>
-              <th className="px-4 py-2.5"></th>
+              <th className="text-left font-medium px-2 py-1.5 sm:px-4 sm:py-2.5">#</th>
+              <th className="text-left font-medium px-2 py-1.5 sm:px-4 sm:py-2.5">Team</th>
+              <th className="text-right font-medium px-2 py-1.5 sm:px-4 sm:py-2.5">{sideLabel}</th>
+              <th className="text-left font-medium px-2 py-1.5 sm:px-4 sm:py-2.5">Next fixture</th>
+              <th className="text-right font-medium px-2 py-1.5 sm:px-4 sm:py-2.5">Opp concedes</th>
+              <th className="text-right font-medium px-2 py-1.5 sm:px-4 sm:py-2.5">Proj λ</th>
+              <th className="text-right font-medium px-2 py-1.5 sm:px-4 sm:py-2.5">Model ({"\u2265"}line)</th>
+              <th className="px-2 py-1.5 sm:px-4 sm:py-2.5"></th>
             </tr>
           </thead>
           <tbody className="font-mono-data text-sm">
@@ -73,13 +73,13 @@ export default function MatchupTable({ leagueId }) {
                   className={`border-b border-border/50 transition-colors duration-150 ${t.next_fixture ? "hover:bg-white/5 cursor-pointer" : ""}`}
                   style={{ borderLeft: `2px solid ${st.row}`, background: t.tier === "strong" ? "rgba(16,185,129,0.06)" : undefined }}
                 >
-                  <td className="px-4 py-2.5 text-muted-foreground">{i + 1}</td>
-                  <td className="px-4 py-2.5">
+                  <td className="px-2 py-1.5 sm:px-4 sm:py-2.5 text-muted-foreground">{i + 1}</td>
+                  <td className="px-2 py-1.5 sm:px-4 sm:py-2.5">
                     <span className="text-foreground font-sans font-medium whitespace-nowrap">{t.name}</span>
                     {t.real_samples < 5 && <span className="ml-2 text-[9px] text-amber-400/70">est</span>}
                   </td>
-                  <td className="px-4 py-2.5 text-right text-emerald-400 font-semibold">{t.side_for.toFixed(2)}</td>
-                  <td className="px-4 py-2.5 text-xs text-muted-foreground whitespace-nowrap">
+                  <td className="px-2 py-1.5 sm:px-4 sm:py-2.5 text-right text-emerald-400 font-semibold">{t.side_for.toFixed(2)}</td>
+                  <td className="px-2 py-1.5 sm:px-4 sm:py-2.5 text-xs text-muted-foreground whitespace-nowrap">
                     {t.next_fixture ? (
                       <>
                         {t.next_fixture.is_home ? "vs" : "@"} {t.next_fixture.opponent} · {fmt(t.next_fixture.date)}
@@ -89,14 +89,14 @@ export default function MatchupTable({ leagueId }) {
                       </>
                     ) : "—"}
                   </td>
-                  <td className="px-4 py-2.5 text-right">
+                  <td className="px-2 py-1.5 sm:px-4 sm:py-2.5 text-right">
                     {p ? <span className={p.opp_conceded >= data.league_avg_won * 1.1 ? "text-emerald-400" : "text-muted-foreground"}>{p.opp_conceded.toFixed(1)}</span> : <span className="text-muted-foreground">—</span>}
                   </td>
-                  <td className="px-4 py-2.5 text-right text-primary font-semibold">{p ? p.lambda.toFixed(1) : "—"}</td>
-                  <td className="px-4 py-2.5 text-right whitespace-nowrap">
+                  <td className="px-2 py-1.5 sm:px-4 sm:py-2.5 text-right text-primary font-semibold">{p ? p.lambda.toFixed(1) : "—"}</td>
+                  <td className="px-2 py-1.5 sm:px-4 sm:py-2.5 text-right whitespace-nowrap">
                     {p ? <span className="text-foreground" title={`${p.prob.toFixed(0)}% to win ${p.line}+ corners`}>{p.line}+ @ {p.fair_odds?.toFixed(2)}</span> : <span className="text-muted-foreground">—</span>}
                   </td>
-                  <td className="px-4 py-2.5 text-right">
+                  <td className="px-2 py-1.5 sm:px-4 sm:py-2.5 text-right">
                     {t.tier !== "none" && <span className={`text-[10px] px-2 py-0.5 rounded border ${st.chip} mr-2`}>{st.label}</span>}
                     {t.next_fixture && <ArrowRight className="h-4 w-4 text-muted-foreground inline" />}
                   </td>

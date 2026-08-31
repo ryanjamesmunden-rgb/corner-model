@@ -4,10 +4,14 @@ import { X, HelpCircle, Target, Radar, Flame, TrendingUp } from "lucide-react";
 const KEY = "cm2_intro_dismissed";
 
 export default function IntroBanner() {
-  const [open, setOpen] = useState(true);
+  // Open on a desktop column, collapsed on a phone. It is an explainer, and an explainer
+  // that pushes every number below the fold is worse than no explainer.
+  const [open, setOpen] = useState(() => {
+    try { return window.matchMedia("(min-width: 640px)").matches; } catch { return true; }
+  });
 
   useEffect(() => {
-    setOpen(localStorage.getItem(KEY) !== "1");
+    if (localStorage.getItem(KEY) === "1") setOpen(false);
   }, []);
 
   const dismiss = () => {

@@ -40,7 +40,7 @@ export default function BestTeams({ leagueId }) {
 
   return (
     <section className="bg-card border border-border rounded-lg" data-testid="best-teams">
-      <div className="flex flex-col lg:flex-row lg:items-center gap-3 px-4 py-3 border-b border-border">
+      <div className="flex flex-col lg:flex-row lg:items-center gap-3 px-2 py-2 sm:px-4 sm:py-3 border-b border-border">
         <div className="flex items-center gap-2">
           <Trophy className="h-4 w-4 text-primary" />
           <h2 className="font-head font-semibold text-lg">Best Corner Teams</h2>
@@ -77,23 +77,23 @@ export default function BestTeams({ leagueId }) {
         <table className="w-full">
           <thead className="sticky top-0 bg-card z-10">
             <tr className="border-b border-border text-muted-foreground text-xs uppercase tracking-wider">
-              <th className="text-left font-medium px-4 py-2.5">#</th>
-              <th className="text-left font-medium px-4 py-2.5">Team</th>
-              <th className="text-right font-medium px-4 py-2.5">Won/g</th>
-              <th className="text-left font-medium px-4 py-2.5 hidden md:table-cell w-[180px]">&nbsp;</th>
-              <th className="text-right font-medium px-4 py-2.5">Conc/g</th>
-              <th className="text-right font-medium px-4 py-2.5">Total/g</th>
-              <th className="text-right font-medium px-4 py-2.5"
+              <th className="text-left font-medium px-2 py-1.5 sm:px-4 sm:py-2.5">#</th>
+              <th className="text-left font-medium px-2 py-1.5 sm:px-4 sm:py-2.5">Team</th>
+              <th className="text-right font-medium px-2 py-1.5 sm:px-4 sm:py-2.5">Won/g</th>
+              <th className="text-left font-medium px-2 py-1.5 sm:px-4 sm:py-2.5 hidden md:table-cell w-[180px]">&nbsp;</th>
+              <th className="text-right font-medium px-2 py-1.5 sm:px-4 sm:py-2.5">Conc/g</th>
+              <th className="text-right font-medium px-2 py-1.5 sm:px-4 sm:py-2.5">Total/g</th>
+              <th className="text-right font-medium px-2 py-1.5 sm:px-4 sm:py-2.5"
                 title="Shots taken per game, over the fixtures the provider covered">Shots F</th>
-              <th className="text-right font-medium px-4 py-2.5"
+              <th className="text-right font-medium px-2 py-1.5 sm:px-4 sm:py-2.5"
                 title="Shots faced per game — a team winning corners against a side that concedes shots freely is a softer signal">Shots A</th>
-              <th className="text-right font-medium px-4 py-2.5"
+              <th className="text-right font-medium px-2 py-1.5 sm:px-4 sm:py-2.5"
                 title="Shots on target per game. Reported for only about half of fixtures, so this is a thinner sample than Shots — hover a value for its count.">SoT F</th>
-              <th className="text-right font-medium px-4 py-2.5"
+              <th className="text-right font-medium px-2 py-1.5 sm:px-4 sm:py-2.5"
                 title="Shots on target faced per game. Same reduced coverage as SoT F.">SoT A</th>
-              <th className="text-right font-medium px-4 py-2.5">Games</th>
-              <th className="text-left font-medium px-4 py-2.5">Next</th>
-              <th className="px-4 py-2.5"></th>
+              <th className="text-right font-medium px-2 py-1.5 sm:px-4 sm:py-2.5">Games</th>
+              <th className="text-left font-medium px-2 py-1.5 sm:px-4 sm:py-2.5">Next</th>
+              <th className="px-2 py-1.5 sm:px-4 sm:py-2.5"></th>
             </tr>
           </thead>
           <tbody className="font-mono-data text-sm">
@@ -109,41 +109,41 @@ export default function BestTeams({ leagueId }) {
                 className={`border-b border-border/50 transition-colors duration-150 ${r.next_fixture ? "hover:bg-white/5 cursor-pointer" : ""}`}
                 style={{ borderLeft: i < 3 ? "2px solid #22D3EE" : "2px solid transparent" }}
               >
-                <td className="px-4 py-2.5 text-muted-foreground">{i + 1}</td>
-                <td className="px-4 py-2.5">
+                <td className="px-2 py-1.5 sm:px-4 sm:py-2.5 text-muted-foreground">{i + 1}</td>
+                <td className="px-2 py-1.5 sm:px-4 sm:py-2.5">
                   <div className="text-foreground font-sans font-medium whitespace-nowrap">{r.name}</div>
                   <div className="text-[10px] text-muted-foreground uppercase tracking-wider font-sans">{r.league_name}</div>
                 </td>
-                <td className="px-4 py-2.5 text-right text-emerald-400 font-semibold">{r.won_avg.toFixed(2)}</td>
-                <td className="px-4 py-2.5 hidden md:table-cell">
+                <td className="px-2 py-1.5 sm:px-4 sm:py-2.5 text-right text-emerald-400 font-semibold">{r.won_avg.toFixed(2)}</td>
+                <td className="px-2 py-1.5 sm:px-4 sm:py-2.5 hidden md:table-cell">
                   <div className="h-2 rounded-full bg-white/5 overflow-hidden">
                     <div className="h-full rounded-full bg-primary/70" style={{ width: `${Math.min(100, (r.won_avg / max) * 100)}%` }} />
                   </div>
                 </td>
-                <td className="px-4 py-2.5 text-right text-red-400">{r.conceded_avg.toFixed(2)}</td>
-                <td className="px-4 py-2.5 text-right text-foreground">{r.total_avg.toFixed(2)}</td>
-                <td className="px-4 py-2.5 text-right text-foreground"
+                <td className="px-2 py-1.5 sm:px-4 sm:py-2.5 text-right text-red-400">{r.conceded_avg.toFixed(2)}</td>
+                <td className="px-2 py-1.5 sm:px-4 sm:py-2.5 text-right text-foreground">{r.total_avg.toFixed(2)}</td>
+                <td className="px-2 py-1.5 sm:px-4 sm:py-2.5 text-right text-foreground"
                   title={r.shots_games ? `from ${r.shots_games} covered game${r.shots_games === 1 ? "" : "s"}` : undefined}>
                   {r.shots_for_avg != null ? r.shots_for_avg.toFixed(1)
                     : <span className="text-muted-foreground">—</span>}
                 </td>
-                <td className="px-4 py-2.5 text-right text-muted-foreground">
+                <td className="px-2 py-1.5 sm:px-4 sm:py-2.5 text-right text-muted-foreground">
                   {r.shots_against_avg != null ? r.shots_against_avg.toFixed(1) : "—"}
                 </td>
-                <td className="px-4 py-2.5 text-right text-foreground"
+                <td className="px-2 py-1.5 sm:px-4 sm:py-2.5 text-right text-foreground"
                   title={r.sot_games ? `from ${r.sot_games} covered game${r.sot_games === 1 ? "" : "s"}`
                                      : "not reported for any of this team's fixtures"}>
                   {r.sot_for_avg != null ? r.sot_for_avg.toFixed(1)
                     : <span className="text-muted-foreground">—</span>}
                 </td>
-                <td className="px-4 py-2.5 text-right text-muted-foreground">
+                <td className="px-2 py-1.5 sm:px-4 sm:py-2.5 text-right text-muted-foreground">
                   {r.sot_against_avg != null ? r.sot_against_avg.toFixed(1) : "—"}
                 </td>
-                <td className="px-4 py-2.5 text-right text-muted-foreground">{r.games}</td>
-                <td className="px-4 py-2.5 text-xs text-muted-foreground whitespace-nowrap">
+                <td className="px-2 py-1.5 sm:px-4 sm:py-2.5 text-right text-muted-foreground">{r.games}</td>
+                <td className="px-2 py-1.5 sm:px-4 sm:py-2.5 text-xs text-muted-foreground whitespace-nowrap">
                   {r.next_fixture ? `${r.next_fixture.is_home ? "vs" : "@"} ${r.next_fixture.opponent} · ${fmt(r.next_fixture.date)}` : "—"}
                 </td>
-                <td className="px-4 py-2.5 text-right">{r.next_fixture && <ArrowRight className="h-4 w-4 text-muted-foreground inline" />}</td>
+                <td className="px-2 py-1.5 sm:px-4 sm:py-2.5 text-right">{r.next_fixture && <ArrowRight className="h-4 w-4 text-muted-foreground inline" />}</td>
               </tr>
             ))}
           </tbody>

@@ -1,7 +1,8 @@
 import { useState, useEffect, useCallback } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { toast } from "sonner";
-import { ArrowLeft, ClipboardPaste, Calculator, TrendingUp } from "lucide-react";
+import { ArrowLeft, TrendingUp } from "lucide-react";
+import StarButton from "@/components/StarButton";
 import { api, tierMeta, confMeta } from "@/lib/api";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 
@@ -95,7 +96,7 @@ export default function FixtureDetail() {
   ];
 
   return (
-    <div className="space-y-6" data-testid="fixture-detail-page">
+    <div className="space-y-3 sm:space-y-6" data-testid="fixture-detail-page">
       <button onClick={() => navigate(-1)} data-testid="back-btn" className="flex items-center gap-2 text-sm text-muted-foreground hover:text-foreground transition-colors duration-150">
         <ArrowLeft className="h-4 w-4" /> Back
       </button>
@@ -103,9 +104,15 @@ export default function FixtureDetail() {
       {/* Header */}
       <div className="bg-card border border-border rounded-lg p-5 flex flex-col sm:flex-row sm:items-center gap-4">
         <div className="flex-1">
-          <h1 className="font-head text-2xl sm:text-3xl font-bold tracking-tight">
-            {fixture.home_name} <span className="text-muted-foreground font-normal">vs</span> {fixture.away_name}
-          </h1>
+          {/* The most natural place to save a game is the game's own page — this was the
+              one surface the star was missing from, which is most of why it could not
+              be found. */}
+          <div className="flex items-start gap-2">
+            <StarButton fixtureId={fixture.fixture_id} size="lg" />
+            <h1 className="font-head text-2xl sm:text-3xl font-bold tracking-tight">
+              {fixture.home_name} <span className="text-muted-foreground font-normal">vs</span> {fixture.away_name}
+            </h1>
+          </div>
           <p className="font-mono-data text-xs text-muted-foreground mt-1">
             {new Date(fixture.date).toLocaleString()}
             {fixture.round && fixture.round !== "Upcoming" && (
@@ -122,56 +129,6 @@ export default function FixtureDetail() {
             <span className={`text-xs px-2 py-0.5 rounded border ${confMeta[model.confidence.label]}`}>{model.confidence.label} · {model.confidence.score}</span>
           </div>
         </div>
-      </div>
-
-      {/* Quick paste */}
-      <div className="bg-card border border-border rounded-lg p-4">
-        <div className="flex items-center gap-2 mb-3 flex-wrap">
-          <ClipboardPaste className="h-4 w-4 text-primary" />
-          <h2 className="font-head font-semibold">Quick-Paste Bookmaker Odds</h2>
-          <span className="text-xs text-muted-foreground">e.g. "4.5 1.80" or "5+ 1.80" — one per line</span>
-        </div>
-        <div className="flex items-center gap-2 mb-3">
-          <span className="text-[10px] uppercase tracking-wider text-muted-foreground mr-1">Paste into</span>
-          {[
-            { v: "home", l: fixture.home_name },
-            { v: "away", l: fixture.away_name },
-            { v: "total", l: "Total" },
-          ].map((o) => (
-            <button
-              key={o.v}
-              data-testid={`paste-target-${o.v}`}
-              onClick={() => setPasteTarget(o.v)}
-              className={`text-xs px-2.5 py-1 rounded-md border transition-colors duration-150 max-w-[160px] truncate ${
-                pasteTarget === o.v
-                  ? "bg-primary/15 text-primary border-primary/40"
-                  : "bg-secondary text-muted-foreground border-border hover:text-foreground"
-              }`}
-            >
-              {o.v === "total" ? "Total match" : `${o.l} corners`}
-            </button>
-          ))}
-        </div>
-        <div className="flex flex-col sm:flex-row gap-3">
-          <textarea
-            data-testid="odds-paste-input"
-            value={paste}
-            onChange={(e) => setPaste(e.target.value)}
-            placeholder={"4.5 1.80\n5.5 2.40\n6.5 3.30"}
-            className="flex-1 h-24 bg-black border border-border rounded-md p-3 font-mono-data text-sm resize-none focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent"
-          />
-          <button
-            data-testid="paste-parse-btn"
-            onClick={handlePaste}
-            className="sm:w-40 flex items-center justify-center gap-2 bg-primary text-black font-medium text-sm rounded-md px-4 py-2 transition-colors duration-150 hover:bg-[#33EEFF] self-start"
-          >
-            <Calculator className="h-4 w-4" /> Calculate EV
-          </button>
-        </div>
-        <p className="text-[11px] text-muted-foreground mt-2 leading-relaxed">
-          Tip: include a team name on a line (e.g. "{fixture.home_name} over 4.5 1.80") and it routes automatically.
-          "5+" is read as 5-or-more (Over 4.5).
-        </p>
       </div>
 
       {/* Markets */}

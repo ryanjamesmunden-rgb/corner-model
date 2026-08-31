@@ -33,7 +33,7 @@ export default function TrendFinder() {
 
   return (
     <section className="bg-card border border-border rounded-lg" data-testid="trend-finder">
-      <div className="flex flex-col lg:flex-row lg:items-center gap-3 px-4 py-3 border-b border-border">
+      <div className="flex flex-col lg:flex-row lg:items-center gap-3 px-2 py-2 sm:px-4 sm:py-3 border-b border-border">
         <div className="flex items-center gap-2">
           <TrendingUp className="h-4 w-4 text-primary" />
           <h2 className="font-head font-semibold text-lg">Hot Form</h2>
@@ -65,16 +65,16 @@ export default function TrendFinder() {
           </Select>
         </div>
       </div>
-      <div className="overflow-x-auto max-h-[520px] overflow-y-auto">
+      <div className="overflow-x-auto sm:max-h-[520px] sm:overflow-y-auto">
         <table className="w-full">
           <thead className="sticky top-0 bg-card z-10">
             <tr className="border-b border-border text-muted-foreground text-xs uppercase tracking-wider">
-              <th className="text-left font-medium px-4 py-2.5">Team</th>
-              <th className="text-right font-medium px-4 py-2.5">Recent avg</th>
-              <th className="text-right font-medium px-4 py-2.5">Season avg</th>
-              <th className="text-right font-medium px-4 py-2.5">Trend</th>
-              <th className="text-left font-medium px-4 py-2.5">Next</th>
-              <th className="px-4 py-2.5"></th>
+              <th className="text-left font-medium px-2 py-1.5 sm:px-4 sm:py-2.5">Team</th>
+              <th className="text-right font-medium px-2 py-1.5 sm:px-4 sm:py-2.5">Recent avg</th>
+              <th className="text-right font-medium px-2 py-1.5 sm:px-4 sm:py-2.5">Season avg</th>
+              <th className="text-right font-medium px-2 py-1.5 sm:px-4 sm:py-2.5">Trend</th>
+              <th className="text-left font-medium px-2 py-1.5 sm:px-4 sm:py-2.5">Next</th>
+              <th className="px-2 py-1.5 sm:px-4 sm:py-2.5"></th>
             </tr>
           </thead>
           <tbody className="font-mono-data text-sm">
@@ -90,21 +90,21 @@ export default function TrendFinder() {
                 className={`border-b border-border/50 transition-colors duration-150 ${r.next_fixture ? "hover:bg-white/5 cursor-pointer" : ""}`}
                 style={{ borderLeft: "2px solid #22D3EE" }}
               >
-                <td className="px-4 py-2.5">
+                <td className="px-2 py-1.5 sm:px-4 sm:py-2.5">
                   <div className="text-foreground font-sans font-medium whitespace-nowrap">{r.name}</div>
                   <div className="text-[10px] text-muted-foreground uppercase tracking-wider font-sans">{r.league_name}</div>
                 </td>
-                <td className="px-4 py-2.5 text-right text-foreground font-semibold">{r[recKey].toFixed(2)}</td>
-                <td className="px-4 py-2.5 text-right text-muted-foreground">{r[seaKey].toFixed(2)}</td>
-                <td className="px-4 py-2.5 text-right">
+                <td className="px-2 py-1.5 sm:px-4 sm:py-2.5 text-right text-foreground font-semibold">{r[recKey].toFixed(2)}</td>
+                <td className="px-2 py-1.5 sm:px-4 sm:py-2.5 text-right text-muted-foreground">{r[seaKey].toFixed(2)}</td>
+                <td className="px-2 py-1.5 sm:px-4 sm:py-2.5 text-right">
                   <span className="inline-flex items-center gap-1 text-emerald-400 font-semibold">
                     <ArrowUpRight className="h-3.5 w-3.5" />+{r.delta.toFixed(2)}
                   </span>
                 </td>
-                <td className="px-4 py-2.5 text-xs text-muted-foreground whitespace-nowrap">
+                <td className="px-2 py-1.5 sm:px-4 sm:py-2.5 text-xs text-muted-foreground whitespace-nowrap">
                   {r.next_fixture ? `${r.next_fixture.is_home ? "vs" : "@"} ${r.next_fixture.opponent} · ${fmt(r.next_fixture.date)}` : "—"}
                 </td>
-                <td className="px-4 py-2.5 text-right">{r.next_fixture && <ArrowRight className="h-4 w-4 text-muted-foreground inline" />}</td>
+                <td className="px-2 py-1.5 sm:px-4 sm:py-2.5 text-right">{r.next_fixture && <ArrowRight className="h-4 w-4 text-muted-foreground inline" />}</td>
               </tr>
             ))}
           </tbody>

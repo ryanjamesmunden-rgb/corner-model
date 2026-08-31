@@ -5,6 +5,7 @@ from motor.motor_asyncio import AsyncIOMotorClient
 import asyncio
 import contextvars
 import os
+import secrets
 import logging
 import math
 import random
@@ -636,6 +637,45 @@ async def require_user(request: Request) -> dict:
     return user
 
 
+# MEMBERSHIP. One code, posted in the paid Telegram, redeemed once per account.
+#
+# Chosen over matching against Stripe because the emails do not line up: the address
+# someone signs in with is routinely not the one on their card, and every mismatch would
+# be a person who paid and cannot get in. The channel already contains exactly the paying
+# members, so posting the code there is the same list by a simpler route.
+#
+# ROTATION: changing MEMBER_CODE stops the old one being redeemed but does NOT remove
+# anyone already unlocked — membership is a flag on the account, not a re-check of the
+# code. That is deliberate; rotating should close a leak, not log out paying members.
+MEMBER_CODE = os.environ.get("MEMBER_CODE", "").strip()
+
+
+async def require_member(request: Request) -> dict:
+    """For the screens that are the paid product."""
+    user = await get_current_user(request)
+    if user.get("user_id") == PUBLIC_USER_ID:
+        raise HTTPException(status_code=401, detail="Sign in to view this")
+    if not user.get("member"):
+        raise HTTPException(status_code=402, detail="Members only — enter your code from the channel")
+    return user
+
+
+class RedeemBody(BaseModel):
+    code: str
+
+
+@api_router.post("/membership/redeem")
+async def redeem_code(body: RedeemBody, user: dict = Depends(require_user)):
+    if not MEMBER_CODE:
+        raise HTTPException(status_code=503, detail="Membership is not set up yet")
+    # compare_digest so a wrong code cannot be narrowed down by timing
+    if not secrets.compare_digest(body.code.strip().upper(), MEMBER_CODE.upper()):
+        raise HTTPException(status_code=403, detail="That code is not right — check the channel")
+    await db.users.update_one({"user_id": user["user_id"]}, {"$set": {
+        "member": True, "member_since": datetime.now(timezone.utc).isoformat()}})
+    return {"member": True}
+
+
 class GoogleSignInBody(BaseModel):
     credential: str          # the ID token Google Identity Services hands the browser
 
@@ -674,7 +714,8 @@ async def sign_in_with_google(body: GoogleSignInBody):
 def _public_user(u: dict) -> dict:
     """Only what the browser needs. google_sub is an account identifier and stays here."""
     return {"user_id": u.get("user_id"), "name": u.get("name"),
-            "email": u.get("email"), "picture": u.get("picture")}
+            "email": u.get("email"), "picture": u.get("picture"),
+            "member": bool(u.get("member"))}
 
 
 # ----------------------------- Favourites -----------------------------
@@ -2303,7 +2344,7 @@ async def streaks(league_id: Optional[str] = None, side: str = "overall", window
                   within_days: Optional[int] = None, direction: str = "over",
                   subject: str = "team", max_line: Optional[int] = None,
                   min_streak: int = MIN_STREAK_LEN,
-                  user: dict = Depends(get_current_user)):
+                  user: dict = Depends(require_member)):
     """Teams that keep landing the same side of a corner line over recent REAL games —
     e.g. 4+ team corners in 5/5 home games, or the match total under 10 in 8 of the last 10.
 
@@ -2522,7 +2563,7 @@ async def matchups(league_id: str, side: str = "overall", user: dict = Depends(g
 
 @api_router.get("/trends")
 async def trends(league_id: Optional[str] = None, window: int = 5, metric: str = "total",
-                 side: str = "overall", user: dict = Depends(get_current_user)):
+                 side: str = "overall", user: dict = Depends(require_member)):
     """Teams currently averaging MORE corners than their season baseline (hot form), by venue."""
     q = {} if not league_id or league_id == "all" else {"league_id": league_id}
     teams = await db.teams.find(q, {"_id": 0}).to_list(1000)
@@ -2614,7 +2655,7 @@ async def _all_mismatches(within_days: Optional[int] = None, limit: int = 20):
 
 @api_router.get("/top-mismatches")
 async def top_mismatches(within_days: Optional[int] = None, limit: int = 20,
-                         user: dict = Depends(get_current_user)):
+                         user: dict = Depends(require_member)):
     if _cache_ok() and within_days == 7 and limit == 30:
         return await _screen("mismatches")
     return await _all_mismatches(within_days, limit)
@@ -2723,7 +2764,7 @@ async def _chase_board(within_days: int = 7, limit: int = 25, league_id: Optiona
 
 @api_router.get("/chase-board")
 async def chase_board(within_days: int = 7, limit: int = 25, league_id: Optional[str] = None,
-                      user: dict = Depends(get_current_user)):
+                      user: dict = Depends(require_member)):
     if _cache_ok() and within_days == 7 and limit == 25 and league_id in (None, "all"):
         return await _screen("chase")
     board = await _chase_board(within_days, min(max(limit, 1), 100), league_id)

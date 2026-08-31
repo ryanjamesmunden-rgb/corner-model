@@ -111,7 +111,7 @@ export default function StreakFinder({ leagueId }) {
 
   return (
     <section className="bg-card border border-border rounded-lg" data-testid="streak-finder">
-      <div className="flex flex-col lg:flex-row lg:items-center gap-3 px-4 py-3 border-b border-border">
+      <div className="flex flex-col lg:flex-row lg:items-center gap-3 px-2 py-2 sm:px-4 sm:py-3 border-b border-border">
         <div className="flex items-center gap-2">
           <Flame className="h-4 w-4 text-primary" />
           <h2 className="font-head font-semibold text-lg">Corner Streak Finder</h2>
@@ -178,22 +178,22 @@ export default function StreakFinder({ leagueId }) {
         </div>
       </div>
 
-      <div className="overflow-x-auto max-h-[420px] overflow-y-auto">
+      <div className="overflow-x-auto sm:max-h-[420px] sm:overflow-y-auto">
         <table className="w-full">
           <thead className="sticky top-0 bg-card z-10">
             <tr className="border-b border-border text-muted-foreground text-xs uppercase tracking-wider">
-              <th className="text-left font-medium px-4 py-2.5">Team</th>
-              <th className="text-left font-medium px-4 py-2.5">Line</th>
-              <th className="text-left font-medium px-4 py-2.5">Hit rate</th>
-              <th className="text-left font-medium px-4 py-2.5">Streak</th>
-              <th className="text-left font-medium px-4 py-2.5">Longest</th>
-              <th className="text-right font-medium px-4 py-2.5">Avg</th>
-              <th className="text-left font-medium px-4 py-2.5 hidden md:table-cell">Recent ({side})</th>
-              <th className="text-left font-medium px-4 py-2.5">Next</th>
-              <th className="text-right font-medium px-4 py-2.5">{subject === "match" ? "Proj λ" : "Opp conc"}</th>
-              <th className="text-right font-medium px-4 py-2.5">Model odds</th>
-              <th className="text-right font-medium px-4 py-2.5">Edge</th>
-              <th className="px-4 py-2.5"></th>
+              <th className="text-left font-medium px-2 py-1.5 sm:px-4 sm:py-2.5 sticky left-0 bg-card z-20">Team</th>
+              <th className="text-left font-medium px-2 py-1.5 sm:px-4 sm:py-2.5">Line</th>
+              <th className="text-left font-medium px-2 py-1.5 sm:px-4 sm:py-2.5">Hit rate</th>
+              <th className="text-left font-medium px-2 py-1.5 sm:px-4 sm:py-2.5">Streak</th>
+              <th className="text-left font-medium px-2 py-1.5 sm:px-4 sm:py-2.5">Longest</th>
+              <th className="text-right font-medium px-2 py-1.5 sm:px-4 sm:py-2.5">Avg</th>
+              <th className="text-left font-medium px-2 py-1.5 sm:px-4 sm:py-2.5 hidden md:table-cell">Recent ({side})</th>
+              <th className="text-left font-medium px-2 py-1.5 sm:px-4 sm:py-2.5">Next</th>
+              <th className="text-right font-medium px-2 py-1.5 sm:px-4 sm:py-2.5">{subject === "match" ? "Proj λ" : "Opp conc"}</th>
+              <th className="text-right font-medium px-2 py-1.5 sm:px-4 sm:py-2.5">Model odds</th>
+              <th className="text-right font-medium px-2 py-1.5 sm:px-4 sm:py-2.5">Edge</th>
+              <th className="px-2 py-1.5 sm:px-4 sm:py-2.5"></th>
             </tr>
           </thead>
           <tbody className="font-mono-data text-sm">
@@ -211,11 +211,11 @@ export default function StreakFinder({ leagueId }) {
                 className={`border-b border-border/50 transition-colors duration-150 ${r.next_fixture ? "hover:bg-white/5 cursor-pointer" : ""}`}
                 style={{ borderLeft: `2px solid ${isSolid(r) ? "#10B981" : "#3F3F46"}` }}
               >
-                <td className="px-4 py-2.5">
+                <td className="px-2 py-1.5 sm:px-4 sm:py-2.5 sticky left-0 bg-card z-10">
                   <div className="text-foreground font-sans font-medium whitespace-nowrap">{r.name}</div>
                   <div className="text-[10px] text-muted-foreground uppercase tracking-wider font-sans">{r.league_name}</div>
                 </td>
-                <td className="px-4 py-2.5">
+                <td className="px-2 py-1.5 sm:px-4 sm:py-2.5">
                   <span className={`inline-flex items-center gap-1 text-xs px-2 py-1 rounded border ${isSolid(r) ? SOLID : THIN}`}
                     title={`${subject === "match" ? "Match total corners" : "Team corners"} — ${
                       isSolid(r) ? "solid: landed in 4 of every 5 settled games"
@@ -223,7 +223,7 @@ export default function StreakFinder({ leagueId }) {
                     {isUnder ? <TrendingDown className="h-3 w-3" /> : <Target className="h-3 w-3" />} {lineLabel(r.line, r.direction)}
                   </span>
                 </td>
-                <td className="px-4 py-2.5 whitespace-nowrap">
+                <td className="px-2 py-1.5 sm:px-4 sm:py-2.5 whitespace-nowrap">
                   <span className={isSolid(r) ? "text-emerald-400 font-semibold" : "text-muted-foreground/70 font-semibold"}>
                     {r.hits}/{r.settled ?? r.window}
                   </span>
@@ -233,7 +233,7 @@ export default function StreakFinder({ leagueId }) {
                     </span>
                   )}
                 </td>
-                <td className="px-4 py-2.5 whitespace-nowrap">
+                <td className="px-2 py-1.5 sm:px-4 sm:py-2.5 whitespace-nowrap">
                   {r.streak && r.streak.length > 0 ? (
                     <>
                       <span className="text-foreground font-semibold">{r.streak.length}</span>
@@ -245,7 +245,7 @@ export default function StreakFinder({ leagueId }) {
                     <span className="text-muted-foreground" title="Broken — the latest game missed this line">0</span>
                   )}
                 </td>
-                <td className="px-4 py-2.5 whitespace-nowrap">
+                <td className="px-2 py-1.5 sm:px-4 sm:py-2.5 whitespace-nowrap">
                   {r.longest ? (
                     <span className={r.longest.is_current ? "text-foreground" : "text-muted-foreground"}
                       title={r.longest.is_current
@@ -256,8 +256,8 @@ export default function StreakFinder({ leagueId }) {
                     </span>
                   ) : <span className="text-muted-foreground">—</span>}
                 </td>
-                <td className="px-4 py-2.5 text-right text-foreground">{r.avg.toFixed(1)}</td>
-                <td className="px-4 py-2.5 hidden md:table-cell">
+                <td className="px-2 py-1.5 sm:px-4 sm:py-2.5 text-right text-foreground">{r.avg.toFixed(1)}</td>
+                <td className="px-2 py-1.5 sm:px-4 sm:py-2.5 hidden md:table-cell">
                   <div className="flex gap-1">
                     {r.recent.map((m, i) => (
                       <span key={i} title={`${m.corners} vs ${m.opponent}${m.result === "void" ? " — void (exact line)" : ""}`}
@@ -267,10 +267,10 @@ export default function StreakFinder({ leagueId }) {
                     ))}
                   </div>
                 </td>
-                <td className="px-4 py-2.5 text-xs text-muted-foreground whitespace-nowrap">
+                <td className="px-2 py-1.5 sm:px-4 sm:py-2.5 text-xs text-muted-foreground whitespace-nowrap">
                   {r.next_fixture ? `${r.next_fixture.is_home ? "vs" : "@"} ${r.next_fixture.opponent} · ${fmtDate(r.next_fixture.date)}` : "—"}
                 </td>
-                <td className="px-4 py-2.5 text-right">
+                <td className="px-2 py-1.5 sm:px-4 sm:py-2.5 text-right">
                   {r.projection ? (
                     subject === "match" ? (
                       <span className="text-foreground" title="Projected match total corners">{r.projection.lambda.toFixed(1)}</span>
@@ -283,7 +283,7 @@ export default function StreakFinder({ leagueId }) {
                     )
                   ) : <span className="text-muted-foreground">—</span>}
                 </td>
-                <td className="px-4 py-2.5 text-right whitespace-nowrap">
+                <td className="px-2 py-1.5 sm:px-4 sm:py-2.5 text-right whitespace-nowrap">
                   {r.projection && r.projection.fair_odds ? (
                     <span className="text-foreground font-semibold"
                       title={`Model: ${r.projection.prob.toFixed(1)}% to land ${lineLabel(r.line, r.direction)} (λ ${r.projection.lambda})`
@@ -292,7 +292,7 @@ export default function StreakFinder({ leagueId }) {
                     </span>
                   ) : <span className="text-muted-foreground">—</span>}
                 </td>
-                <td className="px-4 py-2.5 text-right whitespace-nowrap">
+                <td className="px-2 py-1.5 sm:px-4 sm:py-2.5 text-right whitespace-nowrap">
                   {r.projection && r.projection.ev != null ? (
                     <span className={`font-semibold ${r.projection.ev >= 5 ? "text-emerald-400" : r.projection.ev >= 0 ? "text-amber-400" : "text-red-400"}`}
                       title={`Book ${r.projection.book_odds} vs model ${r.projection.fair_odds}`}>
@@ -300,7 +300,7 @@ export default function StreakFinder({ leagueId }) {
                     </span>
                   ) : <span className="text-muted-foreground" title={`Paste ${r.projection?.market_key || "this"} odds on the fixture page`}>—</span>}
                 </td>
-                <td className="px-4 py-2.5 text-right">{r.next_fixture && <ArrowRight className="h-4 w-4 text-muted-foreground inline" />}</td>
+                <td className="px-2 py-1.5 sm:px-4 sm:py-2.5 text-right">{r.next_fixture && <ArrowRight className="h-4 w-4 text-muted-foreground inline" />}</td>
               </tr>
             ))}
           </tbody>

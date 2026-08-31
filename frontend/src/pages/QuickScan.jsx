@@ -3,6 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { Zap, ArrowRight, Swords, TrendingUp, ShieldAlert, Sparkles, Loader2 } from "lucide-react";
 import { api } from "@/lib/api";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import MembersOnly from "@/components/MembersOnly";
 
 const WINDOWS = [
   { v: "3", l: "Next 3 days" },
@@ -27,43 +28,45 @@ export default function QuickScan() {
   }, [within]);
 
   return (
-    <div className="space-y-6" data-testid="quickscan-page">
-      <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-4">
-        <div>
-          <div className="flex items-center gap-2 text-primary mb-1">
-            <Zap className="h-4 w-4" />
-            <span className="font-mono-data text-xs tracking-widest uppercase">Quick Value Scan</span>
+    <MembersOnly title="Corner mismatches" blurb="Strong corner-winning sides drawn against defences that concede them, ranked by projected total, with the sample behind both halves.">
+      <div className="space-y-3 sm:space-y-6" data-testid="quickscan-page">
+        <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-4">
+          <div>
+            <div className="flex items-center gap-2 text-primary mb-1">
+              <Zap className="h-4 w-4" />
+              <span className="font-mono-data text-xs tracking-widest uppercase">Quick Value Scan</span>
+            </div>
+            <h1 className="font-head text-3xl sm:text-4xl font-bold tracking-tight">Corner Mismatches</h1>
+            <p className="text-muted-foreground text-sm mt-1">
+              Strong corner-winning teams drawn against defences that concede a lot — ranked by projected total corners.
+            </p>
           </div>
-          <h1 className="font-head text-3xl sm:text-4xl font-bold tracking-tight">Corner Mismatches</h1>
-          <p className="text-muted-foreground text-sm mt-1">
-            Strong corner-winning teams drawn against defences that concede a lot — ranked by projected total corners.
-          </p>
+          <Tabs value={within} onValueChange={setWithin}>
+            <TabsList className="bg-secondary h-9">
+              {WINDOWS.map((w) => (
+                <TabsTrigger key={w.v} value={w.v} data-testid={`quickscan-window-${w.v}`} className="text-xs px-2.5 h-7">{w.l}</TabsTrigger>
+              ))}
+            </TabsList>
+          </Tabs>
         </div>
-        <Tabs value={within} onValueChange={setWithin}>
-          <TabsList className="bg-secondary h-9">
-            {WINDOWS.map((w) => (
-              <TabsTrigger key={w.v} value={w.v} data-testid={`quickscan-window-${w.v}`} className="text-xs px-2.5 h-7">{w.l}</TabsTrigger>
-            ))}
-          </TabsList>
-        </Tabs>
-      </div>
 
-      {loading ? (
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-          {Array.from({ length: 6 }).map((_, i) => <div key={i} className="h-[184px] bg-card border border-border rounded-lg animate-pulse" />)}
-        </div>
-      ) : rows.length === 0 ? (
-        <div className="bg-card border border-border rounded-lg py-20 text-center text-muted-foreground text-sm" data-testid="quickscan-empty">
-          No strong mismatches in this window. Try widening the timeframe.
-        </div>
-      ) : (
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 items-start">
-          {rows.map((r) => (
-            <PairCard key={r.team_id} r={r} onClick={() => r.next_fixture?.fixture_id && navigate(`/fixture/${r.next_fixture.fixture_id}`)} />
-          ))}
-        </div>
-      )}
-    </div>
+        {loading ? (
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+            {Array.from({ length: 6 }).map((_, i) => <div key={i} className="h-[184px] bg-card border border-border rounded-lg animate-pulse" />)}
+          </div>
+        ) : rows.length === 0 ? (
+          <div className="bg-card border border-border rounded-lg py-20 text-center text-muted-foreground text-sm" data-testid="quickscan-empty">
+            No strong mismatches in this window. Try widening the timeframe.
+          </div>
+        ) : (
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 items-start">
+            {rows.map((r) => (
+              <PairCard key={r.team_id} r={r} onClick={() => r.next_fixture?.fixture_id && navigate(`/fixture/${r.next_fixture.fixture_id}`)} />
+            ))}
+          </div>
+        )}
+      </div>
+    </MembersOnly>
   );
 }
 

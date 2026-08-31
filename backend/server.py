@@ -811,6 +811,88 @@ def _record(picks: List[dict]) -> dict:
                                  if p.get("status") in _WIN_STATUSES and not p.get("odds"))}
 
 
+class ManualPickBody(BaseModel):
+    """A pick you actually sent out, logged so it becomes part of the published record."""
+    league_id: str
+    date: str                       # YYYY-MM-DD, the day it kicks off
+    home: str
+    away: str
+    team: str                       # must be one of home/away — see below
+    line: int                       # e.g. 6 for "6+ corners"
+    odds: Optional[float] = None    # the price you actually took
+    note: Optional[str] = None
+
+
+@api_router.post("/picks")
+async def add_pick(body: ManualPickBody, token: Optional[str] = None):
+    """Log a pick you sent to Telegram, so the site's record is the record you SELL.
+
+    Until this existed there was no write path for a real pick at all: db.picks was
+    only ever written by _snapshot_daily_picks, so the ledger held the model's own
+    unattended selections and nothing else. The picks actually being posted lived
+    nowhere on the site, which meant /join was publishing one record while the product
+    was a different one.
+
+    TOKEN-GATED, and that is not optional. This writes the record /join advertises and
+    the money-back guarantee is measured against, so it has to be writable by you and
+    nobody else. The site is public; an open endpoint here would let anyone edit your
+    published P&L.
+
+    Nothing is computed or assumed. A pick is settled later by settle_picks against the
+    real result, exactly like the automated ones — so a logged pick can only ever report
+    what actually happened.
+    """
+    _check_tools_token(token)
+    if body.league_id not in MANAGED_LEAGUE_IDS:
+        raise HTTPException(status_code=400,
+                            detail=f"Unknown league '{body.league_id}'. Settlement can only "
+                                   f"grade leagues the model syncs.")
+    try:
+        datetime.fromisoformat(body.date)
+    except Exception:
+        raise HTTPException(status_code=400, detail="date must be YYYY-MM-DD")
+    if body.line < 1:
+        raise HTTPException(status_code=400, detail="line must be 1 or more")
+    if body.odds is not None and body.odds <= 1.0:
+        raise HTTPException(status_code=400, detail="odds must be greater than 1.0")
+    # Settlement decides WHICH SIDE you backed by name overlap against the real fixture.
+    # If `team` is neither of the two names, that comparison still returns a winner and
+    # would grade the wrong side's corners — silently, and in your favour half the time.
+    names = {body.home.strip().lower(), body.away.strip().lower()}
+    if body.team.strip().lower() not in names:
+        raise HTTPException(status_code=400,
+                            detail="team must be exactly the home or away name, or settlement "
+                                   "cannot tell which side you backed")
+    doc = {
+        "pick_id": str(uuid.uuid4()), "auto": False,
+        "league_id": body.league_id, "league_name": LEAGUE_META[body.league_id]["name"],
+        "date": body.date, "home": body.home.strip(), "away": body.away.strip(),
+        "team": body.team.strip(), "line": body.line,
+        "venue": "home" if body.team.strip().lower() == body.home.strip().lower() else "away",
+        "odds": body.odds, "note": (body.note or "").strip() or None,
+        "signal": "manual", "selected_by": "manual",
+        "status": settlement.PENDING,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    await db.picks.insert_one(dict(doc))
+    doc.pop("_id", None)
+    return doc
+
+
+@api_router.delete("/picks/{pick_id}")
+async def delete_pick(pick_id: str, token: Optional[str] = None):
+    """Remove a mis-typed pick. Token-gated for the same reason as adding one.
+
+    Only ever for a mistake — deleting a pick because it LOST would make the published
+    record a selection of the good ones, which is the thing the whole ledger exists to
+    make impossible."""
+    _check_tools_token(token)
+    res = await db.picks.delete_one({"pick_id": pick_id, "auto": False})
+    if not res.deleted_count:
+        raise HTTPException(status_code=404, detail="No manual pick with that id")
+    return {"deleted": pick_id}
+
+
 @api_router.get("/picks")
 async def get_picks(user: dict = Depends(get_current_user)):
     # auto-tracked Daily 2 picks live on their own ledger (/ledger), not the curated board

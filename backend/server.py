@@ -10,6 +10,8 @@ import math
 import random
 import re
 import uuid
+
+import auth
 from pathlib import Path
 from pydantic import BaseModel
 from typing import List, Optional, Dict
@@ -598,7 +600,7 @@ async def get_fixture_model(fixture: dict, odds: Dict[str, float]) -> dict:
 PUBLIC_USER_ID = "public"
 
 
-async def get_current_user(request: Request) -> dict:
+async def _guest() -> dict:
     user = await db.users.find_one({"user_id": PUBLIC_USER_ID}, {"_id": 0})
     if not user:
         user = {"user_id": PUBLIC_USER_ID, "email": "", "name": "Guest", "picture": "",
@@ -606,6 +608,82 @@ async def get_current_user(request: Request) -> dict:
         await db.users.insert_one(dict(user))
         user.pop("_id", None)
     return user
+
+
+async def get_current_user(request: Request) -> dict:
+    """Whoever is asking — a signed-in member, or the shared guest.
+
+    The site stays PUBLIC. Every screen that worked before sign-in existed still works
+    signed out, so this never refuses: no session simply means the guest, which is the
+    behaviour every existing route was written against. Only the routes that genuinely
+    need to know who you are use `require_user` below.
+
+    The row is re-read from the database rather than trusted from the token, so a stale
+    session cannot carry a stale name or a deleted account back to life."""
+    uid = auth.read_session(auth.bearer(request.headers.get("authorization")))
+    if uid:
+        user = await db.users.find_one({"user_id": uid}, {"_id": 0})
+        if user:
+            return user
+    return await _guest()
+
+
+async def require_user(request: Request) -> dict:
+    """For routes that are meaningless without an identity — your stars, your prices."""
+    user = await get_current_user(request)
+    if user.get("user_id") == PUBLIC_USER_ID:
+        raise HTTPException(status_code=401, detail="Sign in to do that")
+    return user
+
+
+class GoogleSignInBody(BaseModel):
+    credential: str          # the ID token Google Identity Services hands the browser
+
+
+@api_router.post("/auth/google")
+async def sign_in_with_google(body: GoogleSignInBody):
+    """Exchange a Google ID token for one of our sessions.
+
+    Keyed on Google's `sub`, never on email: an address can be changed or reassigned,
+    while sub is stable for the life of the account. Using email as the key would mean
+    someone who changes theirs becomes a stranger, and — worse on a Workspace domain —
+    a reassigned address could inherit the previous holder's data."""
+    try:
+        claims = auth.verify_google_token(body.credential)
+    except auth.AuthError as e:
+        raise HTTPException(status_code=401, detail=str(e))
+    now = datetime.now(timezone.utc).isoformat()
+    existing = await db.users.find_one({"google_sub": claims["sub"]}, {"_id": 0})
+    if existing:
+        # Refresh the profile: people change their Google name and picture, and a stale
+        # avatar looks like the site is broken rather than merely behind.
+        await db.users.update_one({"user_id": existing["user_id"]}, {"$set": {
+            "email": claims["email"], "name": claims["name"],
+            "picture": claims["picture"], "last_seen": now}})
+        user = {**existing, **claims, "last_seen": now}
+        user.pop("sub", None)
+    else:
+        user = {"user_id": str(uuid.uuid4()), "google_sub": claims["sub"],
+                "email": claims["email"], "name": claims["name"],
+                "picture": claims["picture"], "created_at": now, "last_seen": now}
+        await db.users.insert_one(dict(user))
+        user.pop("_id", None)
+    return {"token": auth.issue_session(user["user_id"]), "user": _public_user(user)}
+
+
+def _public_user(u: dict) -> dict:
+    """Only what the browser needs. google_sub is an account identifier and stays here."""
+    return {"user_id": u.get("user_id"), "name": u.get("name"),
+            "email": u.get("email"), "picture": u.get("picture")}
+
+
+@api_router.get("/auth/me")
+async def whoami(user: dict = Depends(get_current_user)):
+    """Who the current token belongs to, or null when signed out — not a 401, because
+    being signed out is the ordinary state on a public site, not an error."""
+    if user.get("user_id") == PUBLIC_USER_ID:
+        return {"user": None}
+    return {"user": _public_user(user)}
 
 
 # ----------------------------- App Routes -----------------------------
@@ -667,7 +745,7 @@ JOIN_URL = os.environ.get("JOIN_URL", "").strip()
 async def public_config():
     """Runtime settings the frontend needs. Public by design — the join link is a URL
     meant to be clicked by anyone, not a secret."""
-    return {"join_url": JOIN_URL}
+    return {"join_url": JOIN_URL, "google_client_id": auth.GOOGLE_CLIENT_ID}
 
 
 @api_router.get("/health")

@@ -649,6 +649,27 @@ async def root():
     return {"message": "Corner Model 2.0 API"}
 
 
+# The subscription link, served at RUNTIME rather than compiled into the frontend.
+#
+# It began as REACT_APP_JOIN_URL, a build-time variable, and that turned out to be a bad
+# place for it: Create React App inlines those during the build, so changing the link
+# means a rebuild — and a Vercel redeploy reuses the build cache by default, which can
+# hand back the previously compiled bundle. The deploy goes green and the value never
+# changes, with nothing anywhere saying why.
+#
+# Read here instead, JOIN_URL is an ordinary environment variable on the backend: set it,
+# restart, done. No build, no cache, and it can be changed without touching the frontend
+# at all. The build-time variable still works as a fallback so nothing breaks.
+JOIN_URL = os.environ.get("JOIN_URL", "").strip()
+
+
+@api_router.get("/config")
+async def public_config():
+    """Runtime settings the frontend needs. Public by design — the join link is a URL
+    meant to be clicked by anyone, not a secret."""
+    return {"join_url": JOIN_URL}
+
+
 @api_router.get("/health")
 async def health():
     """Liveness + scheduler visibility. Used by the platform healthcheck and by any
@@ -2606,22 +2627,47 @@ def angle_is_strong(a: dict, min_run: int = BOARD_MIN_RUN,
     return (a.get("streak_len") or 0) >= min_run
 
 
+# Explicit membership, not a suffix test: "mismatch" ENDS WITH "match", so
+# endswith("match") files every mismatch as a match-total angle. That put a team's streak
+# and its mismatch into different buckets, so they stopped deduping against each other.
+MATCH_TOTAL_KINDS = frozenset({"over_match", "under_match"})
+
+
+def angle_subject(kind) -> str:
+    """Which quantity the angle is about: that team's own corners, or the match total."""
+    return "match" if kind in MATCH_TOTAL_KINDS else "team"
+
+
 def dedupe_angles(angles: List[dict]) -> List[dict]:
-    """Drop a mismatch that says the same thing as an angle already on the row.
+    """One angle per team per quantity — the best one.
 
-    Adding mismatches to the board introduced a duplicate: a side can appear both as a
-    streak and as a mismatch on the SAME team at the SAME line, which renders as two chips
-    proposing one bet — precisely the "two tags, is that two bets?" confusion the colour
-    change is meant to end.
+    A fixture could show "Barnet 4+ corners" AND "Barnet under 6 corners" at the same
+    time. Both are true: it is a side that reliably lands on four or five. But as two
+    chips side by side it reads as the board recommending opposite bets on one team, which
+    tells a reader nothing to back — and colouring them differently only made the
+    contradiction easier to see, not easier to act on.
 
-    The mismatch is the one dropped, always, because it is the weaker evidence: a streak
-    carries a hit rate and a live run, a mismatch is two averages pointed at each other. A
-    mismatch on a DIFFERENT team or a different line is kept — that is a genuinely separate
-    reason to look at the game.
+    So the row now carries at most one angle per (team, quantity). A fixture tops out at
+    four chips — each side's own corners, and each side's read on the match total —
+    instead of six that argue with each other.
+
+    Which one survives is _angle_rank's existing order: strong before weak, then the
+    longest live run, then most hits, then the tighter line. That means a real 12-game run
+    beats a bracketing under, and a streak beats the mismatch that merely agrees with it —
+    a mismatch is two averages pointed at each other with no hit rate behind it.
+
+    Deliberately NOT collapsed: the two SIDES of a fixture. An over from one team's history
+    and an under from the other's are different subjects, and that is the case the colours
+    exist to keep legible.
     """
-    covered = {(a.get("team"), a.get("line")) for a in angles if a.get("kind") != "mismatch"}
-    return [a for a in angles
-            if a.get("kind") != "mismatch" or (a.get("team"), a.get("line")) not in covered]
+    best: Dict[tuple, dict] = {}
+    for a in angles:
+        key = (a.get("team"), angle_subject(a.get("kind")))
+        if key not in best or _angle_rank(a) > _angle_rank(best[key]):
+            best[key] = a
+    # preserve input order; the caller sorts afterwards
+    keep = {id(a) for a in best.values()}
+    return [a for a in angles if id(a) in keep]
 
 
 # What to tell the reader about why this fixture is on the board at all. Every fixture
@@ -2639,7 +2685,7 @@ def board_reason(a: Optional[dict]) -> Optional[str]:
         return (f"{team} wins {a.get('team_for')} corners a game against a defence conceding "
                 f"{a.get('opp_conceded')}, over {a.get('real_samples')} games")
     run, direction = a.get("streak_len") or 0, "over" if str(kind).startswith("over") else "under"
-    what = "match total" if str(kind).endswith("match") else "team corners"
+    what = "match total" if angle_subject(kind) == "match" else "team corners"
     side = "above" if direction == "over" else "below"
     return f"{team} has stayed {side} this {what} line {run} games running"
 

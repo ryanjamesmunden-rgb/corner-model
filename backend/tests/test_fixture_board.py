@@ -19,7 +19,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from server import (  # noqa: E402
     BOARD_MAX_DAYS, _angle_rank, angle_is_strong, board_days, board_reason,
-    dedupe_angles, fixture_qualifies, mismatch_angle,
+    angle_subject, dedupe_angles, fixture_qualifies, mismatch_angle,
 )
 
 
@@ -272,38 +272,66 @@ def test_an_under_reason_never_reads_as_an_over():
     assert "below" in under and "above" not in under
 
 
-def test_a_mismatch_duplicating_a_streak_is_dropped():
-    """Same team, same line, two chips proposing one bet — the exact confusion the colour
-    change exists to end. The streak survives: it has a hit rate, the mismatch has not."""
-    angles = [{"kind": "over_team", "team": "Barnet", "line": 6},
-              {"kind": "mismatch", "team": "Barnet", "line": 6}]
+def test_opposing_directions_on_one_team_collapse_to_the_better():
+    """The reported bug: "Barnet 4+ corners" and "Barnet under 6 corners" on one row.
+    Both true, but as two chips they tell a reader nothing to back."""
+    angles = [{"kind": "over_team", "team": "Barnet", "line": 4, "strong": True, "streak_len": 12},
+              {"kind": "under_team", "team": "Barnet", "line": 6, "strong": True, "streak_len": 3}]
+    kept = dedupe_angles(angles)
+    assert len(kept) == 1
+    assert kept[0]["kind"] == "over_team"   # the 12-game run beats the bracketing under
+
+
+def test_the_weaker_direction_loses_even_when_it_is_the_over():
+    angles = [{"kind": "over_team", "team": "Bahia", "line": 4, "strong": False, "streak_len": 1},
+              {"kind": "under_team", "team": "Bahia", "line": 7, "strong": True, "streak_len": 8}]
+    kept = dedupe_angles(angles)
+    assert [a["kind"] for a in kept] == ["under_team"]
+
+
+def test_both_sides_of_a_fixture_survive():
+    """An over from one team's history and an under from the other's are different
+    subjects — this is the case the colours exist to keep legible, not a contradiction."""
+    angles = [{"kind": "over_team", "team": "Barnet", "line": 6, "strong": True, "streak_len": 12},
+              {"kind": "under_team", "team": "Exeter", "line": 6, "strong": True, "streak_len": 5}]
+    assert len(dedupe_angles(angles)) == 2
+
+
+def test_team_corners_and_match_total_are_different_quantities():
+    """One is about that side, one about the game — both can stand on the same team."""
+    angles = [{"kind": "over_team", "team": "Wycombe", "line": 4, "strong": True, "streak_len": 7},
+              {"kind": "over_match", "team": "Wycombe", "line": 9, "strong": True, "streak_len": 7}]
+    assert len(dedupe_angles(angles)) == 2
+
+
+def test_a_streak_beats_the_mismatch_that_merely_agrees_with_it():
+    """A mismatch is two averages pointed at each other, with no hit rate behind it."""
+    angles = [{"kind": "over_team", "team": "Barnet", "line": 6, "strong": True, "streak_len": 12},
+              {"kind": "mismatch", "team": "Barnet", "line": 6, "strong": True, "streak_len": 0}]
     kept = dedupe_angles(angles)
     assert [a["kind"] for a in kept] == ["over_team"]
 
 
-def test_a_mismatch_on_a_different_line_survives():
-    angles = [{"kind": "over_team", "team": "Barnet", "line": 6},
-              {"kind": "mismatch", "team": "Barnet", "line": 8}]
-    assert len(dedupe_angles(angles)) == 2
-
-
-def test_a_mismatch_on_the_other_team_survives():
-    angles = [{"kind": "over_team", "team": "Barnet", "line": 6},
-              {"kind": "mismatch", "team": "Exeter", "line": 6}]
-    assert len(dedupe_angles(angles)) == 2
-
-
-def test_a_lone_mismatch_is_never_dropped():
-    """Nothing else covers it, so it is the only reason the fixture is here."""
-    angles = [{"kind": "mismatch", "team": "Bradford", "line": 4}]
+def test_a_lone_mismatch_still_survives():
+    angles = [{"kind": "mismatch", "team": "Bradford", "line": 4, "strong": True, "streak_len": 0}]
     assert dedupe_angles(angles) == angles
 
 
-def test_dedupe_never_drops_a_non_mismatch():
-    """A chase and a streak on the same team and line are different bets, not duplicates."""
-    angles = [{"kind": "over_team", "team": "Barnet", "line": 6},
-              {"kind": "chase", "team": "Barnet", "line": 6}]
-    assert len(dedupe_angles(angles)) == 2
+def test_a_fixture_tops_out_at_four_chips():
+    """Each side's own corners and each side's read on the match total. No more."""
+    angles = []
+    for team in ("Barnet", "Exeter"):
+        for kind in ("over_team", "under_team", "mismatch", "over_match", "under_match"):
+            angles.append({"kind": kind, "team": team, "line": 5, "strong": True, "streak_len": 4})
+    assert len(dedupe_angles(angles)) == 4
+
+
+def test_the_subject_split_is_by_quantity_not_direction():
+    assert angle_subject("over_match") == "match"
+    assert angle_subject("under_match") == "match"
+    assert angle_subject("over_team") == "team"
+    assert angle_subject("chase") == "team"
+    assert angle_subject("mismatch") == "team"
 
 
 # --------------------------------------------------------------------------------------

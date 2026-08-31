@@ -269,3 +269,72 @@ def test_one_members_stars_are_not_anothers(favs_db):
     _run(server.add_favourite("fx-1", MEMBER()))
     other = _run(server.list_favourites({"user_id": "u-2"}))
     assert other["favourites"] == []
+
+
+# --------------------------------------------------------------------------------------
+# Membership. The paid screens are gated at the API, not just hidden in the UI — hiding
+# them in the frontend alone would leave the data one request away in the network tab.
+
+@pytest.fixture
+def member_code(monkeypatch):
+    monkeypatch.setattr(server, "MEMBER_CODE", "CORNER-SEP-2026")
+
+
+def test_the_right_code_unlocks_the_account(member_code, fake_users):
+    fake_users["u-1"] = {"user_id": "u-1", "name": "M"}
+    out = _run(server.redeem_code(server.RedeemBody(code="CORNER-SEP-2026"),
+                                  {"user_id": "u-1"}))
+    assert out["member"] is True
+    assert fake_users["u-1"]["member"] is True
+
+
+def test_the_code_is_not_case_or_whitespace_sensitive(member_code, fake_users):
+    fake_users["u-1"] = {"user_id": "u-1"}
+    assert _run(server.redeem_code(server.RedeemBody(code="  corner-sep-2026 "),
+                                   {"user_id": "u-1"}))["member"] is True
+
+
+def test_a_wrong_code_is_refused(member_code, fake_users):
+    with pytest.raises(HTTPException) as e:
+        _run(server.redeem_code(server.RedeemBody(code="NOPE"), {"user_id": "u-1"}))
+    assert e.value.status_code == 403
+
+
+def test_redeeming_before_membership_is_configured_says_so(monkeypatch, fake_users):
+    monkeypatch.setattr(server, "MEMBER_CODE", "")
+    with pytest.raises(HTTPException) as e:
+        _run(server.redeem_code(server.RedeemBody(code="anything"), {"user_id": "u-1"}))
+    assert e.value.status_code == 503
+
+
+def test_signed_out_gets_401_from_a_paid_screen(fake_users):
+    with pytest.raises(HTTPException) as e:
+        _run(server.require_member(_Req()))
+    assert e.value.status_code == 401
+
+
+def test_signed_in_but_not_a_member_gets_402(fake_users):
+    """402 Payment Required, distinct from 401 — the UI shows a different thing for
+    "sign in" than for "subscribe", and cannot tell them apart from one status."""
+    fake_users["u-3"] = {"user_id": "u-3", "name": "Free"}
+    with pytest.raises(HTTPException) as e:
+        _run(server.require_member(_Req(f"Bearer {auth.issue_session('u-3')}")))
+    assert e.value.status_code == 402
+
+
+def test_a_member_is_admitted(fake_users):
+    fake_users["u-4"] = {"user_id": "u-4", "name": "Paid", "member": True}
+    assert _run(server.require_member(_Req(f"Bearer {auth.issue_session('u-4')}")))["user_id"] == "u-4"
+
+
+def test_membership_reaches_the_browser(fake_users):
+    """The UI cannot decide what to show without it."""
+    assert server._public_user({"user_id": "u", "member": True})["member"] is True
+    assert server._public_user({"user_id": "u"})["member"] is False
+
+
+def test_rotating_the_code_does_not_evict_existing_members(monkeypatch, fake_users):
+    """Rotation closes a leak; it must not log out people who have paid."""
+    fake_users["u-5"] = {"user_id": "u-5", "member": True}
+    monkeypatch.setattr(server, "MEMBER_CODE", "A-COMPLETELY-NEW-CODE")
+    assert _run(server.require_member(_Req(f"Bearer {auth.issue_session('u-5')}")))["member"] is True

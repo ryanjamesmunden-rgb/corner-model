@@ -13,8 +13,8 @@ import { api, getToken, setToken } from "@/lib/api";
 // stale from a cache with nothing reporting why.
 
 const AuthContext = createContext({
-  user: null, ready: false, clientId: "", starred: new Set(),
-  setStarred: () => {}, signOut: () => {}, renderButton: () => {},
+  user: null, ready: false, member: false, clientId: "", starred: new Set(),
+  setStarred: () => {}, setMember: () => {}, signOut: () => {}, renderButton: () => {},
 });
 
 export const useAuth = () => useContext(AuthContext);
@@ -82,6 +82,12 @@ export function AuthProvider({ children }) {
     return () => { alive = false; };
   }, [user]);
 
+  // Membership lives on the user record, so unlocking is a local update of the same
+  // object the server already returned rather than a second source of truth.
+  const setMember = useCallback((on) => {
+    setUser((u) => (u ? { ...u, member: on } : u));
+  }, []);
+
   const setStarred = useCallback((fixtureId, on) => {
     setStarredSet((prev) => {
       const next = new Set(prev);
@@ -126,7 +132,7 @@ export function AuthProvider({ children }) {
   }, []);
 
   return (
-    <AuthContext.Provider value={{ user, ready, clientId, starred, setStarred, signOut, renderButton }}>
+    <AuthContext.Provider value={{ user, ready, member: !!user?.member, clientId, starred, setStarred, setMember, signOut, renderButton }}>
       {children}
     </AuthContext.Provider>
   );

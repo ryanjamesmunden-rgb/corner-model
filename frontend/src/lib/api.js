@@ -8,6 +8,7 @@ const BACKEND = process.env.REACT_APP_BACKEND_URL || "https://corner-model.onren
 export const API = `${BACKEND}/api`;
 
 export const api = {
+  config: () => axios.get(`${API}/config`).then((r) => r.data),
   leagues: () => axios.get(`${API}/leagues`).then((r) => r.data),
   teams: (id, split, window) => axios.get(`${API}/leagues/${id}/teams`, { params: { split, window } }).then((r) => r.data),
   fixtures: (id) => axios.get(`${API}/leagues/${id}/fixtures`).then((r) => r.data),

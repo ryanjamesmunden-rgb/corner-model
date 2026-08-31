@@ -13,10 +13,17 @@ import { publishableRecord, signed, MIN_SAMPLE } from "@/lib/record";
 // when the sample cannot support them (see lib/record.js). Nothing on this page can be
 // improved by editing it — only by the picks doing better.
 //
-// SETUP: set REACT_APP_JOIN_URL in the Vercel environment to the Stripe payment link.
-// Until that exists the call to action renders as an unconfigured state rather than a
-// dead button, so a half-finished deploy cannot silently take nobody's money.
-const JOIN_URL = process.env.REACT_APP_JOIN_URL || "";
+// SETUP: set JOIN_URL in the BACKEND environment (Render) to the Stripe payment link.
+//
+// It used to be REACT_APP_JOIN_URL, compiled into this bundle at build time, and that was
+// the wrong place for it. Create React App inlines build-time variables, so changing the
+// link needs a rebuild — and Vercel's redeploy reuses the build cache by default, which
+// can hand back the previously compiled bundle. The deploy goes green, the value never
+// changes, and nothing reports why. That cost an evening.
+//
+// The backend value wins; the build-time one is kept only as a fallback so an older
+// deployment does not lose its link.
+const BUILD_JOIN_URL = process.env.REACT_APP_JOIN_URL || "";
 const PRICE = "£20";
 
 const INCLUDED = [
@@ -28,11 +35,17 @@ const INCLUDED = [
 
 export default function Join() {
   const [summary, setSummary] = useState(undefined);   // undefined = loading, null = failed
+  const [joinUrl, setJoinUrl] = useState(BUILD_JOIN_URL);
+  const [configReached, setConfigReached] = useState(null);   // null = still asking
 
   useEffect(() => {
     api.ledger()
       .then((d) => setSummary(d?.summary || null))
       .catch(() => setSummary(null));
+    // Runtime config wins over anything compiled into this bundle.
+    api.config()
+      .then((c) => { setConfigReached(true); if (c?.join_url) setJoinUrl(c.join_url); })
+      .catch(() => setConfigReached(false));
   }, []);
 
   const rec = summary === undefined ? undefined : publishableRecord(summary);
@@ -85,8 +98,8 @@ export default function Join() {
             <span className="text-muted-foreground">per month</span>
             <span className="ml-auto text-xs text-muted-foreground">cancel any time</span>
           </div>
-          {JOIN_URL ? (
-            <a href={JOIN_URL} target="_blank" rel="noopener noreferrer"
+          {joinUrl ? (
+            <a href={joinUrl} target="_blank" rel="noopener noreferrer"
               data-testid="join-button"
               className="mt-4 w-full inline-flex items-center justify-center gap-2 px-4 py-3 rounded-md bg-primary text-black font-semibold hover:opacity-90 transition-opacity">
               Subscribe <ExternalLink className="h-4 w-4" />
@@ -94,13 +107,22 @@ export default function Join() {
           ) : (
             // Deliberately not a disabled button: a greyed-out CTA reads as "sold out" to a
             // visitor and as "working" to whoever deployed it. This says which it is.
-            <p className="mt-4 rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2.5 text-xs text-amber-300"
+            <div className="mt-4 rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2.5 text-xs text-amber-300"
               data-testid="join-unconfigured">
               Subscriptions aren't open yet — no payment link is configured.
               <span className="block mt-1 text-amber-300/70">
-                (Set REACT_APP_JOIN_URL in the Vercel environment to the Stripe payment link.)
+                Set JOIN_URL in the backend environment (Render) to the Stripe payment link.
               </span>
-            </p>
+              {/* What the page ACTUALLY received. Without this the only way to tell a
+                  missing backend value from an unreachable backend was to guess. */}
+              <span className="block mt-2 font-mono-data text-[10px] text-amber-300/60"
+                data-testid="join-diagnostic">
+                backend /api/config:{" "}
+                {configReached === null ? "asking…"
+                  : configReached ? "reached, join_url empty" : "UNREACHABLE"}
+                {" · "}build-time value: {BUILD_JOIN_URL ? "present" : "absent"}
+              </span>
+            </div>
           )}
           <p className="mt-3 text-xs text-muted-foreground">
             Checkout asks for your Telegram username — that's how you get added. Access is manual,

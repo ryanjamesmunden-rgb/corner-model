@@ -649,6 +649,27 @@ async def root():
     return {"message": "Corner Model 2.0 API"}
 
 
+# The subscription link, served at RUNTIME rather than compiled into the frontend.
+#
+# It began as REACT_APP_JOIN_URL, a build-time variable, and that turned out to be a bad
+# place for it: Create React App inlines those during the build, so changing the link
+# means a rebuild — and a Vercel redeploy reuses the build cache by default, which can
+# hand back the previously compiled bundle. The deploy goes green and the value never
+# changes, with nothing anywhere saying why.
+#
+# Read here instead, JOIN_URL is an ordinary environment variable on the backend: set it,
+# restart, done. No build, no cache, and it can be changed without touching the frontend
+# at all. The build-time variable still works as a fallback so nothing breaks.
+JOIN_URL = os.environ.get("JOIN_URL", "").strip()
+
+
+@api_router.get("/config")
+async def public_config():
+    """Runtime settings the frontend needs. Public by design — the join link is a URL
+    meant to be clicked by anyone, not a secret."""
+    return {"join_url": JOIN_URL}
+
+
 @api_router.get("/health")
 async def health():
     """Liveness + scheduler visibility. Used by the platform healthcheck and by any

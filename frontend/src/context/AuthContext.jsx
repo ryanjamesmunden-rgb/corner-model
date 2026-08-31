@@ -120,7 +120,11 @@ export function AuthProvider({ children }) {
       }
       el.innerHTML = "";
       google.accounts.id.renderButton(el, {
-        theme: "filled_black", size: "medium", text: "signin_with", shape: "pill",
+        theme: "filled_black", size: "medium", shape: "pill",
+        // On a phone the worded button eats most of a narrow header. The G on its own is
+        // universally understood, and the header is not where sign-in gets explained.
+        ...(window.matchMedia("(max-width: 639px)").matches
+          ? { type: "icon" } : { text: "signin_with" }),
       });
     } catch { /* script blocked; the sign-in button simply does not appear */ }
   }, [clientId, onCredential]);

@@ -50,8 +50,8 @@ export default function Layout({ children }) {
     <LeagueContext.Provider value={{ leagueId, changeLeague, leagues }}>
       <div className="min-h-screen bg-background">
         <header className="sticky top-0 z-40 bg-[#0a0a0a]/80 backdrop-blur-xl border-b border-white/10">
-          <div className="max-w-[1600px] mx-auto px-4 sm:px-6 min-h-16 py-2 flex items-center gap-2 sm:gap-4 flex-wrap">
-            <Link to="/scanner" className="flex items-center gap-2 shrink-0">
+          <div className="max-w-[1600px] mx-auto px-3 sm:px-6 min-h-12 sm:min-h-16 py-1.5 sm:py-2 flex items-center gap-1.5 sm:gap-4 flex-wrap">
+            <Link to="/scanner" className="hidden sm:flex items-center gap-2 shrink-0">
               <div className="h-8 w-8 rounded-md bg-primary flex items-center justify-center">
                 <CornerDownRight className="h-4 w-4 text-black" strokeWidth={2.5} />
               </div>
@@ -61,7 +61,7 @@ export default function Layout({ children }) {
               </div>
             </Link>
 
-            <nav className="flex items-center gap-1 sm:ml-2">
+            <nav className="flex items-center gap-0.5 sm:gap-1 sm:ml-2">
               {nav.map((n) => {
                 const active = location.pathname === n.to;
                 return (
@@ -69,7 +69,7 @@ export default function Layout({ children }) {
                     key={n.to}
                     data-testid={`nav-${n.to.slice(1)}`}
                     onClick={() => navigate(n.to)}
-                    className={`flex items-center gap-2 px-3 py-2 rounded-md text-sm font-medium transition-colors duration-150 ${
+                    className={`flex items-center gap-2 px-2 sm:px-3 py-1.5 sm:py-2 rounded-md text-sm font-medium transition-colors duration-150 ${
                       active ? "bg-secondary text-foreground" : "text-muted-foreground hover:text-foreground hover:bg-white/5"
                     }`}
                   >
@@ -80,7 +80,7 @@ export default function Layout({ children }) {
               })}
             </nav>
 
-            <div className="ml-auto flex items-center gap-3">
+            <div className="ml-auto flex items-center gap-1.5 sm:gap-3">
               <SignIn />
               {freshness && health && (
                 <div
@@ -105,7 +105,7 @@ export default function Layout({ children }) {
                 </div>
               )}
               <Select value={leagueId} onValueChange={changeLeague}>
-                <SelectTrigger data-testid="league-switcher" className="w-[130px] sm:w-[180px] bg-[#121212] border-border font-mono-data text-xs h-9">
+                <SelectTrigger data-testid="league-switcher" className="w-[104px] sm:w-[180px] bg-[#121212] border-border font-mono-data text-xs h-8 sm:h-9">
                   <SelectValue placeholder="Select league" />
                 </SelectTrigger>
                 <SelectContent className="bg-[#121212] border-border">

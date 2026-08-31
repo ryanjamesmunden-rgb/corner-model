@@ -13,10 +13,10 @@ import { useAuth } from "@/context/AuthContext";
 // Optimistic: the star fills immediately and reverts if the request fails. A star that
 // waits on a round trip feels broken, and this is a bookmark — the cost of being briefly
 // wrong is nil.
-export default function StarButton({ fixtureId, starred = false, onChange, size = "sm" }) {
-  const { user } = useAuth();
-  const [on, setOn] = useState(starred);
+export default function StarButton({ fixtureId, onChange, size = "sm" }) {
+  const { user, starred, setStarred } = useAuth();
   const [busy, setBusy] = useState(false);
+  const on = starred.has(fixtureId);
 
   const toggle = async (e) => {
     e.stopPropagation();          // the whole row is a link to the fixture
@@ -29,28 +29,28 @@ export default function StarButton({ fixtureId, starred = false, onChange, size 
     }
     if (busy) return;
     const next = !on;
-    setOn(next);
+    setStarred(fixtureId, next);        // optimistic — see the note above
     setBusy(true);
     try {
       await (next ? api.addFavourite(fixtureId) : api.removeFavourite(fixtureId));
       onChange?.(fixtureId, next);
     } catch {
-      setOn(!next);               // put it back — the server does not agree
+      setStarred(fixtureId, !next);   // put it back — the server does not agree
       toast.error("Could not save that — try again");
     } finally {
       setBusy(false);
     }
   };
 
-  const px = size === "lg" ? "h-4 w-4" : "h-3.5 w-3.5";
+  const px = size === "lg" ? "h-5 w-5" : "h-4 w-4";
   return (
     <button onClick={toggle} data-testid="star" data-starred={on ? "1" : "0"}
       aria-label={on ? "Remove from saved games" : "Save this game"}
       title={user ? (on ? "Saved — tap to remove" : "Save this game")
                   : "Sign in to save games"}
-      className={`shrink-0 rounded p-1 transition-colors ${
+      className={`shrink-0 rounded p-1.5 -m-0.5 transition-colors ${
         on ? "text-amber-400 hover:text-amber-300"
-           : "text-muted-foreground/40 hover:text-muted-foreground"}`}>
+           : "text-muted-foreground hover:text-amber-400"}`}>
       <Star className={px} fill={on ? "currentColor" : "none"} />
     </button>
   );

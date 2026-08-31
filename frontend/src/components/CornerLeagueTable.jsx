@@ -16,7 +16,7 @@ export default function CornerLeagueTable({ leagueId }) {
 
   return (
     <aside className="bg-card border border-border rounded-lg overflow-hidden lg:sticky lg:top-20" data-testid="corner-league-table">
-      <div className="flex items-center gap-2 px-4 py-3 border-b border-border">
+      <div className="flex items-center gap-2 px-2 py-2 sm:px-4 sm:py-3 border-b border-border">
         <CornerDownRight className="h-4 w-4 text-primary" strokeWidth={2.5} />
         <div className="min-w-0">
           <h2 className="font-head font-semibold text-sm leading-tight truncate">Corner Table</h2>

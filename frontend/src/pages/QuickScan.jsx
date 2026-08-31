@@ -27,7 +27,7 @@ export default function QuickScan() {
   }, [within]);
 
   return (
-    <div className="space-y-6" data-testid="quickscan-page">
+    <div className="space-y-3 sm:space-y-6" data-testid="quickscan-page">
       <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-4">
         <div>
           <div className="flex items-center gap-2 text-primary mb-1">

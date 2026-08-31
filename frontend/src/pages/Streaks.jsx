@@ -10,7 +10,7 @@ export default function Streaks() {
   const [view, setView] = useState("form");
 
   return (
-    <div className="space-y-6" data-testid="streaks-page">
+    <div className="space-y-3 sm:space-y-6" data-testid="streaks-page">
       <div>
         <div className="flex items-center gap-2 text-primary mb-1">
           <Flame className="h-4 w-4" />

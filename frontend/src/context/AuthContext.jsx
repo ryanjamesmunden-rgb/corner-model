@@ -13,7 +13,8 @@ import { api, getToken, setToken } from "@/lib/api";
 // stale from a cache with nothing reporting why.
 
 const AuthContext = createContext({
-  user: null, ready: false, clientId: "", signOut: () => {}, renderButton: () => {},
+  user: null, ready: false, clientId: "", starred: new Set(),
+  setStarred: () => {}, signOut: () => {}, renderButton: () => {},
 });
 
 export const useAuth = () => useContext(AuthContext);
@@ -41,6 +42,11 @@ export function AuthProvider({ children }) {
   const [user, setUser] = useState(null);
   const [ready, setReady] = useState(false);
   const [clientId, setClientId] = useState("");
+  // WHICH FIXTURES ARE ALREADY STARRED, held once for the whole app. Without this every
+  // star renders empty on load however many times you have saved the game — you star it,
+  // navigate away, come back, and it looks like nothing happened. One fetch, shared,
+  // rather than a request per star on every list.
+  const [starred, setStarredSet] = useState(() => new Set());
   const initialised = useRef(false);
 
   // Resume an existing session, and pick up the client id. Both failures are silent on
@@ -63,6 +69,25 @@ export function AuthProvider({ children }) {
       if (alive) setReady(true);
     })();
     return () => { alive = false; };
+  }, []);
+
+  // Load the starred set whenever we learn who the user is, and clear it on sign-out so
+  // the next person to use this browser does not inherit the last one's stars.
+  useEffect(() => {
+    if (!user) { setStarredSet(new Set()); return; }
+    let alive = true;
+    api.favourites()
+      .then((d) => alive && setStarredSet(new Set((d.favourites || []).map((f) => f.fixture_id))))
+      .catch(() => { /* stars just render empty; nothing else breaks */ });
+    return () => { alive = false; };
+  }, [user]);
+
+  const setStarred = useCallback((fixtureId, on) => {
+    setStarredSet((prev) => {
+      const next = new Set(prev);
+      on ? next.add(fixtureId) : next.delete(fixtureId);
+      return next;
+    });
   }, []);
 
   const onCredential = useCallback(async (resp) => {
@@ -101,7 +126,7 @@ export function AuthProvider({ children }) {
   }, []);
 
   return (
-    <AuthContext.Provider value={{ user, ready, clientId, signOut, renderButton }}>
+    <AuthContext.Provider value={{ user, ready, clientId, starred, setStarred, signOut, renderButton }}>
       {children}
     </AuthContext.Provider>
   );

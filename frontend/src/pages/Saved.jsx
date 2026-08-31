@@ -51,7 +51,7 @@ export default function Saved() {
   }
 
   return (
-    <div className="space-y-4" data-testid="saved-page">
+    <div className="space-y-2.5 sm:space-y-4" data-testid="saved-page">
       <div>
         <div className="flex items-center gap-2 text-amber-400 mb-1">
           <Star className="h-4 w-4" fill="currentColor" />
@@ -77,10 +77,11 @@ export default function Saved() {
           {rows.map((f) => {
             const k = kickoff(f.date);
             return (
-              <button key={f.fixture_id} data-testid="saved-row"
+              <div key={f.fixture_id} data-testid="saved-row" role="button" tabIndex={0}
                 onClick={() => navigate(`/fixture/${f.fixture_id}`)}
-                className="w-full text-left px-4 py-3 hover:bg-white/5 transition-colors flex items-center gap-3">
-                <StarButton fixtureId={f.fixture_id} starred onChange={drop} />
+                onKeyDown={(e) => (e.key === "Enter" || e.key === " ") && navigate(`/fixture/${f.fixture_id}`)}
+                className="w-full cursor-pointer text-left px-3 py-2.5 sm:px-4 sm:py-3 hover:bg-white/5 transition-colors flex items-center gap-2 sm:gap-3">
+                <StarButton fixtureId={f.fixture_id} onChange={drop} />
                 <div className="font-mono-data text-[11px] text-muted-foreground w-20 shrink-0 leading-tight">
                   {k.day}<br />{k.time}
                 </div>
@@ -93,7 +94,7 @@ export default function Saved() {
                   </p>
                 </div>
                 <ChevronRight className="h-4 w-4 text-muted-foreground shrink-0" />
-              </button>
+              </div>
             );
           })}
         </div>

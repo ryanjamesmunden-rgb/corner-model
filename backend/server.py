@@ -677,6 +677,52 @@ def _public_user(u: dict) -> dict:
             "email": u.get("email"), "picture": u.get("picture")}
 
 
+# ----------------------------- Favourites -----------------------------
+# Star a fixture now, come back to it when the prices are up. Per-user by definition,
+# so these are the first routes on the site that require an identity.
+
+@api_router.get("/favourites")
+async def list_favourites(user: dict = Depends(require_user)):
+    """Your starred fixtures, upcoming first, with the fixture attached.
+
+    A star can outlive its fixture — the sync rebuilds db.fixtures every run, so a game
+    that has been played or a league that stopped syncing leaves the star pointing at
+    nothing. Those are reported as `missing` rather than silently dropped, so a star that
+    vanished is visible instead of looking like it was never saved."""
+    favs = await db.favourites.find({"user_id": user["user_id"]}, {"_id": 0}).to_list(500)
+    if not favs:
+        return {"favourites": [], "missing": 0}
+    fx_ids = [f["fixture_id"] for f in favs]
+    fixtures = {f["fixture_id"]: f for f in
+                await db.fixtures.find({"fixture_id": {"$in": fx_ids}}, {"_id": 0}).to_list(500)}
+    starred_at = {f["fixture_id"]: f.get("created_at") for f in favs}
+    out = [{**fx, "starred_at": starred_at.get(fid)}
+           for fid, fx in fixtures.items()]
+    out.sort(key=lambda f: f.get("date") or "")
+    return {"favourites": out, "missing": len(favs) - len(out)}
+
+
+@api_router.post("/favourites/{fixture_id}")
+async def add_favourite(fixture_id: str, user: dict = Depends(require_user)):
+    """Idempotent — starring twice is not an error, it is a double tap."""
+    if not await db.fixtures.find_one({"fixture_id": fixture_id}, {"_id": 1}):
+        raise HTTPException(status_code=404, detail="No such fixture")
+    await db.favourites.update_one(
+        {"user_id": user["user_id"], "fixture_id": fixture_id},
+        {"$setOnInsert": {"user_id": user["user_id"], "fixture_id": fixture_id,
+                          "created_at": datetime.now(timezone.utc).isoformat()}},
+        upsert=True)
+    return {"fixture_id": fixture_id, "starred": True}
+
+
+@api_router.delete("/favourites/{fixture_id}")
+async def remove_favourite(fixture_id: str, user: dict = Depends(require_user)):
+    """Also idempotent: un-starring something already gone is a success, not a 404.
+    The caller wanted it not starred, and it is not starred."""
+    await db.favourites.delete_one({"user_id": user["user_id"], "fixture_id": fixture_id})
+    return {"fixture_id": fixture_id, "starred": False}
+
+
 @api_router.get("/auth/me")
 async def whoami(user: dict = Depends(get_current_user)):
     """Who the current token belongs to, or null when signed out — not a 401, because

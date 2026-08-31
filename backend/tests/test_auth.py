@@ -176,3 +176,96 @@ def test_the_browser_never_receives_the_google_account_id(fake_users):
     out = server._public_user({"user_id": "u-3", "name": "N", "email": "e", "picture": "p",
                                "google_sub": "SECRET-SUB"})
     assert "google_sub" not in out and "SECRET-SUB" not in str(out)
+
+
+# --------------------------------------------------------------------------------------
+# Favourites — the first routes that genuinely need to know who is asking.
+
+class _Coll:
+    """Minimal stand-in for a Mongo collection: enough for these handlers, no more."""
+    def __init__(self, rows=None):
+        self.rows = list(rows or [])
+
+    def _match(self, r, q):
+        for k, v in q.items():
+            if isinstance(v, dict) and "$in" in v:
+                if r.get(k) not in v["$in"]:
+                    return False
+            elif r.get(k) != v:
+                return False
+        return True
+
+    async def find_one(self, q, *a, **k):
+        return next((dict(r) for r in self.rows if self._match(r, q)), None)
+
+    def find(self, q, *a, **k):
+        hits = [dict(r) for r in self.rows if self._match(r, q)]
+
+        class C:
+            async def to_list(self, n): return hits
+        return C()
+
+    async def update_one(self, q, upd, upsert=False, **k):
+        if not any(self._match(r, q) for r in self.rows) and upsert:
+            self.rows.append({**q, **upd.get("$setOnInsert", {}), **upd.get("$set", {})})
+
+    async def delete_one(self, q):
+        before = len(self.rows)
+        self.rows = [r for r in self.rows if not self._match(r, q)]
+        return type("R", (), {"deleted_count": before - len(self.rows)})()
+
+
+@pytest.fixture
+def favs_db(monkeypatch, fake_users):
+    fake_users["u-1"] = {"user_id": "u-1", "name": "Member"}
+    favs, fixtures = _Coll(), _Coll([
+        {"fixture_id": "fx-1", "home_name": "Exeter", "away_name": "Barnet",
+         "date": "2026-09-02T18:45:00Z", "league_id": "eng-l2"},
+        {"fixture_id": "fx-2", "home_name": "Bradford", "away_name": "Cambridge",
+         "date": "2026-09-01T18:45:00Z", "league_id": "eng-l1"}])
+    monkeypatch.setattr(server.db, "favourites", favs)
+    monkeypatch.setattr(server.db, "fixtures", fixtures)
+    return favs
+
+
+MEMBER = lambda: {"user_id": "u-1", "name": "Member"}  # noqa: E731
+
+
+def test_starring_is_idempotent(favs_db):
+    """A double tap is a double tap, not an error and not two rows."""
+    _run(server.add_favourite("fx-1", MEMBER()))
+    _run(server.add_favourite("fx-1", MEMBER()))
+    assert len(favs_db.rows) == 1
+
+
+def test_starring_something_that_does_not_exist_is_refused(favs_db):
+    with pytest.raises(HTTPException) as e:
+        _run(server.add_favourite("nope", MEMBER()))
+    assert e.value.status_code == 404
+
+
+def test_unstarring_something_never_starred_succeeds(favs_db):
+    """The caller wanted it not starred. It is not starred."""
+    out = _run(server.remove_favourite("fx-1", MEMBER()))
+    assert out["starred"] is False
+
+
+def test_saved_games_come_back_soonest_first(favs_db):
+    _run(server.add_favourite("fx-1", MEMBER()))
+    _run(server.add_favourite("fx-2", MEMBER()))
+    out = _run(server.list_favourites(MEMBER()))
+    assert [f["fixture_id"] for f in out["favourites"]] == ["fx-2", "fx-1"]
+
+
+def test_a_star_whose_fixture_is_gone_is_counted_not_dropped(favs_db):
+    """The sync rebuilds db.fixtures every run, so a played game leaves a dangling star.
+    Silently swallowing it looks like the star was never saved."""
+    favs_db.rows.append({"user_id": "u-1", "fixture_id": "fx-played"})
+    out = _run(server.list_favourites(MEMBER()))
+    assert out["missing"] == 1
+
+
+def test_one_members_stars_are_not_anothers(favs_db):
+    _run(server.add_favourite("fx-1", MEMBER()))
+    other = _run(server.list_favourites({"user_id": "u-2"}))
+    assert other["favourites"] == []

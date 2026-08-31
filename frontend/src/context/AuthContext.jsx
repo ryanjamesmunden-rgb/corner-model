@@ -1,0 +1,108 @@
+import { createContext, useContext, useState, useEffect, useCallback, useRef } from "react";
+import { api, getToken, setToken } from "@/lib/api";
+
+// Who is signed in, and the Google button that gets them there.
+//
+// The site is PUBLIC. Nothing here gates anything — signing in adds your starred games
+// and your own prices, and every screen works without it. So `user` being null is the
+// ordinary state, not a loading failure, and nothing should render a spinner over it.
+//
+// The client id comes from /api/config at runtime rather than the build, so it is
+// configured in exactly one place (the Render environment) and changing it needs no
+// rebuild. That is the same lesson JOIN_URL taught: a build-time value can be served
+// stale from a cache with nothing reporting why.
+
+const AuthContext = createContext({
+  user: null, ready: false, clientId: "", signOut: () => {}, renderButton: () => {},
+});
+
+export const useAuth = () => useContext(AuthContext);
+
+const GSI_SRC = "https://accounts.google.com/gsi/client";
+
+/** Load Google's script once, however many components ask for it. */
+let gsiPromise = null;
+function loadGsi() {
+  if (gsiPromise) return gsiPromise;
+  gsiPromise = new Promise((resolve, reject) => {
+    if (window.google?.accounts?.id) return resolve(window.google);
+    const el = document.createElement("script");
+    el.src = GSI_SRC;
+    el.async = true;
+    el.defer = true;
+    el.onload = () => (window.google?.accounts?.id ? resolve(window.google) : reject(new Error("gsi missing")));
+    el.onerror = () => reject(new Error("gsi blocked"));
+    document.head.appendChild(el);
+  });
+  return gsiPromise;
+}
+
+export function AuthProvider({ children }) {
+  const [user, setUser] = useState(null);
+  const [ready, setReady] = useState(false);
+  const [clientId, setClientId] = useState("");
+  const initialised = useRef(false);
+
+  // Resume an existing session, and pick up the client id. Both failures are silent on
+  // purpose: signed out is normal, and a backend that cannot be reached should leave a
+  // public site readable rather than blocking it behind a broken sign-in.
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        const cfg = await api.config();
+        if (alive) setClientId(cfg?.google_client_id || "");
+      } catch { /* sign-in unavailable; the rest of the site is not */ }
+      if (getToken()) {
+        try {
+          const d = await api.me();
+          if (alive) setUser(d?.user || null);
+          if (!d?.user) setToken(null);         // expired or revoked — stop sending it
+        } catch { setToken(null); }
+      }
+      if (alive) setReady(true);
+    })();
+    return () => { alive = false; };
+  }, []);
+
+  const onCredential = useCallback(async (resp) => {
+    try {
+      const d = await api.signInWithGoogle(resp.credential);
+      setToken(d.token);
+      setUser(d.user);
+    } catch (e) {
+      // Surfaced rather than swallowed: a sign-in that silently does nothing is the
+      // worst version of this, because the user has no idea whether to try again.
+      const msg = e?.response?.data?.detail || "Sign-in failed — please try again";
+      window.alert(msg);
+    }
+  }, []);
+
+  /** Draw Google's button into `el`. No-op until the client id has arrived. */
+  const renderButton = useCallback(async (el) => {
+    if (!el || !clientId) return;
+    try {
+      const google = await loadGsi();
+      if (!initialised.current) {
+        google.accounts.id.initialize({ client_id: clientId, callback: onCredential });
+        initialised.current = true;
+      }
+      el.innerHTML = "";
+      google.accounts.id.renderButton(el, {
+        theme: "filled_black", size: "medium", text: "signin_with", shape: "pill",
+      });
+    } catch { /* script blocked; the sign-in button simply does not appear */ }
+  }, [clientId, onCredential]);
+
+  const signOut = useCallback(() => {
+    setToken(null);
+    setUser(null);
+    try { window.google?.accounts?.id?.disableAutoSelect?.(); } catch { /* ignore */ }
+  }, []);
+
+  return (
+    <AuthContext.Provider value={{ user, ready, clientId, signOut, renderButton }}>
+      {children}
+    </AuthContext.Provider>
+  );
+}

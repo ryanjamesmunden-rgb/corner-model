@@ -7,8 +7,33 @@ const BACKEND = process.env.REACT_APP_BACKEND_URL || "https://corner-model.onren
 
 export const API = `${BACKEND}/api`;
 
+// SESSION TOKEN. Kept in localStorage rather than a cookie because the frontend and the
+// backend are on different origins (Vercel and Render), which makes a cookie need
+// SameSite=None, Secure and CORS credentials on every call — three things to get wrong
+// for no gain here. A bearer header is simpler and does the same job.
+const TOKEN_KEY = "cm2_session";
+export const getToken = () => { try { return localStorage.getItem(TOKEN_KEY); } catch { return null; } };
+export const setToken = (t) => { try { t ? localStorage.setItem(TOKEN_KEY, t) : localStorage.removeItem(TOKEN_KEY); } catch { /* private mode */ } };
+
+// Attach the session to every call. Signed out simply sends nothing, and the backend
+// answers as the guest — the site is public, so that is an ordinary request, not a
+// refused one.
+axios.interceptors.request.use((cfg) => {
+  const t = getToken();
+  if (t && String(cfg.url || "").startsWith(API)) {
+    cfg.headers = { ...(cfg.headers || {}), Authorization: `Bearer ${t}` };
+  }
+  return cfg;
+});
+
 export const api = {
   config: () => axios.get(`${API}/config`).then((r) => r.data),
+  signInWithGoogle: (credential) =>
+    axios.post(`${API}/auth/google`, { credential }).then((r) => r.data),
+  me: () => axios.get(`${API}/auth/me`).then((r) => r.data),
+  favourites: () => axios.get(`${API}/favourites`).then((r) => r.data),
+  addFavourite: (fixtureId) => axios.post(`${API}/favourites/${fixtureId}`).then((r) => r.data),
+  removeFavourite: (fixtureId) => axios.delete(`${API}/favourites/${fixtureId}`).then((r) => r.data),
   leagues: () => axios.get(`${API}/leagues`).then((r) => r.data),
   teams: (id, split, window) => axios.get(`${API}/leagues/${id}/teams`, { params: { split, window } }).then((r) => r.data),
   fixtures: (id) => axios.get(`${API}/leagues/${id}/fixtures`).then((r) => r.data),

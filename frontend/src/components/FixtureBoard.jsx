@@ -4,6 +4,7 @@ import { CalendarDays, ChevronRight, Flame, Swords, Target, TrendingDown } from 
 import { api } from "@/lib/api";
 import ShareButtons from "@/components/ShareButtons";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import StarButton from "@/components/StarButton";
 import { TONE, toneFor, toneLabel } from "@/lib/angleTone";
 
 // The best upcoming games, grouped by day — a schedule you can scan, not another ranked
@@ -205,8 +206,10 @@ function FixtureRow({ f, onClick }) {
   const edgePct = Math.round((f.corner_edge - 1) * 100);
   const hot = edgePct >= 8;
   return (
-    <button onClick={onClick} data-testid="fb-fixture"
-      className="w-full text-left px-4 py-3 hover:bg-white/5 transition-colors duration-150 flex gap-3 items-start">
+    <div onClick={onClick} role="button" tabIndex={0} data-testid="fb-fixture"
+      onKeyDown={(e) => (e.key === "Enter" || e.key === " ") && onClick()}
+      className="w-full cursor-pointer text-left px-4 py-3 hover:bg-white/5 transition-colors duration-150 flex gap-3 items-start">
+      <StarButton fixtureId={f.fixture_id} />
       <div className="font-mono-data text-xs text-muted-foreground pt-0.5 w-11 shrink-0">
         {kickoff(f.date)}
       </div>
@@ -259,6 +262,6 @@ function FixtureRow({ f, onClick }) {
         </div>
       </div>
       <ChevronRight className="h-4 w-4 text-muted-foreground shrink-0 mt-0.5" />
-    </button>
+    </div>
   );
 }

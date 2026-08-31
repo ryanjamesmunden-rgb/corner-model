@@ -3,6 +3,7 @@ import { lazy, Suspense } from "react";
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { Toaster } from "sonner";
 import Layout from "@/components/Layout";
+import { AuthProvider } from "@/context/AuthContext";
 
 // Each route is its own chunk: landing on the Scanner shouldn't download and parse
 // Streaks, Picks and the fixture detail page before it can paint.
@@ -13,6 +14,7 @@ const QuickScan = lazy(() => import("@/pages/QuickScan"));
 const Picks = lazy(() => import("@/pages/Picks"));
 const FixtureDetail = lazy(() => import("@/pages/FixtureDetail"));
 const Join = lazy(() => import("@/pages/Join"));
+const Saved = lazy(() => import("@/pages/Saved"));
 
 const RouteFallback = () => (
   <div className="py-20 text-center text-muted-foreground animate-pulse font-mono-data text-sm">
@@ -38,6 +40,7 @@ function AppRouter() {
       <Route path="/quick-scan" element={page(QuickScan)} />
       <Route path="/picks" element={page(Picks)} />
       <Route path="/streaks" element={page(Streaks)} />
+      <Route path="/saved" element={page(Saved)} />
       <Route path="/fixture/:id" element={page(FixtureDetail)} />
       {/* Deliberately OUTSIDE page(): the subscription page is for people who are not
           members yet, so it carries no app chrome — no league switcher, no nav to
@@ -53,10 +56,12 @@ function AppRouter() {
 function App() {
   return (
     <div className="App">
-      <BrowserRouter>
-        <AppRouter />
-        <Toaster theme="dark" position="top-right" richColors />
-      </BrowserRouter>
+      <AuthProvider>
+        <BrowserRouter>
+          <AppRouter />
+          <Toaster theme="dark" position="top-right" richColors />
+        </BrowserRouter>
+      </AuthProvider>
     </div>
   );
 }

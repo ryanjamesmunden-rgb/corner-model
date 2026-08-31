@@ -1,9 +1,10 @@
 import { useState, useEffect } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
-import { CornerDownRight, LayoutDashboard, Radar, Flame, Zap, ClipboardCheck } from "lucide-react";
+import { CornerDownRight, LayoutDashboard, Radar, Flame, Zap, ClipboardCheck, Star } from "lucide-react";
 import { LeagueContext } from "@/context/LeagueContext";
 import ExportMenu from "@/components/ExportMenu";
 import { api } from "@/lib/api";
+import SignIn from "@/components/SignIn";
 import { dataHealth, healthTitle, freshnessLabel } from "@/lib/freshness";
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
@@ -42,6 +43,7 @@ export default function Layout({ children }) {
     { to: "/picks", label: "Picks", icon: ClipboardCheck },
     { to: "/dashboard", label: "Leagues", icon: LayoutDashboard },
     { to: "/streaks", label: "Streaks", icon: Flame },
+    { to: "/saved", label: "Saved", icon: Star },
   ];
 
   return (
@@ -79,6 +81,7 @@ export default function Layout({ children }) {
             </nav>
 
             <div className="ml-auto flex items-center gap-3">
+              <SignIn />
               {freshness && health && (
                 <div
                   data-testid="data-freshness"

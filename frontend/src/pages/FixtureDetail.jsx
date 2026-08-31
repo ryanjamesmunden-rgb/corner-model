@@ -426,21 +426,22 @@ function TeamBreakdown({ team, title, highlight }) {
           <GoalChip label={`O2.5 in ${over25}/${withGoals.length}`} strong={over25 >= withGoals.length * 0.6} />
         </div>
       )}
+      <div className="overflow-x-auto">
       <table className="w-full">
         <thead>
           <tr className="border-b border-border text-muted-foreground text-[10px] uppercase tracking-wider">
-            <th className="text-left font-medium px-4 py-1.5">Date</th>
-            <th className="text-left font-medium px-4 py-1.5">Opponent</th>
+            <th className="text-left font-medium px-2 py-1.5 sm:px-4">Date</th>
+            <th className="text-left font-medium px-2 py-1.5 sm:px-4">Opponent</th>
             <th className="text-center font-medium px-2 py-1.5">V</th>
+            <th className="text-right font-medium px-2 py-1.5 sm:px-4" title="Corners won">Won</th>
+            <th className="text-right font-medium px-2 py-1.5 sm:px-4" title="Corners conceded">Conc</th>
+            <th className="text-right font-medium px-2 py-1.5 sm:px-4">Total</th>
             <th className="text-center font-medium px-2 py-1.5" title="Final score (goals for-against)">Score</th>
             <th className="text-center font-medium px-2 py-1.5" title="Scored a first-half goal">FHG</th>
             <th className="text-center font-medium px-2 py-1.5"
               title="Shots taken by this team vs shots faced. A high corner count against a side that concedes a lot of shots is a different signal from one earned against a solid defence.">Shots F–A</th>
             <th className="text-center font-medium px-2 py-1.5"
               title="Shots on target, taken vs faced. Reported for only about half of fixtures, so a dash here means the provider didn't cover it — not that nothing was on target.">SoT F–A</th>
-            <th className="text-right font-medium px-4 py-1.5" title="Corners won">Won</th>
-            <th className="text-right font-medium px-4 py-1.5" title="Corners conceded">Conc</th>
-            <th className="text-right font-medium px-4 py-1.5">Total</th>
           </tr>
         </thead>
         <tbody className="font-mono-data text-sm" data-testid={`bd-recent-${highlight}`}>
@@ -448,11 +449,14 @@ function TeamBreakdown({ team, title, highlight }) {
             <tr><td colSpan={10} className="px-4 py-4 text-center text-muted-foreground text-xs">No real games on this split</td></tr>
           ) : games.map((m, i) => (
             <tr key={i} className="border-b border-border/50 hover:bg-white/5 transition-colors duration-150">
-              <td className="px-4 py-1.5 text-muted-foreground text-xs">{fmtDate(m.date)}</td>
-              <td className="px-4 py-1.5 text-foreground font-sans text-xs whitespace-nowrap truncate max-w-[140px]">{m.opponent}</td>
+              <td className="px-2 py-1.5 sm:px-4 text-muted-foreground text-xs whitespace-nowrap">{fmtDate(m.date)}</td>
+              <td className="px-2 py-1.5 sm:px-4 text-foreground font-sans text-xs whitespace-nowrap truncate max-w-[110px] sm:max-w-[140px]">{m.opponent}</td>
               <td className="px-2 py-1.5 text-center">
                 <span className={`text-[9px] px-1 py-0.5 rounded ${m.home ? "bg-primary/15 text-primary" : "bg-zinc-500/15 text-zinc-400"}`}>{m.home ? "H" : "A"}</span>
               </td>
+              <td className="px-2 py-1.5 sm:px-4 text-right text-emerald-400 font-semibold">{m.won}</td>
+              <td className="px-2 py-1.5 sm:px-4 text-right text-red-400">{m.conceded}</td>
+              <td className="px-2 py-1.5 sm:px-4 text-right text-foreground">{m.total}</td>
               <td className={`px-2 py-1.5 text-center text-xs font-semibold ${m.gf != null ? resultTone(m) : "text-muted-foreground"}`}
                 title={scorerNote(m)}>
                 {m.gf != null ? `${m.gf}-${m.ga}` : "—"}
@@ -490,13 +494,11 @@ function TeamBreakdown({ team, title, highlight }) {
                   </span>
                 )}
               </td>
-              <td className="px-4 py-1.5 text-right text-emerald-400 font-semibold">{m.won}</td>
-              <td className="px-4 py-1.5 text-right text-red-400">{m.conceded}</td>
-              <td className="px-4 py-1.5 text-right text-foreground">{m.total}</td>
             </tr>
           ))}
         </tbody>
       </table>
+      </div>
       <GoalDetail profile={team.goal_profile?.[split]} highlight={highlight} split={split} />
     </div>
   );

@@ -81,6 +81,26 @@ V3_BLOCKED_WEIGHT = 0.15
 # pricing falls back to v2's shots intent rather than trusting a thin sample
 MIN_BLOCKED_GAMES = 5
 
+# ---- Model v4 (live): the OPPONENT's defensive style ----
+# Until this term existed, the only thing the opposition contributed to a projection was
+# their corners-conceded average, blended 50/50 into the base. Everything about HOW they
+# concede was discarded: a side that sits deep and blocks five shots a game and a side
+# that gives up clean looks priced identically, given the same corners-against number.
+# Blocked shots are the mechanism — a block is the most common way a shot becomes a
+# corner — so a heavy-blocking defence manufactures corners for whoever it plays.
+#
+# Read off the OPPONENT's `blocked_shots_against`: their opposition's blocked shots, which
+# is this side doing the blocking.
+#
+# WEIGHT. Deliberately below the attacking term's 0.15. The opponent's corner concession
+# is already half the base and blocking is one of its causes, so part of this signal is a
+# second look at evidence the base has seen; the defensible reason to add it anyway is
+# that blocks accumulate far faster than corners conceded, so they say the same thing on a
+# thinner sample. 0.10 is a starting point chosen to bound the damage if that is wrong —
+# it is NOT a fitted value. Sweep it (`/api/backtest?model=v4&opp_weight=...`) before
+# trusting it. Setting it to 0.0 prices exactly as v3 did.
+V4_OPP_BLOCKED_WEIGHT = 0.10
+
 
 def _intent(value: float, league_avg: float, weight: float) -> float:
     """Intent multiplier: +/- `weight` on lambda, clamped to 0.6-1.5x the league average."""
@@ -111,7 +131,12 @@ def nb_ge(k: int, lam: float, r: float = NB_R) -> float:
     return max(0.0, min(1.0, 1.0 - cum))
 
 
-def _shots_form(team: dict, venue: str):
+def _venue_pool(team: dict, venue: str) -> list:
+    """This team's matches on this venue, falling back to all of them when it has none.
+
+    The four form helpers below all sliced this out for themselves; sharing it means a
+    team's intent, its blocking and its opponents' view of it can never end up computed
+    over different sets of games."""
     rms = (team or {}).get("real_matches") or []
     if venue == "home":
         pool = [m for m in rms if m["home"]]
@@ -119,8 +144,11 @@ def _shots_form(team: dict, venue: str):
         pool = [m for m in rms if not m["home"]]
     else:
         pool = rms
-    if not pool:
-        pool = rms
+    return pool or rms
+
+
+def _shots_form(team: dict, venue: str):
+    pool = _venue_pool(team, venue)
     if not pool:
         return None, None
     sf = sum(m.get("shots_for", 0) for m in pool) / len(pool)
@@ -128,37 +156,33 @@ def _shots_form(team: dict, venue: str):
     return sf, fh
 
 
-def _blocked_form(team: dict, venue: str) -> Optional[float]:
-    """Team's blocked-shots average on this venue, or None where the backfill hasn't
-    reached far enough. A missing stat is never read as zero, and a handful of games
-    is not enough to move a price — under MIN_BLOCKED_GAMES we say we don't know."""
-    rms = (team or {}).get("real_matches") or []
-    if venue == "home":
-        pool = [m for m in rms if m["home"]]
-    elif venue == "away":
-        pool = [m for m in rms if not m["home"]]
-    else:
-        pool = rms
-    if not pool:
-        pool = rms
-    vals = [m["blocked_shots_for"] for m in pool if m.get("blocked_shots_for") is not None]
+def _blocked_avg(team: dict, venue: str, key: str) -> Optional[float]:
+    """Average of `key` on this venue, or None where the backfill hasn't reached far
+    enough. A missing stat is never read as zero, and a handful of games is not enough
+    to move a price — under MIN_BLOCKED_GAMES we say we don't know."""
+    vals = [m[key] for m in _venue_pool(team, venue) if m.get(key) is not None]
     if len(vals) < MIN_BLOCKED_GAMES:
         return None
     return sum(vals) / len(vals)
 
 
-def _blocked_covered(team: dict, venue: str) -> int:
-    """Games on this venue that carry blocked shots — the count `_blocked_form` tests."""
-    rms = (team or {}).get("real_matches") or []
-    if venue == "home":
-        pool = [m for m in rms if m["home"]]
-    elif venue == "away":
-        pool = [m for m in rms if not m["home"]]
-    else:
-        pool = rms
-    if not pool:
-        pool = rms
-    return sum(1 for m in pool if m.get("blocked_shots_for") is not None)
+def _blocked_covered(team: dict, venue: str, key: str = "blocked_shots_for") -> int:
+    """Games on this venue that carry `key` — the count `_blocked_avg` tests."""
+    return sum(1 for m in _venue_pool(team, venue) if m.get(key) is not None)
+
+
+def _blocked_form(team: dict, venue: str) -> Optional[float]:
+    """How many of THIS team's own shots get blocked — the v3 attacking-intent stat."""
+    return _blocked_avg(team, venue, "blocked_shots_for")
+
+
+def _blocks_conceded_form(team: dict, venue: str) -> Optional[float]:
+    """How many of the OPPOSITION's shots this team blocks, per game, on this venue.
+
+    Stored per fixture as `blocked_shots_against` — the other side's blocked shots — so
+    from this team's point of view it is blocking done, not suffered. That is the stat
+    the v4 opponent term reads."""
+    return _blocked_avg(team, venue, "blocked_shots_against")
 
 
 def intent_breakdown(team: dict, venue: str, league_shots: float,
@@ -193,15 +217,52 @@ def intent_breakdown(team: dict, venue: str, league_shots: float,
             "reason": reason}
 
 
+def opponent_defence(opp: Optional[dict], opp_venue: Optional[str],
+                     league_blocked: float = 0.0) -> dict:
+    """How the OPPOSING side's defensive style moves this team's corner count (v4).
+
+    Same contract as `intent_breakdown`: `live_lambda` is defined in terms of this, so
+    the explain panel and the price cannot disagree.
+
+    NEUTRAL (1.0) whenever we cannot tell — no opponent supplied, the league has no
+    blocked-shots data, or too few of the opponent's games carry it. There is deliberately
+    NO fallback to a shots-based term the way `intent_breakdown` falls back to v2: this
+    multiplier sits on top of the v3 price, so "don't know" has to mean "price exactly as
+    v3 did" rather than a guess from a stat that was never fitted for this job."""
+    covered = _blocked_covered(opp, opp_venue, "blocked_shots_against") if opp else 0
+    flat = {"source": "none", "multiplier": 1.0, "value": None, "league_avg": None,
+            "weight": None, "covered": covered, "min_games": MIN_BLOCKED_GAMES}
+    if not opp or not opp_venue:
+        return {**flat, "reason": "no opponent supplied"}
+    if not league_blocked:
+        return {**flat, "reason": "league has no blocked-shots data"}
+    blocks = _blocks_conceded_form(opp, opp_venue)
+    if blocks is None:
+        return {**flat, "reason": f"only {covered} of the opponent's games here carry "
+                                  f"blocked shots — needs {MIN_BLOCKED_GAMES}"}
+    return {"source": "blocked_against",
+            "multiplier": _intent(blocks, league_blocked, V4_OPP_BLOCKED_WEIGHT),
+            "value": round(blocks, 2), "league_avg": round(league_blocked, 2),
+            "weight": V4_OPP_BLOCKED_WEIGHT, "covered": covered,
+            "min_games": MIN_BLOCKED_GAMES, "reason": None}
+
+
 def live_lambda(base: float, team: dict, venue: str, league_shots: float,
-                league_blocked: float = 0.0) -> float:
-    """Production corner-lambda (v3): blocked-shots intent x first-half-goal form.
+                league_blocked: float = 0.0, opp: Optional[dict] = None,
+                opp_venue: Optional[str] = None) -> float:
+    """Production corner-lambda (v4): the team's own blocked-shots intent, its first-half
+    goal form, and the opponent's blocking, all on top of the venue-split corner base.
 
     Falls back to v2's shots intent for any team without enough blocked-shots history,
     so a thinly-covered team prices exactly as it does today rather than worse. Both
-    branches are the same shape; only the stat driving the intent differs."""
+    branches are the same shape; only the stat driving the intent differs.
+
+    `opp` is OPTIONAL and defaults to neutral, so a caller that has no opponent in hand
+    prices exactly as v3 did rather than failing — the term can only ever be additional
+    information, never a precondition."""
     b = intent_breakdown(team, venue, league_shots, league_blocked)
-    return round(base * b["multiplier"] * b["form"], 2)
+    d = opponent_defence(opp, opp_venue, league_blocked)
+    return round(base * b["multiplier"] * b["form"] * d["multiplier"], 2)
 
 
 def _league_shots_map(teams: list) -> dict:
@@ -465,9 +526,9 @@ def expected_lambdas(home: dict, away: dict, league_shots: float = REF_SHOTS,
     if a_away["played"] == 0:
         a_away = team_split(_src(away), "overall", 0)
     lam_home = live_lambda((h_home["for_avg"] + a_away["against_avg"]) / 2, home, "home",
-                           league_shots, league_blocked)
+                           league_shots, league_blocked, away, "away")
     lam_away = live_lambda((a_away["for_avg"] + h_home["against_avg"]) / 2, away, "away",
-                           league_shots, league_blocked)
+                           league_shots, league_blocked, home, "home")
     return {"home": lam_home, "away": lam_away, "total": round(lam_home + lam_away, 2)}
 
 
@@ -1514,24 +1575,34 @@ async def explain_pick(req: ExplainReq, user: dict = Depends(get_current_user)):
 def model_lambda(model: str, team_for: float, opp_against: float,
                  team_shots: float = 0.0, league_shots: float = 0.0, team_fh: float = 0.5,
                  team_blocked: float = 0.0, league_blocked: float = 0.0,
-                 blocked_weight: float = V3_BLOCKED_WEIGHT) -> float:
+                 blocked_weight: float = V3_BLOCKED_WEIGHT,
+                 opp_blocks: float = 0.0,
+                 opp_weight: float = V4_OPP_BLOCKED_WEIGHT) -> float:
     """Expected team corners.
     v1 = corner form only.
-    v2 = + shots-intent x first-half-goal form (matches the tuned production formula).
-    v3 = v2 with the shots-intent term SWAPPED for blocked-shots intent (candidate).
+    v2 = + shots-intent x first-half-goal form.
+    v3 = v2 with the shots-intent term SWAPPED for blocked-shots intent.
+    v4 = v3 x the OPPONENT's blocking (matches live pricing).
 
     v3 FALLS BACK TO v2 when a team has no blocked-shots history. Blocked shots only
     exist as far back as the backfill reached, while shots are on every cached fixture,
     so without this a team short on blocked data would price off bare corner form —
     losing the first-half-goal term too, and coming out WORSE than the model it is
-    meant to replace. The backtester skips those rows, so it would never show it."""
+    meant to replace. The backtester skips those rows, so it would never show it.
+
+    v4's opponent term is applied to WHICHEVER branch fires, including bare corner form,
+    because `live_lambda` multiplies `opponent_defence` onto the finished v3 lambda
+    unconditionally. A test pins the two implementations together; if this stops
+    mirroring production the backtest stops describing it."""
     base = (team_for + opp_against) / 2.0
     form = 1.0 + 0.03 * (team_fh - 0.5)
-    if model == "v3" and league_blocked > 0 and team_blocked > 0:
-        return base * _intent(team_blocked, league_blocked, blocked_weight) * form
-    if model in ("v2", "v3") and league_shots > 0 and team_shots > 0:
-        return base * _intent(team_shots, league_shots, 0.10) * form
-    return base
+    opp_mult = (_intent(opp_blocks, league_blocked, opp_weight)
+                if model == "v4" and league_blocked > 0 and opp_blocks > 0 else 1.0)
+    if model in ("v3", "v4") and league_blocked > 0 and team_blocked > 0:
+        return base * _intent(team_blocked, league_blocked, blocked_weight) * form * opp_mult
+    if model in ("v2", "v3", "v4") and league_shots > 0 and team_shots > 0:
+        return base * _intent(team_shots, league_shots, 0.10) * form * opp_mult
+    return base * opp_mult
 
 
 def _backtest_summary(stats: dict, lines: List[int]) -> dict:
@@ -1799,6 +1870,7 @@ async def tool_runs(token: Optional[str] = None, script: Optional[str] = None, l
 @api_router.get("/backtest")
 async def backtest(league_id: str = "all", window: int = 10, min_games: int = 5,
                    model: str = "v1", blocked_weight: float = V3_BLOCKED_WEIGHT,
+                   opp_weight: float = V4_OPP_BLOCKED_WEIGHT,
                    only_covered: bool = False, venue_form: bool = True,
                    user: dict = Depends(get_current_user)):
     """Walk-forward backtest over cached fixture stats: for each past match we predict
@@ -1819,8 +1891,12 @@ async def backtest(league_id: str = "all", window: int = 10, min_games: int = 5,
     must not move when the flag is toggled, or the comparison would be between two
     different sets of matches.
 
-    A v3 run always also returns v2 scored on the SAME rows (`v2_same_sample`) —
-    comparing a v3 run against a separate v2 run would compare two different samples.
+    A v3 run always also returns v2 scored on the SAME rows (`v2_same_sample`), and a v4
+    run returns v3 the same way (`v3_same_sample`) — comparing against a separate run
+    would compare two different samples.
+
+    v4 adds the OPPONENT's blocking to v3. `opp_weight` sweeps it, and `opp_weight=0`
+    reproduces v3 exactly, so one sweep answers both "what weight" and "at all?".
 
     Two v3 questions, two modes:
     - default: every row is scored, v3 falling back to v2 where a team has no
@@ -1852,15 +1928,20 @@ async def backtest(league_id: str = "all", window: int = 10, min_games: int = 5,
     hist_shots_v = defaultdict(lambda: deque(maxlen=window))
     hist_fh_v = defaultdict(lambda: deque(maxlen=window))
     hist_blocked_v = defaultdict(lambda: deque(maxlen=window))
+    # ...and how many of the OPPOSITION's shots each team blocks, which is what v4 reads
+    # off the opponent. Kept separately from hist_blocked because they are different
+    # stats about the same team: what it has blocked, and what has been blocked of it.
+    hist_blocks_v = defaultdict(lambda: deque(maxlen=window))
+    hist_blocks = defaultdict(lambda: deque(maxlen=window))
     lines = [4, 5, 6, 7]
     stats = {L: {"n": 0, "pred": 0.0, "hit": 0, "brier": 0.0} for L in lines}
     alt_stats = {L: {"n": 0, "pred": 0.0, "hit": 0, "brier": 0.0} for L in lines}
-    preds = skipped_no_blocked = fell_back = 0
+    preds = skipped_no_blocked = fell_back = used_opp = 0
 
     def avg(d):
         return sum(d) / len(d) if d else 0.0
 
-    prob_fn = nb_ge if model in ("v2", "v3") else poisson_ge
+    prob_fn = nb_ge if model in ("v2", "v3", "v4") else poisson_ge
 
     def form(pooled, by_venue):
         """The average production would use. Venue-split, falling back to pooled when
@@ -1893,17 +1974,26 @@ async def backtest(league_id: str = "all", window: int = 10, min_games: int = 5,
             # blocked coverage follows whichever pool is actually being used
             bl_used = vbl_d if (venue_form and vbl_d) else bl_d
             has_blocked = len(bl_used) >= min_games
-            if model == "v3" and not has_blocked:
+            if model in ("v3", "v4") and not has_blocked:
                 if only_covered:
                     skipped_no_blocked += 1
                     continue
                 fell_back += 1               # thin history -> v3 prices as v2 would
+            # The OPPONENT's blocking, gated on its own coverage — production reads it
+            # off the opposing team, so a row can carry the v4 term with the attacking
+            # team having fallen back to v2, or the other way round.
+            obl_v, obl_p = hist_blocks_v[(opp, opp_side)], hist_blocks[opp]
+            obl_used = obl_v if (venue_form and obl_v) else obl_p
+            has_opp = len(obl_used) >= min_games
+            if model == "v4" and has_opp:
+                used_opp += 1
             # a too-short window is passed as 0 so the fallback fires, rather than
             # letting two games of blocked data masquerade as form
             args = (form(tf_d, vf_d), form(oa_d, voa_d), form(ts_d, vts_d), league_shots,
                     form(fh_d, vfh_d))
-            lam = model_lambda(model, *args, avg(bl_used) if has_blocked else 0.0,
-                               league_blocked, blocked_weight)
+            blocked_args = (avg(bl_used) if has_blocked else 0.0, league_blocked, blocked_weight)
+            lam = model_lambda(model, *args, *blocked_args,
+                               avg(obl_used) if has_opp else 0.0, opp_weight)
             preds += 1
             for L in lines:
                 p = prob_fn(L, lam)
@@ -1913,7 +2003,12 @@ async def backtest(league_id: str = "all", window: int = 10, min_games: int = 5,
             # The comparison row. For v3 that is v2 on identical rows. Otherwise it is
             # THIS model with pooled form — the old harness's basis — so one call shows
             # what the fidelity fix was worth.
-            if model == "v3":
+            if model == "v4":
+                # v3 on identical rows: the same call with the opponent term removed, so
+                # the ONLY difference between the two scores is the thing being tested.
+                lam2 = model_lambda("v3", *args, *blocked_args)
+                alt_fn = nb_ge
+            elif model == "v3":
                 lam2 = model_lambda("v2", *args)
                 alt_fn = nb_ge
             elif venue_form:
@@ -1941,16 +2036,36 @@ async def backtest(league_id: str = "all", window: int = 10, min_games: int = 5,
             if bl is not None:              # uncovered fixtures never enter the window
                 hist_blocked[tid].append(bl)
                 hist_blocked_v[(tid, side)].append(bl)
+            # the OTHER side's blocked shots — this team doing the blocking
+            obl = m.get(f"{other}_blocked_shots")
+            if obl is not None:
+                hist_blocks[tid].append(obl)
+                hist_blocks_v[(tid, side)].append(obl)
 
     out = {"league_id": league_id, "model": model, "window": window, "min_games": min_games,
            "venue_form": venue_form,
            "matches": len(matches), "predictions": preds, **_backtest_summary(stats, lines)}
-    if venue_form and model != "v3":
+    if venue_form and model not in ("v3", "v4"):
         out["pooled_same_sample"] = _backtest_summary(alt_stats, lines)
         out["note"] = ("venue_form=true mirrors production, which prices from venue-split "
                        "form. pooled_same_sample is the old harness basis on identical "
                        "rows — the difference is what the fidelity fix was worth.")
-    if model == "v3":
+    if model == "v4":
+        out["blocked_weight"] = blocked_weight
+        out["opp_weight"] = opp_weight
+        out["only_covered"] = only_covered
+        out["skipped_no_blocked_history"] = skipped_no_blocked
+        out["rows_using_blocked"] = preds - fell_back
+        out["rows_using_opponent_blocking"] = used_opp
+        out["v3_same_sample"] = _backtest_summary(alt_stats, lines)
+        out["note"] = (
+            "v4 IS live pricing. v3_same_sample is the same rows without the opponent "
+            "term, so the difference is exactly what that term is worth — nothing else "
+            "changes between them. Sweep opp_weight; 0 reproduces v3. If v3_same_sample "
+            "wins, set V4_OPP_BLOCKED_WEIGHT to 0.0. rows_using_opponent_blocking says "
+            "how many rows the term actually reached — a small number means the run is "
+            "mostly measuring v3 and cannot settle the question either way.")
+    elif model == "v3":
         out["blocked_weight"] = blocked_weight
         out["only_covered"] = only_covered
         out["skipped_no_blocked_history"] = skipped_no_blocked
@@ -2091,10 +2206,13 @@ async def fixture_detail(fixture_id: str, user: dict = Depends(get_current_user)
             "home_team": {"name": home["name"], "splits": splits(home), "features": features(home),
                           "state_splits": states(home), "goal_profile": goals(home),
                           "intent": intent(home), "recent": recent(home),
+                          # what the AWAY side's blocking does to the home team's count
+                          "opponent_defence": opponent_defence(away, "away", lb),
                           "real_samples": home.get("real_samples", 0)},
             "away_team": {"name": away["name"], "splits": splits(away), "features": features(away),
                           "state_splits": states(away), "goal_profile": goals(away),
                           "intent": intent(away), "recent": recent(away),
+                          "opponent_defence": opponent_defence(home, "home", lb),
                           "real_samples": away.get("real_samples", 0)}}
 
 
@@ -2303,7 +2421,8 @@ def _streak_projection(team: dict, opp: Optional[dict], team_venue: str, opp_ven
     o_against = _real_avg(opp, opp_venue, "corners_against") if opp else None
     if t_for is None or o_against is None:
         return None
-    lam = live_lambda((t_for + o_against) / 2, team, team_venue, league_shots, league_blocked)
+    lam = live_lambda((t_for + o_against) / 2, team, team_venue, league_shots, league_blocked,
+                      opp, opp_venue)
     ge, pmf, group = nb_ge, nb_pmf, team_venue
     extra = {}
     if subject == "match":
@@ -2311,7 +2430,8 @@ def _streak_projection(team: dict, opp: Optional[dict], team_venue: str, opp_ven
         t_against = _real_avg(team, team_venue, "corners_against")
         if o_for is None or t_against is None:
             return None
-        lam_opp = live_lambda((o_for + t_against) / 2, opp, opp_venue, league_shots, league_blocked)
+        lam_opp = live_lambda((o_for + t_against) / 2, opp, opp_venue, league_shots,
+                              league_blocked, team, team_venue)
         extra = {"opp_for": round(o_for, 2), "team_conceded": round(t_against, 2),
                  "lambda_team": lam, "lambda_opp": lam_opp}
         lam = round(lam + lam_opp, 2)
@@ -2544,7 +2664,7 @@ async def matchups(league_id: str, side: str = "overall", user: dict = Depends(g
             opp = teams_by_id.get(nf["opponent_team_id"])
             opp_conc = (_real_avg(opp, opp_venue, "corners_against") if opp else None)
             if opp_conc is not None:
-                lam = live_lambda((team_for + opp_conc) / 2, t, venue, ls, lb)
+                lam = live_lambda((team_for + opp_conc) / 2, t, venue, ls, lb, opp, opp_venue)
                 line = max(3, round(lam) - 1)
                 p = nb_ge(line, lam)
                 projection = {"team_for": round(team_for, 2), "opp_conceded": round(opp_conc, 2),
@@ -2641,7 +2761,8 @@ async def _all_mismatches(within_days: Optional[int] = None, limit: int = 20):
         if not (team_for >= avg * 1.1 and opp_conc >= avg * 1.1):
             continue
         lam = live_lambda((team_for + opp_conc) / 2, t, venue,
-                          ls_map.get(t["league_id"], REF_SHOTS), bl_map.get(t["league_id"], 0.0))
+                          ls_map.get(t["league_id"], REF_SHOTS), bl_map.get(t["league_id"], 0.0),
+                          opp, opp_venue)
         line = max(3, round(lam) - 1)
         p = nb_ge(line, lam)
         out.append({"team_id": t["team_id"], "name": t["name"], "league_id": t["league_id"],
@@ -2718,7 +2839,8 @@ async def _chase_board(within_days: int = 7, limit: int = 25, league_id: Optiona
         opp_conc = sum(m["corners_against"] for m in opp_pool) / len(opp_pool)
         opp_fh = sum(1 for m in opp_pool if m.get("fh_goals_for", 0) >= 1) / len(opp_pool)
         lam = live_lambda((team_for + opp_conc) / 2, t, venue,
-                          ls_map.get(t["league_id"], REF_SHOTS), bl_map.get(t["league_id"], 0.0))
+                          ls_map.get(t["league_id"], REF_SHOTS), bl_map.get(t["league_id"], 0.0),
+                          opp, opp_venue)
         line = max(3, round(lam) - 1)
         last5 = pool[-5:]
         hit = sum(1 for m in last5 if m["corners_for"] >= line)
@@ -2836,7 +2958,8 @@ def mismatch_angle(team: dict, opp: dict, venue: str, league_for_avg: float,
     if not (team_for >= league_for_avg * MISMATCH_EDGE
             and opp_conc >= league_for_avg * MISMATCH_EDGE):
         return None
-    lam = live_lambda((team_for + opp_conc) / 2, team, venue, league_shots, league_blocked)
+    lam = live_lambda((team_for + opp_conc) / 2, team, venue, league_shots, league_blocked,
+                      opp, opp_venue)
     line = max(3, round(lam) - 1)
     p = nb_ge(line, lam)
     return {

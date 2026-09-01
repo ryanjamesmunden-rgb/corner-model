@@ -586,6 +586,49 @@ Both new tools are in the Tools panel (`POST /api/tools/backfill-goals`), so no 
 - **Security**: the app is public and the backfill spends API credits, so these are gated behind a `TOOLS_TOKEN` env var and return **503 when it is unset** — disabled by default, opt-in only. Token compared with `secrets.compare_digest`. Every subprocess argument is built from validated values (league ids checked against `MANAGED_LEAGUE_IDS`, mode from an enum, limit clamped 1-500) — no raw user string reaches argv. Per-script cooldowns (backfill 10min, measure 2min) and a one-run-at-a-time guard.
 - The frontend keeps the token in `localStorage` only (`cm2_tools_token`), with a "Forget token" control.
 
+### v4 goes live: the opponent's defending now moves the price (2026-09-01)
+**The bug, in the user's words:** clicking a fair price on the fixture page showed how
+often the line had landed, but nothing "changed the odds based on how many corners or
+shots conceded". Half right, and the half that was right mattered.
+
+- **What already worked.** `expected_lambdas` blends the opponent's corners-conceded into
+  the base 50/50, so the opposition's corner record moved the price a lot — holding a team
+  at 7.0 corners/game, a leaky opponent priced 6+ at 1.47 and a tight one at 2.50.
+- **What did not.** That was the ONLY opponent input. `intent_breakdown` and the form term
+  read the TEAM only, so holding corners-conceded at 5.0 and varying the opponent between
+  "blocks 5.5 shots a game" and "blocks 0.8" gave **identical prices to the decimal**. A
+  block is the commonest way a shot becomes a corner, so a deep-blocking side manufactures
+  corners for whoever it plays — and the model used that fact when they were attacking and
+  discarded it when they were defending.
+- **`opponent_defence(opp, opp_venue, league_blocked)`** reads the opponent's
+  `blocked_shots_against` — the opposition's blocked shots in their games, i.e. them doing
+  the blocking. Same contract as `intent_breakdown`, and **`live_lambda` is now defined as
+  `base × multiplier × form × opp_multiplier`**, so the fixture panel still cannot describe
+  a price the site does not charge. Rendered as a second card, only on the split the team
+  actually plays in that fixture.
+- **`opp` is an optional argument defaulting to neutral**, so any call site that has no
+  opponent in hand prices exactly as v3 did. All 8 sites now pass one.
+- **THE WEIGHT IS NOT SWEPT.** 0.10 was chosen to bound the damage if the term is wrong,
+  not fitted — deliberately below the attacking term's 0.15, because the opponent's corner
+  concession is already half the base and blocking is one of its causes, so part of this
+  signal is a second look at evidence the base has seen. The defensible reason to add it
+  anyway is that blocks accumulate far faster than corners conceded.
+  **`/api/backtest?model=v4&opp_weight=…` sweeps it; `opp_weight=0` reproduces v3
+  exactly.** If v3 wins, set `V4_OPP_BLOCKED_WEIGHT = 0.0`. The backtest panel on the site
+  now runs v3-vs-v4 and says which of those two outcomes it is measuring.
+- `model_lambda` gained a `v4` branch and the harness tracks the opponent's blocking in its
+  own walk-forward deques; `v3_same_sample` scores v3 on identical rows, so the only
+  difference between the two numbers is the term under test.
+- `backend/tests/test_v4_opponent.py`: 26 tests — cross-implementation parity with an
+  opponent, the breakdown-product invariant, direction, the `blocked_shots_for` vs
+  `blocked_shots_against` semantics (easy to get backwards), venue splitting, the clamp
+  bounds, and every "cannot tell" path reproducing v3 to the cent.
+- **Still not fixed:** the "Landed" column beside the price is raw history at that venue
+  against anyone, and remains opponent-blind by construction. And the TOTAL line is still
+  priced with Poisson while team lines use NB r=11 — at λ 10.4 that is 16.6% vs 22.7% on
+  Over 13.5, so high total-corner overs read as far bigger longshots than the team-line
+  maths would say.
+
 ### v3 goes live: blocked-shots intent is now production pricing (2026-08-12)
 - Backtester on the real cache, default (shipping) mode: **Brier 0.2226 → 0.2219, calibration gap 0.80 → 0.71** against `v2_same_sample`. Both metrics improved, which was the stated bar. Weight swept to **0.15** (0.2214 / 0.68), up from the inherited 0.10.
 - `v2_lambda()` → **`live_lambda()`**: blocked-shots intent where the team has ≥5 games of it, otherwise v2's shots intent, unchanged. Both branches share `_intent()` with `model_lambda`, and a unit test pins that production λ and the BACKTESTER's λ agree — they are separate implementations, and if they drift the backtest stops describing production.

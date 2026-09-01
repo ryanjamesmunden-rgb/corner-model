@@ -407,7 +407,7 @@ function TeamBreakdown({ team, title, highlight }) {
       </div>
 
       <ShotBlock feats={team.features?.[split]} intent={team.intent?.[split]}
-        highlight={highlight} split={split} />
+        oppDef={team.opponent_defence} highlight={highlight} split={split} />
 
       {/* Per-game breakdown */}
       <div className="px-4 py-2.5 border-t border-border flex items-center gap-3">
@@ -506,10 +506,14 @@ function TeamBreakdown({ team, title, highlight }) {
   );
 }
 
-// Shot volume, and the intent term the LIVE model derives from it. The backend builds
-// `intent` with the same call pricing makes, so this panel cannot describe one thing
-// while the price does another — including which branch fired (v3 blocked shots, or the
-// v2 shots fallback for a team without enough blocked history).
+// Shot volume, and the two terms the LIVE model derives from it. The backend builds both
+// `intent` and `opponent_defence` with the same calls pricing makes, so this panel cannot
+// describe one thing while the price does another — including which branch fired (v3
+// blocked shots, or the v2 shots fallback for a team without enough blocked history).
+//
+// The two terms answer different questions and are shown as separate cards rather than
+// one merged multiplier: `intent` is about THIS team's attacking, `opponent_defence` is
+// about who they are playing. Merging them would hide which half moved the price.
 const SHOT_COLS = [
   ["shots", "Shots"],
   ["shots_on_target", "On target"],
@@ -518,7 +522,7 @@ const SHOT_COLS = [
   // leagues (0/40 on the coverage check), so a column for it would only ever read "—"
 ];
 
-function ShotBlock({ feats, intent, highlight, split }) {
+function ShotBlock({ feats, intent, oppDef, highlight, split }) {
   if (!feats) return null;
   const covered = feats.covered?.shots ?? 0;
   if (!covered) {
@@ -587,6 +591,54 @@ function ShotBlock({ feats, intent, highlight, split }) {
           )}
         </div>
       )}
+
+      {/* Only on the split this team actually plays in THIS fixture. The opponent term is
+          a property of the matchup, not of the team, so showing it under the other splits
+          would attach it to games it had nothing to do with. */}
+      {oppDef && split === highlight && <OpponentBlock d={oppDef} highlight={highlight} />}
+    </div>
+  );
+}
+
+// What the OPPOSING side's defending does to this team's corner count (v4).
+//
+// A block is the most common way a shot becomes a corner, so a side that blocks a lot
+// hands out corners regardless of how many they have conceded historically — which is
+// exactly the thing the corners-against average in the base is slow to notice.
+function OpponentBlock({ d, highlight }) {
+  const pct = (d.multiplier - 1) * 100;
+  const dir = pct >= 0.05 ? "lifts" : pct <= -0.05 ? "cuts" : "leaves";
+  const tone = pct >= 0.05 ? "text-emerald-400" : pct <= -0.05 ? "text-red-400" : "text-muted-foreground";
+  return (
+    <div className="rounded-md border border-border bg-secondary/50 px-3 py-2"
+      data-testid={`bd-oppdef-${highlight}`}>
+      <div className="flex items-center gap-2 flex-wrap">
+        <span className="text-[10px] uppercase tracking-wider text-muted-foreground">
+          v4 · opponent's blocking
+        </span>
+        <span className={`ml-auto font-mono-data text-sm font-semibold ${tone}`}>
+          ×{d.multiplier.toFixed(3)}
+        </span>
+      </div>
+      <p className="text-[11px] text-muted-foreground mt-1">
+        {d.source === "none" ? (
+          <>Nothing known about how this opponent defends — λ is unchanged by them.</>
+        ) : (
+          <>
+            They block{" "}
+            <span className="font-mono-data text-foreground">{d.value?.toFixed(2)}</span>
+            {" shots a game vs league "}
+            <span className="font-mono-data text-foreground">{d.league_avg?.toFixed(2)}</span>
+            {" at weight "}
+            <span className="font-mono-data">{d.weight}</span>
+            {" — "}
+            {dir === "leaves" ? "leaves λ where it is" : (
+              <>{dir} λ by <span className={`font-mono-data ${tone}`}>{Math.abs(pct).toFixed(1)}%</span></>
+            )}
+          </>
+        )}
+      </p>
+      {d.reason && <p className="text-[10px] text-amber-400/80 mt-1">{d.reason}</p>}
     </div>
   );
 }

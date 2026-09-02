@@ -71,6 +71,9 @@ export default function Account() {
   const source = user.member_source;
   const isStripe = source === "stripe";
   const isComp = source === "code";
+  // Access that predates billing. It is permanent — no Stripe event can end it — so the
+  // page says so outright rather than leaving someone wondering what happens next.
+  const isGrandfathered = user.grandfathered;
   const ending = user.cancel_at_period_end;
 
   const openPortal = async () => {
@@ -124,7 +127,9 @@ export default function Account() {
         </Row>
         {member && (
           <Row label="Type">
-            {isStripe ? "Paid subscription" : isComp ? "Complimentary" : "Member"}
+            {isGrandfathered && !isStripe ? "Founding member"
+              : isStripe ? "Paid subscription"
+              : isComp ? "Complimentary" : "Member"}
           </Row>
         )}
         {user.member_since && <Row label="Member since">{fmtDate(user.member_since)}</Row>}
@@ -144,7 +149,9 @@ export default function Account() {
           <>
             <p className="text-sm text-muted-foreground mb-3">
               {ending
-                ? "Your subscription is set to end — you keep access until the date above. You can restart it from the same place."
+                ? (isGrandfathered
+                    ? "Your subscription is set to end. Your original access predates subscriptions and stays either way."
+                    : "Your subscription is set to end — you keep access until the date above. You can restart it from the same place.")
                 : "Update your card, download invoices, or cancel your subscription. Cancelling takes effect at the end of the period you've paid for."}
             </p>
             <button
@@ -165,8 +172,8 @@ export default function Account() {
           </p>
         ) : member ? (
           <p className="text-sm text-muted-foreground">
-            Your membership predates online billing, so there's nothing here to cancel.
-            Get in touch if you'd like it removed.
+            You had access before subscriptions existed here, and you keep it — there's
+            nothing to pay and nothing to cancel. Get in touch if you'd like it removed.
           </p>
         ) : (
           <>

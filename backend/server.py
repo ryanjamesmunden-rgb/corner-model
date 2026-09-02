@@ -727,6 +727,7 @@ def _public_user(u: dict) -> dict:
             "email": u.get("email"), "picture": u.get("picture"),
             "member": bool(u.get("member")),
             "member_source": u.get("member_source"),
+            "grandfathered": bool(u.get("grandfathered")),
             "member_since": u.get("member_since"),
             "subscription_status": u.get("subscription_status"),
             "subscription_ends_at": u.get("subscription_ends_at"),
@@ -3966,6 +3967,16 @@ async def _maybe_sync_on_boot():
 
 @app.on_event("startup")
 async def on_startup():
+    # Protect everyone who already had access, before the billing webhook can act on
+    # anyone. Idempotent; see billing.grandfather_existing_members for why it runs here
+    # rather than as a script someone has to remember.
+    try:
+        await billing.grandfather_existing_members(db)
+    except Exception:
+        # A failure here must not stop the app booting — but it MUST be loud, because
+        # until it succeeds a cancellation event could revoke a pre-existing member.
+        logger.exception("billing: grandfathering failed — DO NOT enable the Stripe "
+                         "webhook until this succeeds")
     # remove any legacy / non-managed leagues (e.g. old mock leagues from an earlier deploy)
     stale = await db.leagues.find({"league_id": {"$nin": list(MANAGED_LEAGUE_IDS)}}, {"_id": 0, "league_id": 1}).to_list(100)
     stale_ids = [l["league_id"] for l in stale]

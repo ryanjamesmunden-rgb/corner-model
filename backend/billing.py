@@ -44,6 +44,7 @@ ACTIVE_STATUSES = ("active", "trialing", "past_due")
 
 MEMBER_SOURCE_STRIPE = "stripe"
 MEMBER_SOURCE_CODE = "code"
+MEMBER_SOURCE_LEGACY = "legacy"
 
 
 def configured() -> bool:
@@ -138,6 +139,35 @@ def _sub_fields(sub: dict) -> dict:
     }
 
 
+async def grandfather_existing_members(db) -> dict:
+    """Stamp everyone who already had access, once, so a later change cannot take it.
+
+    Before this, membership was a flag with no provenance. That was survivable while
+    nothing could clear the flag; it stops being survivable the moment a webhook can.
+    Someone who paid last year and has no Stripe subscription must not be revoked by an
+    event, and "has no member_source" is too fragile a thing to rest that on — one later
+    code path setting the field for an unrelated reason would quietly remove the
+    protection from every one of them.
+
+    So they are marked explicitly, and `grandfathered` is checked directly by
+    apply_subscription rather than being inferred from what a document lacks.
+
+    Runs on boot and is idempotent: the query matches only members not yet stamped, so
+    the second and every subsequent boot is a no-op. On boot rather than in a script
+    because a migration you have to remember to run is a migration that gets forgotten,
+    and the cost of forgetting this one is locking out paying customers.
+    """
+    res = await db.users.update_many(
+        {"member": True, "member_source": {"$exists": False}},
+        {"$set": {"member_source": MEMBER_SOURCE_LEGACY, "grandfathered": True,
+                  "grandfathered_at": datetime.now(timezone.utc).isoformat()}},
+    )
+    if res.modified_count:
+        logger.info("billing: grandfathered %d existing member(s) — their access is now "
+                    "permanent and cannot be revoked by a Stripe event", res.modified_count)
+    return {"grandfathered": res.modified_count}
+
+
 async def apply_subscription(db, sub: dict, user_id: Optional[str] = None) -> dict:
     """Bring one account's membership into line with one Stripe subscription.
 
@@ -145,10 +175,15 @@ async def apply_subscription(db, sub: dict, user_id: Optional[str] = None) -> di
     email, for the reason given in create_checkout_session.
 
     THE REVOCATION RULE. Membership is only ever taken away from an account whose
-    `member_source` is "stripe". A comp and a legacy account are left alone even when a
-    Stripe event says otherwise, because a wrongly-matched event must not be able to lock
-    out someone who paid. Granting is safe in a way revoking is not, so the two are not
+    `member_source` is "stripe" AND which is not grandfathered. A comp, a legacy account,
+    and anyone who had access before billing existed are left alone even when a Stripe
+    event says otherwise, because a wrongly-matched event must not be able to lock out
+    someone who paid. Granting is safe in a way revoking is not, so the two are not
     symmetrical here and should not be made so.
+
+    Grandfathering outranks the source deliberately. Someone who had access before, then
+    later subscribes, keeps what they already had if they cancel — they are not made
+    worse off by having paid you.
     """
     customer_id = sub.get("customer")
     uid = user_id or (sub.get("metadata") or {}).get("user_id")
@@ -166,16 +201,23 @@ async def apply_subscription(db, sub: dict, user_id: Optional[str] = None) -> di
 
     if active:
         fields["member"] = True
+        # The source becomes "stripe" because that is now true, but `grandfathered` is
+        # never unset — see the revocation rule above.
         fields["member_source"] = MEMBER_SOURCE_STRIPE
         if not account.get("member_since"):
             fields["member_since"] = datetime.now(timezone.utc).isoformat()
+    elif account.get("grandfathered"):
+        # Had access before any of this existed. Nothing Stripe says can take it away —
+        # including a cancellation of a subscription they took out later.
+        logger.info("stripe: subscription %s ended but %s is grandfathered — access kept",
+                    sub.get("id"), account["user_id"])
     elif account.get("member_source") == MEMBER_SOURCE_STRIPE:
         # Their access came from this subscription, and the subscription has ended.
         fields["member"] = False
         fields["member_ended_at"] = datetime.now(timezone.utc).isoformat()
     else:
-        # A comp or a legacy account that also happens to have a lapsed subscription.
-        # Record the subscription state, change nothing about their access.
+        # A comp that also happens to have a lapsed subscription. Record the subscription
+        # state, change nothing about their access.
         logger.info("stripe: subscription %s lapsed but %s is a %s member — access kept",
                     sub.get("id"), account["user_id"], account.get("member_source") or "legacy")
 

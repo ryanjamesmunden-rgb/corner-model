@@ -3212,6 +3212,115 @@ def _streak_record(row: dict) -> str:
     return f"{row['hits']}/{row.get('settled', row['window'])}{voids}"
 
 
+class StreakSnapshotBody(BaseModel):
+    """Which streaks went out, so the results post afterwards can be honest."""
+    tag: Optional[str] = None       # defaults to today; the label the results are read back by
+    days: int = 3                   # horizon the posted board covered
+    limit: int = 8
+
+
+@api_router.post("/streaks/snapshot")
+async def snapshot_streaks(body: StreakSnapshotBody, token: Optional[str] = None,
+                           user: dict = Depends(get_current_user)):
+    """Freeze the streaks as posted, before the games are played.
+
+    THIS IS WHAT MAKES A RESULTS POST HONEST, and it is not optional.
+
+    A streak row only appears while the run is alive: a team that misses drops out of
+    the board entirely. So settling "the streaks" against the board as it looks AFTER
+    the weekend reads only the survivors, and would publish something like "5 of 5
+    landed" every single week — not because the model is perfect, but because the
+    losers are no longer in the list being counted. That is survivorship bias, and on a
+    page selling a subscription it is the difference between a record and an
+    advertisement.
+
+    Snapshotting first is the same fix `_snapshot_daily_picks` applies to the daily
+    picks, for the same reason: what was claimed has to be written down before the
+    outcome is known, or the claim cannot be graded.
+
+    Idempotent per tag. Re-running on the same day returns the existing snapshot rather
+    than replacing it — a snapshot that could be rewritten after kick-off would be no
+    snapshot at all.
+    """
+    _check_tools_token(token)
+    tag = body.tag or datetime.now(timezone.utc).date().isoformat()
+    existing = await db.streak_snapshots.find_one({"_id": tag}, {"_id": 0})
+    if existing:
+        return {"status": "exists", "tag": tag, **existing}
+
+    rows = await streaks(league_id="all", side="overall", window=5, min_hits=5,
+                         threshold=None, min_line=3, within_days=body.days,
+                         direction="over", subject="team", user={})
+    entries = []
+    for r in rows[:max(1, min(body.limit, 25))]:
+        nf = r.get("next_fixture") or {}
+        if not nf.get("fixture_id"):
+            continue        # nothing to grade it against later
+        entries.append({
+            "team_id": r["team_id"], "name": r["name"], "league_id": r["league_id"],
+            "line": r["line"], "direction": r["direction"], "subject": r["subject"],
+            "hits": r["hits"], "window": r["window"],
+            "fixture_id": nf["fixture_id"], "kickoff": nf.get("date"),
+            "opponent": nf.get("opponent"), "is_home": nf.get("is_home"),
+        })
+    doc = {"tag": tag, "created_at": datetime.now(timezone.utc).isoformat(),
+           "days": body.days, "entries": entries}
+    await db.streak_snapshots.insert_one({"_id": tag, **doc})
+    return {"status": "created", **doc}
+
+
+@api_router.get("/streaks/snapshot/{tag}/results")
+async def snapshot_results(tag: str, token: Optional[str] = None,
+                           user: dict = Depends(get_current_user)):
+    """How the streaks in a snapshot actually landed.
+
+    Graded off the SYNCED match data, not a fresh scan of the board — the whole point
+    of the snapshot is that the list cannot change between the claim and the grading.
+    An entry whose game has not been played, or not yet synced, comes back `pending`
+    rather than being dropped, so a partial weekend reads as partial instead of as a
+    shorter list of wins.
+    """
+    _check_tools_token(token)
+    snap = await db.streak_snapshots.find_one({"_id": tag}, {"_id": 0})
+    if not snap:
+        raise HTTPException(status_code=404, detail=f"no streak snapshot tagged {tag}")
+
+    team_ids = [e["team_id"] for e in snap["entries"]]
+    teams = {t["team_id"]: t for t in
+             await db.teams.find({"team_id": {"$in": team_ids}}, {"_id": 0}).to_list(500)}
+    out = []
+    for e in snap["entries"]:
+        team = teams.get(e["team_id"]) or {}
+        played = None
+        for m in (team.get("real_matches") or []):
+            # The graded game is the one against the opponent that was upcoming. Matched
+            # on opponent AND on being at or after the kick-off we recorded, so a repeat
+            # fixture earlier in the season cannot be graded in its place.
+            if m.get("opponent") != e.get("opponent"):
+                continue
+            if e.get("kickoff") and (m.get("date") or "") < e["kickoff"][:10]:
+                continue
+            played = m
+            break
+        if not played:
+            out.append({**e, "result": "pending", "value": None})
+            continue
+        value = streak_value(played, e["subject"])
+        out.append({**e, "result": settle_streak_leg(value, e["line"], e["direction"]),
+                    "value": value, "played_at": played.get("date")})
+
+    graded = [r for r in out if r["result"] in (WIN, LOSS)]
+    return {
+        "tag": tag, "created_at": snap.get("created_at"), "days": snap.get("days"),
+        "results": out,
+        "landed": sum(1 for r in out if r["result"] == WIN),
+        "missed": sum(1 for r in out if r["result"] == LOSS),
+        "voided": sum(1 for r in out if r["result"] == VOID),
+        "pending": sum(1 for r in out if r["result"] == "pending"),
+        "settled": len(graded),
+    }
+
+
 @api_router.get("/share/rows")
 async def share_rows(days: int = 3, limit: int = 12, token: Optional[str] = None):
     """The raw rows behind the shared boards, for the scheduled draft job.

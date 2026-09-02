@@ -4,8 +4,10 @@
 // still CREDIBLE. Blurring whole rows proves nothing — it could be an empty list. So a
 // row is four independent slots and each board decides which of them to hold back:
 //
-//   STREAKS hide the team and the line, and keep the country, the record and the
-//   kick-off. A reader sees five 5/5 runs kicking off tonight and cannot bet one.
+//   STREAKS hide the line and keep everything else — the team, the record, the
+//   kick-off. Same policy the text share follows: the team is what makes the post
+//   worth reading and the line is what the paid channel is for, so it is the one
+//   thing that never goes out in public.
 //
 //   MISMATCHES do the opposite: the FIXTURE is the tease, so it stays legible, and what
 //   is held back is the in-depth stats and the model — the line, the projection and the
@@ -280,7 +282,7 @@ export const streakStoryRows = (rows = [], { isUnder = false } = {}) =>
       value: `${r.hits}/${settled}`,
       meta: kickoffLabel(r.next_fixture?.date),
       solid: settled > 0 && r.hits / settled >= 0.8,
-      tease: { headline: true, sub: true },
+      tease: { sub: true },
     };
   });
 

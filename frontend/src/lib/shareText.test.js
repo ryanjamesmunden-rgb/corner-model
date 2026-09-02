@@ -5,7 +5,7 @@
  * of a line and the one thing a row limit must never break: the "+N more" count has to
  * describe the list it is actually attached to.
  */
-import { streakShare, fixtureShare, bestTeamsShare } from "./shareText";
+import { streakShare, fixtureShare, bestTeamsShare, streakResultShare } from "./shareText";
 
 const NORWAY = "\u{1F1F3}\u{1F1F4}";
 const soon = () => {
@@ -24,7 +24,7 @@ const build = streakShare({ rows, subject: "team", isUnder: false, side: "overal
 
 describe("a streak line", () => {
   test("opens with the country flag instead of a bullet", () => {
-    expect(build(1)).toContain(`${NORWAY} A 5+`);
+    expect(build(1)).toContain(`${NORWAY} A`);
     expect(build(1)).not.toContain("• A");
   });
 
@@ -33,6 +33,16 @@ describe("a streak line", () => {
     expect(line).toContain("vs Rosenborg");
     expect(line).toContain("(5/5)");
     expect(line).toContain("Tomorrow");
+  });
+
+  test("NEVER publishes the line — that is the paid half", () => {
+    // The one thing a public post must not carry. Asserted across every row and every
+    // limit, because a leak here is permanent and public the moment it is posted.
+    for (const n of [1, 4, 7]) {
+      const out = build(n);
+      expect(out).not.toMatch(/\d\+/);        // "5+", "6+"
+      expect(out).not.toMatch(/\bU\d/);       // "U9" on an under
+    }
   });
 
   test("names the zone once, at the foot", () => {
@@ -91,5 +101,49 @@ describe("the other two boards", () => {
     // The ranking line, not the heading above it.
     expect(out.split("\n")[1]).toMatch(/^1\. \u{1F3F4}/u);
     expect(out).toContain("8.12 corners won/game");
+  });
+});
+
+describe("the results post", () => {
+  const results = [
+    { name: "A", league_id: "nor-el", opponent: "Rosenborg", is_home: true, result: "win", value: 8, line: 5 },
+    { name: "B", league_id: "eng-pl", opponent: "Everton", is_home: false, result: "loss", value: 3, line: 6 },
+    { name: "C", league_id: "ita-sa", opponent: "Lazio", is_home: true, result: "win", value: 7, line: 5 },
+    { name: "D", league_id: "ger-bl", opponent: "Union Berlin", is_home: true, result: "pending", value: null, line: 6 },
+  ];
+  const build = streakResultShare({ results, landed: 2, settled: 3, voided: 1 });
+
+  test("reports the corner count, never the line", () => {
+    // The count is a fact anyone can look up; the line is the product.
+    expect(build(4)).toContain("8 corners");
+    expect(build(4)).not.toMatch(/\d\+/);
+  });
+
+  test("carries no money at all — no units, no ROI, no price", () => {
+    const out = build(4);
+    expect(out).not.toMatch(/[+-]?\d+(\.\d+)?\s*u\b/i);
+    expect(out).not.toMatch(/ROI|profit|odds|@\s*\d/i);
+  });
+
+  test("shows the misses — a results post that only lists wins is an advert", () => {
+    expect(build(4)).toContain("❌");
+    expect(build(4)).toContain("✅");
+  });
+
+  test("counts voids out loud rather than dropping them", () => {
+    // 2/3 plus a stake-back is a different week from 2/3, and hiding it inflates it.
+    expect(build(4)).toContain("1 void");
+  });
+
+  test("games not yet played are left out, not counted as anything", () => {
+    expect(build(4)).not.toContain("D vs");
+  });
+
+  test("nothing settled yet shares nothing", () => {
+    const pendingOnly = streakResultShare({
+      results: [{ name: "X", league_id: "nor-el", result: "pending", value: null }],
+      landed: 0, settled: 0,
+    });
+    expect(pendingOnly(4)).toBe("");
   });
 });

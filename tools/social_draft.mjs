@@ -54,8 +54,15 @@ const get = async (path, label) => {
     const res = await fetch(`${BACKEND}${path}`, { signal: AbortSignal.timeout(60000) });
     if (res.status === 404) return null;      // the caller decides whether that is fatal
     if (!res.ok) {
+      // 503 from a gated endpoint is a CONFIG error, not an outage: _check_tools_token
+      // raises it when the backend has no TOOLS_TOKEN at all. Left as a bare status it
+      // reads as "Render is down" and sends you to the wrong dashboard.
+      if (res.status === 503) {
+        fail("backend has no TOOLS_TOKEN set in its own environment — set it on Render, "
+             + "then set the matching GitHub repo secret");
+      }
       fail(res.status === 403
-        ? "backend rejected the token — check the TOOLS_TOKEN secret matches the backend env"
+        ? "backend rejected the token — the TOOLS_TOKEN repo secret does not match the backend env"
         : `${label} returned ${res.status} ${res.statusText}`);
     }
     return await res.json();

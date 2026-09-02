@@ -3,6 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { Flame, ArrowRight, Target, TrendingDown, History } from "lucide-react";
 import { api } from "@/lib/api";
 import ShareButtons from "@/components/ShareButtons";
+import { flagBullet } from "@/lib/countryFlag";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 
@@ -103,7 +104,8 @@ export default function StreakFinder({ leagueId }) {
     const lines = rows.slice(0, 6).map((r) => {
       const fx = r.next_fixture;
       const vs = fx ? ` ${fx.is_home ? "vs" : "@"} ${fx.opponent}` : "";
-      return `• ${r.name} ${isUnder ? "U" : ""}${r.line}${isUnder ? "" : "+"}${vs} (${r.hits}/${r.window})`;
+      // The flag replaces the bullet rather than joining it — see flagBullet.
+      return `${flagBullet(r.league_id)} ${r.name} ${isUnder ? "U" : ""}${r.line}${isUnder ? "" : "+"}${vs} (${r.hits}/${r.window})`;
     });
     const more = rows.length > 6 ? `\n+${rows.length - 6} more on the site` : "";
     return `${head}\n${lines.join("\n")}${more}`;

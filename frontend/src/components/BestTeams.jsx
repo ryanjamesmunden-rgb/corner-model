@@ -3,6 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { Trophy, ArrowRight } from "lucide-react";
 import { api } from "@/lib/api";
 import ShareButtons from "@/components/ShareButtons";
+import { withFlag } from "@/lib/countryFlag";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 
@@ -35,7 +36,7 @@ export default function BestTeams({ leagueId }) {
     ? `Best corner teams — ${side === "overall" ? "all games" : side} `
       + `(${WINDOWS.find((w) => w.v === win)?.l || ""}):\n`
       + rows.slice(0, 8).map((r, i) =>
-          `${i + 1}. ${r.name} — ${r.won_avg.toFixed(2)} corners won/game`).join("\n")
+          `${i + 1}. ${withFlag(r.league_id, r.name)} — ${r.won_avg.toFixed(2)} corners won/game`).join("\n")
     : "";
 
   return (

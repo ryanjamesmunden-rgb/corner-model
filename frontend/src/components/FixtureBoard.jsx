@@ -3,6 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { CalendarDays, ChevronRight, Flame, Swords, Target, TrendingDown } from "lucide-react";
 import { api } from "@/lib/api";
 import ShareButtons from "@/components/ShareButtons";
+import { flagBullet } from "@/lib/countryFlag";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import StarButton from "@/components/StarButton";
 import { TONE, toneFor, toneLabel } from "@/lib/angleTone";
@@ -75,7 +76,7 @@ export default function FixtureBoard({ leagueId = "all" }) {
       + allFixtures.slice(0, 8).map((f) => {
           const angle = (f.angles || [])[0];
           const tag = angle ? ` — ${angle.team} ${angle.label}` : "";
-          return `• ${f.home} v ${f.away} (λ ${f.lambda_total})${tag}`;
+          return `${flagBullet(f.league_id)} ${f.home} v ${f.away} (λ ${f.lambda_total})${tag}`;
         }).join("\n")
       + (fixtureCount > 8 ? `\n+${fixtureCount - 8} more on the site` : "")
     : "";

@@ -55,6 +55,19 @@ const subdivision = (code) =>
   + [...code.replace(/-/g, "").toLowerCase()].map((c) => String.fromCodePoint(0xe0000 + c.charCodeAt(0))).join("")
   + "\u{E007F}";
 
+/**
+ * A short country code for a league id — "NO", "ENG" — for places a flag emoji can't be
+ * trusted. Text shares are read on the reader's own device, so a flag that doesn't render
+ * is one reader's problem; a generated IMAGE bakes whatever the creator's machine drew
+ * into a PNG that everyone then sees, and Windows has no flag glyphs at all. See
+ * lib/storyImage, which probes for that and falls back to this.
+ */
+export const countryCodeFor = (leagueId) => {
+  const code = CODES[String(leagueId || "").slice(0, 3).toLowerCase()];
+  if (!code) return "";
+  return code.includes("-") ? code.split("-")[1].toUpperCase() : code.toUpperCase();
+};
+
 /** The flag for a league id, or "" when the league isn't one we know. */
 export const flagFor = (leagueId) => {
   const code = CODES[String(leagueId || "").slice(0, 3).toLowerCase()];

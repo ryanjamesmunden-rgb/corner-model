@@ -4,6 +4,7 @@ import { CalendarDays, ChevronRight, Flame, Swords, Target, TrendingDown } from 
 import { api } from "@/lib/api";
 import ShareButtons from "@/components/ShareButtons";
 import { flagBullet, withFlag } from "@/lib/countryFlag";
+import { kickoffLabel, timesFooter } from "@/lib/kickoff";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import StarButton from "@/components/StarButton";
 import { TONE, toneFor, toneLabel } from "@/lib/angleTone";
@@ -71,14 +72,22 @@ export default function FixtureBoard({ leagueId = "all" }) {
 
   const allFixtures = (board?.days || []).flatMap((d) => d.fixtures || []);
   const fixtureCount = allFixtures.length;
+  const shown = allFixtures.slice(0, 8);
   const shareText = fixtureCount
     ? `Best upcoming corner games (next ${days === "1" ? "day" : `${days} days`}):\n`
-      + allFixtures.slice(0, 8).map((f) => {
+      + shown.map((f) => {
           const angle = (f.angles || [])[0];
           const tag = angle ? ` — ${angle.team} ${angle.label}` : "";
-          return `${flagBullet(f.league_id)} ${f.home} v ${f.away} (λ ${f.lambda_total})${tag}`;
+          // Same shape as the streak share, deliberately: both boards land in the same
+          // channel an hour apart, and a reader shouldn't have to re-learn the line.
+          // The board groups by day on screen, but the shared text is flat, so each
+          // line has to carry its own day rather than inheriting a heading.
+          const when = kickoffLabel(f.date);
+          return `${flagBullet(f.league_id)} ${f.home} v ${f.away} (λ ${f.lambda_total})${tag}`
+            + (when ? ` · ${when}` : "");
         }).join("\n")
       + (fixtureCount > 8 ? `\n+${fixtureCount - 8} more on the site` : "")
+      + timesFooter(shown.map((f) => f.date))
     : "";
 
   return (

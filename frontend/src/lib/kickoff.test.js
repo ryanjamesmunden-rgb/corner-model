@@ -6,7 +6,7 @@
  * The exact strings are locale-dependent, so what's asserted is the SHAPE — which day
  * word, whether a time is present — not "19:45", which is only that on a 24-hour clock.
  */
-import { kickoffTime, kickoffDay, kickoffLabel, timeZoneLabel } from "./kickoff";
+import { kickoffTime, kickoffDay, kickoffLabel, timeZoneLabel, timesFooter } from "./kickoff";
 
 const inHours = (h) => new Date(Date.now() + h * 3600 * 1000).toISOString();
 // Anchored to local midnight so the case can't straddle a day boundary mid-run.
@@ -58,5 +58,30 @@ describe("the label", () => {
   test("the zone is a separate call, so shared text can name it once", () => {
     expect(kickoffLabel(atLocalNoonInDays(0))).not.toContain(timeZoneLabel());
     expect(typeof timeZoneLabel()).toBe("string");
+  });
+});
+
+describe("the shared zone footer", () => {
+  test("names the zone once, on its own line", () => {
+    const footer = timesFooter([atLocalNoonInDays(0), atLocalNoonInDays(1)]);
+    expect(footer).toBe(`\nAll times ${timeZoneLabel()}`);
+    // Once, not once per date — the whole reason it isn't on every line.
+    expect(footer.match(/All times/g)).toHaveLength(1);
+  });
+
+  test("is dropped when nothing in the board has a kick-off", () => {
+    // A board of dateless rows that still said "All times BST" would be claiming
+    // a precision it hasn't got.
+    expect(timesFooter([])).toBe("");
+    expect(timesFooter([null, undefined, "", "not a date"])).toBe("");
+    expect(timesFooter(undefined)).toBe("");
+  });
+
+  test("survives one bad date among good ones", () => {
+    expect(timesFooter([null, atLocalNoonInDays(0)])).toContain("All times");
+  });
+
+  test("carries its own leading newline, so it can't run into the line above", () => {
+    expect(`+3 more on the site${timesFooter([atLocalNoonInDays(0)])}`).toContain("site\nAll times");
   });
 });

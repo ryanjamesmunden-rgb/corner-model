@@ -4,7 +4,7 @@ import { Flame, ArrowRight, Target, TrendingDown, History } from "lucide-react";
 import { api } from "@/lib/api";
 import ShareButtons from "@/components/ShareButtons";
 import { flagBullet, withFlag } from "@/lib/countryFlag";
-import { kickoffLabel, timeZoneLabel } from "@/lib/kickoff";
+import { kickoffLabel, timesFooter } from "@/lib/kickoff";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 
@@ -115,9 +115,8 @@ export default function StreakFinder({ leagueId }) {
     });
     const more = rows.length > 6 ? `\n+${rows.length - 6} more on the site` : "";
     // The zone is named ONCE, not on every line — six repeats of "BST" is a third of a
-    // tweet. Omitted entirely when no row has a kick-off to be wrong about.
-    const zone = timeZoneLabel();
-    const times = zone && shown.some((r) => r.next_fixture?.date) ? `\nAll times ${zone}` : "";
+    // tweet. See timesFooter for when it is dropped entirely.
+    const times = timesFooter(shown.map((r) => r.next_fixture?.date));
     return `${head}\n${lines.join("\n")}${more}${times}`;
   })();
 

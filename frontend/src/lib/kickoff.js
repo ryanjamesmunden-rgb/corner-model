@@ -55,3 +55,18 @@ export const timeZoneLabel = () => {
     return "";
   }
 };
+
+/**
+ * The zone line that closes a shared board: "\nAll times BST", or "" when there is no
+ * kick-off in it to be wrong about. Takes the LEADING newline with it, so a caller
+ * appending it to a board can't produce "…on the siteAll times BST".
+ *
+ * Shared rather than written per board: the rule is a pair of conditions that have to
+ * agree across every share button — name the zone once, never on a board without times —
+ * and two copies of that is how one of them ends up naming BST over a list of dates.
+ */
+export const timesFooter = (dates) => {
+  const zone = timeZoneLabel();
+  if (!zone || !(dates || []).some((d) => parse(d))) return "";
+  return `\nAll times ${zone}`;
+};

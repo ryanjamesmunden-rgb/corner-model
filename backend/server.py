@@ -13,6 +13,7 @@ import re
 import uuid
 
 import auth
+import billing
 from pathlib import Path
 from pydantic import BaseModel
 from typing import List, Optional, Dict
@@ -672,7 +673,11 @@ async def redeem_code(body: RedeemBody, user: dict = Depends(require_user)):
     if not secrets.compare_digest(body.code.strip().upper(), MEMBER_CODE.upper()):
         raise HTTPException(status_code=403, detail="That code is not right — check the channel")
     await db.users.update_one({"user_id": user["user_id"]}, {"$set": {
-        "member": True, "member_since": datetime.now(timezone.utc).isoformat()}})
+        "member": True, "member_since": datetime.now(timezone.utc).isoformat(),
+        # Tagged as a COMP so no Stripe event can ever take it away — see billing.py.
+        # Without this a code-redeemed member who once had a lapsed subscription would
+        # be revoked by a webhook about that old subscription.
+        "member_source": billing.MEMBER_SOURCE_CODE}})
     return {"member": True}
 
 
@@ -712,10 +717,113 @@ async def sign_in_with_google(body: GoogleSignInBody):
 
 
 def _public_user(u: dict) -> dict:
-    """Only what the browser needs. google_sub is an account identifier and stays here."""
+    """Only what the browser needs. google_sub is an account identifier and stays here.
+
+    The billing fields are here so the account page can say something TRUE about the
+    subscription without a second round trip — and specifically so it can tell a paying
+    member (who gets a cancel button) from a comped one (who must not be shown one, since
+    there is nothing of theirs to cancel)."""
     return {"user_id": u.get("user_id"), "name": u.get("name"),
             "email": u.get("email"), "picture": u.get("picture"),
-            "member": bool(u.get("member"))}
+            "member": bool(u.get("member")),
+            "member_source": u.get("member_source"),
+            "member_since": u.get("member_since"),
+            "subscription_status": u.get("subscription_status"),
+            "subscription_ends_at": u.get("subscription_ends_at"),
+            "cancel_at_period_end": bool(u.get("cancel_at_period_end")),
+            # Drives the "Manage subscription" button. The id itself never leaves the
+            # backend — only whether there is one.
+            "has_billing": bool(u.get("stripe_customer_id"))}
+
+
+# ----------------------------- Billing -----------------------------
+# Subscriptions live on Stripe; this is the thin layer that links one to an account and
+# hands people to Stripe's own portal to cancel. See billing.py for the revocation rule.
+
+
+@api_router.post("/billing/checkout")
+async def billing_checkout(user: dict = Depends(require_user)):
+    """Start a subscription for the SIGNED-IN account.
+
+    require_user, not get_current_user, and that is the point of the change: the old flow
+    was a bare Stripe Payment Link that anyone could open, so a payment arrived with no
+    way to tell whose it was. Checkout now begins from an account, which is what makes a
+    cancel button possible later.
+    """
+    if not billing.configured():
+        raise HTTPException(status_code=503,
+                            detail="Subscriptions are not set up yet — set STRIPE_SECRET_KEY "
+                                   "and STRIPE_PRICE_ID in the backend environment")
+    if user.get("member") and user.get("member_source") == billing.MEMBER_SOURCE_STRIPE:
+        raise HTTPException(status_code=409, detail="You already have an active subscription")
+    try:
+        return {"url": billing.create_checkout_session(user)}
+    except Exception as e:
+        logger.exception("stripe: checkout failed for %s", user["user_id"])
+        raise HTTPException(status_code=502, detail=f"Stripe could not start checkout: {e}")
+
+
+@api_router.post("/billing/portal")
+async def billing_portal(user: dict = Depends(require_user)):
+    """A link into Stripe's billing portal, where cancelling actually happens."""
+    customer_id = user.get("stripe_customer_id")
+    if not customer_id:
+        # A comped or legacy member has no Stripe customer, so there is nothing to
+        # manage. Saying so plainly beats a portal error, and beats hiding the button
+        # and leaving them wondering where their cancel option went.
+        raise HTTPException(status_code=404,
+                            detail="This account has no Stripe subscription to manage")
+    try:
+        return {"url": billing.create_portal_session(customer_id)}
+    except Exception as e:
+        logger.exception("stripe: portal failed for %s", user["user_id"])
+        raise HTTPException(status_code=502, detail=f"Stripe could not open the portal: {e}")
+
+
+@api_router.post("/billing/webhook")
+async def billing_webhook(request: Request):
+    """Stripe telling us a subscription started, renewed, lapsed or was cancelled.
+
+    UNAUTHENTICATED BY NECESSITY and signature-verified without exception — Stripe cannot
+    present a session token, so the signature is the only thing separating a real event
+    from anyone who finds this URL. An unverified webhook here would let a stranger grant
+    themselves paid access, or cancel someone else's.
+
+    Always answers 200 once the signature checks out, even when we cannot match the event
+    to an account. Stripe retries non-2xx responses for days, and a permanently
+    unmatchable event — a test payment, a customer deleted on our side — would otherwise
+    be redelivered forever. The mismatch is logged instead, where it can be looked at.
+    """
+    payload = await request.body()
+    try:
+        event = billing.verify_event(payload, request.headers.get("stripe-signature"))
+    except RuntimeError as e:
+        raise HTTPException(status_code=503, detail=str(e))
+    except Exception:
+        # Deliberately terse: a bad signature should not describe why it was bad.
+        raise HTTPException(status_code=400, detail="Bad signature")
+
+    kind = event["type"]
+    obj = event["data"]["object"]
+    result = {"matched": False}
+
+    if kind == "checkout.session.completed":
+        # The session carries our user id; the subscription carries the status. Fetch it
+        # rather than assuming active — a session can complete while payment is still
+        # processing, and granting access on the session alone would let a failed
+        # bank debit through.
+        uid = obj.get("client_reference_id")
+        sub_id = obj.get("subscription")
+        if sub_id:
+            sub = billing._stripe().Subscription.retrieve(sub_id)
+            result = await billing.apply_subscription(db, sub, user_id=uid)
+    elif kind in ("customer.subscription.created", "customer.subscription.updated",
+                  "customer.subscription.deleted"):
+        result = await billing.apply_subscription(db, obj)
+    else:
+        logger.info("stripe: ignoring %s", kind)
+
+    return {"received": True, "type": kind, **result}
 
 
 # ----------------------------- Favourites -----------------------------
@@ -832,7 +940,10 @@ JOIN_URL = os.environ.get("JOIN_URL", "").strip()
 async def public_config():
     """Runtime settings the frontend needs. Public by design — the join link is a URL
     meant to be clicked by anyone, not a secret."""
-    return {"join_url": JOIN_URL, "google_client_id": auth.GOOGLE_CLIENT_ID}
+    return {"join_url": JOIN_URL, "google_client_id": auth.GOOGLE_CLIENT_ID,
+            # Whether checkout can run. The page falls back to the old payment link when
+            # this is false, so the switchover needs no coordinated deploy.
+            "stripe_ready": billing.configured()}
 
 
 @api_router.get("/health")

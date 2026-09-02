@@ -14,6 +14,7 @@ const QuickScan = lazy(() => import("@/pages/QuickScan"));
 const Picks = lazy(() => import("@/pages/Picks"));
 const FixtureDetail = lazy(() => import("@/pages/FixtureDetail"));
 const Join = lazy(() => import("@/pages/Join"));
+const Account = lazy(() => import("@/pages/Account"));
 const Saved = lazy(() => import("@/pages/Saved"));
 
 const RouteFallback = () => (
@@ -42,6 +43,7 @@ function AppRouter() {
       <Route path="/streaks" element={page(Streaks)} />
       <Route path="/saved" element={page(Saved)} />
       <Route path="/fixture/:id" element={page(FixtureDetail)} />
+      <Route path="/account" element={page(Account)} />
       {/* Deliberately OUTSIDE page(): the subscription page is for people who are not
           members yet, so it carries no app chrome — no league switcher, no nav to
           sections that presume you already know what this is. */}

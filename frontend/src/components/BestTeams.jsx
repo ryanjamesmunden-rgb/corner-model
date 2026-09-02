@@ -32,12 +32,15 @@ export default function BestTeams({ leagueId }) {
 
   const max = rows.length ? rows[0].won_avg : 1;
 
-  const shareText = rows.length
+  // See StreakFinder: built to a row count rather than truncated after the fact.
+  const SHARE_ROWS = 8;
+  const buildShare = (limit) => (rows.length
     ? `Best corner teams — ${side === "overall" ? "all games" : side} `
       + `(${WINDOWS.find((w) => w.v === win)?.l || ""}):\n`
-      + rows.slice(0, 8).map((r, i) =>
+      + rows.slice(0, limit).map((r, i) =>
           `${i + 1}. ${withFlag(r.league_id, r.name)} — ${r.won_avg.toFixed(2)} corners won/game`).join("\n")
-    : "";
+      + (rows.length > limit ? `\n+${rows.length - limit} more on the site` : "")
+    : "");
 
   return (
     <section className="bg-card border border-border rounded-lg" data-testid="best-teams">
@@ -50,7 +53,7 @@ export default function BestTeams({ leagueId }) {
             <span className="font-mono-data text-[10px] text-muted-foreground">{rows.length} shown</span>
           )}
         </div>
-        {rows.length > 0 && <ShareButtons text={shareText} />}
+        {rows.length > 0 && <ShareButtons text={buildShare(SHARE_ROWS)} buildX={buildShare} />}
         <div className="lg:ml-auto flex flex-wrap items-center gap-2">
           <Tabs value={side} onValueChange={setSide}>
             <TabsList className="bg-secondary h-8">

@@ -1,4 +1,5 @@
 import { Send, Link2, Check } from "lucide-react";
+import { fitToPost } from "@/lib/xLimit";
 import { useState } from "react";
 import { toast } from "sonner";
 
@@ -10,19 +11,37 @@ const XLogo = (props) => (
 );
 
 /**
+ * The most rows an X share will carry. A CEILING, not a promise: four rows of streaks
+ * measure ~313 against X's 280 once the flags are counted at 2 apiece, so fitToPost
+ * drops rows from here until the post actually fits. Four is where it starts because
+ * that is roughly what fits on a good day — short club names, a 24-hour clock — and
+ * asking for more only ever means throwing more away.
+ *
+ * Telegram and the clipboard have no limit and keep the full board.
+ */
+export const X_SHARE_ROWS = 4;
+
+/**
  * Share intents for a view the user is looking at. These open the platform's own
  * compose window with text prefilled — nothing is ever posted automatically, the
  * user still has to hit send on X or Telegram.
+ *
+ * `buildX(rows)` builds the same board at a given row count, for X alone. It is a
+ * FUNCTION rather than a second string because fitting a post means rebuilding at fewer
+ * rows, not cutting one short: the "+N more on the site" tail has to keep matching the
+ * list above it, and only the board knows what N is. Boards that don't pass it share
+ * their full text everywhere, as before.
  */
-export default function ShareButtons({ text, url, className = "" }) {
+export default function ShareButtons({ text, buildX, url, className = "" }) {
   const [copied, setCopied] = useState(false);
   const shareUrl = url || (typeof window !== "undefined" ? window.location.href : "");
   const body = text || "";
+  const xBody = buildX ? fitToPost(buildX, X_SHARE_ROWS) : body;
 
   const open = (href) => window.open(href, "_blank", "noopener,noreferrer");
 
   const shareX = () =>
-    open(`https://x.com/intent/tweet?text=${encodeURIComponent(body)}&url=${encodeURIComponent(shareUrl)}`);
+    open(`https://x.com/intent/tweet?text=${encodeURIComponent(xBody)}&url=${encodeURIComponent(shareUrl)}`);
 
   const shareTelegram = () =>
     open(`https://t.me/share/url?url=${encodeURIComponent(shareUrl)}&text=${encodeURIComponent(body)}`);
@@ -42,7 +61,7 @@ export default function ShareButtons({ text, url, className = "" }) {
 
   return (
     <div className={`flex items-center gap-2 ${className}`} data-testid="share-buttons">
-      <button onClick={shareX} className={btn} data-testid="share-x" title="Share on X">
+      <button onClick={shareX} className={btn} data-testid="share-x" title={`Share on X — up to ${X_SHARE_ROWS} rows, trimmed to fit one post`}>
         <XLogo className="h-3.5 w-3.5" /> <span className="hidden sm:inline">Share</span>
       </button>
       <button onClick={shareTelegram} className={btn} data-testid="share-telegram" title="Share on Telegram">

@@ -72,9 +72,12 @@ export default function FixtureBoard({ leagueId = "all" }) {
 
   const allFixtures = (board?.days || []).flatMap((d) => d.fixtures || []);
   const fixtureCount = allFixtures.length;
-  const shown = allFixtures.slice(0, 8);
-  const shareText = fixtureCount
-    ? `Best upcoming corner games (next ${days === "1" ? "day" : `${days} days`}):\n`
+  // See StreakFinder: built to a row count so the "+N more" tail matches its own list.
+  const SHARE_ROWS = 8;
+  const buildShare = (limit) => {
+    if (!fixtureCount) return "";
+    const shown = allFixtures.slice(0, limit);
+    return `Best upcoming corner games (next ${days === "1" ? "day" : `${days} days`}):\n`
       + shown.map((f) => {
           const angle = (f.angles || [])[0];
           const tag = angle ? ` — ${angle.team} ${angle.label}` : "";
@@ -86,9 +89,9 @@ export default function FixtureBoard({ leagueId = "all" }) {
           return `${flagBullet(f.league_id)} ${f.home} v ${f.away} (λ ${f.lambda_total})${tag}`
             + (when ? ` · ${when}` : "");
         }).join("\n")
-      + (fixtureCount > 8 ? `\n+${fixtureCount - 8} more on the site` : "")
-      + timesFooter(shown.map((f) => f.date))
-    : "";
+      + (fixtureCount > limit ? `\n+${fixtureCount - limit} more on the site` : "")
+      + timesFooter(shown.map((f) => f.date));
+  };
 
   return (
     <section className="bg-card border border-border rounded-lg" data-testid="fixture-board">
@@ -103,7 +106,9 @@ export default function FixtureBoard({ leagueId = "all" }) {
             <span className="font-mono-data text-[10px] text-muted-foreground shrink-0">{fixtureCount} games</span>
           )}
         </div>
-        {fixtureCount > 0 && <ShareButtons text={shareText} className="shrink-0" />}
+        {fixtureCount > 0 && (
+          <ShareButtons text={buildShare(SHARE_ROWS)} buildX={buildShare} className="shrink-0" />
+        )}
         <div className="sm:ml-auto flex gap-2">
           <Tabs value={days} onValueChange={setDays}>
             <TabsList className="bg-secondary h-8">

@@ -96,13 +96,17 @@ export default function StreakFinder({ leagueId }) {
   };
 
   // A postable summary of what's on screen: the headline filter plus the top few runs.
+  // Built to a ROW COUNT rather than once and truncated, because the cut changes the
+  // "+N more on the site" tail — a 4-row X post and a 6-row Telegram one disagree about
+  // how many were left behind, and only the count that matches its own list is true.
   const presetMeta = PRESETS.find((x) => x.v === preset);
-  const shareText = (() => {
+  const SHARE_ROWS = 6;
+  const buildShare = (limit) => {
     if (!rows.length) return "";
     const what = subject === "match" ? "match total corners" : "team corners";
     const head = `${isUnder ? "Under" : "Over"} ${what} — hit in ${presetMeta?.l || ""} `
       + `${side === "overall" ? "" : side + " "}games:`;
-    const shown = rows.slice(0, 6);
+    const shown = rows.slice(0, limit);
     const lines = shown.map((r) => {
       const fx = r.next_fixture;
       const vs = fx ? ` ${fx.is_home ? "vs" : "@"} ${fx.opponent}` : "";
@@ -113,12 +117,12 @@ export default function StreakFinder({ leagueId }) {
       return `${flagBullet(r.league_id)} ${r.name} ${isUnder ? "U" : ""}${r.line}${isUnder ? "" : "+"}${vs}`
         + ` (${r.hits}/${r.window})${when ? ` · ${when}` : ""}`;
     });
-    const more = rows.length > 6 ? `\n+${rows.length - 6} more on the site` : "";
+    const more = rows.length > limit ? `\n+${rows.length - limit} more on the site` : "";
     // The zone is named ONCE, not on every line — six repeats of "BST" is a third of a
     // tweet. See timesFooter for when it is dropped entirely.
     const times = timesFooter(shown.map((r) => r.next_fixture?.date));
     return `${head}\n${lines.join("\n")}${more}${times}`;
-  })();
+  };
 
   return (
     <section className="bg-card border border-border rounded-lg" data-testid="streak-finder">
@@ -137,7 +141,9 @@ export default function StreakFinder({ leagueId }) {
             </span>
           )}
         </div>
-        {rows.length > 0 && <ShareButtons text={shareText} className="lg:ml-2" />}
+        {rows.length > 0 && (
+          <ShareButtons text={buildShare(SHARE_ROWS)} buildX={buildShare} className="lg:ml-2" />
+        )}
         <div className="lg:ml-auto flex flex-wrap items-center gap-2">
           <Tabs value={direction} onValueChange={switchTo(setDirection)}>
             <TabsList className="bg-secondary h-8">

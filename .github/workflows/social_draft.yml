@@ -112,15 +112,33 @@ jobs:
           SITE_URL: ${{ vars.SITE_URL || 'https://corner-model.vercel.app' }}
           TOOLS_TOKEN: ${{ secrets.TOOLS_TOKEN }}
 
+      - name: Make sure the label exists
+        if: steps.when.outputs.go == 'true' && steps.build.outputs.empty != 'true'
+        # Created here rather than by hand, so it is not a piece of setup that can be
+        # missing — the same reasoning sync.yml gives for avoiding a required secret.
+        # `gh label create` exits non-zero when the label already exists, which is the
+        # normal case from the second run onward, so that is not an error.
+        run: |
+          if gh label create "social-draft" \
+               --description "An X post drafted by the scheduled job, waiting for review" \
+               --color "1D9BF0" 2>/dev/null; then
+            echo "created the social-draft label"
+          else
+            echo "social-draft label already exists"
+          fi
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
       - name: File it as an issue
         if: steps.when.outputs.go == 'true' && steps.build.outputs.empty != 'true'
+        # ONE create, no `|| gh issue create` fallback. The fallback was there in case
+        # the label was missing, but it would also have fired on a rate limit or a
+        # transient 5xx — and a retry of "create an issue" that has already half
+        # succeeded posts the draft twice. The step above removes the reason for it.
         run: |
           gh issue create \
             --title "X draft — ${{ steps.when.outputs.board }} — $(TZ=Europe/London date '+%a %d %b')" \
             --body-file draft.md \
-            --label "social-draft" \
-            || gh issue create \
-                 --title "X draft — ${{ steps.when.outputs.board }} — $(TZ=Europe/London date '+%a %d %b')" \
-                 --body-file draft.md
+            --label "social-draft"
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

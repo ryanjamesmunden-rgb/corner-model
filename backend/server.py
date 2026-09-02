@@ -3212,6 +3212,50 @@ def _streak_record(row: dict) -> str:
     return f"{row['hits']}/{row.get('settled', row['window'])}{voids}"
 
 
+@api_router.get("/share/rows")
+async def share_rows(days: int = 3, limit: int = 12, token: Optional[str] = None):
+    """The raw rows behind the shared boards, for the scheduled draft job.
+
+    Returns ROWS, not rendered text, on purpose. The share format lives in the frontend
+    (frontend/src/lib/shareText.js) and is used by both the share buttons and
+    tools/social_draft.mjs, so that a scheduled post and one a person clicks out an hour
+    earlier cannot look different. Rendering here would be a second copy of that format,
+    and a second copy is how they drift.
+
+    GATED with the tools token rather than left open, because the streak screen is the
+    paid product — `/streaks` itself requires a member. This endpoint reaches the same
+    data, so it gets the same protection the other automation endpoints get, and the
+    workflow holds the token as a repo secret.
+
+    `data_age_hours` rides along so the caller can refuse to draft from stale numbers:
+    a post is public and permanent in a way a stale screen is not."""
+    _check_tools_token(token)
+    now = datetime.now(timezone.utc)
+    newest = await db.leagues.find({"data_source": "real"}, {"_id": 0, "synced_at": 1}) \
+        .sort("synced_at", -1).limit(1).to_list(1)
+    age_h = None
+    if newest and newest[0].get("synced_at"):
+        try:
+            age_h = round((now - datetime.fromisoformat(newest[0]["synced_at"])).total_seconds() / 3600, 1)
+        except Exception:
+            age_h = None
+
+    # The same grid the Streak Finder opens on, so the draft matches the screen the
+    # numbers would be checked against.
+    streaks_rows = await streaks(league_id="all", side="overall", window=5, min_hits=5,
+                                 threshold=None, min_line=3, within_days=days,
+                                 direction="over", subject="team", user={})
+    board = await _fixture_board(days=days, per_day=5, league_id="all", user={})
+    fixtures = [f for d in (board.get("days") or []) for f in (d.get("fixtures") or [])]
+    return {
+        "generated_at": now.isoformat(),
+        "data_age_hours": age_h,
+        "within_days": days,
+        "streaks": streaks_rows[:limit],
+        "fixtures": fixtures[:limit],
+    }
+
+
 @api_router.get("/export/streaks")
 async def export_streaks(days: int = 7, window: int = 5, min_hits: int = 5,
                          side: str = "overall", league_id: Optional[str] = None,

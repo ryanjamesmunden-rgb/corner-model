@@ -3,8 +3,9 @@ import { useNavigate } from "react-router-dom";
 import { Flame, ArrowRight, Target, TrendingDown, History } from "lucide-react";
 import { api } from "@/lib/api";
 import ShareButtons from "@/components/ShareButtons";
-import { flagBullet, withFlag } from "@/lib/countryFlag";
-import { kickoffLabel, timesFooter } from "@/lib/kickoff";
+import { withFlag } from "@/lib/countryFlag";
+import { kickoffLabel } from "@/lib/kickoff";
+import { streakShare } from "@/lib/shareText";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 
@@ -95,34 +96,11 @@ export default function StreakFinder({ leagueId }) {
     loss: "bg-red-500/15 text-red-400",
   };
 
-  // A postable summary of what's on screen: the headline filter plus the top few runs.
-  // Built to a ROW COUNT rather than once and truncated, because the cut changes the
-  // "+N more on the site" tail — a 4-row X post and a 6-row Telegram one disagree about
-  // how many were left behind, and only the count that matches its own list is true.
+  // A postable summary of what's on screen — the same builder tools/social_draft.mjs
+  // uses for the scheduled post, so the two can't drift. See lib/shareText.
   const presetMeta = PRESETS.find((x) => x.v === preset);
   const SHARE_ROWS = 6;
-  const buildShare = (limit) => {
-    if (!rows.length) return "";
-    const what = subject === "match" ? "match total corners" : "team corners";
-    const head = `${isUnder ? "Under" : "Over"} ${what} — hit in ${presetMeta?.l || ""} `
-      + `${side === "overall" ? "" : side + " "}games:`;
-    const shown = rows.slice(0, limit);
-    const lines = shown.map((r) => {
-      const fx = r.next_fixture;
-      const vs = fx ? ` ${fx.is_home ? "vs" : "@"} ${fx.opponent}` : "";
-      // The kick-off closes the line rather than interrupting it: the bet is what the
-      // reader is deciding about, the time is what they act on once they've decided.
-      const when = kickoffLabel(fx?.date);
-      // The flag replaces the bullet rather than joining it — see flagBullet.
-      return `${flagBullet(r.league_id)} ${r.name} ${isUnder ? "U" : ""}${r.line}${isUnder ? "" : "+"}${vs}`
-        + ` (${r.hits}/${r.window})${when ? ` · ${when}` : ""}`;
-    });
-    const more = rows.length > limit ? `\n+${rows.length - limit} more on the site` : "";
-    // The zone is named ONCE, not on every line — six repeats of "BST" is a third of a
-    // tweet. See timesFooter for when it is dropped entirely.
-    const times = timesFooter(shown.map((r) => r.next_fixture?.date));
-    return `${head}\n${lines.join("\n")}${more}${times}`;
-  };
+  const buildShare = streakShare({ rows, subject, isUnder, side, presetLabel: presetMeta?.l || "" });
 
   return (
     <section className="bg-card border border-border rounded-lg" data-testid="streak-finder">

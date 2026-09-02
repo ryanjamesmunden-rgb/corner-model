@@ -19,6 +19,18 @@ const LIGHT_RANGES = [[0, 4351], [8192, 8205], [8208, 8223], [8242, 8247]];
 
 /** X replaces every link with a t.co of fixed length, so a URL is a flat cost. */
 export const URL_WEIGHT = 23;
+
+/**
+ * The most rows an X share will carry. A CEILING, not a promise: four rows of streaks
+ * measure ~313 against the 280 limit once the flags are counted at 2 apiece, so
+ * fitToPost drops rows from here until the post actually fits. Four is where it starts
+ * because that is roughly what fits on a good day — short club names, a 24-hour clock —
+ * and asking for more only ever means throwing more away.
+ *
+ * Lives here rather than in ShareButtons so the scheduled draft job, which cannot
+ * import a React component, uses the same number the buttons do.
+ */
+export const X_SHARE_ROWS = 4;
 export const X_MAX_WEIGHT = 280;
 
 const segmenter = typeof Intl !== "undefined" && Intl.Segmenter

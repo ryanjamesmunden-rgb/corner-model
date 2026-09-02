@@ -3,8 +3,8 @@ import { useNavigate } from "react-router-dom";
 import { CalendarDays, ChevronRight, Flame, Swords, Target, TrendingDown } from "lucide-react";
 import { api } from "@/lib/api";
 import ShareButtons from "@/components/ShareButtons";
-import { flagBullet, withFlag } from "@/lib/countryFlag";
-import { kickoffLabel, timesFooter } from "@/lib/kickoff";
+import { withFlag } from "@/lib/countryFlag";
+import { fixtureShare } from "@/lib/shareText";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import StarButton from "@/components/StarButton";
 import { TONE, toneFor, toneLabel } from "@/lib/angleTone";
@@ -72,26 +72,9 @@ export default function FixtureBoard({ leagueId = "all" }) {
 
   const allFixtures = (board?.days || []).flatMap((d) => d.fixtures || []);
   const fixtureCount = allFixtures.length;
-  // See StreakFinder: built to a row count so the "+N more" tail matches its own list.
+  // Shared with the scheduled post — see lib/shareText.
   const SHARE_ROWS = 8;
-  const buildShare = (limit) => {
-    if (!fixtureCount) return "";
-    const shown = allFixtures.slice(0, limit);
-    return `Best upcoming corner games (next ${days === "1" ? "day" : `${days} days`}):\n`
-      + shown.map((f) => {
-          const angle = (f.angles || [])[0];
-          const tag = angle ? ` — ${angle.team} ${angle.label}` : "";
-          // Same shape as the streak share, deliberately: both boards land in the same
-          // channel an hour apart, and a reader shouldn't have to re-learn the line.
-          // The board groups by day on screen, but the shared text is flat, so each
-          // line has to carry its own day rather than inheriting a heading.
-          const when = kickoffLabel(f.date);
-          return `${flagBullet(f.league_id)} ${f.home} v ${f.away} (λ ${f.lambda_total})${tag}`
-            + (when ? ` · ${when}` : "");
-        }).join("\n")
-      + (fixtureCount > limit ? `\n+${fixtureCount - limit} more on the site` : "")
-      + timesFooter(shown.map((f) => f.date));
-  };
+  const buildShare = fixtureShare({ fixtures: allFixtures, days });
 
   return (
     <section className="bg-card border border-border rounded-lg" data-testid="fixture-board">

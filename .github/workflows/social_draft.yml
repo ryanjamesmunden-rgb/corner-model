@@ -1,0 +1,126 @@
+# Drafts the X post three times a week and opens it as an issue for review.
+#
+# IT NEVER POSTS. The job builds the text and files it as a GitHub issue with a
+# one-click intent link that opens X's composer already filled in — nothing reaches an
+# audience until a person clicks Post. That is a deliberate choice, not a limitation:
+# auto-posting would need X API write credentials, and a bad data day (a stalled sync, a
+# mis-parsed fixture) would go out unreviewed and permanent. If you later want it fully
+# automatic, the piece to add is a post step; everything else here already applies.
+#
+# TIMEZONE. GitHub cron is UTC only, and "lunchtime" is a LOCAL idea that moves twice a
+# year: 12:00 London is 12:00 UTC in winter and 11:00 UTC in summer. A single UTC cron
+# would therefore drift an hour every March and October. So this fires at BOTH hours and
+# the first step drops the run that isn't local noon — exactly one survives, year round.
+#
+# WHICH BOARD. Streaks on Monday and Wednesday, the fixture board on Friday, when the
+# weekend card is what is worth looking at. Both come from the same builders the site's
+# own share buttons use (frontend/src/lib/shareText.js), so a scheduled draft and a post
+# clicked out by hand cannot look different.
+#
+# COST: one call to a cached backend endpoint. No API-Football credits are spent.
+name: Draft the X post
+
+on:
+  schedule:
+    # Mon/Wed/Fri at 11:00 and 12:00 UTC — one of the two is 12:00 in London.
+    - cron: "0 11,12 * * 1,3,5"
+  workflow_dispatch:
+    inputs:
+      board:
+        description: "Which board to draft (blank = the one this weekday would use)"
+        required: false
+        type: choice
+        options: ["", "streaks", "fixtures"]
+      force:
+        description: "Run even if it isn't local noon"
+        required: false
+        type: boolean
+        default: true
+
+concurrency:
+  group: corner-social-draft
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  issues: write        # the draft is filed as an issue; nothing else is written
+
+jobs:
+  draft:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Only continue at London lunchtime
+        id: when
+        # Both crons fire; this keeps the one where Europe/London says it is 12:00, so
+        # the post lands at the same local time through both BST and GMT. A manual run
+        # skips the check by default — you asked for it, you get it.
+        run: |
+          hour=$(TZ=Europe/London date +%H)
+          weekday=$(TZ=Europe/London date +%u)   # 1=Mon .. 7=Sun
+          echo "London time: $(TZ=Europe/London date '+%A %H:%M %Z')"
+          if [ "${{ inputs.force }}" != "true" ] && [ "$hour" != "12" ]; then
+            echo "::notice::not local noon (London hour $hour) — this is the duplicate cron, skipping"
+            echo "go=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # Friday gets the weekend card; Monday and Wednesday get the streaks.
+          board="${{ inputs.board }}"
+          if [ -z "$board" ]; then
+            if [ "$weekday" = "5" ]; then board=fixtures; else board=streaks; fi
+          fi
+          echo "board=$board" >> "$GITHUB_OUTPUT"
+          echo "go=true" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-node@v4
+        if: steps.when.outputs.go == 'true'
+        with:
+          node-version: "20"
+
+      - name: Wake the backend
+        if: steps.when.outputs.go == 'true'
+        # Render sleeps the free instance; the first request after a quiet spell can be
+        # the one that times out. Same reason sync.yml does this.
+        run: |
+          for i in 1 2 3 4 5 6; do
+            code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 60 "$BACKEND/api/" || true)
+            echo "attempt $i: HTTP $code"
+            [ "$code" = "200" ] && break
+            sleep 15
+          done
+        env:
+          BACKEND: ${{ vars.BACKEND_URL || 'https://corner-model.onrender.com' }}
+
+      - name: Build the draft
+        if: steps.when.outputs.go == 'true'
+        id: build
+        # Writes to a file rather than stdout so the post text — which contains newlines,
+        # emoji and backticks — never has to survive a shell round trip.
+        run: |
+          node tools/social_draft.mjs \
+            --board "${{ steps.when.outputs.board }}" \
+            --days 3 \
+            --out draft.md
+          if [ ! -s draft.md ]; then
+            echo "::notice::nothing to draft today (stale data or a quiet board)"
+            echo "empty=true" >> "$GITHUB_OUTPUT"
+          fi
+        env:
+          BACKEND_URL: ${{ vars.BACKEND_URL || 'https://corner-model.onrender.com' }}
+          SITE_URL: ${{ vars.SITE_URL || 'https://corner-model.vercel.app' }}
+          TOOLS_TOKEN: ${{ secrets.TOOLS_TOKEN }}
+
+      - name: File it as an issue
+        if: steps.when.outputs.go == 'true' && steps.build.outputs.empty != 'true'
+        run: |
+          gh issue create \
+            --title "X draft — ${{ steps.when.outputs.board }} — $(TZ=Europe/London date '+%a %d %b')" \
+            --body-file draft.md \
+            --label "social-draft" \
+            || gh issue create \
+                 --title "X draft — ${{ steps.when.outputs.board }} — $(TZ=Europe/London date '+%a %d %b')" \
+                 --body-file draft.md
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

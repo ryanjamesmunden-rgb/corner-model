@@ -1,5 +1,5 @@
 import { Send, Link2, Check } from "lucide-react";
-import { fitToPost } from "@/lib/xLimit";
+import { fitToPost, X_SHARE_ROWS } from "@/lib/xLimit";
 import { useState } from "react";
 import { toast } from "sonner";
 
@@ -10,16 +10,8 @@ const XLogo = (props) => (
   </svg>
 );
 
-/**
- * The most rows an X share will carry. A CEILING, not a promise: four rows of streaks
- * measure ~313 against X's 280 once the flags are counted at 2 apiece, so fitToPost
- * drops rows from here until the post actually fits. Four is where it starts because
- * that is roughly what fits on a good day — short club names, a 24-hour clock — and
- * asking for more only ever means throwing more away.
- *
- * Telegram and the clipboard have no limit and keep the full board.
- */
-export const X_SHARE_ROWS = 4;
+// Re-exported so the boards and their tests keep importing it from here.
+export { X_SHARE_ROWS };
 
 /**
  * Share intents for a view the user is looking at. These open the platform's own

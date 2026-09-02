@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
-import { CreditCard, LogOut, ShieldCheck, Loader2, ExternalLink, CheckCircle2 } from "lucide-react";
+import { CreditCard, LogOut, ShieldCheck, Loader2, ExternalLink, CheckCircle2, XCircle, RotateCcw } from "lucide-react";
 import { toast } from "sonner";
 import { api } from "@/lib/api";
 import { useAuth } from "@/context/AuthContext";
@@ -39,6 +39,13 @@ export default function Account() {
   const { user, ready, member, signOut, renderButton, clientId } = useAuth();
   const [params] = useSearchParams();
   const [busy, setBusy] = useState(false);
+  // Cancelling is two steps, not one. A single click that ends a paid subscription is
+  // too easy to hit by accident on a phone, and an accidental cancellation costs the
+  // same support conversation the whole page exists to avoid.
+  const [confirming, setConfirming] = useState(false);
+  // Held locally so the page updates the moment Stripe confirms, rather than waiting for
+  // the next reload to reflect what the user just did.
+  const [ends, setEnds] = useState(null);
   // renderButton DRAWS INTO a node rather than returning one — same pattern as SignIn.
   const signInSlot = useRef(null);
   useEffect(() => { if (!user) renderButton(signInSlot.current); }, [user, renderButton, clientId]);
@@ -74,7 +81,7 @@ export default function Account() {
   // Access that predates billing. It is permanent — no Stripe event can end it — so the
   // page says so outright rather than leaving someone wondering what happens next.
   const isGrandfathered = user.grandfathered;
-  const ending = user.cancel_at_period_end;
+  const ending = ends === null ? user.cancel_at_period_end : ends;
 
   const openPortal = async () => {
     if (busy) return;
@@ -84,6 +91,23 @@ export default function Account() {
       window.location.href = url;
     } catch (e) {
       toast.error(e?.response?.data?.detail || "Couldn't open the billing portal");
+      setBusy(false);
+    }
+  };
+
+  const setCancelled = async (cancel) => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      const res = await api.billingCancel(cancel);
+      setEnds(res.cancel_at_period_end);
+      setConfirming(false);
+      toast.success(cancel
+        ? "Cancelled — you keep access until the end of the period you've paid for"
+        : "Subscription resumed");
+    } catch (e) {
+      toast.error(e?.response?.data?.detail || "Couldn't update the subscription");
+    } finally {
       setBusy(false);
     }
   };
@@ -151,17 +175,69 @@ export default function Account() {
               {ending
                 ? (isGrandfathered
                     ? "Your subscription is set to end. Your original access predates subscriptions and stays either way."
-                    : "Your subscription is set to end — you keep access until the date above. You can restart it from the same place.")
-                : "Update your card, download invoices, or cancel your subscription. Cancelling takes effect at the end of the period you've paid for."}
+                    : "Your subscription is set to end — you keep access until the date above, and you won't be charged again.")
+                : "Cancel any time. Cancelling takes effect at the end of the period you've already paid for, so you keep what you bought."}
             </p>
+            {/* CANCELLING FIRST, and on this page rather than behind a redirect. The
+                portal below is for cards and invoices; sending someone off-site to stop
+                paying is where they give up and email you, or call their bank. */}
+            {ending ? (
+              <button
+                onClick={() => setCancelled(false)}
+                disabled={busy}
+                data-testid="resume-subscription"
+                className="w-full flex items-center justify-center gap-2 text-sm font-medium px-4 py-2.5 rounded-md bg-secondary border border-border hover:bg-white/10 transition-colors disabled:opacity-50"
+              >
+                {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <RotateCcw className="h-4 w-4" />}
+                Resume subscription
+              </button>
+            ) : confirming ? (
+              <div className="rounded-md border border-border bg-secondary/50 p-3" data-testid="cancel-confirm">
+                <p className="text-sm text-foreground mb-1">Cancel your subscription?</p>
+                <p className="text-xs text-muted-foreground mb-3">
+                  You'll keep access until {fmtDate(user.subscription_ends_at) || "the end of the current period"},
+                  and you won't be charged again. You can restart any time.
+                </p>
+                <div className="flex gap-2">
+                  <button
+                    onClick={() => setCancelled(true)}
+                    disabled={busy}
+                    data-testid="cancel-confirm-yes"
+                    className="flex-1 flex items-center justify-center gap-2 text-sm font-medium px-3 py-2 rounded-md border border-red-500/40 text-red-400 hover:bg-red-500/10 transition-colors disabled:opacity-50"
+                  >
+                    {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+                    Yes, cancel
+                  </button>
+                  <button
+                    onClick={() => setConfirming(false)}
+                    disabled={busy}
+                    data-testid="cancel-confirm-no"
+                    className="flex-1 text-sm font-medium px-3 py-2 rounded-md bg-secondary border border-border hover:bg-white/10 transition-colors"
+                  >
+                    Keep it
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <button
+                onClick={() => setConfirming(true)}
+                disabled={busy}
+                data-testid="cancel-subscription"
+                className="w-full flex items-center justify-center gap-2 text-sm font-medium px-4 py-2.5 rounded-md border border-border text-muted-foreground hover:text-foreground hover:bg-white/10 transition-colors disabled:opacity-50"
+              >
+                <XCircle className="h-4 w-4" />
+                Cancel subscription
+              </button>
+            )}
+
             <button
               onClick={openPortal}
               disabled={busy}
               data-testid="manage-subscription"
-              className="w-full flex items-center justify-center gap-2 text-sm font-medium px-4 py-2.5 rounded-md bg-secondary border border-border hover:bg-white/10 transition-colors disabled:opacity-50"
+              className="mt-2 w-full flex items-center justify-center gap-2 text-xs text-muted-foreground hover:text-foreground transition-colors disabled:opacity-50"
             >
-              {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <ExternalLink className="h-4 w-4" />}
-              Manage or cancel subscription
+              <ExternalLink className="h-3.5 w-3.5" />
+              Update card or view invoices
             </button>
           </>
         ) : isComp ? (

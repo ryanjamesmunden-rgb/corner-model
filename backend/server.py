@@ -781,6 +781,44 @@ async def billing_portal(user: dict = Depends(require_user)):
         raise HTTPException(status_code=502, detail=f"Stripe could not open the portal: {e}")
 
 
+class CancelBody(BaseModel):
+    # False resumes a subscription that was set to end. One endpoint rather than two
+    # because they are the same write, and splitting them invites the two halves to
+    # drift on validation.
+    cancel: bool = True
+
+
+@api_router.post("/billing/cancel")
+async def billing_cancel(body: CancelBody, user: dict = Depends(require_user)):
+    """Cancel a subscription from the site, without a trip to Stripe's portal.
+
+    The portal button stays — it is where cards and invoices live — but cancelling is
+    the one thing people must not have to hunt for, and an off-site redirect is exactly
+    where someone gives up and emails you instead, or charges back.
+
+    Takes effect at the end of the period already paid for; see
+    billing.set_cancel_at_period_end for why it is never immediate.
+    """
+    sub_id = user.get("stripe_subscription_id")
+    if not sub_id:
+        raise HTTPException(status_code=404,
+                            detail="This account has no subscription to cancel")
+    try:
+        sub = billing.set_cancel_at_period_end(sub_id, body.cancel)
+    except Exception as e:
+        logger.exception("stripe: cancel(%s) failed for %s", body.cancel, user["user_id"])
+        raise HTTPException(status_code=502, detail=f"Stripe could not update the subscription: {e}")
+    # Write the new state straight away rather than waiting for the webhook. The webhook
+    # is the source of truth and will confirm this within seconds, but a page that still
+    # says "renews" right after someone cancelled reads as the cancellation not working —
+    # which is what sends them to their bank.
+    await billing.apply_subscription(db, sub, user_id=user["user_id"])
+    fresh = await db.users.find_one({"user_id": user["user_id"]}, {"_id": 0})
+    return {"cancel_at_period_end": bool(sub.get("cancel_at_period_end")),
+            "subscription_ends_at": (fresh or {}).get("subscription_ends_at"),
+            "user": _public_user(fresh or user)}
+
+
 @api_router.post("/billing/webhook")
 async def billing_webhook(request: Request):
     """Stripe telling us a subscription started, renewed, lapsed or was cancelled.

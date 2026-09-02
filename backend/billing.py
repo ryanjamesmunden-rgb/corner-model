@@ -109,6 +109,21 @@ def create_portal_session(customer_id: str) -> str:
     ).url
 
 
+def set_cancel_at_period_end(subscription_id: str, cancelling: bool) -> dict:
+    """Schedule a cancellation, or call one off. Returns the updated subscription.
+
+    AT PERIOD END, NEVER IMMEDIATELY. Someone cancelling on day 2 of a month they have
+    paid for should keep the other 28 days — ending it there and then would be taking
+    money for nothing and would turn every cancellation into a refund conversation.
+    Stripe stops billing at the end of the period and access follows.
+
+    Reversible on purpose: `cancelling=False` puts the subscription back. A cancellation
+    that cannot be undone without contacting you is the same trap as a cancellation that
+    cannot be done without contacting you, only pointed the other way.
+    """
+    return _stripe().Subscription.modify(subscription_id, cancel_at_period_end=cancelling)
+
+
 def verify_event(payload: bytes, signature: Optional[str]) -> dict:
     """Parse a webhook, or raise.
 

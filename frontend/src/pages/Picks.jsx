@@ -2,6 +2,7 @@ import { useState, useEffect } from "react";
 import { toast } from "sonner";
 import { ClipboardCheck, CheckCircle2, XCircle, Clock, MinusCircle, RefreshCw, TrendingUp } from "lucide-react";
 import { api } from "@/lib/api";
+import { withFlag } from "@/lib/countryFlag";
 import DailyLedger from "@/components/DailyLedger";
 
 const MANUAL_KEY = "__manual__";
@@ -136,7 +137,7 @@ function PickRow({ p }) {
           <p className="font-mono-data text-xs text-muted-foreground truncate">{p.market || `${p.line}+ team corners`}</p>
         )}
         <p className="text-[10px] uppercase tracking-wider text-muted-foreground mt-0.5">
-          {p.league_name}{p.kickoff ? ` · ${timeFmt(p.kickoff)}` : ""}
+          {withFlag(p.league_id, p.league_name)}{p.kickoff ? ` · ${timeFmt(p.kickoff)}` : ""}
         </p>
       </div>
       <div className="flex flex-col items-end gap-1 shrink-0">

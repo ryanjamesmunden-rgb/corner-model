@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
 import { Star, ChevronRight } from "lucide-react";
 import { api } from "@/lib/api";
+import { withFlag } from "@/lib/countryFlag";
 import { useAuth } from "@/context/AuthContext";
 import StarButton from "@/components/StarButton";
 
@@ -90,7 +91,7 @@ export default function Saved() {
                     {f.home_name} <span className="text-muted-foreground font-normal">v</span> {f.away_name}
                   </p>
                   <p className="text-[10px] text-muted-foreground uppercase tracking-wider mt-0.5">
-                    {f.league_id}{f.round && f.round !== "Upcoming" ? ` · ${f.round}` : ""}
+                    {withFlag(f.league_id, f.league_id)}{f.round && f.round !== "Upcoming" ? ` · ${f.round}` : ""}
                   </p>
                 </div>
                 <ChevronRight className="h-4 w-4 text-muted-foreground shrink-0" />

@@ -2,6 +2,7 @@ import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { TrendingUp, ArrowRight, ArrowUpRight } from "lucide-react";
 import { api } from "@/lib/api";
+import { withFlag } from "@/lib/countryFlag";
 import { useLeague } from "@/context/LeagueContext";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -92,7 +93,7 @@ export default function TrendFinder() {
               >
                 <td className="px-2 py-1.5 sm:px-4 sm:py-2.5">
                   <div className="text-foreground font-sans font-medium whitespace-nowrap">{r.name}</div>
-                  <div className="text-[10px] text-muted-foreground uppercase tracking-wider font-sans">{r.league_name}</div>
+                  <div className="text-[10px] text-muted-foreground uppercase tracking-wider font-sans">{withFlag(r.league_id, r.league_name)}</div>
                 </td>
                 <td className="px-2 py-1.5 sm:px-4 sm:py-2.5 text-right text-foreground font-semibold">{r[recKey].toFixed(2)}</td>
                 <td className="px-2 py-1.5 sm:px-4 sm:py-2.5 text-right text-muted-foreground">{r[seaKey].toFixed(2)}</td>

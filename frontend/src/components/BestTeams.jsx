@@ -113,7 +113,7 @@ export default function BestTeams({ leagueId }) {
                 <td className="px-2 py-1.5 sm:px-4 sm:py-2.5 text-muted-foreground">{i + 1}</td>
                 <td className="px-2 py-1.5 sm:px-4 sm:py-2.5">
                   <div className="text-foreground font-sans font-medium whitespace-nowrap">{r.name}</div>
-                  <div className="text-[10px] text-muted-foreground uppercase tracking-wider font-sans">{r.league_name}</div>
+                  <div className="text-[10px] text-muted-foreground uppercase tracking-wider font-sans">{withFlag(r.league_id, r.league_name)}</div>
                 </td>
                 <td className="px-2 py-1.5 sm:px-4 sm:py-2.5 text-right text-emerald-400 font-semibold">{r.won_avg.toFixed(2)}</td>
                 <td className="px-2 py-1.5 sm:px-4 sm:py-2.5 hidden md:table-cell">

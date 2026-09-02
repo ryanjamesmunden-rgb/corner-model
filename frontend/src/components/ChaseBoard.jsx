@@ -2,6 +2,7 @@ import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { Target, Flame, ArrowRight, Plus, Zap } from "lucide-react";
 import { api, tierMeta } from "@/lib/api";
+import { withFlag } from "@/lib/countryFlag";
 
 const fmtDate = (d) => (d ? new Date(d).toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" }) : "");
 
@@ -63,7 +64,7 @@ export default function ChaseBoard({ leagueId = "all", withinDays = 7, limit = 2
                       {r.name} <span className="text-muted-foreground font-normal">{nf.is_home ? "vs" : "@"}</span> {nf.opponent}
                     </div>
                     <div className="flex items-center gap-1.5 text-[10px] text-muted-foreground uppercase tracking-wider font-sans mt-0.5">
-                      <span>{r.league_name}</span>
+                      <span>{withFlag(r.league_id, r.league_name)}</span>
                       {fmtDate(nf.date) && <><span className="opacity-40">·</span><span className="text-primary/80 normal-case tracking-normal">{fmtDate(nf.date)}</span></>}
                       {nf.round && nf.round !== "Upcoming" && <><span className="opacity-40">·</span><span className="normal-case tracking-normal">{nf.round}</span></>}
                     </div>

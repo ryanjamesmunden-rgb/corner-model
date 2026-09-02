@@ -2,6 +2,7 @@ import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { Zap, ArrowRight, Swords, TrendingUp, ShieldAlert, Sparkles, Loader2 } from "lucide-react";
 import { api } from "@/lib/api";
+import { withFlag } from "@/lib/countryFlag";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import MembersOnly from "@/components/MembersOnly";
 
@@ -103,7 +104,7 @@ function PairCard({ r, onClick }) {
       style={{ borderTop: "2px solid #10B981" }}
     >
       <div className="flex items-center gap-2 text-[10px] uppercase tracking-widest text-muted-foreground">
-        <span>{r.league_name}</span>
+        <span>{withFlag(r.league_id, r.league_name)}</span>
         <span className="opacity-40">·</span>
         <span className="text-primary/80 normal-case tracking-normal">{fmt(nf.date)}</span>
         {nf.round && nf.round !== "Upcoming" && <><span className="opacity-40">·</span><span className="normal-case tracking-normal">{nf.round}</span></>}

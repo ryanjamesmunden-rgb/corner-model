@@ -3,7 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { CalendarDays, ChevronRight, Flame, Swords, Target, TrendingDown } from "lucide-react";
 import { api } from "@/lib/api";
 import ShareButtons from "@/components/ShareButtons";
-import { flagBullet } from "@/lib/countryFlag";
+import { flagBullet, withFlag } from "@/lib/countryFlag";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import StarButton from "@/components/StarButton";
 import { TONE, toneFor, toneLabel } from "@/lib/angleTone";
@@ -227,7 +227,7 @@ function FixtureRow({ f, onClick }) {
           </span>
         </div>
         <div className="text-[10px] text-muted-foreground uppercase tracking-wider mt-0.5">
-          {f.league_name}
+          {withFlag(f.league_id, f.league_name)}
           <span className="ml-2 normal-case tracking-normal font-mono-data"
             title="Real matches behind each side's numbers">
             {Math.min(f.home_games ?? 0, f.away_games ?? 0)}+ games each

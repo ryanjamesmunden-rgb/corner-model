@@ -3,7 +3,8 @@ import { useNavigate } from "react-router-dom";
 import { Flame, ArrowRight, Target, TrendingDown, History } from "lucide-react";
 import { api } from "@/lib/api";
 import ShareButtons from "@/components/ShareButtons";
-import { flagBullet } from "@/lib/countryFlag";
+import { flagBullet, withFlag } from "@/lib/countryFlag";
+import { kickoffLabel, timeZoneLabel } from "@/lib/kickoff";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 
@@ -101,14 +102,23 @@ export default function StreakFinder({ leagueId }) {
     const what = subject === "match" ? "match total corners" : "team corners";
     const head = `${isUnder ? "Under" : "Over"} ${what} — hit in ${presetMeta?.l || ""} `
       + `${side === "overall" ? "" : side + " "}games:`;
-    const lines = rows.slice(0, 6).map((r) => {
+    const shown = rows.slice(0, 6);
+    const lines = shown.map((r) => {
       const fx = r.next_fixture;
       const vs = fx ? ` ${fx.is_home ? "vs" : "@"} ${fx.opponent}` : "";
+      // The kick-off closes the line rather than interrupting it: the bet is what the
+      // reader is deciding about, the time is what they act on once they've decided.
+      const when = kickoffLabel(fx?.date);
       // The flag replaces the bullet rather than joining it — see flagBullet.
-      return `${flagBullet(r.league_id)} ${r.name} ${isUnder ? "U" : ""}${r.line}${isUnder ? "" : "+"}${vs} (${r.hits}/${r.window})`;
+      return `${flagBullet(r.league_id)} ${r.name} ${isUnder ? "U" : ""}${r.line}${isUnder ? "" : "+"}${vs}`
+        + ` (${r.hits}/${r.window})${when ? ` · ${when}` : ""}`;
     });
     const more = rows.length > 6 ? `\n+${rows.length - 6} more on the site` : "";
-    return `${head}\n${lines.join("\n")}${more}`;
+    // The zone is named ONCE, not on every line — six repeats of "BST" is a third of a
+    // tweet. Omitted entirely when no row has a kick-off to be wrong about.
+    const zone = timeZoneLabel();
+    const times = zone && shown.some((r) => r.next_fixture?.date) ? `\nAll times ${zone}` : "";
+    return `${head}\n${lines.join("\n")}${more}${times}`;
   })();
 
   return (
@@ -215,7 +225,7 @@ export default function StreakFinder({ leagueId }) {
               >
                 <td className="px-2 py-1.5 sm:px-4 sm:py-2.5 sticky left-0 bg-card z-10">
                   <div className="text-foreground font-sans font-medium whitespace-nowrap">{r.name}</div>
-                  <div className="text-[10px] text-muted-foreground uppercase tracking-wider font-sans">{r.league_name}</div>
+                  <div className="text-[10px] text-muted-foreground uppercase tracking-wider font-sans">{withFlag(r.league_id, r.league_name)}</div>
                 </td>
                 <td className="px-2 py-1.5 sm:px-4 sm:py-2.5">
                   <span className={`inline-flex items-center gap-1 text-xs px-2 py-1 rounded border ${isSolid(r) ? SOLID : THIN}`}
@@ -270,7 +280,14 @@ export default function StreakFinder({ leagueId }) {
                   </div>
                 </td>
                 <td className="px-2 py-1.5 sm:px-4 sm:py-2.5 text-xs text-muted-foreground whitespace-nowrap">
-                  {r.next_fixture ? `${r.next_fixture.is_home ? "vs" : "@"} ${r.next_fixture.opponent} · ${fmtDate(r.next_fixture.date)}` : "—"}
+                  {r.next_fixture ? (
+                    <>
+                      <div>{r.next_fixture.is_home ? "vs" : "@"} {r.next_fixture.opponent}</div>
+                      {/* The kick-off, not just the date: at 6pm "tonight" and "started an
+                          hour ago" are the same date and opposite decisions. */}
+                      <div className="text-[10px] text-primary/80">{kickoffLabel(r.next_fixture.date)}</div>
+                    </>
+                  ) : "—"}
                 </td>
                 <td className="px-2 py-1.5 sm:px-4 sm:py-2.5 text-right">
                   {r.projection ? (

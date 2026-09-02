@@ -3212,6 +3212,11 @@ def _streak_record(row: dict) -> str:
     return f"{row['hits']}/{row.get('settled', row['window'])}{voids}"
 
 
+# A snapshot outlives the run that made it and is graded much later, so the tolerance
+# is tighter than a screen's: a little over one sync cycle, not two.
+SNAPSHOT_MAX_AGE_HOURS = 14
+
+
 class StreakSnapshotBody(BaseModel):
     """Which streaks went out, so the results post afterwards can be honest."""
     tag: Optional[str] = None       # defaults to today; the label the results are read back by
@@ -3241,12 +3246,31 @@ async def snapshot_streaks(body: StreakSnapshotBody, token: Optional[str] = None
     Idempotent per tag. Re-running on the same day returns the existing snapshot rather
     than replacing it — a snapshot that could be rewritten after kick-off would be no
     snapshot at all.
+
+    SELF-LIMITING on stale data, like /sync/if-stale: it refuses rather than freezing a
+    board built from old numbers. A snapshot is graded weeks later by people who cannot
+    see how fresh it was, so a stale one does not merely go unused — it quietly becomes
+    part of a published record. Refusing is reported, not raised: the caller is a
+    scheduled job, and a skipped Friday is a fact to log, not a crash.
     """
     _check_tools_token(token)
     tag = body.tag or datetime.now(timezone.utc).date().isoformat()
     existing = await db.streak_snapshots.find_one({"_id": tag}, {"_id": 0})
     if existing:
         return {"status": "exists", "tag": tag, **existing}
+
+    now_ = datetime.now(timezone.utc)
+    newest = await db.leagues.find({"data_source": "real"}, {"_id": 0, "synced_at": 1}) \
+        .sort("synced_at", -1).limit(1).to_list(1)
+    age_h = None
+    if newest and newest[0].get("synced_at"):
+        try:
+            age_h = round((now_ - datetime.fromisoformat(newest[0]["synced_at"])).total_seconds() / 3600, 1)
+        except Exception:
+            age_h = None
+    if age_h is None or age_h > SNAPSHOT_MAX_AGE_HOURS:
+        return {"status": "stale", "tag": tag, "data_age_hours": age_h,
+                "max_age_hours": SNAPSHOT_MAX_AGE_HOURS, "entries": []}
 
     rows = await streaks(league_id="all", side="overall", window=5, min_hits=5,
                          threshold=None, min_line=3, within_days=body.days,

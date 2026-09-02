@@ -17,6 +17,14 @@
 # own share buttons use (frontend/src/lib/shareText.js), so a scheduled draft and a post
 # clicked out by hand cannot look different.
 #
+# FRIDAY ALSO FREEZES THE WEEKEND'S STREAKS. A streak row only exists while the run is
+# alive — a team that misses drops off the board — so grading "how the streaks did"
+# against Monday's board would count only the survivors and report a near-perfect week
+# every week. The snapshot writes down what was claimed BEFORE kick-off, which is the
+# only point at which it can be written down honestly. It runs AFTER the draft is filed
+# so a snapshot failure cannot cost you the post, and it fails loudly, because a missing
+# Friday snapshot is a weekend that can never be graded.
+#
 # COST: one call to a cached backend endpoint. No API-Football credits are spent.
 name: Draft the X post
 
@@ -72,6 +80,8 @@ jobs:
             if [ "$weekday" = "5" ]; then board=fixtures; else board=streaks; fi
           fi
           echo "board=$board" >> "$GITHUB_OUTPUT"
+          echo "weekday=$weekday" >> "$GITHUB_OUTPUT"
+          echo "tag=$(TZ=Europe/London date +%F)" >> "$GITHUB_OUTPUT"
           echo "go=true" >> "$GITHUB_OUTPUT"
 
       - uses: actions/setup-node@v4
@@ -142,3 +152,32 @@ jobs:
             --label "social-draft"
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Freeze the weekend's streaks
+        # Friday only, and last: see the note at the top of this file for why this exists
+        # and why it runs after the issue is filed rather than before.
+        if: steps.when.outputs.go == 'true' && steps.when.outputs.weekday == '5'
+        run: |
+          code=$(curl -s -o snap.json -w '%{http_code}' --max-time 120 -X POST \
+            "$BACKEND/api/streaks/snapshot?token=$TOOLS_TOKEN" \
+            -H 'content-type: application/json' \
+            -d "{\"tag\":\"${{ steps.when.outputs.tag }}\",\"days\":3,\"limit\":8}" || true)
+          # The token is in the URL, so the BODY is safe to print but the request is not.
+          echo "HTTP $code"
+          case "$code" in
+            200) ;;
+            403) echo "::error::backend rejected the token — check the TOOLS_TOKEN secret"; exit 1 ;;
+            *)   echo "::error::snapshot failed (HTTP $code) — this weekend cannot be graded"; exit 1 ;;
+          esac
+          status=$(python3 -c "import json,sys; print(json.load(open('snap.json')).get('status',''))")
+          count=$(python3 -c "import json,sys; print(len(json.load(open('snap.json')).get('entries') or []))")
+          case "$status" in
+            created) echo "::notice::froze $count streaks as tag ${{ steps.when.outputs.tag }}" ;;
+            exists)  echo "::notice::already snapshotted today ($count streaks) — left untouched" ;;
+            stale)
+              echo "::error::data too old to snapshot — the weekend will not be gradeable"; exit 1 ;;
+            *) echo "::error::unexpected snapshot status '$status'"; exit 1 ;;
+          esac
+        env:
+          BACKEND: ${{ vars.BACKEND_URL || 'https://corner-model.onrender.com' }}
+          TOOLS_TOKEN: ${{ secrets.TOOLS_TOKEN }}

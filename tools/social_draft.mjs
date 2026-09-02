@@ -15,7 +15,8 @@
 // same modules are imported directly. They are plain ES modules with no React, no
 // window and no fetch, which is what makes that possible.
 //
-// Usage:  node tools/social_draft.mjs --board streaks|fixtures [--days 3] [--out draft.md]
+// Usage:  node tools/social_draft.mjs --board streaks|fixtures|results [--days 3]
+//                                    [--tag YYYY-MM-DD] [--out draft.md]
 // Env:    BACKEND_URL (default the live Render backend), TOOLS_TOKEN (required)
 
 import { readFileSync, writeFileSync } from "node:fs";
@@ -27,7 +28,7 @@ const LIB = resolve(HERE, "..", "frontend", "src", "lib");
 
 // The lib modules import each other by relative path and use no bundler features, so
 // they load as-is. `shareText.js` pulls in countryFlag and kickoff itself.
-const { streakShare, fixtureShare } = await import(resolve(LIB, "shareText.js"));
+const { streakShare, fixtureShare, streakResultShare } = await import(resolve(LIB, "shareText.js"));
 const { fitToPost, weightedLength, URL_WEIGHT, X_SHARE_ROWS } = await import(resolve(LIB, "xLimit.js"));
 
 const arg = (name, fallback = null) => {
@@ -36,6 +37,7 @@ const arg = (name, fallback = null) => {
 };
 
 const BOARD = arg("board", "streaks");
+const TAG = arg("tag", null);
 const DAYS = Number(arg("days", "3"));
 const OUT = arg("out", null);
 const SITE = process.env.SITE_URL || "https://corner-model.vercel.app";
@@ -47,6 +49,21 @@ const TOKEN = process.env.TOOLS_TOKEN;
 const MAX_DATA_AGE_HOURS = 14;   // a little over the 12h sync cadence
 const MIN_ROWS = 3;              // fewer than this is a quiet day, not a post
 
+const get = async (path, label) => {
+  try {
+    const res = await fetch(`${BACKEND}${path}`, { signal: AbortSignal.timeout(60000) });
+    if (res.status === 404) return null;      // the caller decides whether that is fatal
+    if (!res.ok) {
+      fail(res.status === 403
+        ? "backend rejected the token — check the TOOLS_TOKEN secret matches the backend env"
+        : `${label} returned ${res.status} ${res.statusText}`);
+    }
+    return await res.json();
+  } catch (err) {
+    fail(`could not reach ${BACKEND} — ${err.name === "TimeoutError" ? "timed out after 60s" : err.message}`);
+  }
+};
+
 const fail = (msg) => { console.error(`social_draft: ${msg}`); process.exit(1); };
 // A quiet day is not a failure — it exits 0 with no draft, and the workflow posts nothing.
 const skip = (msg) => { console.log(`SKIP: ${msg}`); writeIfAsked(""); process.exit(0); };
@@ -55,25 +72,60 @@ function writeIfAsked(body) {
   if (OUT) writeFileSync(OUT, body);
 }
 
+/** The finished draft: to the file the workflow reads, or to stdout when run by hand. */
+function emit(body) {
+  writeIfAsked(body);
+  if (!OUT) console.log(body);
+}
+
 if (!TOKEN) fail("TOOLS_TOKEN is not set — add it as a repo secret");
 
+// ---- results: graded off the snapshot frozen before kick-off, never off the live board.
+// A streak row only exists while its run is alive, so the board on Monday lists the
+// survivors and nothing else. See /api/streaks/snapshot.
+if (BOARD === "results") {
+  if (!TAG) fail("--board results needs --tag YYYY-MM-DD (the Friday it was frozen)");
+  const r = await get(`/api/streaks/snapshot/${TAG}/results?token=${encodeURIComponent(TOKEN)}`,
+                      "snapshot results");
+  // No snapshot is a fact about last Friday, and Monday cannot fix it. Worth a line in
+  // the log, not a red run.
+  if (!r) skip(`no snapshot tagged ${TAG} — nothing was frozen that day, so nothing can be graded`);
+  if (r.settled < MIN_ROWS) {
+    skip(`only ${r.settled} of ${r.results.length} settled so far — too few to post a week on`);
+  }
+  const build = streakResultShare(r);
+  const post = fitToPost(build, X_SHARE_ROWS);
+  const full = build(8);
+  const weight = weightedLength(post) + 1 + URL_WEIGHT;
+  const intent = `https://x.com/intent/tweet?text=${encodeURIComponent(post)}&url=${encodeURIComponent(SITE)}`;
+  emit(`**[Post this on X](${intent})** — opens the composer already filled in. Nothing is posted until you hit Post.
+
+\`\`\`
+${post}
+\`\`\`
+
+${weight} / 280 characters as X counts them.
+Graded from the snapshot frozen on ${TAG}: ${r.landed} landed, ${r.missed} missed${r.voided ? `, ${r.voided} void` : ""}${r.pending ? `, ${r.pending} still to settle` : ""}.
+No line and no stake appear in this post — see streakResultShare.
+
+<details><summary>Longer version, for Telegram (no character limit)</summary>
+
+\`\`\`
+${full}
+\`\`\`
+
+</details>
+`);
+  process.exit(0);
+}
+
+// ---- the live boards.
 // Render sleeps the free instance, so the first call after a quiet spell can take a
 // while or fail outright. A crash here would surface in CI as a raw stack trace with
 // the token in the URL; catching it keeps the failure readable and the secret out of
 // the log.
-let data;
-try {
-  const res = await fetch(`${BACKEND}/api/share/rows?days=${DAYS}&token=${encodeURIComponent(TOKEN)}`,
-                          { signal: AbortSignal.timeout(60000) });
-  if (!res.ok) {
-    fail(res.status === 403
-      ? "backend rejected the token — check the TOOLS_TOKEN secret matches the backend env"
-      : `backend returned ${res.status} ${res.statusText}`);
-  }
-  data = await res.json();
-} catch (err) {
-  fail(`could not reach ${BACKEND} — ${err.name === "TimeoutError" ? "timed out after 60s" : err.message}`);
-}
+const data = await get(`/api/share/rows?days=${DAYS}&token=${encodeURIComponent(TOKEN)}`, "backend");
+if (!data) fail("backend has no /api/share/rows — it is running an older build");
 
 if (data.data_age_hours != null && data.data_age_hours > MAX_DATA_AGE_HOURS) {
   skip(`data is ${data.data_age_hours}h old (limit ${MAX_DATA_AGE_HOURS}h) — not drafting from stale numbers`);
@@ -113,5 +165,4 @@ ${full}
 </details>
 `;
 
-writeIfAsked(body);
-if (!OUT) console.log(body);
+emit(body);

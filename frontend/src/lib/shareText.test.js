@@ -135,6 +135,21 @@ describe("the results post", () => {
     expect(build(4)).toContain("1 void");
   });
 
+  test("a trimmed post still shows a miss, even when the wins come first", () => {
+    // Trimming takes the first N rows; if those happen to all be wins, an honest "2/3"
+    // headline sits over a picture of a clean sweep. The count would be true and the
+    // impression false.
+    const winsFirst = [
+      { name: "W1", league_id: "nor-el", opponent: "O", is_home: true, result: "win", value: 8 },
+      { name: "W2", league_id: "nor-el", opponent: "O", is_home: true, result: "win", value: 8 },
+      { name: "W3", league_id: "nor-el", opponent: "O", is_home: true, result: "win", value: 8 },
+      { name: "L1", league_id: "eng-pl", opponent: "O", is_home: true, result: "loss", value: 2 },
+    ];
+    const out = streakResultShare({ results: winsFirst, landed: 3, settled: 4 })(2);
+    expect(out).toContain("❌");
+    expect(out).toContain("L1");
+  });
+
   test("games not yet played are left out, not counted as anything", () => {
     expect(build(4)).not.toContain("D vs");
   });

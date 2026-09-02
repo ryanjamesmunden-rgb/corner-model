@@ -93,12 +93,26 @@ export const bestTeamsShare = ({ rows = [], side, windowLabel = "" }) => (limit)
  * count is a fact about the game that anyone can look up; the line is the product. A
  * reader can check the model was right without being handed what to back next time.
  */
-export const streakResultShare = ({ results = [], landed = 0, settled = 0, voided = 0 }) => (limit) => {
+export const streakResultShare = ({ results = [], landed = 0, settled = 0, voided = 0,
+                                   pending = 0 }) => (limit) => {
   const graded = results.filter((r) => r.result === "win" || r.result === "loss");
   if (!graded.length) return "";
   const mark = { win: "✅", loss: "❌" };
   const head = `How last week's corner streaks landed — ${landed}/${settled}:`;
-  const shown = graded.slice(0, limit);
+
+  // A TRIMMED RESULTS POST MUST STILL SHOW A MISS.
+  //
+  // Trimming to fit takes the first N rows, and the first N can happen to be all wins —
+  // which is how an honest "3/4" headline ends up over a picture of a clean sweep. The
+  // count would be true and the impression false, and a reader has no way to tell. So
+  // when the cut would hide every miss, the last visible win gives up its place to the
+  // first miss. The post gets shorter-looking odds and stays a record rather than an
+  // advert.
+  let shown = graded.slice(0, limit);
+  const missed = graded.filter((r) => r.result === "loss");
+  if (missed.length && !shown.some((r) => r.result === "loss")) {
+    shown = [...shown.slice(0, Math.max(0, shown.length - 1)), missed[0]];
+  }
   const lines = shown.map((r) => {
     const vs = r.opponent ? ` ${r.is_home ? "vs" : "@"} ${r.opponent}` : "";
     // The corner count, not the line: it shows the call was right without giving away
@@ -109,6 +123,10 @@ export const streakResultShare = ({ results = [], landed = 0, settled = 0, voide
   // Voids are named rather than quietly dropped. A week reported as 4/4 that was really
   // 4/4 plus two stake-backs is a different week, and hiding that inflates the record.
   const voids = voided ? `\n${voided} void (exact line — stake back)` : "";
+  // Games still unsettled are DECLARED, not omitted. "3/3" posted while three more are
+  // outstanding is a different week from "3/3", and a reader has no way to tell which
+  // one they are being shown unless the post says.
+  const left = pending ? `\n${pending} still to settle` : "";
   const more = graded.length > limit ? `\n+${graded.length - limit} more on the site` : "";
-  return `${head}\n${lines.join("\n")}${voids}${more}`;
+  return `${head}\n${lines.join("\n")}${voids}${left}${more}`;
 };

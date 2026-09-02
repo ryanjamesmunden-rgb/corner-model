@@ -25,6 +25,12 @@
 # so a snapshot failure cannot cost you the post, and it fails loudly, because a missing
 # Friday snapshot is a weekend that can never be graded.
 #
+# MONDAY GRADES THE WEEKEND. It files a second issue: how the streaks frozen on Friday
+# actually landed. It is a separate draft from the streaks one so either can be posted
+# without the other, and it is allowed to find nothing — a missing snapshot, or a weekend
+# not yet synced, is logged and skipped rather than failed, because Monday cannot fix
+# either and a red tick every Monday would train you to ignore them.
+#
 # COST: one call to a cached backend endpoint. No API-Football credits are spent.
 name: Draft the X post
 
@@ -82,6 +88,9 @@ jobs:
           echo "board=$board" >> "$GITHUB_OUTPUT"
           echo "weekday=$weekday" >> "$GITHUB_OUTPUT"
           echo "tag=$(TZ=Europe/London date +%F)" >> "$GITHUB_OUTPUT"
+          # Monday grades the Friday just gone — three days back, in London, so the tag
+          # matches the one that run wrote rather than a UTC day that may differ.
+          echo "friday=$(TZ=Europe/London date -d '3 days ago' +%F)" >> "$GITHUB_OUTPUT"
           echo "go=true" >> "$GITHUB_OUTPUT"
 
       - uses: actions/setup-node@v4
@@ -123,7 +132,10 @@ jobs:
           TOOLS_TOKEN: ${{ secrets.TOOLS_TOKEN }}
 
       - name: Make sure the label exists
-        if: steps.when.outputs.go == 'true' && steps.build.outputs.empty != 'true'
+        # Gated on the run, not on either draft: two steps file issues with this label
+        # now, and a Monday where the streaks board is quiet but the results are not
+        # would otherwise reach `gh issue create --label` with no label in existence.
+        if: steps.when.outputs.go == 'true'
         # Created here rather than by hand, so it is not a piece of setup that can be
         # missing — the same reasoning sync.yml gives for avoiding a required secret.
         # `gh label create` exits non-zero when the label already exists, which is the
@@ -181,3 +193,31 @@ jobs:
         env:
           BACKEND: ${{ vars.BACKEND_URL || 'https://corner-model.onrender.com' }}
           TOOLS_TOKEN: ${{ secrets.TOOLS_TOKEN }}
+
+      - name: Draft how the weekend landed
+        # Monday only. Reads the snapshot Friday froze; see the note at the top.
+        if: steps.when.outputs.go == 'true' && steps.when.outputs.weekday == '1'
+        id: results
+        run: |
+          node tools/social_draft.mjs \
+            --board results \
+            --tag "${{ steps.when.outputs.friday }}" \
+            --out results.md
+          if [ ! -s results.md ]; then
+            echo "::notice::no results to post for ${{ steps.when.outputs.friday }}"
+            echo "empty=true" >> "$GITHUB_OUTPUT"
+          fi
+        env:
+          BACKEND_URL: ${{ vars.BACKEND_URL || 'https://corner-model.onrender.com' }}
+          SITE_URL: ${{ vars.SITE_URL || 'https://corner-model.vercel.app' }}
+          TOOLS_TOKEN: ${{ secrets.TOOLS_TOKEN }}
+
+      - name: File the results draft
+        if: steps.when.outputs.go == 'true' && steps.when.outputs.weekday == '1' && steps.results.outputs.empty != 'true'
+        run: |
+          gh issue create \
+            --title "Results draft — weekend of ${{ steps.when.outputs.friday }}" \
+            --body-file results.md \
+            --label "social-draft"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

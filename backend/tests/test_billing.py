@@ -128,7 +128,15 @@ def test_active_statuses_are_the_ones_documented():
 
 
 class FakeUsersMany(FakeUsers):
-    """update_many, for the grandfathering migration."""
+    """update_many and count_documents, for the grandfathering migration."""
+
+    async def count_documents(self, query):
+        n = 0
+        for r in self.rows:
+            if all(r.get(k) == v for k, v in query.items()):
+                n += 1
+        return n
+
     async def update_many(self, query, update):
         n = 0
         for r in self.rows:
@@ -169,6 +177,18 @@ def test_grandfathering_is_idempotent():
     db = FakeDbMany(rows)
     assert run(billing.grandfather_existing_members(db))["grandfathered"] == 1
     assert run(billing.grandfather_existing_members(db))["grandfathered"] == 0
+
+
+def test_it_reports_how_many_are_protected_even_when_it_changed_nothing():
+    """The boot log is what an operator reads before enabling the Stripe webhook. A run
+    that changed nothing still has to say how many accounts are covered, or "no line in
+    the log" cannot be told apart from "the migration never ran"."""
+    rows = [{"user_id": "old", "member": True}]
+    db = FakeDbMany(rows)
+    run(billing.grandfather_existing_members(db))
+    second = run(billing.grandfather_existing_members(db))
+    assert second["grandfathered"] == 0
+    assert second["protected"] == 1 and second["members"] == 1
 
 
 def test_a_grandfathered_member_survives_a_cancellation():

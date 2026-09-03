@@ -177,10 +177,18 @@ async def grandfather_existing_members(db) -> dict:
         {"$set": {"member_source": MEMBER_SOURCE_LEGACY, "grandfathered": True,
                   "grandfathered_at": datetime.now(timezone.utc).isoformat()}},
     )
-    if res.modified_count:
-        logger.info("billing: grandfathered %d existing member(s) — their access is now "
-                    "permanent and cannot be revoked by a Stripe event", res.modified_count)
-    return {"grandfathered": res.modified_count}
+    # ALWAYS LOGGED, including when it changed nothing.
+    #
+    # This line is what an operator reads to decide whether it is safe to point Stripe's
+    # webhook at this deploy. Logging only when modified_count > 0 made "no line in the
+    # log" mean either "ran fine, nothing to do" or "never ran at all" — and those want
+    # opposite responses, one of them being "do not enable the webhook yet". A check
+    # whose negative result is ambiguous is not a check.
+    protected = await db.users.count_documents({"member": True, "grandfathered": True})
+    members = await db.users.count_documents({"member": True})
+    logger.info("billing: grandfathering complete — %d newly marked, %d of %d member(s) "
+                "now protected from Stripe revocation", res.modified_count, protected, members)
+    return {"grandfathered": res.modified_count, "protected": protected, "members": members}
 
 
 async def apply_subscription(db, sub: dict, user_id: Optional[str] = None) -> dict:

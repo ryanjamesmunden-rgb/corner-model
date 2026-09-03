@@ -1353,8 +1353,16 @@ async def settle_picks_now(user: dict = Depends(get_current_user)):
     return await _run_settlement()
 
 
-# ----------------------------- Daily 2 — auto-tracked ledger -----------------------------
-# The day's two strongest chase spots are snapshotted into db.picks BEFORE kickoff and
+# ----------------------------- Daily 2 — DISABLED -----------------------------
+# NOTHING CALLS THIS ANY MORE. The scheduled job and the endpoint that triggered it are
+# both gone: the picks it produced carried no price, so they had no EV and no trackable
+# P/L, and they polluted the ledger they were meant to evidence.
+#
+# Kept rather than deleted because the selection rule below is real work and the history
+# is one merge deep, but do not re-arm it without giving each pick a price first — an
+# unpriced ledger is worse than no ledger, because it looks like evidence.
+#
+# The day's two strongest chase spots were snapshotted into db.picks BEFORE kickoff and
 # never recomputed. This is the whole point: a ledger that re-selected its picks from
 # finished games would be look-ahead biased and could not evidence anything.
 
@@ -1461,11 +1469,6 @@ async def _snapshot_daily_picks(day: Optional[str] = None) -> dict:
         doc.pop("_id", None)
         inserted.append(doc)
     return {"day": day, "shortlisted": len(shortlist), "inserted": len(inserted), "picks": inserted}
-
-
-@api_router.post("/ledger/snapshot")
-async def ledger_snapshot(day: Optional[str] = None, user: dict = Depends(get_current_user)):
-    return await _snapshot_daily_picks(day)
 
 
 def _ledger_agg(subset: List[dict]) -> dict:
@@ -4124,9 +4127,14 @@ async def on_startup():
     from apscheduler.triggers.cron import CronTrigger
     scheduler = AsyncIOScheduler(timezone="UTC")
     scheduler.add_job(run_sync_all, CronTrigger(hour="7,19", minute=0), id="sync_all", replace_existing=True)
-    # lock in the day's two picks shortly after the morning sync, while games are unplayed
-    scheduler.add_job(_snapshot_daily_picks, CronTrigger(hour=7, minute=30),
-                      id="daily_picks", replace_existing=True)
+    # THE DAILY 2 IS OFF. It selected two chase spots a day and wrote them to db.picks
+    # with no price attached, so they carried no EV and no meaningful P/L — a ledger of
+    # unpriced selections cannot be tracked even at a flat stake, which is exactly the
+    # complaint. Removing the page alone would not have stopped this: the job wrote to
+    # the database whether anything displayed it or not.
+    #
+    # The manual write path (POST /api/picks) is untouched. That one logs picks that were
+    # actually sent, with the price taken, which is what a real record needs.
     # settle hourly — most fixtures finish well after the twice-daily sync
     scheduler.add_job(_run_settlement, CronTrigger(minute=20), id="settle", replace_existing=True)
     # warm the screen cache after each sync has had time to finish. This is only a

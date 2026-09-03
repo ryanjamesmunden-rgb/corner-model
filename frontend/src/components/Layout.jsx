@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
-import { CornerDownRight, LayoutDashboard, Radar, Flame, Zap, ClipboardCheck, Star, Sparkles } from "lucide-react";
+import { CornerDownRight, LayoutDashboard, Radar, Flame, Zap, Star, Sparkles } from "lucide-react";
 import { LeagueContext } from "@/context/LeagueContext";
 import ExportMenu from "@/components/ExportMenu";
 import { api } from "@/lib/api";
@@ -45,7 +45,6 @@ export default function Layout({ children }) {
   const nav = [
     { to: "/scanner", label: "Value Finder", icon: Radar },
     { to: "/quick-scan", label: "Quick Scan", icon: Zap },
-    { to: "/picks", label: "Picks", icon: ClipboardCheck },
     { to: "/dashboard", label: "Leagues", icon: LayoutDashboard },
     { to: "/streaks", label: "Streaks", icon: Flame },
     { to: "/saved", label: "Saved", icon: Star },

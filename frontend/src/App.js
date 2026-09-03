@@ -6,12 +6,11 @@ import Layout from "@/components/Layout";
 import { AuthProvider } from "@/context/AuthContext";
 
 // Each route is its own chunk: landing on the Scanner shouldn't download and parse
-// Streaks, Picks and the fixture detail page before it can paint.
+// Streaks and the fixture detail page before it can paint.
 const Dashboard = lazy(() => import("@/pages/Dashboard"));
 const Scanner = lazy(() => import("@/pages/Scanner"));
 const Streaks = lazy(() => import("@/pages/Streaks"));
 const QuickScan = lazy(() => import("@/pages/QuickScan"));
-const Picks = lazy(() => import("@/pages/Picks"));
 const FixtureDetail = lazy(() => import("@/pages/FixtureDetail"));
 const Join = lazy(() => import("@/pages/Join"));
 const Account = lazy(() => import("@/pages/Account"));
@@ -40,7 +39,6 @@ function AppRouter() {
       <Route path="/dashboard" element={page(Dashboard)} />
       <Route path="/scanner" element={page(Scanner)} />
       <Route path="/quick-scan" element={page(QuickScan)} />
-      <Route path="/picks" element={page(Picks)} />
       <Route path="/streaks" element={page(Streaks)} />
       <Route path="/saved" element={page(Saved)} />
       <Route path="/fixture/:id" element={page(FixtureDetail)} />

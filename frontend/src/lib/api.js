@@ -69,6 +69,9 @@ export const api = {
   // which needs no token because it only acts when the data is actually old.
   toolSyncNow: (token) => axios.post(`${API}/sync/refresh-all`, null, { params: { token } }).then((r) => r.data),
   syncRuns: (limit = 8) => axios.get(`${API}/sync/runs`, { params: { limit } }).then((r) => r.data),
+  // No UI calls these since the Picks page was removed. Kept because the manual pick
+  // path is how /join eventually publishes a record built from settled results rather
+  // than typed figures — see the note at the top of Join.jsx.
   picks: () => axios.get(`${API}/picks`).then((r) => r.data),
   settlePicks: () => axios.post(`${API}/picks/settle`).then((r) => r.data),
   ledger: () => axios.get(`${API}/ledger`).then((r) => r.data),

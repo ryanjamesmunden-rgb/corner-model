@@ -47,7 +47,8 @@ export default function MembersOnly({ title, blurb, children }) {
 
       {!user ? (
         <p className="mt-5 text-sm text-muted-foreground" data-testid="members-signin">
-          Sign in with the button at the top right to get started.
+          Create a free account with the Google button at the top right — it takes a few
+          seconds, and it's also how you'd manage a subscription later.
         </p>
       ) : (
         <form onSubmit={redeem} className="mt-6 max-w-sm mx-auto" data-testid="members-redeem">

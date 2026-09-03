@@ -9,6 +9,21 @@ import SyncPanel from "@/components/SyncPanel";
 import BacktestPanel from "@/components/BacktestPanel";
 import ToolsPanel from "@/components/ToolsPanel";
 
+// Owner tooling is hidden unless it has already been unlocked on this browser, or the
+// page is opened with ?tools=1. It ran the analysis scripts from a phone, which is
+// useful — but it sat on /dashboard, which is public, so every visitor met a box asking
+// for a token they could not have. Nothing was exploitable (the endpoints check the
+// token server-side), but a paying customer should not be shown the machinery, and a
+// list of privileged endpoints is not something to advertise.
+const TOOLS_UNLOCKED = () => {
+  try {
+    return !!localStorage.getItem("cm2_tools_token")
+      || new URLSearchParams(window.location.search).get("tools") === "1";
+  } catch {
+    return false;   // private mode: stay hidden, which is the safe default
+  }
+};
+
 const SPLITS = [{ v: "overall", l: "Overall" }, { v: "home", l: "Home" }, { v: "away", l: "Away" }];
 const WINDOWS = [{ v: "3", l: "Last 3" }, { v: "5", l: "Last 5" }, { v: "10", l: "Last 10" }];
 
@@ -101,7 +116,7 @@ export default function Dashboard() {
       <SyncPanel />
       <BacktestPanel leagueId={leagueId} />
 
-      <ToolsPanel />
+      {TOOLS_UNLOCKED() && <ToolsPanel />}
     </div>
   );
 }

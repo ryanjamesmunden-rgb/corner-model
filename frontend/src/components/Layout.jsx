@@ -1,10 +1,11 @@
 import { useState, useEffect } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
-import { CornerDownRight, LayoutDashboard, Radar, Flame, Zap, ClipboardCheck, Star } from "lucide-react";
+import { CornerDownRight, LayoutDashboard, Radar, Flame, Zap, ClipboardCheck, Star, Sparkles } from "lucide-react";
 import { LeagueContext } from "@/context/LeagueContext";
 import ExportMenu from "@/components/ExportMenu";
 import { api } from "@/lib/api";
 import SignIn from "@/components/SignIn";
+import { useAuth } from "@/context/AuthContext";
 import { dataHealth, healthTitle, freshnessLabel } from "@/lib/freshness";
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
@@ -13,6 +14,10 @@ import {
 export default function Layout({ children }) {
   const location = useLocation();
   const navigate = useNavigate();
+  // Whether to show the join CTA. `ready` matters: until the session has resolved,
+  // everyone looks signed out, and flashing "Join" at an existing member for half a
+  // second is a worse first impression than showing it a beat late.
+  const { member, ready: authReady } = useAuth();
   const [leagues, setLeagues] = useState([]);
   const [leagueId, setLeagueId] = useState(localStorage.getItem("leagueId") || "ned-ed");
   const [now, setNow] = useState(Date.now());
@@ -81,6 +86,23 @@ export default function Layout({ children }) {
             </nav>
 
             <div className="ml-auto flex items-center gap-1.5 sm:gap-3">
+              {/* THE ONLY WAY INTO /join from inside the app. It had no link at all —
+                  the page existed and could be reached by typing the URL or by hitting a
+                  members-only screen, which meant every signup had to be hand-delivered.
+                  Shown to anyone who is not a member, on every screen, including mobile
+                  where the label is what makes it worth the space. */}
+              {authReady && !member && location.pathname !== "/join" && (
+                <button
+                  onClick={() => navigate("/join")}
+                  data-testid="nav-join"
+                  className="flex items-center gap-1.5 px-2.5 sm:px-3.5 py-1.5 sm:py-2 rounded-md
+                             bg-primary text-black font-semibold text-xs sm:text-sm
+                             hover:opacity-90 transition-opacity shrink-0"
+                >
+                  <Sparkles className="h-3.5 w-3.5" />
+                  Join
+                </button>
+              )}
               <SignIn />
               {freshness && health && (
                 <div

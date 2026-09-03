@@ -32,9 +32,21 @@ export const api = {
     axios.post(`${API}/auth/google`, { credential }).then((r) => r.data),
   me: () => axios.get(`${API}/auth/me`).then((r) => r.data),
   redeemCode: (code) => axios.post(`${API}/membership/redeem`, { code }).then((r) => r.data),
+  // Billing. Both return a Stripe-hosted URL to send the browser to — checkout starts a
+  // subscription, portal is where cancelling actually happens.
+  billingCheckout: () => axios.post(`${API}/billing/checkout`).then((r) => r.data),
+  billingPortal: () => axios.post(`${API}/billing/portal`).then((r) => r.data),
+  // cancel:false resumes a subscription that was set to end.
+  billingCancel: (cancel = true) => axios.post(`${API}/billing/cancel`, { cancel }).then((r) => r.data),
   favourites: () => axios.get(`${API}/favourites`).then((r) => r.data),
   addFavourite: (fixtureId) => axios.post(`${API}/favourites/${fixtureId}`).then((r) => r.data),
   removeFavourite: (fixtureId) => axios.delete(`${API}/favourites/${fixtureId}`).then((r) => r.data),
+  // Followed TEAMS, separate from starred fixtures: a fixture star is spent once the
+  // game kicks off, a team follow is meant to outlive seasons.
+  favouriteTeams: (withinDays = 30) =>
+    axios.get(`${API}/favourites/teams`, { params: { within_days: withinDays } }).then((r) => r.data),
+  addFavouriteTeam: (teamId) => axios.post(`${API}/favourites/teams/${teamId}`).then((r) => r.data),
+  removeFavouriteTeam: (teamId) => axios.delete(`${API}/favourites/teams/${teamId}`).then((r) => r.data),
   leagues: () => axios.get(`${API}/leagues`).then((r) => r.data),
   teams: (id, split, window) => axios.get(`${API}/leagues/${id}/teams`, { params: { split, window } }).then((r) => r.data),
   fixtures: (id) => axios.get(`${API}/leagues/${id}/fixtures`).then((r) => r.data),

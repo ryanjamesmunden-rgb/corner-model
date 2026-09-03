@@ -2,6 +2,9 @@ import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { Zap, ArrowRight, Swords, TrendingUp, ShieldAlert, Sparkles, Loader2 } from "lucide-react";
 import { api } from "@/lib/api";
+import { withFlag } from "@/lib/countryFlag";
+import StoryButton from "@/components/StoryButton";
+import { mismatchStoryDays } from "@/lib/storyImage";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import MembersOnly from "@/components/MembersOnly";
 
@@ -27,6 +30,10 @@ export default function QuickScan() {
     api.topMismatches(params).then(setRows).catch(() => setRows([])).finally(() => setLoading(false));
   }, [within]);
 
+  // One story per matchday; the weekend is capped at a top 3 because Saturday's full
+  // card is unreadable at story size. Numbers stay hidden on every row.
+  const storyDays = mismatchStoryDays(rows);
+
   return (
     <MembersOnly title="Corner mismatches" blurb="Strong corner-winning sides drawn against defences that concede them, ranked by projected total, with the sample behind both halves.">
       <div className="space-y-3 sm:space-y-6" data-testid="quickscan-page">
@@ -41,13 +48,17 @@ export default function QuickScan() {
               Strong corner-winning teams drawn against defences that concede a lot — ranked by projected total corners.
             </p>
           </div>
-          <Tabs value={within} onValueChange={setWithin}>
-            <TabsList className="bg-secondary h-9">
-              {WINDOWS.map((w) => (
-                <TabsTrigger key={w.v} value={w.v} data-testid={`quickscan-window-${w.v}`} className="text-xs px-2.5 h-7">{w.l}</TabsTrigger>
-              ))}
-            </TabsList>
-          </Tabs>
+          <div className="flex items-center gap-2">
+            {/* One story per matchday, numbers blurred — see lib/storyImage. */}
+            <StoryButton days={storyDays} className="h-9 px-3" />
+            <Tabs value={within} onValueChange={setWithin}>
+              <TabsList className="bg-secondary h-9">
+                {WINDOWS.map((w) => (
+                  <TabsTrigger key={w.v} value={w.v} data-testid={`quickscan-window-${w.v}`} className="text-xs px-2.5 h-7">{w.l}</TabsTrigger>
+                ))}
+              </TabsList>
+            </Tabs>
+          </div>
         </div>
 
         {loading ? (
@@ -103,7 +114,7 @@ function PairCard({ r, onClick }) {
       style={{ borderTop: "2px solid #10B981" }}
     >
       <div className="flex items-center gap-2 text-[10px] uppercase tracking-widest text-muted-foreground">
-        <span>{r.league_name}</span>
+        <span>{withFlag(r.league_id, r.league_name)}</span>
         <span className="opacity-40">·</span>
         <span className="text-primary/80 normal-case tracking-normal">{fmt(nf.date)}</span>
         {nf.round && nf.round !== "Upcoming" && <><span className="opacity-40">·</span><span className="normal-case tracking-normal">{nf.round}</span></>}

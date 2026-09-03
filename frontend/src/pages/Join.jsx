@@ -1,7 +1,10 @@
-import { useState, useEffect } from "react";
-import { Link } from "react-router-dom";
-import { CornerDownRight, Check, ExternalLink, ArrowRight } from "lucide-react";
+import { useState, useEffect, useRef } from "react";
+import { Link, useNavigate } from "react-router-dom";
+import { CornerDownRight, Check, ExternalLink, ArrowRight, Loader2 } from "lucide-react";
+import { toast } from "sonner";
 import { api } from "@/lib/api";
+import Faq from "@/components/Faq";
+import { useAuth } from "@/context/AuthContext";
 
 // The subscription page the payment link points at.
 //
@@ -54,13 +57,37 @@ const INCLUDED = [
 export default function Join() {
   const [joinUrl, setJoinUrl] = useState(BUILD_JOIN_URL);
   const [configReached, setConfigReached] = useState(null);   // null = still asking
+  const [stripeReady, setStripeReady] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const navigate = useNavigate();
+  const { user, member, renderButton, clientId } = useAuth();
+  const signInSlot = useRef(null);
 
   useEffect(() => {
     // Runtime config wins over anything compiled into this bundle.
     api.config()
-      .then((c) => { setConfigReached(true); if (c?.join_url) setJoinUrl(c.join_url); })
+      .then((c) => {
+        setConfigReached(true);
+        if (c?.join_url) setJoinUrl(c.join_url);
+        setStripeReady(!!c?.stripe_ready);
+      })
       .catch(() => setConfigReached(false));
   }, []);
+
+  // Google's button draws into a node rather than returning one — same as SignIn.
+  useEffect(() => { if (!user) renderButton(signInSlot.current); }, [user, renderButton, clientId]);
+
+  const subscribe = async () => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      const { url } = await api.billingCheckout();
+      window.location.href = url;
+    } catch (e) {
+      toast.error(e?.response?.data?.detail || "Couldn't start checkout");
+      setBusy(false);
+    }
+  };
 
   return (
     <div className="min-h-screen bg-background text-foreground">
@@ -140,9 +167,41 @@ export default function Join() {
             <span className="text-muted-foreground">per month</span>
             <span className="ml-auto text-xs text-muted-foreground">cancel any time</span>
           </div>
-          {joinUrl ? (
-            <a href={joinUrl} target="_blank" rel="noopener noreferrer"
+          {/* SIGN IN FIRST, then pay. The old flow was a bare payment link anyone could
+              open, so the money arrived with no way to tell whose it was — which is why
+              the site could never show you your subscription or let you cancel it.
+              Checkout now starts from an account, and that account is what the cancel
+              button on /account hangs off. */}
+          {!user ? (
+            <div className="mt-4" data-testid="join-signin">
+              <p className="text-sm text-muted-foreground mb-3">
+                Create your account first — it's how you'll manage or cancel your
+                subscription later.
+              </p>
+              <div className="flex justify-center" ref={signInSlot} />
+            </div>
+          ) : member ? (
+            <button
+              onClick={() => navigate("/account")}
+              data-testid="join-already-member"
+              className="mt-4 w-full inline-flex items-center justify-center gap-2 px-4 py-3 rounded-md bg-secondary border border-border font-semibold hover:bg-white/10 transition-colors">
+              You're already a member — go to your account
+            </button>
+          ) : stripeReady ? (
+            <button
+              onClick={subscribe}
+              disabled={busy}
               data-testid="join-button"
+              className="mt-4 w-full inline-flex items-center justify-center gap-2 px-4 py-3 rounded-md bg-primary text-black font-semibold hover:opacity-90 transition-opacity disabled:opacity-50">
+              {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+              Subscribe <ExternalLink className="h-4 w-4" />
+            </button>
+          ) : joinUrl ? (
+            // Fallback to the old payment link while Stripe keys are not configured, so
+            // the page can still take money during the switchover. Anyone arriving this
+            // way has no linked subscription and redeems a code as before.
+            <a href={joinUrl} target="_blank" rel="noopener noreferrer"
+              data-testid="join-button-legacy"
               className="mt-4 w-full inline-flex items-center justify-center gap-2 px-4 py-3 rounded-md bg-primary text-black font-semibold hover:opacity-90 transition-opacity">
               Subscribe <ExternalLink className="h-4 w-4" />
             </a>
@@ -166,10 +225,22 @@ export default function Join() {
               </span>
             </div>
           )}
+          {/* This has to track which checkout is actually live. The Stripe flow unlocks
+              the site the moment the webhook lands; the old payment-link fallback is
+              still manual. Saying "allow a few hours" under an instant checkout would
+              have people waiting for access they already have — and emailing to ask. */}
           <p className="mt-3 text-xs text-muted-foreground">
-            Checkout asks for your Telegram username — that's how you get added. Access is manual,
-            so allow a few hours.
+            {stripeReady
+              ? "Access unlocks as soon as payment goes through. Manage or cancel any time from your account."
+              : "Checkout asks for your Telegram username — that's how you get added. Access is manual, so allow a few hours."}
           </p>
+        </section>
+
+        {/* The objections, answered on the page where they occur. A buyer who has to
+            leave to find out whether they can cancel usually just leaves. */}
+        <section data-testid="join-faq">
+          <h2 className="font-head font-semibold text-lg mb-3">Questions</h2>
+          <Faq price={PRICE} instant={stripeReady} />
         </section>
 
         <section className="border border-border rounded-lg p-5" data-testid="join-guarantee">

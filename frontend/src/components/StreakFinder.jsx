@@ -2,7 +2,11 @@ import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { Flame, ArrowRight, Target, TrendingDown, History } from "lucide-react";
 import { api } from "@/lib/api";
+import TeamStar from "@/components/TeamStar";
 import ShareButtons from "@/components/ShareButtons";
+import { withFlag } from "@/lib/countryFlag";
+import { kickoffLabel } from "@/lib/kickoff";
+import { streakShare } from "@/lib/shareText";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 
@@ -93,21 +97,11 @@ export default function StreakFinder({ leagueId }) {
     loss: "bg-red-500/15 text-red-400",
   };
 
-  // A postable summary of what's on screen: the headline filter plus the top few runs.
+  // A postable summary of what's on screen — the same builder tools/social_draft.mjs
+  // uses for the scheduled post, so the two can't drift. See lib/shareText.
   const presetMeta = PRESETS.find((x) => x.v === preset);
-  const shareText = (() => {
-    if (!rows.length) return "";
-    const what = subject === "match" ? "match total corners" : "team corners";
-    const head = `${isUnder ? "Under" : "Over"} ${what} — hit in ${presetMeta?.l || ""} `
-      + `${side === "overall" ? "" : side + " "}games:`;
-    const lines = rows.slice(0, 6).map((r) => {
-      const fx = r.next_fixture;
-      const vs = fx ? ` ${fx.is_home ? "vs" : "@"} ${fx.opponent}` : "";
-      return `• ${r.name} ${isUnder ? "U" : ""}${r.line}${isUnder ? "" : "+"}${vs} (${r.hits}/${r.window})`;
-    });
-    const more = rows.length > 6 ? `\n+${rows.length - 6} more on the site` : "";
-    return `${head}\n${lines.join("\n")}${more}`;
-  })();
+  const SHARE_ROWS = 6;
+  const buildShare = streakShare({ rows, subject, isUnder, side, presetLabel: presetMeta?.l || "" });
 
   return (
     <section className="bg-card border border-border rounded-lg" data-testid="streak-finder">
@@ -126,7 +120,9 @@ export default function StreakFinder({ leagueId }) {
             </span>
           )}
         </div>
-        {rows.length > 0 && <ShareButtons text={shareText} className="lg:ml-2" />}
+        {rows.length > 0 && (
+          <ShareButtons text={buildShare(SHARE_ROWS)} buildX={buildShare} className="lg:ml-2" />
+        )}
         <div className="lg:ml-auto flex flex-wrap items-center gap-2">
           <Tabs value={direction} onValueChange={switchTo(setDirection)}>
             <TabsList className="bg-secondary h-8">
@@ -212,8 +208,11 @@ export default function StreakFinder({ leagueId }) {
                 style={{ borderLeft: `2px solid ${isSolid(r) ? "#10B981" : "#3F3F46"}` }}
               >
                 <td className="px-2 py-1.5 sm:px-4 sm:py-2.5 sticky left-0 bg-card z-10">
-                  <div className="text-foreground font-sans font-medium whitespace-nowrap">{r.name}</div>
-                  <div className="text-[10px] text-muted-foreground uppercase tracking-wider font-sans">{r.league_name}</div>
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-foreground font-sans font-medium whitespace-nowrap">{r.name}</span>
+                    <TeamStar teamId={r.team_id} teamName={r.name} />
+                  </div>
+                  <div className="text-[10px] text-muted-foreground uppercase tracking-wider font-sans">{withFlag(r.league_id, r.league_name)}</div>
                 </td>
                 <td className="px-2 py-1.5 sm:px-4 sm:py-2.5">
                   <span className={`inline-flex items-center gap-1 text-xs px-2 py-1 rounded border ${isSolid(r) ? SOLID : THIN}`}
@@ -268,7 +267,14 @@ export default function StreakFinder({ leagueId }) {
                   </div>
                 </td>
                 <td className="px-2 py-1.5 sm:px-4 sm:py-2.5 text-xs text-muted-foreground whitespace-nowrap">
-                  {r.next_fixture ? `${r.next_fixture.is_home ? "vs" : "@"} ${r.next_fixture.opponent} · ${fmtDate(r.next_fixture.date)}` : "—"}
+                  {r.next_fixture ? (
+                    <>
+                      <div>{r.next_fixture.is_home ? "vs" : "@"} {r.next_fixture.opponent}</div>
+                      {/* The kick-off, not just the date: at 6pm "tonight" and "started an
+                          hour ago" are the same date and opposite decisions. */}
+                      <div className="text-[10px] text-primary/80">{kickoffLabel(r.next_fixture.date)}</div>
+                    </>
+                  ) : "—"}
                 </td>
                 <td className="px-2 py-1.5 sm:px-4 sm:py-2.5 text-right">
                   {r.projection ? (

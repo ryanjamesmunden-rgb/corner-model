@@ -2,6 +2,7 @@ import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { Trophy, Flame, TrendingUp, ArrowRight, Star } from "lucide-react";
 import { api } from "@/lib/api";
+import { withFlag } from "@/lib/countryFlag";
 
 // THREE CARDS, ONE PER SIGNAL — so here colour identifies WHICH signal, unlike the
 // fixture board where six chips on one row made colour-by-type meaningless. Quality has
@@ -87,7 +88,7 @@ export default function HomeInsights() {
               why={`A mismatch is a lambda comparison with no hit-rate behind it, so what makes it solid is SAMPLE: 6+ real games. This one has ${best.mismatch.real_samples || 0}.`}
               title={`${best.mismatch.name} ${best.mismatch.next_fixture?.is_home ? "vs" : "@"} ${best.mismatch.next_fixture?.opponent}`}
               sub={`${best.mismatch.line}+ corners @ ${best.mismatch.fair_odds} · λ ${best.mismatch.lambda} (opp conc ${best.mismatch.opp_conceded})`}
-              chip={best.mismatch.league_name}
+              chip={withFlag(best.mismatch.league_id, best.mismatch.league_name)}
               onClick={() => go(best.mismatch.next_fixture?.fixture_id)}
             />
           ) : <SkeletonCard />}

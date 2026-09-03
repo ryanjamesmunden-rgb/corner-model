@@ -3,6 +3,8 @@ import { useNavigate } from "react-router-dom";
 import { CalendarDays, ChevronRight, Flame, Swords, Target, TrendingDown } from "lucide-react";
 import { api } from "@/lib/api";
 import ShareButtons from "@/components/ShareButtons";
+import { withFlag } from "@/lib/countryFlag";
+import { fixtureShare } from "@/lib/shareText";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import StarButton from "@/components/StarButton";
 import { TONE, toneFor, toneLabel } from "@/lib/angleTone";
@@ -70,15 +72,9 @@ export default function FixtureBoard({ leagueId = "all" }) {
 
   const allFixtures = (board?.days || []).flatMap((d) => d.fixtures || []);
   const fixtureCount = allFixtures.length;
-  const shareText = fixtureCount
-    ? `Best upcoming corner games (next ${days === "1" ? "day" : `${days} days`}):\n`
-      + allFixtures.slice(0, 8).map((f) => {
-          const angle = (f.angles || [])[0];
-          const tag = angle ? ` — ${angle.team} ${angle.label}` : "";
-          return `• ${f.home} v ${f.away} (λ ${f.lambda_total})${tag}`;
-        }).join("\n")
-      + (fixtureCount > 8 ? `\n+${fixtureCount - 8} more on the site` : "")
-    : "";
+  // Shared with the scheduled post — see lib/shareText.
+  const SHARE_ROWS = 8;
+  const buildShare = fixtureShare({ fixtures: allFixtures, days });
 
   return (
     <section className="bg-card border border-border rounded-lg" data-testid="fixture-board">
@@ -93,7 +89,9 @@ export default function FixtureBoard({ leagueId = "all" }) {
             <span className="font-mono-data text-[10px] text-muted-foreground shrink-0">{fixtureCount} games</span>
           )}
         </div>
-        {fixtureCount > 0 && <ShareButtons text={shareText} className="shrink-0" />}
+        {fixtureCount > 0 && (
+          <ShareButtons text={buildShare(SHARE_ROWS)} buildX={buildShare} className="shrink-0" />
+        )}
         <div className="sm:ml-auto flex gap-2">
           <Tabs value={days} onValueChange={setDays}>
             <TabsList className="bg-secondary h-8">
@@ -226,7 +224,7 @@ function FixtureRow({ f, onClick }) {
           </span>
         </div>
         <div className="text-[10px] text-muted-foreground uppercase tracking-wider mt-0.5">
-          {f.league_name}
+          {withFlag(f.league_id, f.league_name)}
           <span className="ml-2 normal-case tracking-normal font-mono-data"
             title="Real matches behind each side's numbers">
             {Math.min(f.home_games ?? 0, f.away_games ?? 0)}+ games each

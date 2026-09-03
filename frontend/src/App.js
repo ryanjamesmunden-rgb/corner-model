@@ -14,6 +14,8 @@ const QuickScan = lazy(() => import("@/pages/QuickScan"));
 const Picks = lazy(() => import("@/pages/Picks"));
 const FixtureDetail = lazy(() => import("@/pages/FixtureDetail"));
 const Join = lazy(() => import("@/pages/Join"));
+const Account = lazy(() => import("@/pages/Account"));
+const FaqPage = lazy(() => import("@/pages/FaqPage"));
 const Saved = lazy(() => import("@/pages/Saved"));
 
 const RouteFallback = () => (
@@ -42,11 +44,17 @@ function AppRouter() {
       <Route path="/streaks" element={page(Streaks)} />
       <Route path="/saved" element={page(Saved)} />
       <Route path="/fixture/:id" element={page(FixtureDetail)} />
+      <Route path="/account" element={page(Account)} />
       {/* Deliberately OUTSIDE page(): the subscription page is for people who are not
           members yet, so it carries no app chrome — no league switcher, no nav to
           sections that presume you already know what this is. */}
       <Route path="/join" element={
         <Suspense fallback={<RouteFallback />}><Join /></Suspense>
+      } />
+      {/* Outside page() for the same reason as /join: whoever is reading this may not
+          have paid yet, and app chrome above "how do I cancel" is noise. */}
+      <Route path="/faq" element={
+        <Suspense fallback={<RouteFallback />}><FaqPage /></Suspense>
       } />
       <Route path="*" element={<Navigate to="/scanner" replace />} />
     </Routes>

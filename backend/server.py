@@ -13,6 +13,7 @@ import re
 import uuid
 
 import auth
+import billing
 from pathlib import Path
 from pydantic import BaseModel
 from typing import List, Optional, Dict
@@ -672,7 +673,11 @@ async def redeem_code(body: RedeemBody, user: dict = Depends(require_user)):
     if not secrets.compare_digest(body.code.strip().upper(), MEMBER_CODE.upper()):
         raise HTTPException(status_code=403, detail="That code is not right — check the channel")
     await db.users.update_one({"user_id": user["user_id"]}, {"$set": {
-        "member": True, "member_since": datetime.now(timezone.utc).isoformat()}})
+        "member": True, "member_since": datetime.now(timezone.utc).isoformat(),
+        # Tagged as a COMP so no Stripe event can ever take it away — see billing.py.
+        # Without this a code-redeemed member who once had a lapsed subscription would
+        # be revoked by a webhook about that old subscription.
+        "member_source": billing.MEMBER_SOURCE_CODE}})
     return {"member": True}
 
 
@@ -712,10 +717,152 @@ async def sign_in_with_google(body: GoogleSignInBody):
 
 
 def _public_user(u: dict) -> dict:
-    """Only what the browser needs. google_sub is an account identifier and stays here."""
+    """Only what the browser needs. google_sub is an account identifier and stays here.
+
+    The billing fields are here so the account page can say something TRUE about the
+    subscription without a second round trip — and specifically so it can tell a paying
+    member (who gets a cancel button) from a comped one (who must not be shown one, since
+    there is nothing of theirs to cancel)."""
     return {"user_id": u.get("user_id"), "name": u.get("name"),
             "email": u.get("email"), "picture": u.get("picture"),
-            "member": bool(u.get("member"))}
+            "member": bool(u.get("member")),
+            "member_source": u.get("member_source"),
+            "grandfathered": bool(u.get("grandfathered")),
+            "member_since": u.get("member_since"),
+            "subscription_status": u.get("subscription_status"),
+            "subscription_ends_at": u.get("subscription_ends_at"),
+            "cancel_at_period_end": bool(u.get("cancel_at_period_end")),
+            # Drives the "Manage subscription" button. The id itself never leaves the
+            # backend — only whether there is one.
+            "has_billing": bool(u.get("stripe_customer_id"))}
+
+
+# ----------------------------- Billing -----------------------------
+# Subscriptions live on Stripe; this is the thin layer that links one to an account and
+# hands people to Stripe's own portal to cancel. See billing.py for the revocation rule.
+
+
+@api_router.post("/billing/checkout")
+async def billing_checkout(user: dict = Depends(require_user)):
+    """Start a subscription for the SIGNED-IN account.
+
+    require_user, not get_current_user, and that is the point of the change: the old flow
+    was a bare Stripe Payment Link that anyone could open, so a payment arrived with no
+    way to tell whose it was. Checkout now begins from an account, which is what makes a
+    cancel button possible later.
+    """
+    if not billing.configured():
+        raise HTTPException(status_code=503,
+                            detail="Subscriptions are not set up yet — set STRIPE_SECRET_KEY "
+                                   "and STRIPE_PRICE_ID in the backend environment")
+    if user.get("member") and user.get("member_source") == billing.MEMBER_SOURCE_STRIPE:
+        raise HTTPException(status_code=409, detail="You already have an active subscription")
+    try:
+        return {"url": billing.create_checkout_session(user)}
+    except Exception as e:
+        logger.exception("stripe: checkout failed for %s", user["user_id"])
+        raise HTTPException(status_code=502, detail=f"Stripe could not start checkout: {e}")
+
+
+@api_router.post("/billing/portal")
+async def billing_portal(user: dict = Depends(require_user)):
+    """A link into Stripe's billing portal, where cancelling actually happens."""
+    customer_id = user.get("stripe_customer_id")
+    if not customer_id:
+        # A comped or legacy member has no Stripe customer, so there is nothing to
+        # manage. Saying so plainly beats a portal error, and beats hiding the button
+        # and leaving them wondering where their cancel option went.
+        raise HTTPException(status_code=404,
+                            detail="This account has no Stripe subscription to manage")
+    try:
+        return {"url": billing.create_portal_session(customer_id)}
+    except Exception as e:
+        logger.exception("stripe: portal failed for %s", user["user_id"])
+        raise HTTPException(status_code=502, detail=f"Stripe could not open the portal: {e}")
+
+
+class CancelBody(BaseModel):
+    # False resumes a subscription that was set to end. One endpoint rather than two
+    # because they are the same write, and splitting them invites the two halves to
+    # drift on validation.
+    cancel: bool = True
+
+
+@api_router.post("/billing/cancel")
+async def billing_cancel(body: CancelBody, user: dict = Depends(require_user)):
+    """Cancel a subscription from the site, without a trip to Stripe's portal.
+
+    The portal button stays — it is where cards and invoices live — but cancelling is
+    the one thing people must not have to hunt for, and an off-site redirect is exactly
+    where someone gives up and emails you instead, or charges back.
+
+    Takes effect at the end of the period already paid for; see
+    billing.set_cancel_at_period_end for why it is never immediate.
+    """
+    sub_id = user.get("stripe_subscription_id")
+    if not sub_id:
+        raise HTTPException(status_code=404,
+                            detail="This account has no subscription to cancel")
+    try:
+        sub = billing.set_cancel_at_period_end(sub_id, body.cancel)
+    except Exception as e:
+        logger.exception("stripe: cancel(%s) failed for %s", body.cancel, user["user_id"])
+        raise HTTPException(status_code=502, detail=f"Stripe could not update the subscription: {e}")
+    # Write the new state straight away rather than waiting for the webhook. The webhook
+    # is the source of truth and will confirm this within seconds, but a page that still
+    # says "renews" right after someone cancelled reads as the cancellation not working —
+    # which is what sends them to their bank.
+    await billing.apply_subscription(db, sub, user_id=user["user_id"])
+    fresh = await db.users.find_one({"user_id": user["user_id"]}, {"_id": 0})
+    return {"cancel_at_period_end": bool(sub.get("cancel_at_period_end")),
+            "subscription_ends_at": (fresh or {}).get("subscription_ends_at"),
+            "user": _public_user(fresh or user)}
+
+
+@api_router.post("/billing/webhook")
+async def billing_webhook(request: Request):
+    """Stripe telling us a subscription started, renewed, lapsed or was cancelled.
+
+    UNAUTHENTICATED BY NECESSITY and signature-verified without exception — Stripe cannot
+    present a session token, so the signature is the only thing separating a real event
+    from anyone who finds this URL. An unverified webhook here would let a stranger grant
+    themselves paid access, or cancel someone else's.
+
+    Always answers 200 once the signature checks out, even when we cannot match the event
+    to an account. Stripe retries non-2xx responses for days, and a permanently
+    unmatchable event — a test payment, a customer deleted on our side — would otherwise
+    be redelivered forever. The mismatch is logged instead, where it can be looked at.
+    """
+    payload = await request.body()
+    try:
+        event = billing.verify_event(payload, request.headers.get("stripe-signature"))
+    except RuntimeError as e:
+        raise HTTPException(status_code=503, detail=str(e))
+    except Exception:
+        # Deliberately terse: a bad signature should not describe why it was bad.
+        raise HTTPException(status_code=400, detail="Bad signature")
+
+    kind = event["type"]
+    obj = event["data"]["object"]
+    result = {"matched": False}
+
+    if kind == "checkout.session.completed":
+        # The session carries our user id; the subscription carries the status. Fetch it
+        # rather than assuming active — a session can complete while payment is still
+        # processing, and granting access on the session alone would let a failed
+        # bank debit through.
+        uid = obj.get("client_reference_id")
+        sub_id = obj.get("subscription")
+        if sub_id:
+            sub = billing._stripe().Subscription.retrieve(sub_id)
+            result = await billing.apply_subscription(db, sub, user_id=uid)
+    elif kind in ("customer.subscription.created", "customer.subscription.updated",
+                  "customer.subscription.deleted"):
+        result = await billing.apply_subscription(db, obj)
+    else:
+        logger.info("stripe: ignoring %s", kind)
+
+    return {"received": True, "type": kind, **result}
 
 
 # ----------------------------- Favourites -----------------------------
@@ -762,6 +909,93 @@ async def remove_favourite(fixture_id: str, user: dict = Depends(require_user)):
     The caller wanted it not starred, and it is not starred."""
     await db.favourites.delete_one({"user_id": user["user_id"], "fixture_id": fixture_id})
     return {"fixture_id": fixture_id, "starred": False}
+
+
+# ---- Followed teams. A star on a FIXTURE is "come back to this game"; a star on a TEAM
+# is "tell me whenever they play". Different shelf-life, so a different collection: a
+# fixture star is spent once the game kicks off, a team star is meant to outlive seasons.
+
+
+@api_router.get("/favourites/teams")
+async def list_favourite_teams(user: dict = Depends(require_user), within_days: int = 30):
+    """Followed teams with their upcoming fixtures — the point of following one.
+
+    Returns the NEXT FEW games per team rather than just the next one. Someone following
+    a side wants to see the run coming up, which is the whole difference between this and
+    starring a single fixture; answering with one game would just be a slower way of
+    doing what the fixture star already does.
+
+    A team that stops syncing leaves a star pointing at nothing. Those come back with an
+    empty fixture list rather than being dropped, so a follow that has gone quiet is
+    visible instead of looking like it was never saved."""
+    favs = await db.favourite_teams.find({"user_id": user["user_id"]}, {"_id": 0}).to_list(500)
+    if not favs:
+        return {"teams": [], "missing": 0}
+    ids = [f["team_id"] for f in favs]
+    teams = {t["team_id"]: t for t in
+             await db.teams.find({"team_id": {"$in": ids}}, {"_id": 0}).to_list(500)}
+    leagues = {l["league_id"]: l["name"] for l in await db.leagues.find({}, {"_id": 0}).to_list(200)}
+
+    now = datetime.now(timezone.utc)
+    horizon = now + timedelta(days=max(1, min(within_days, 120)))
+    fixtures = await db.fixtures.find(
+        {"$or": [{"home_team_id": {"$in": ids}}, {"away_team_id": {"$in": ids}}]},
+        {"_id": 0}).to_list(5000)
+
+    upcoming = {tid: [] for tid in ids}
+    for fx in fixtures:
+        try:
+            dt = datetime.fromisoformat((fx.get("date") or "").replace("Z", "+00:00"))
+        except Exception:
+            continue
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        if dt < now or dt > horizon:
+            continue
+        for tid, opp, is_home in ((fx["home_team_id"], fx["away_name"], True),
+                                  (fx["away_team_id"], fx["home_name"], False)):
+            if tid in upcoming:
+                upcoming[tid].append({"fixture_id": fx["fixture_id"], "date": fx["date"],
+                                      "round": fx.get("round"), "opponent": opp,
+                                      "is_home": is_home, "league_id": fx["league_id"]})
+    for v in upcoming.values():
+        v.sort(key=lambda f: f["date"])
+
+    starred_at = {f["team_id"]: f.get("created_at") for f in favs}
+    out = []
+    for tid in ids:
+        t = teams.get(tid)
+        if not t:
+            continue
+        out.append({"team_id": tid, "name": t["name"], "league_id": t["league_id"],
+                    "league_name": leagues.get(t["league_id"], ""),
+                    "starred_at": starred_at.get(tid),
+                    "real_samples": t.get("real_samples", 0),
+                    "fixtures": upcoming.get(tid, [])})
+    # Teams with a game soonest first; those with nothing scheduled fall to the bottom
+    # rather than being hidden, because "no fixture found" is information too.
+    out.sort(key=lambda r: (r["fixtures"][0]["date"] if r["fixtures"] else "9999"))
+    return {"teams": out, "missing": len(favs) - len(out), "within_days": within_days}
+
+
+@api_router.post("/favourites/teams/{team_id}")
+async def add_favourite_team(team_id: str, user: dict = Depends(require_user)):
+    """Idempotent — following twice is a double tap, not an error."""
+    if not await db.teams.find_one({"team_id": team_id}, {"_id": 1}):
+        raise HTTPException(status_code=404, detail="No such team")
+    await db.favourite_teams.update_one(
+        {"user_id": user["user_id"], "team_id": team_id},
+        {"$setOnInsert": {"user_id": user["user_id"], "team_id": team_id,
+                          "created_at": datetime.now(timezone.utc).isoformat()}},
+        upsert=True)
+    return {"team_id": team_id, "starred": True}
+
+
+@api_router.delete("/favourites/teams/{team_id}")
+async def remove_favourite_team(team_id: str, user: dict = Depends(require_user)):
+    """Also idempotent: unfollowing something already gone is a success."""
+    await db.favourite_teams.delete_one({"user_id": user["user_id"], "team_id": team_id})
+    return {"team_id": team_id, "starred": False}
 
 
 @api_router.get("/auth/me")
@@ -827,12 +1061,24 @@ async def root():
 # at all. The build-time variable still works as a fallback so nothing breaks.
 JOIN_URL = os.environ.get("JOIN_URL", "").strip()
 
+# The "how to use this" video, shown to someone the moment their payment clears.
+#
+# Runtime, not build-time, for exactly the reason JOIN_URL is — see the note above. A
+# YouTube link is the sort of thing that gets re-recorded and swapped, and needing a
+# frontend rebuild (which Vercel may serve from cache) to change a URL is how a dead
+# link outlives the deploy that was supposed to fix it.
+TUTORIAL_URL = os.environ.get("TUTORIAL_URL", "").strip()
+
 
 @api_router.get("/config")
 async def public_config():
     """Runtime settings the frontend needs. Public by design — the join link is a URL
     meant to be clicked by anyone, not a secret."""
-    return {"join_url": JOIN_URL, "google_client_id": auth.GOOGLE_CLIENT_ID}
+    return {"join_url": JOIN_URL, "tutorial_url": TUTORIAL_URL,
+            "google_client_id": auth.GOOGLE_CLIENT_ID,
+            # Whether checkout can run. The page falls back to the old payment link when
+            # this is false, so the switchover needs no coordinated deploy.
+            "stripe_ready": billing.configured()}
 
 
 @api_router.get("/health")
@@ -3212,6 +3458,183 @@ def _streak_record(row: dict) -> str:
     return f"{row['hits']}/{row.get('settled', row['window'])}{voids}"
 
 
+# A snapshot outlives the run that made it and is graded much later, so the tolerance
+# is tighter than a screen's: a little over one sync cycle, not two.
+SNAPSHOT_MAX_AGE_HOURS = 14
+
+
+class StreakSnapshotBody(BaseModel):
+    """Which streaks went out, so the results post afterwards can be honest."""
+    tag: Optional[str] = None       # defaults to today; the label the results are read back by
+    days: int = 3                   # horizon the posted board covered
+    limit: int = 8
+
+
+@api_router.post("/streaks/snapshot")
+async def snapshot_streaks(body: StreakSnapshotBody, token: Optional[str] = None,
+                           user: dict = Depends(get_current_user)):
+    """Freeze the streaks as posted, before the games are played.
+
+    THIS IS WHAT MAKES A RESULTS POST HONEST, and it is not optional.
+
+    A streak row only appears while the run is alive: a team that misses drops out of
+    the board entirely. So settling "the streaks" against the board as it looks AFTER
+    the weekend reads only the survivors, and would publish something like "5 of 5
+    landed" every single week — not because the model is perfect, but because the
+    losers are no longer in the list being counted. That is survivorship bias, and on a
+    page selling a subscription it is the difference between a record and an
+    advertisement.
+
+    Snapshotting first is the same fix `_snapshot_daily_picks` applies to the daily
+    picks, for the same reason: what was claimed has to be written down before the
+    outcome is known, or the claim cannot be graded.
+
+    Idempotent per tag. Re-running on the same day returns the existing snapshot rather
+    than replacing it — a snapshot that could be rewritten after kick-off would be no
+    snapshot at all.
+
+    SELF-LIMITING on stale data, like /sync/if-stale: it refuses rather than freezing a
+    board built from old numbers. A snapshot is graded weeks later by people who cannot
+    see how fresh it was, so a stale one does not merely go unused — it quietly becomes
+    part of a published record. Refusing is reported, not raised: the caller is a
+    scheduled job, and a skipped Friday is a fact to log, not a crash.
+    """
+    _check_tools_token(token)
+    tag = body.tag or datetime.now(timezone.utc).date().isoformat()
+    existing = await db.streak_snapshots.find_one({"_id": tag}, {"_id": 0})
+    if existing:
+        return {"status": "exists", "tag": tag, **existing}
+
+    now_ = datetime.now(timezone.utc)
+    newest = await db.leagues.find({"data_source": "real"}, {"_id": 0, "synced_at": 1}) \
+        .sort("synced_at", -1).limit(1).to_list(1)
+    age_h = None
+    if newest and newest[0].get("synced_at"):
+        try:
+            age_h = round((now_ - datetime.fromisoformat(newest[0]["synced_at"])).total_seconds() / 3600, 1)
+        except Exception:
+            age_h = None
+    if age_h is None or age_h > SNAPSHOT_MAX_AGE_HOURS:
+        return {"status": "stale", "tag": tag, "data_age_hours": age_h,
+                "max_age_hours": SNAPSHOT_MAX_AGE_HOURS, "entries": []}
+
+    rows = await streaks(league_id="all", side="overall", window=5, min_hits=5,
+                         threshold=None, min_line=3, within_days=body.days,
+                         direction="over", subject="team", user={})
+    entries = []
+    for r in rows[:max(1, min(body.limit, 25))]:
+        nf = r.get("next_fixture") or {}
+        if not nf.get("fixture_id"):
+            continue        # nothing to grade it against later
+        entries.append({
+            "team_id": r["team_id"], "name": r["name"], "league_id": r["league_id"],
+            "line": r["line"], "direction": r["direction"], "subject": r["subject"],
+            "hits": r["hits"], "window": r["window"],
+            "fixture_id": nf["fixture_id"], "kickoff": nf.get("date"),
+            "opponent": nf.get("opponent"), "is_home": nf.get("is_home"),
+        })
+    doc = {"tag": tag, "created_at": datetime.now(timezone.utc).isoformat(),
+           "days": body.days, "entries": entries}
+    await db.streak_snapshots.insert_one({"_id": tag, **doc})
+    return {"status": "created", **doc}
+
+
+@api_router.get("/streaks/snapshot/{tag}/results")
+async def snapshot_results(tag: str, token: Optional[str] = None,
+                           user: dict = Depends(get_current_user)):
+    """How the streaks in a snapshot actually landed.
+
+    Graded off the SYNCED match data, not a fresh scan of the board — the whole point
+    of the snapshot is that the list cannot change between the claim and the grading.
+    An entry whose game has not been played, or not yet synced, comes back `pending`
+    rather than being dropped, so a partial weekend reads as partial instead of as a
+    shorter list of wins.
+    """
+    _check_tools_token(token)
+    snap = await db.streak_snapshots.find_one({"_id": tag}, {"_id": 0})
+    if not snap:
+        raise HTTPException(status_code=404, detail=f"no streak snapshot tagged {tag}")
+
+    team_ids = [e["team_id"] for e in snap["entries"]]
+    teams = {t["team_id"]: t for t in
+             await db.teams.find({"team_id": {"$in": team_ids}}, {"_id": 0}).to_list(500)}
+    out = []
+    for e in snap["entries"]:
+        team = teams.get(e["team_id"]) or {}
+        played = None
+        for m in (team.get("real_matches") or []):
+            # The graded game is the one against the opponent that was upcoming. Matched
+            # on opponent AND on being at or after the kick-off we recorded, so a repeat
+            # fixture earlier in the season cannot be graded in its place.
+            if m.get("opponent") != e.get("opponent"):
+                continue
+            if e.get("kickoff") and (m.get("date") or "") < e["kickoff"][:10]:
+                continue
+            played = m
+            break
+        if not played:
+            out.append({**e, "result": "pending", "value": None})
+            continue
+        value = streak_value(played, e["subject"])
+        out.append({**e, "result": settle_streak_leg(value, e["line"], e["direction"]),
+                    "value": value, "played_at": played.get("date")})
+
+    graded = [r for r in out if r["result"] in (WIN, LOSS)]
+    return {
+        "tag": tag, "created_at": snap.get("created_at"), "days": snap.get("days"),
+        "results": out,
+        "landed": sum(1 for r in out if r["result"] == WIN),
+        "missed": sum(1 for r in out if r["result"] == LOSS),
+        "voided": sum(1 for r in out if r["result"] == VOID),
+        "pending": sum(1 for r in out if r["result"] == "pending"),
+        "settled": len(graded),
+    }
+
+
+@api_router.get("/share/rows")
+async def share_rows(days: int = 3, limit: int = 12, token: Optional[str] = None):
+    """The raw rows behind the shared boards, for the scheduled draft job.
+
+    Returns ROWS, not rendered text, on purpose. The share format lives in the frontend
+    (frontend/src/lib/shareText.js) and is used by both the share buttons and
+    tools/social_draft.mjs, so that a scheduled post and one a person clicks out an hour
+    earlier cannot look different. Rendering here would be a second copy of that format,
+    and a second copy is how they drift.
+
+    GATED with the tools token rather than left open, because the streak screen is the
+    paid product — `/streaks` itself requires a member. This endpoint reaches the same
+    data, so it gets the same protection the other automation endpoints get, and the
+    workflow holds the token as a repo secret.
+
+    `data_age_hours` rides along so the caller can refuse to draft from stale numbers:
+    a post is public and permanent in a way a stale screen is not."""
+    _check_tools_token(token)
+    now = datetime.now(timezone.utc)
+    newest = await db.leagues.find({"data_source": "real"}, {"_id": 0, "synced_at": 1}) \
+        .sort("synced_at", -1).limit(1).to_list(1)
+    age_h = None
+    if newest and newest[0].get("synced_at"):
+        try:
+            age_h = round((now - datetime.fromisoformat(newest[0]["synced_at"])).total_seconds() / 3600, 1)
+        except Exception:
+            age_h = None
+
+    # The same grid the Streak Finder opens on, so the draft matches the screen the
+    # numbers would be checked against.
+    streaks_rows = await streaks(league_id="all", side="overall", window=5, min_hits=5,
+                                 threshold=None, min_line=3, within_days=days,
+                                 direction="over", subject="team", user={})
+    board = await _fixture_board(days=days, per_day=5, league_id="all", user={})
+    fixtures = [f for d in (board.get("days") or []) for f in (d.get("fixtures") or [])]
+    return {
+        "generated_at": now.isoformat(),
+        "data_age_hours": age_h,
+        "within_days": days,
+        "streaks": streaks_rows[:limit],
+        "fixtures": fixtures[:limit],
+    }
+
+
 @api_router.get("/export/streaks")
 async def export_streaks(days: int = 7, window: int = 5, min_hits: int = 5,
                          side: str = "overall", league_id: Optional[str] = None,
@@ -3678,6 +4101,16 @@ async def _maybe_sync_on_boot():
 
 @app.on_event("startup")
 async def on_startup():
+    # Protect everyone who already had access, before the billing webhook can act on
+    # anyone. Idempotent; see billing.grandfather_existing_members for why it runs here
+    # rather than as a script someone has to remember.
+    try:
+        await billing.grandfather_existing_members(db)
+    except Exception:
+        # A failure here must not stop the app booting — but it MUST be loud, because
+        # until it succeeds a cancellation event could revoke a pre-existing member.
+        logger.exception("billing: grandfathering failed — DO NOT enable the Stripe "
+                         "webhook until this succeeds")
     # remove any legacy / non-managed leagues (e.g. old mock leagues from an earlier deploy)
     stale = await db.leagues.find({"league_id": {"$nin": list(MANAGED_LEAGUE_IDS)}}, {"_id": 0, "league_id": 1}).to_list(100)
     stale_ids = [l["league_id"] for l in stale]

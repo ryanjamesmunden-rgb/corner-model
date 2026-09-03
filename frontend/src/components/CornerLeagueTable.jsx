@@ -24,6 +24,8 @@ export default function CornerLeagueTable({ leagueId }) {
         </div>
       </div>
       <div className="max-h-[560px] overflow-y-auto">
+        {/* Wide on a phone: the card clips, so the table needs its own scroller. */}
+        <div className="overflow-x-auto">
         <table className="w-full">
           <thead className="sticky top-0 bg-card z-10">
             <tr className="border-b border-border text-muted-foreground text-[10px] uppercase tracking-wider">
@@ -55,6 +57,7 @@ export default function CornerLeagueTable({ leagueId }) {
             ))}
           </tbody>
         </table>
+        </div>
       </div>
     </aside>
   );

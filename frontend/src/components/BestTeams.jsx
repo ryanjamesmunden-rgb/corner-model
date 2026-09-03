@@ -2,7 +2,10 @@ import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { Trophy, ArrowRight } from "lucide-react";
 import { api } from "@/lib/api";
+import TeamStar from "@/components/TeamStar";
 import ShareButtons from "@/components/ShareButtons";
+import { withFlag } from "@/lib/countryFlag";
+import { bestTeamsShare } from "@/lib/shareText";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 
@@ -31,12 +34,9 @@ export default function BestTeams({ leagueId }) {
 
   const max = rows.length ? rows[0].won_avg : 1;
 
-  const shareText = rows.length
-    ? `Best corner teams — ${side === "overall" ? "all games" : side} `
-      + `(${WINDOWS.find((w) => w.v === win)?.l || ""}):\n`
-      + rows.slice(0, 8).map((r, i) =>
-          `${i + 1}. ${r.name} — ${r.won_avg.toFixed(2)} corners won/game`).join("\n")
-    : "";
+  // Shared with the scheduled post — see lib/shareText.
+  const SHARE_ROWS = 8;
+  const buildShare = bestTeamsShare({ rows, side, windowLabel: WINDOWS.find((w) => w.v === win)?.l || "" });
 
   return (
     <section className="bg-card border border-border rounded-lg" data-testid="best-teams">
@@ -49,7 +49,10 @@ export default function BestTeams({ leagueId }) {
             <span className="font-mono-data text-[10px] text-muted-foreground">{rows.length} shown</span>
           )}
         </div>
-        {rows.length > 0 && <ShareButtons text={shareText} />}
+        {/* The compact row format fits all eight in one post — see bestTeamsShare. */}
+        {rows.length > 0 && (
+          <ShareButtons text={buildShare(SHARE_ROWS)} buildX={buildShare} xRows={SHARE_ROWS} />
+        )}
         <div className="lg:ml-auto flex flex-wrap items-center gap-2">
           <Tabs value={side} onValueChange={setSide}>
             <TabsList className="bg-secondary h-8">
@@ -111,8 +114,11 @@ export default function BestTeams({ leagueId }) {
               >
                 <td className="px-2 py-1.5 sm:px-4 sm:py-2.5 text-muted-foreground">{i + 1}</td>
                 <td className="px-2 py-1.5 sm:px-4 sm:py-2.5">
-                  <div className="text-foreground font-sans font-medium whitespace-nowrap">{r.name}</div>
-                  <div className="text-[10px] text-muted-foreground uppercase tracking-wider font-sans">{r.league_name}</div>
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-foreground font-sans font-medium whitespace-nowrap">{r.name}</span>
+                    <TeamStar teamId={r.team_id} teamName={r.name} />
+                  </div>
+                  <div className="text-[10px] text-muted-foreground uppercase tracking-wider font-sans">{withFlag(r.league_id, r.league_name)}</div>
                 </td>
                 <td className="px-2 py-1.5 sm:px-4 sm:py-2.5 text-right text-emerald-400 font-semibold">{r.won_avg.toFixed(2)}</td>
                 <td className="px-2 py-1.5 sm:px-4 sm:py-2.5 hidden md:table-cell">

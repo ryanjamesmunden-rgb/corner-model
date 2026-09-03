@@ -38,8 +38,11 @@ export default function Scanner() {
 
       <HomeInsights />
 
-      <FixtureBoard leagueId="all" />
-
+      {/* The board comes BEFORE the fixture list. The page is titled "Best Corner Teams
+          & Streaks" and opens on the Best Teams tab, so the thing it is named after was
+          arriving below a full fixture board — a scroll away from the headline that
+          promised it. Fixtures are still there, one scroll down, which is where someone
+          looking for a specific game goes anyway. */}
       <Tabs value={view} onValueChange={setView}>
         <TabsList className="bg-secondary h-10 flex-wrap">
           {TABS.map((t) => (
@@ -54,6 +57,8 @@ export default function Scanner() {
       {view === "form" && <TrendFinder />}
       {view === "streaks" && <StreakFinder leagueId={leagueId} />}
       {view === "chase" && <ChaseBoard leagueId="all" withinDays={7} limit={25} />}
+
+      <FixtureBoard leagueId="all" />
     </div>
   );
 }

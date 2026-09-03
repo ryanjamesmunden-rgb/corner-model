@@ -1901,6 +1901,56 @@ async def _start_tool(script: str, argv: List[str], label: str) -> dict:
     return {"started": True, **doc}
 
 
+@api_router.post("/tools/purge-auto-picks")
+async def purge_auto_picks(token: Optional[str] = None, confirm: bool = False):
+    """Delete the Daily 2's auto-generated picks. DRY RUN unless confirm=true.
+
+    These are the unpriced selections the removed scheduler wrote every morning. They
+    carried no price, so no EV and no gradeable P/L, and nothing displays them any more —
+    but they are still in db.picks skewing anything that counts rows there.
+
+    DRY RUN BY DEFAULT, and that is not politeness. This is a delete_many against
+    production records, triggered by a URL, with no undo: a typo'd query or a
+    misunderstanding about what "auto" covers destroys history that cannot be
+    reconstructed. So the first call only ever REPORTS — what it would remove, over what
+    dates, and how many manual picks it is leaving alone — and deleting takes a second,
+    deliberate call. Anyone who reads the report and still passes confirm=true has seen
+    the number.
+
+    ONLY `auto: True`. Manually logged picks are the real record — the ones actually sent,
+    with the price taken — and they are matched by a different query entirely so that no
+    mistake here can reach them. The manual count is reported both times as proof they
+    were untouched.
+    """
+    _check_tools_token(token)
+    auto_q = {"auto": True}
+    docs = await db.picks.find(auto_q, {"_id": 0, "date": 1, "status": 1}).to_list(20000)
+    manual = await db.picks.count_documents({"auto": {"$ne": True}})
+
+    dates = sorted(d["date"] for d in docs if d.get("date"))
+    by_status = {}
+    for d in docs:
+        by_status[d.get("status") or "unknown"] = by_status.get(d.get("status") or "unknown", 0) + 1
+    report = {
+        "auto_picks": len(docs),
+        "by_status": by_status,
+        "earliest": dates[0] if dates else None,
+        "latest": dates[-1] if dates else None,
+        "manual_picks_kept": manual,
+    }
+
+    if not confirm:
+        return {"status": "dry_run",
+                "message": "Nothing deleted. Re-run with &confirm=true to delete the "
+                           f"{len(docs)} auto pick(s) listed here.",
+                **report}
+
+    res = await db.picks.delete_many(auto_q)
+    logger.info("tools: purged %d auto picks; %d manual picks untouched",
+                res.deleted_count, manual)
+    return {"status": "deleted", "deleted": res.deleted_count, **report}
+
+
 @api_router.post("/tools/backfill-shots")
 async def tool_backfill_shots(token: Optional[str] = None, league_id: Optional[str] = None,
                               limit: int = 120, project_only: bool = False,

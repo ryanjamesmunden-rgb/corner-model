@@ -2,6 +2,7 @@ import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { Flame, ArrowRight, Target, TrendingDown, History } from "lucide-react";
 import { api } from "@/lib/api";
+import TeamStar from "@/components/TeamStar";
 import ShareButtons from "@/components/ShareButtons";
 import { withFlag } from "@/lib/countryFlag";
 import { kickoffLabel } from "@/lib/kickoff";
@@ -207,7 +208,10 @@ export default function StreakFinder({ leagueId }) {
                 style={{ borderLeft: `2px solid ${isSolid(r) ? "#10B981" : "#3F3F46"}` }}
               >
                 <td className="px-2 py-1.5 sm:px-4 sm:py-2.5 sticky left-0 bg-card z-10">
-                  <div className="text-foreground font-sans font-medium whitespace-nowrap">{r.name}</div>
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-foreground font-sans font-medium whitespace-nowrap">{r.name}</span>
+                    <TeamStar teamId={r.team_id} teamName={r.name} />
+                  </div>
                   <div className="text-[10px] text-muted-foreground uppercase tracking-wider font-sans">{withFlag(r.league_id, r.league_name)}</div>
                 </td>
                 <td className="px-2 py-1.5 sm:px-4 sm:py-2.5">

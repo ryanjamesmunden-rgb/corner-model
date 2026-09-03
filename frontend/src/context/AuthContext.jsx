@@ -14,6 +14,7 @@ import { api, getToken, setToken } from "@/lib/api";
 
 const AuthContext = createContext({
   user: null, ready: false, member: false, clientId: "", starred: new Set(),
+  starredTeams: new Set(), setStarredTeam: () => {},
   setStarred: () => {}, setMember: () => {}, signOut: () => {}, renderButton: () => {},
 });
 
@@ -47,6 +48,9 @@ export function AuthProvider({ children }) {
   // navigate away, come back, and it looks like nothing happened. One fetch, shared,
   // rather than a request per star on every list.
   const [starred, setStarredSet] = useState(() => new Set());
+  // Followed teams, held alongside starred fixtures and for the same reason: without it
+  // every team star renders empty on load, so following looks like it did nothing.
+  const [starredTeams, setStarredTeamsSet] = useState(() => new Set());
   const initialised = useRef(false);
 
   // Resume an existing session, and pick up the client id. Both failures are silent on
@@ -74,11 +78,14 @@ export function AuthProvider({ children }) {
   // Load the starred set whenever we learn who the user is, and clear it on sign-out so
   // the next person to use this browser does not inherit the last one's stars.
   useEffect(() => {
-    if (!user) { setStarredSet(new Set()); return; }
+    if (!user) { setStarredSet(new Set()); setStarredTeamsSet(new Set()); return; }
     let alive = true;
     api.favourites()
       .then((d) => alive && setStarredSet(new Set((d.favourites || []).map((f) => f.fixture_id))))
       .catch(() => { /* stars just render empty; nothing else breaks */ });
+    api.favouriteTeams()
+      .then((d) => alive && setStarredTeamsSet(new Set((d.teams || []).map((t) => t.team_id))))
+      .catch(() => { /* same — a failed load leaves stars hollow, not the page broken */ });
     return () => { alive = false; };
   }, [user]);
 
@@ -86,6 +93,14 @@ export function AuthProvider({ children }) {
   // object the server already returned rather than a second source of truth.
   const setMember = useCallback((on) => {
     setUser((u) => (u ? { ...u, member: on } : u));
+  }, []);
+
+  const setStarredTeam = useCallback((teamId, on) => {
+    setStarredTeamsSet((prev) => {
+      const next = new Set(prev);
+      on ? next.add(teamId) : next.delete(teamId);
+      return next;
+    });
   }, []);
 
   const setStarred = useCallback((fixtureId, on) => {
@@ -136,7 +151,7 @@ export function AuthProvider({ children }) {
   }, []);
 
   return (
-    <AuthContext.Provider value={{ user, ready, member: !!user?.member, clientId, starred, setStarred, setMember, signOut, renderButton }}>
+    <AuthContext.Provider value={{ user, ready, member: !!user?.member, clientId, starred, setStarred, starredTeams, setStarredTeam, setMember, signOut, renderButton }}>
       {children}
     </AuthContext.Provider>
   );

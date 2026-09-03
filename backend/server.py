@@ -911,6 +911,93 @@ async def remove_favourite(fixture_id: str, user: dict = Depends(require_user)):
     return {"fixture_id": fixture_id, "starred": False}
 
 
+# ---- Followed teams. A star on a FIXTURE is "come back to this game"; a star on a TEAM
+# is "tell me whenever they play". Different shelf-life, so a different collection: a
+# fixture star is spent once the game kicks off, a team star is meant to outlive seasons.
+
+
+@api_router.get("/favourites/teams")
+async def list_favourite_teams(user: dict = Depends(require_user), within_days: int = 30):
+    """Followed teams with their upcoming fixtures — the point of following one.
+
+    Returns the NEXT FEW games per team rather than just the next one. Someone following
+    a side wants to see the run coming up, which is the whole difference between this and
+    starring a single fixture; answering with one game would just be a slower way of
+    doing what the fixture star already does.
+
+    A team that stops syncing leaves a star pointing at nothing. Those come back with an
+    empty fixture list rather than being dropped, so a follow that has gone quiet is
+    visible instead of looking like it was never saved."""
+    favs = await db.favourite_teams.find({"user_id": user["user_id"]}, {"_id": 0}).to_list(500)
+    if not favs:
+        return {"teams": [], "missing": 0}
+    ids = [f["team_id"] for f in favs]
+    teams = {t["team_id"]: t for t in
+             await db.teams.find({"team_id": {"$in": ids}}, {"_id": 0}).to_list(500)}
+    leagues = {l["league_id"]: l["name"] for l in await db.leagues.find({}, {"_id": 0}).to_list(200)}
+
+    now = datetime.now(timezone.utc)
+    horizon = now + timedelta(days=max(1, min(within_days, 120)))
+    fixtures = await db.fixtures.find(
+        {"$or": [{"home_team_id": {"$in": ids}}, {"away_team_id": {"$in": ids}}]},
+        {"_id": 0}).to_list(5000)
+
+    upcoming = {tid: [] for tid in ids}
+    for fx in fixtures:
+        try:
+            dt = datetime.fromisoformat((fx.get("date") or "").replace("Z", "+00:00"))
+        except Exception:
+            continue
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        if dt < now or dt > horizon:
+            continue
+        for tid, opp, is_home in ((fx["home_team_id"], fx["away_name"], True),
+                                  (fx["away_team_id"], fx["home_name"], False)):
+            if tid in upcoming:
+                upcoming[tid].append({"fixture_id": fx["fixture_id"], "date": fx["date"],
+                                      "round": fx.get("round"), "opponent": opp,
+                                      "is_home": is_home, "league_id": fx["league_id"]})
+    for v in upcoming.values():
+        v.sort(key=lambda f: f["date"])
+
+    starred_at = {f["team_id"]: f.get("created_at") for f in favs}
+    out = []
+    for tid in ids:
+        t = teams.get(tid)
+        if not t:
+            continue
+        out.append({"team_id": tid, "name": t["name"], "league_id": t["league_id"],
+                    "league_name": leagues.get(t["league_id"], ""),
+                    "starred_at": starred_at.get(tid),
+                    "real_samples": t.get("real_samples", 0),
+                    "fixtures": upcoming.get(tid, [])})
+    # Teams with a game soonest first; those with nothing scheduled fall to the bottom
+    # rather than being hidden, because "no fixture found" is information too.
+    out.sort(key=lambda r: (r["fixtures"][0]["date"] if r["fixtures"] else "9999"))
+    return {"teams": out, "missing": len(favs) - len(out), "within_days": within_days}
+
+
+@api_router.post("/favourites/teams/{team_id}")
+async def add_favourite_team(team_id: str, user: dict = Depends(require_user)):
+    """Idempotent — following twice is a double tap, not an error."""
+    if not await db.teams.find_one({"team_id": team_id}, {"_id": 1}):
+        raise HTTPException(status_code=404, detail="No such team")
+    await db.favourite_teams.update_one(
+        {"user_id": user["user_id"], "team_id": team_id},
+        {"$setOnInsert": {"user_id": user["user_id"], "team_id": team_id,
+                          "created_at": datetime.now(timezone.utc).isoformat()}},
+        upsert=True)
+    return {"team_id": team_id, "starred": True}
+
+
+@api_router.delete("/favourites/teams/{team_id}")
+async def remove_favourite_team(team_id: str, user: dict = Depends(require_user)):
+    """Also idempotent: unfollowing something already gone is a success."""
+    await db.favourite_teams.delete_one({"user_id": user["user_id"], "team_id": team_id})
+    return {"team_id": team_id, "starred": False}
+
+
 @api_router.get("/auth/me")
 async def whoami(user: dict = Depends(get_current_user)):
     """Who the current token belongs to, or null when signed out — not a 401, because

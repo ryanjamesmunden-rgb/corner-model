@@ -146,6 +146,8 @@ export default function FixtureDetail() {
               <TrendingUp className="h-4 w-4 text-muted-foreground" />
               <h3 className="font-head font-semibold text-sm">{g.label}</h3>
             </div>
+            {/* Wide on a phone: the card clips, so the table needs its own scroller. */}
+            <div className="overflow-x-auto">
             <table className="w-full">
               <thead>
                 <tr className="border-b border-border text-muted-foreground text-[10px] uppercase tracking-wider">
@@ -212,6 +214,7 @@ export default function FixtureDetail() {
                 })}
               </tbody>
             </table>
+            </div>
             <BandKey note="Landed = how often this team hit the line in its own games on this venue. Colour follows that, not the model's probability." />
           </div>
         ))}
@@ -276,6 +279,8 @@ function TotalCornersLanded({ markets, home, away, homeName, awayName }) {
           {sample} games
         </span>
       </div>
+      {/* Wide on a phone: the card clips, so the table needs its own scroller. */}
+      <div className="overflow-x-auto">
       <table className="w-full">
         <thead>
           <tr className="border-b border-border text-muted-foreground text-[10px] uppercase tracking-wider">
@@ -316,6 +321,7 @@ function TotalCornersLanded({ markets, home, away, homeName, awayName }) {
           })}
         </tbody>
       </table>
+      </div>
       <BandKey note="Landed in = how often both teams' recent games cleared this total." />
       <p className="px-3 py-2 text-[10px] text-muted-foreground leading-relaxed border-t border-border">
         Share of these teams' recent games that reached each line. Both sides' games count

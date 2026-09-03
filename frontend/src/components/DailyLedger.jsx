@@ -194,6 +194,8 @@ function Breakdown({ title, groups }) {
       {entries.length === 0 ? (
         <p className="px-4 py-6 text-center text-muted-foreground text-xs">Nothing tracked yet</p>
       ) : (
+        // Wide on a phone: the card clips, so the table needs its own scroller.
+        <div className="overflow-x-auto">
         <table className="w-full">
           <thead>
             <tr className="border-b border-border text-muted-foreground text-[10px] uppercase tracking-wider">
@@ -220,6 +222,7 @@ function Breakdown({ title, groups }) {
             ))}
           </tbody>
         </table>
+        </div>
       )}
     </div>
   );

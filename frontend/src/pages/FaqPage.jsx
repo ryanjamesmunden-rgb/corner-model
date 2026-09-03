@@ -14,12 +14,16 @@ const PRICE = "£20";
 // have paid yet, and a league switcher above a "how do I cancel" answer is noise.
 export default function FaqPage() {
   const [instant, setInstant] = useState(true);
+  const [hasTutorial, setHasTutorial] = useState(false);
 
   useEffect(() => {
     // Whether checkout grants access immediately depends on which one is live. Assume
     // the modern flow if the backend cannot be reached — it is what a new visitor will
     // get, and the alternative reads as "expect a delay" to someone who won't have one.
-    api.config().then((c) => setInstant(!!c?.stripe_ready)).catch(() => {});
+    api.config().then((c) => {
+      setInstant(!!c?.stripe_ready);
+      setHasTutorial(!!c?.tutorial_url);
+    }).catch(() => {});
   }, []);
 
   return (
@@ -39,7 +43,7 @@ export default function FaqPage() {
           </p>
         </div>
 
-        <Faq price={PRICE} instant={instant} />
+        <Faq price={PRICE} instant={instant} hasTutorial={hasTutorial} />
 
         <div className="flex flex-wrap gap-3 pt-2">
           <Link to="/join"

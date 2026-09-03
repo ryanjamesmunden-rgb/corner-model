@@ -974,12 +974,21 @@ async def root():
 # at all. The build-time variable still works as a fallback so nothing breaks.
 JOIN_URL = os.environ.get("JOIN_URL", "").strip()
 
+# The "how to use this" video, shown to someone the moment their payment clears.
+#
+# Runtime, not build-time, for exactly the reason JOIN_URL is — see the note above. A
+# YouTube link is the sort of thing that gets re-recorded and swapped, and needing a
+# frontend rebuild (which Vercel may serve from cache) to change a URL is how a dead
+# link outlives the deploy that was supposed to fix it.
+TUTORIAL_URL = os.environ.get("TUTORIAL_URL", "").strip()
+
 
 @api_router.get("/config")
 async def public_config():
     """Runtime settings the frontend needs. Public by design — the join link is a URL
     meant to be clicked by anyone, not a secret."""
-    return {"join_url": JOIN_URL, "google_client_id": auth.GOOGLE_CLIENT_ID,
+    return {"join_url": JOIN_URL, "tutorial_url": TUTORIAL_URL,
+            "google_client_id": auth.GOOGLE_CLIENT_ID,
             # Whether checkout can run. The page falls back to the old payment link when
             # this is false, so the switchover needs no coordinated deploy.
             "stripe_ready": billing.configured()}

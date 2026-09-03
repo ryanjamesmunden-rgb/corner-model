@@ -19,7 +19,7 @@
  *                old payment-link fallback). Getting this wrong tells people to wait for
  *                access they already have, or to expect instantly what takes hours.
  */
-export const faqSections = ({ price = "£20", instant = true } = {}) => [
+export const faqSections = ({ price = "£20", instant = true, hasTutorial = false } = {}) => [
   {
     title: "Getting started",
     items: [
@@ -92,6 +92,12 @@ export const faqSections = ({ price = "£20", instant = true } = {}) => [
             finished matches — the screens say "real games only" because that is what they
             count.`,
       },
+      ...(hasTutorial ? [{
+        q: "I've subscribed — where do I start?",
+        a: `There's a short walkthrough on your account page covering where the value is,
+            how to read a streak and what the projections mean. It's the fastest way in;
+            the boards make a lot more sense after five minutes of it.`,
+      }] : []),
       {
         q: "What is a corner streak?",
         a: `A team that keeps landing the same side of a corner line — say 5 or more team

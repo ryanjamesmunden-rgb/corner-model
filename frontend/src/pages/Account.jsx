@@ -3,6 +3,7 @@ import { useNavigate, useSearchParams } from "react-router-dom";
 import { CreditCard, LogOut, ShieldCheck, Loader2, ExternalLink, CheckCircle2, XCircle, RotateCcw } from "lucide-react";
 import { toast } from "sonner";
 import { api } from "@/lib/api";
+import WelcomeVideo from "@/components/WelcomeVideo";
 import { useAuth } from "@/context/AuthContext";
 
 // Where a subscriber manages their subscription — and, above all, where they cancel it.
@@ -36,7 +37,7 @@ function Row({ label, children }) {
 
 export default function Account() {
   const navigate = useNavigate();
-  const { user, ready, member, signOut, renderButton, clientId } = useAuth();
+  const { user, ready, member, signOut, renderButton, clientId, setMember } = useAuth();
   const [params] = useSearchParams();
   const [busy, setBusy] = useState(false);
   // Cancelling is two steps, not one. A single click that ends a paid subscription is
@@ -46,20 +47,39 @@ export default function Account() {
   // Held locally so the page updates the moment Stripe confirms, rather than waiting for
   // the next reload to reflect what the user just did.
   const [ends, setEnds] = useState(null);
+  // Runtime config, so the video can be swapped without a frontend rebuild.
+  const [tutorialUrl, setTutorialUrl] = useState("");
+  useEffect(() => { api.config().then((c) => setTutorialUrl(c?.tutorial_url || "")).catch(() => {}); }, []);
   // renderButton DRAWS INTO a node rather than returning one — same pattern as SignIn.
   const signInSlot = useRef(null);
   useEffect(() => { if (!user) renderButton(signInSlot.current); }, [user, renderButton, clientId]);
 
   // Stripe sends people back here after checkout. The webhook is what actually grants
-  // membership, and it can land a beat after the redirect, so this refreshes rather than
-  // asserting success — telling someone they are subscribed before the webhook has been
-  // processed produces a page that says "member" over a locked screen.
+  // membership and it can land a beat after the redirect, so this waits for it rather
+  // than asserting success — telling someone they are subscribed before the webhook has
+  // been processed produces a page that says "member" over a locked screen.
+  //
+  // POLLED, NOT RELOADED. This used to call window.location.reload(), which was fine
+  // until the same view started showing a welcome video: a reload two seconds in kills
+  // playback and restarts the video under someone who had just pressed play. Asking the
+  // API instead updates the same state without touching the page.
   const justPaid = params.get("checkout") === "success";
   useEffect(() => {
-    if (!justPaid) return;
-    const t = setTimeout(() => window.location.reload(), 2500);
-    return () => clearTimeout(t);
-  }, [justPaid]);
+    if (!justPaid || member) return;
+    let alive = true;
+    let tries = 0;
+    const tick = async () => {
+      if (!alive || tries >= 10) return;      // ~30s, then give up quietly
+      tries += 1;
+      try {
+        const res = await api.me();
+        if (alive && res?.user?.member) { setMember(true); return; }
+      } catch { /* transient; try again */ }
+      if (alive) setTimeout(tick, 3000);
+    };
+    const t = setTimeout(tick, 1500);
+    return () => { alive = false; clearTimeout(t); };
+  }, [justPaid, member, setMember]);
 
   if (!ready) return null;
 
@@ -136,6 +156,18 @@ export default function Account() {
           <CheckCircle2 className="h-4 w-4 shrink-0" />
           Payment received — setting up your membership…
         </div>
+      )}
+
+      {/* Straight after checkout this is the first thing on the page, above the
+          membership box: someone who has just paid wants to know what to do next, not
+          to be told what they already know about their own status. */}
+      {justPaid && (
+        <WelcomeVideo
+          url={tutorialUrl}
+          prominent
+          title="Start here — how to use the site"
+          subtitle="Five minutes on where the value is, how to read a streak, and what the projections mean."
+        />
       )}
 
       <section className="bg-card border border-border rounded-lg p-4">
@@ -269,6 +301,14 @@ export default function Account() {
           </>
         )}
       </section>
+
+      {member && !justPaid && (
+        <WelcomeVideo
+          url={tutorialUrl}
+          title="How to use the site"
+          subtitle="Where the value is, how to read a streak, and what the projections mean."
+        />
+      )}
 
       <a href="/faq" className="block text-sm text-primary hover:underline" data-testid="account-faq">
         Questions about your subscription

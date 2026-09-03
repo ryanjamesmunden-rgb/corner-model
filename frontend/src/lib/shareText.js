@@ -71,14 +71,27 @@ export const fixtureShare = ({ fixtures = [], days = "3" }) => (limit) => {
 };
 
 /**
- * Best Corner Teams. Numbered rather than bulleted, so the flag joins the name instead
- * of replacing the marker — a ranking without its numbers is just a list.
+ * Best Corner Teams: flag, team, number. Nothing else on the line.
+ *
+ * THE UNIT IS NAMED ONCE, IN THE HEADING, and never repeated per row — the same rule the
+ * timezone footer follows. "corners won/game" after every team cost 18 characters a line
+ * and said the same thing eight times; on a board headed "avg corners won" the number
+ * needs no unit, and "per game" is what an average already means.
+ *
+ * The rank numbers are gone too. They cost three characters a row to state an order the
+ * list is already in, and on X those three characters are a whole extra team.
+ *
+ * That takes a row from ~42 characters to ~16, which is the difference between three
+ * teams surviving the post limit and all eight — the point being that fitToPost drops
+ * rows it cannot fit, so shortening the line is what stops it having to.
  */
 export const bestTeamsShare = ({ rows = [], side, windowLabel = "" }) => (limit) => {
   if (!rows.length) return "";
-  return `Best corner teams — ${side === "overall" ? "all games" : side} (${windowLabel}):\n`
-    + rows.slice(0, limit).map((r, i) =>
-        `${i + 1}. ${withFlag(r.league_id, r.name)} — ${r.won_avg.toFixed(2)} corners won/game`).join("\n")
+  const scope = side === "overall" ? "" : ` ${side}`;
+  const window = windowLabel ? ` · ${windowLabel}` : "";
+  return `Best corner teams${scope} — avg corners won${window}:\n`
+    + rows.slice(0, limit).map((r) =>
+        `${flagBullet(r.league_id)} ${r.name} ${r.won_avg.toFixed(2)}`).join("\n")
     + more(rows.length, limit);
 };
 

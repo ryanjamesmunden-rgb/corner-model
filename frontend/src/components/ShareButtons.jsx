@@ -18,17 +18,22 @@ export { X_SHARE_ROWS };
  * compose window with text prefilled — nothing is ever posted automatically, the
  * user still has to hit send on X or Telegram.
  *
+ * `xRows` is the ceiling to start from, defaulting to X_SHARE_ROWS. A board with short
+ * rows passes its own, higher, number: fitToPost still drops whatever will not fit, so
+ * the ceiling only decides where the trying starts. Best Corner Teams fits all eight
+ * rows in a post; capping it at four would throw away half a board that fits.
+ *
  * `buildX(rows)` builds the same board at a given row count, for X alone. It is a
  * FUNCTION rather than a second string because fitting a post means rebuilding at fewer
  * rows, not cutting one short: the "+N more on the site" tail has to keep matching the
  * list above it, and only the board knows what N is. Boards that don't pass it share
  * their full text everywhere, as before.
  */
-export default function ShareButtons({ text, buildX, url, className = "" }) {
+export default function ShareButtons({ text, buildX, xRows = X_SHARE_ROWS, url, className = "" }) {
   const [copied, setCopied] = useState(false);
   const shareUrl = url || (typeof window !== "undefined" ? window.location.href : "");
   const body = text || "";
-  const xBody = buildX ? fitToPost(buildX, X_SHARE_ROWS) : body;
+  const xBody = buildX ? fitToPost(buildX, xRows) : body;
 
   const open = (href) => window.open(href, "_blank", "noopener,noreferrer");
 
@@ -53,7 +58,7 @@ export default function ShareButtons({ text, buildX, url, className = "" }) {
 
   return (
     <div className={`flex items-center gap-2 ${className}`} data-testid="share-buttons">
-      <button onClick={shareX} className={btn} data-testid="share-x" title={`Share on X — up to ${X_SHARE_ROWS} rows, trimmed to fit one post`}>
+      <button onClick={shareX} className={btn} data-testid="share-x" title={`Share on X — up to ${xRows} rows, trimmed to fit one post`}>
         <XLogo className="h-3.5 w-3.5" /> <span className="hidden sm:inline">Share</span>
       </button>
       <button onClick={shareTelegram} className={btn} data-testid="share-telegram" title="Share on Telegram">

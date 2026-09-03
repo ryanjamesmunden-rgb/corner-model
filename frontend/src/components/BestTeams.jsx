@@ -49,7 +49,10 @@ export default function BestTeams({ leagueId }) {
             <span className="font-mono-data text-[10px] text-muted-foreground">{rows.length} shown</span>
           )}
         </div>
-        {rows.length > 0 && <ShareButtons text={buildShare(SHARE_ROWS)} buildX={buildShare} />}
+        {/* The compact row format fits all eight in one post — see bestTeamsShare. */}
+        {rows.length > 0 && (
+          <ShareButtons text={buildShare(SHARE_ROWS)} buildX={buildShare} xRows={SHARE_ROWS} />
+        )}
         <div className="lg:ml-auto flex flex-wrap items-center gap-2">
           <Tabs value={side} onValueChange={setSide}>
             <TabsList className="bg-secondary h-8">

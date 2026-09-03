@@ -93,14 +93,25 @@ describe("the other two boards", () => {
     expect(fixtureShare({ fixtures, days: "3" })(2)).toContain("Roma v Lazio (λ 10.2) ·");
   });
 
-  test("best teams keeps its numbering, so the flag joins the name", () => {
+  test("best teams is flag, name, number — and nothing else on the line", () => {
     const out = bestTeamsShare({
       rows: [{ name: "Celtic", league_id: "sco-pl", won_avg: 8.123 }],
       side: "overall", windowLabel: "Season",
     })(4);
-    // The ranking line, not the heading above it.
-    expect(out.split("\n")[1]).toMatch(/^1\. \u{1F3F4}/u);
-    expect(out).toContain("8.12 corners won/game");
+    const row = out.split("\n")[1];
+    expect(row).toBe("\u{1F3F4}\u{E0067}\u{E0062}\u{E0073}\u{E0063}\u{E0074}\u{E007F} Celtic 8.12");
+    // The unit belongs in the heading once, not after every team — 18 characters a row
+    // saying the same thing eight times is what pushed the post over the limit.
+    expect(row).not.toMatch(/corners|game/);
+    expect(out.split("\n")[0]).toContain("avg corners won");
+  });
+
+  test("all eight teams fit one X post in the compact format", () => {
+    const rows = Array.from({ length: 8 }, (_, i) =>
+      ({ name: `Team ${i}`, league_id: "eng-pl", won_avg: 7 - i * 0.1 }));
+    const out = bestTeamsShare({ rows, side: "overall", windowLabel: "Season" })(8);
+    expect(out.split("\n").filter((l) => /\d\.\d\d$/.test(l))).toHaveLength(8);
+    expect(out).not.toContain("more on the site");
   });
 });
 

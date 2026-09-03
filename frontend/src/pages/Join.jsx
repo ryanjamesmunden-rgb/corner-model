@@ -224,9 +224,14 @@ export default function Join() {
               </span>
             </div>
           )}
+          {/* This has to track which checkout is actually live. The Stripe flow unlocks
+              the site the moment the webhook lands; the old payment-link fallback is
+              still manual. Saying "allow a few hours" under an instant checkout would
+              have people waiting for access they already have — and emailing to ask. */}
           <p className="mt-3 text-xs text-muted-foreground">
-            Checkout asks for your Telegram username — that's how you get added. Access is manual,
-            so allow a few hours.
+            {stripeReady
+              ? "Access unlocks as soon as payment goes through. Manage or cancel any time from your account."
+              : "Checkout asks for your Telegram username — that's how you get added. Access is manual, so allow a few hours."}
           </p>
         </section>
 

@@ -66,7 +66,7 @@ export default function MembersOnly({ title, blurb, children }) {
             </button>
           </div>
           <p className="text-[11px] text-muted-foreground/70 mt-2">
-            Posted in the members channel. Enter it once and this browser stays unlocked.
+            Posted in the VIP channel. Enter it once and this browser stays unlocked.
           </p>
         </form>
       )}

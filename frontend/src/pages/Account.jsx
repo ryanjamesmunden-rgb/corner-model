@@ -270,6 +270,10 @@ export default function Account() {
         )}
       </section>
 
+      <a href="/faq" className="block text-sm text-primary hover:underline" data-testid="account-faq">
+        Questions about your subscription
+      </a>
+
       <button
         onClick={() => { signOut(); navigate("/scanner"); }}
         data-testid="account-signout"

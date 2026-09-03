@@ -3,6 +3,7 @@ import { Link, useNavigate } from "react-router-dom";
 import { CornerDownRight, Check, ExternalLink, ArrowRight, Loader2 } from "lucide-react";
 import { toast } from "sonner";
 import { api } from "@/lib/api";
+import Faq from "@/components/Faq";
 import { useAuth } from "@/context/AuthContext";
 
 // The subscription page the payment link points at.
@@ -233,6 +234,13 @@ export default function Join() {
               ? "Access unlocks as soon as payment goes through. Manage or cancel any time from your account."
               : "Checkout asks for your Telegram username — that's how you get added. Access is manual, so allow a few hours."}
           </p>
+        </section>
+
+        {/* The objections, answered on the page where they occur. A buyer who has to
+            leave to find out whether they can cancel usually just leaves. */}
+        <section data-testid="join-faq">
+          <h2 className="font-head font-semibold text-lg mb-3">Questions</h2>
+          <Faq price={PRICE} instant={stripeReady} />
         </section>
 
         <section className="border border-border rounded-lg p-5" data-testid="join-guarantee">

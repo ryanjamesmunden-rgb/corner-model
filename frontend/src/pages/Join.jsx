@@ -59,6 +59,10 @@ export default function Join() {
   const [configReached, setConfigReached] = useState(null);   // null = still asking
   const [stripeReady, setStripeReady] = useState(false);
   const [busy, setBusy] = useState(false);
+  // Did they press Subscribe before signing in? Only then does signing in continue
+  // straight to payment. Someone who signs in to look around must not be thrown at a
+  // checkout page they never asked for.
+  const [intent, setIntent] = useState(false);
   const navigate = useNavigate();
   const { user, member, renderButton, clientId } = useAuth();
   const signInSlot = useRef(null);
@@ -75,7 +79,22 @@ export default function Join() {
   }, []);
 
   // Google's button draws into a node rather than returning one — same as SignIn.
-  useEffect(() => { if (!user) renderButton(signInSlot.current); }, [user, renderButton, clientId]);
+  useEffect(() => { if (!user) renderButton(signInSlot.current); }, [user, renderButton, clientId, intent]);
+
+  // THE DEAD STOP THIS REMOVES. Signing in re-rendered the page with a Subscribe button
+  // where the sign-in prompt had been, and the visitor had to notice that and click
+  // again. That pause, on the one screen where someone has already decided to pay, is
+  // where people leave. Pressing Subscribe now carries through the sign-in and lands on
+  // Stripe's payment page by itself.
+  //
+  // Still safe: Stripe's checkout is a page you fill in and confirm, so arriving there
+  // charges nobody. And it only fires for someone who asked to subscribe.
+  useEffect(() => {
+    if (!intent || !user || member || !stripeReady || busy) return;
+    setIntent(false);
+    subscribe();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [intent, user, member, stripeReady]);
 
   const subscribe = async () => {
     if (busy) return;
@@ -167,19 +186,31 @@ export default function Join() {
             <span className="text-muted-foreground">per month</span>
             <span className="ml-auto text-xs text-muted-foreground">cancel any time</span>
           </div>
-          {/* SIGN IN FIRST, then pay. The old flow was a bare payment link anyone could
-              open, so the money arrived with no way to tell whose it was — which is why
-              the site could never show you your subscription or let you cancel it.
-              Checkout now starts from an account, and that account is what the cancel
-              button on /account hangs off. */}
-          {!user ? (
-            <div className="mt-4" data-testid="join-signin">
-              <p className="text-sm text-muted-foreground mb-3">
-                Create your account first — it's how you'll manage or cancel your
-                subscription later.
-              </p>
-              <div className="flex justify-center" ref={signInSlot} />
-            </div>
+          {/* SIGN IN FIRST, then pay — checkout has to carry the account id, which is what
+              makes a cancel button possible later. But it is presented as ONE action:
+              press Subscribe, sign in, arrive at payment. The account is a step in
+              buying, not a hurdle in front of it.
+
+              When Stripe is not configured the old payment link is used instead, and that
+              link cannot be tied to an account — so demanding one first would be friction
+              buying nothing. Signed-out visitors go straight to it. */}
+          {!user && stripeReady ? (
+            !intent ? (
+              <button
+                onClick={() => setIntent(true)}
+                data-testid="join-button"
+                className="mt-4 w-full inline-flex items-center justify-center gap-2 px-4 py-3 rounded-md bg-primary text-black font-semibold hover:opacity-90 transition-opacity">
+                Subscribe — {PRICE}/month
+              </button>
+            ) : (
+              <div className="mt-4" data-testid="join-signin">
+                <p className="text-sm text-muted-foreground mb-3">
+                  One step first — sign in, and you'll go straight to payment. It's how
+                  you'll manage or cancel afterwards.
+                </p>
+                <div className="flex justify-center" ref={signInSlot} />
+              </div>
+            )
           ) : member ? (
             <button
               onClick={() => navigate("/account")}
@@ -187,7 +218,7 @@ export default function Join() {
               className="mt-4 w-full inline-flex items-center justify-center gap-2 px-4 py-3 rounded-md bg-secondary border border-border font-semibold hover:bg-white/10 transition-colors">
               You're already a member — go to your account
             </button>
-          ) : stripeReady ? (
+          ) : user && stripeReady ? (
             <button
               onClick={subscribe}
               disabled={busy}

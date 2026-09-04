@@ -18,8 +18,13 @@
  * @param instant whether checkout grants access immediately (Stripe) or by hand (the
  *                old payment-link fallback). Getting this wrong tells people to wait for
  *                access they already have, or to expect instantly what takes hours.
+ * @param support how to reach a person, as a phrase ("email x@y" / "message @z on
+ *                Telegram"), or "" when nothing is configured. The refund answer names
+ *                it, because "refunded on request" with no address given is the sentence
+ *                a disputing customer screenshots.
  */
-export const faqSections = ({ price = "£20", instant = true, hasTutorial = false } = {}) => [
+export const faqSections = ({ price = "£20", instant = true, hasTutorial = false,
+                              support = "" } = {}) => [
   {
     title: "Getting started",
     items: [
@@ -36,6 +41,14 @@ export const faqSections = ({ price = "£20", instant = true, hasTutorial = fals
              payment goes through — you don't need to message anyone or wait to be added.`
           : `Checkout asks for your Telegram username and access is added by hand, so allow
              a few hours.`,
+      },
+      {
+        q: "Can I follow my own team?",
+        a: `Yes, and it's worth doing. Tap the bell next to any side and their upcoming
+            fixtures collect on your Saved page, so you stop scrolling the board to find
+            them. The star next to a fixture does the other half of the job — it keeps one
+            game to come back to once the prices are up. There's a quick picker on your
+            account page if you'd rather start from the best corner sides.`,
       },
       {
         q: "What's the difference between the free and VIP channels?",
@@ -68,6 +81,21 @@ export const faqSections = ({ price = "£20", instant = true, hasTutorial = fals
       {
         q: `How much is it?`,
         a: `${price} a month, and it can be stopped at any time from your account.`,
+      },
+      {
+        q: "How do I actually claim the refund?",
+        a: `Ask${support ? ` (${support})` : " in the Telegram channel"}, within 14 days
+            of the month ending. Cancelling and refunding are separate things: you can
+            stop paying yourself on your account page in two clicks, but a month back
+            under the guarantee needs a person, because it is measured on how the
+            channel's posted picks settled and no button can work that out.`,
+      },
+      {
+        q: "Something has gone wrong — how do I reach a human?",
+        a: `${support ? `Please ${support}.` : "The Telegram channel is the way through."}
+            Payment taken but no access, locked out of your account, anything the site has
+            got stuck on — that is the route, and it is the same one that answers refund
+            requests.`,
       },
       {
         q: "Where do I update my card or get an invoice?",

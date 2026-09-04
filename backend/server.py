@@ -1069,6 +1069,23 @@ JOIN_URL = os.environ.get("JOIN_URL", "").strip()
 # link outlives the deploy that was supposed to fix it.
 TUTORIAL_URL = os.environ.get("TUTORIAL_URL", "").strip()
 
+# Where a member goes when the site itself cannot help them: a refund under the
+# guarantee, a payment that did not land, an account they are locked out of.
+#
+# Runtime env vars for the same reason JOIN_URL is, and OPTIONAL by design: when neither
+# is set the frontend says plainly that the Telegram channel is the way through rather
+# than printing a mailto that goes nowhere. An address is never invented.
+#
+# There is a real reason to set one. /join and the FAQ both promise the month is
+# "refunded on request", and a promise to honour a request with nowhere to make it is
+# the exact failure that made this billing work necessary — someone who cannot reach you
+# does not give up, they ask their bank instead.
+SUPPORT_EMAIL = os.environ.get("SUPPORT_EMAIL", "").strip()
+# Stored bare so the frontend owns how it is displayed and linked; a pasted "@handle" or
+# a full t.me URL both reduce to the handle.
+SUPPORT_TELEGRAM = (os.environ.get("SUPPORT_TELEGRAM", "").strip()
+                    .rsplit("/", 1)[-1].lstrip("@"))
+
 
 @api_router.get("/config")
 async def public_config():
@@ -1076,6 +1093,7 @@ async def public_config():
     meant to be clicked by anyone, not a secret."""
     return {"join_url": JOIN_URL, "tutorial_url": TUTORIAL_URL,
             "google_client_id": auth.GOOGLE_CLIENT_ID,
+            "support_email": SUPPORT_EMAIL, "support_telegram": SUPPORT_TELEGRAM,
             # Whether checkout can run. The page falls back to the old payment link when
             # this is false, so the switchover needs no coordinated deploy.
             "stripe_ready": billing.configured()}

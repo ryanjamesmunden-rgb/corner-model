@@ -4,6 +4,8 @@ import { CreditCard, LogOut, ShieldCheck, Loader2, ExternalLink, CheckCircle2, X
 import { toast } from "sonner";
 import { api } from "@/lib/api";
 import WelcomeVideo from "@/components/WelcomeVideo";
+import AccountTeams from "@/components/AccountTeams";
+import SupportCard from "@/components/SupportCard";
 import { useAuth } from "@/context/AuthContext";
 
 // Where a subscriber manages their subscription — and, above all, where they cancel it.
@@ -25,6 +27,18 @@ import { useAuth } from "@/context/AuthContext";
 const fmtDate = (iso) => (iso
   ? new Date(iso).toLocaleDateString(undefined, { day: "numeric", month: "long", year: "numeric" })
   : "");
+
+// Greeting rather than a header. This page is otherwise a wall of status rows and a
+// cancel button, and the one place a subscriber lands after paying should sound like it
+// is run by the person whose picks they just bought — not like a billing portal. Time of
+// day rather than a fixed hello, because it costs nothing and reads as a site that is
+// awake.
+const greet = (name, now = new Date()) => {
+  const first = String(name || "").trim().split(/\s+/)[0];
+  const h = now.getHours();
+  const when = h < 12 ? "Morning" : h < 18 ? "Afternoon" : "Evening";
+  return first ? `${when}, ${first}` : "Your account";
+};
 
 function Row({ label, children }) {
   return (
@@ -88,7 +102,8 @@ export default function Account() {
       <div className="max-w-lg mx-auto py-16 text-center" data-testid="account-signed-out">
         <h1 className="font-head text-2xl font-bold mb-2">Your account</h1>
         <p className="text-muted-foreground text-sm mb-6">
-          Sign in to see your membership and manage your subscription.
+          Sign in to follow your teams, keep your starred games, and manage or cancel
+          your subscription. Free, and about ten seconds.
         </p>
         <div className="flex justify-center" ref={signInSlot} />
       </div>
@@ -102,6 +117,21 @@ export default function Account() {
   // page says so outright rather than leaving someone wondering what happens next.
   const isGrandfathered = user.grandfathered;
   const ending = ends === null ? user.cancel_at_period_end : ends;
+
+  // One line that tells you where you stand, in the voice of the channel rather than of
+  // a payments processor. It is the first thing under the greeting because "am I still
+  // a member?" is the question that brought most people to this page.
+  const blurb = !member
+    ? `You're signed in, so your starred games and followed teams stick around. The
+       members' screens — streaks, mismatches, the full board — are still locked.`
+    : ending
+      ? `Winding down, but you're still in until the date below. Nothing else to do, and
+         you can put it back any time.`
+      : isStripe
+        ? `You're in — streaks, mismatches and the full board, all unlocked. Follow a few
+           teams below and the site starts working for you rather than the other way round.`
+        : `You've got the run of the place, on the house. Nothing to pay and nothing to
+           cancel.`;
 
   const openPortal = async () => {
     if (busy) return;
@@ -147,8 +177,17 @@ export default function Account() {
   return (
     <div className="max-w-lg mx-auto py-8 space-y-6" data-testid="account-page">
       <div>
-        <h1 className="font-head text-2xl font-bold">Your account</h1>
-        <p className="text-muted-foreground text-sm mt-1">{user.email}</p>
+        <div className="flex items-center gap-3">
+          {user.picture ? (
+            <img src={user.picture} alt="" referrerPolicy="no-referrer"
+              className="h-11 w-11 rounded-full border border-border shrink-0" />
+          ) : null}
+          <div className="min-w-0">
+            <h1 className="font-head text-2xl font-bold truncate">{greet(user.name)}</h1>
+            <p className="text-muted-foreground text-xs truncate">{user.email}</p>
+          </div>
+        </div>
+        <p className="text-sm text-muted-foreground mt-3">{blurb}</p>
       </div>
 
       {justPaid && (
@@ -302,6 +341,10 @@ export default function Account() {
         )}
       </section>
 
+      {/* Teams before the video: someone who has been here a week has watched it, and the
+          thing they came back to change is what the site follows for them. */}
+      <AccountTeams />
+
       {member && !justPaid && (
         <WelcomeVideo
           url={tutorialUrl}
@@ -309,6 +352,10 @@ export default function Account() {
           subtitle="Where the value is, how to read a streak, and what the projections mean."
         />
       )}
+
+      {/* Below billing on purpose. Cancelling is self-service and comes first; this is
+          for the things a button cannot settle — refunds above all. */}
+      <SupportCard showCancelPointer={member && (isStripe || user.has_billing)} />
 
       <a href="/faq" className="block text-sm text-primary hover:underline" data-testid="account-faq">
         Questions about your subscription

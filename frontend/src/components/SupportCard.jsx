@@ -17,10 +17,16 @@ import { useAuth } from "@/context/AuthContext";
 // a free account is noise, and offering one to a comped member is a question they
 // cannot answer.
 
-export default function SupportCard({ showCancelPointer = true, className = "" }) {
+export default function SupportCard({ config: given, showCancelPointer = true, className = "" }) {
   const { user, member } = useAuth();
-  const [config, setConfig] = useState(null);
-  useEffect(() => { api.config().then(setConfig).catch(() => setConfig({})); }, []);
+  // Fetches its own config only when it is not handed one. A page that already has the
+  // payload passes it down rather than asking twice for the same three fields.
+  const [fetched, setFetched] = useState(null);
+  useEffect(() => {
+    if (given) return;
+    api.config().then(setFetched).catch(() => setFetched({}));
+  }, [given]);
+  const config = given || fetched;
 
   const paid = member && user?.member_source === "stripe";
   const routes = supportRoutes(config || {}, paid ? "refund" : "help", user);

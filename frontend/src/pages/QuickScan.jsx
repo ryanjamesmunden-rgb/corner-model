@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
-import { Zap, ArrowRight, Swords, TrendingUp, ShieldAlert, Sparkles, Loader2 } from "lucide-react";
+import { Zap, ArrowRight, Swords, TrendingUp, ShieldAlert, Sparkles, Loader2, ChevronDown, AlertTriangle } from "lucide-react";
 import { api } from "@/lib/api";
 import { withFlag } from "@/lib/countryFlag";
 import StoryButton from "@/components/StoryButton";
@@ -85,6 +85,10 @@ function PairCard({ r, onClick }) {
   const nf = r.next_fixture || {};
   const [explanation, setExplanation] = useState(null);
   const [loadingExp, setLoadingExp] = useState(false);
+  // Second level of the same answer. The blurb says what the angle is; this says what
+  // it is made of, and the numbers behind it ship with the row so opening it costs
+  // nothing and works even when the explainer itself is down.
+  const [expanded, setExpanded] = useState(false);
 
   const explain = async (e) => {
     e.stopPropagation();
@@ -100,7 +104,10 @@ function PairCard({ r, onClick }) {
       });
       setExplanation(res.explanation);
     } catch {
-      setExplanation("Couldn't generate an explanation right now.");
+      // Still opens the panel, because the NUMBERS do not depend on the explainer —
+      // they came down with the row. A failed model call should cost you the prose, not
+      // the evidence.
+      setExplanation("Couldn't write an explanation right now — the numbers behind this angle are still below.");
     } finally {
       setLoadingExp(false);
     }
@@ -154,18 +161,37 @@ function PairCard({ r, onClick }) {
 
       {/* Claude explainer */}
       {explanation ? (
-        <div data-testid="quickscan-explanation" className="rounded-md bg-primary/5 border border-primary/20 p-2.5">
+        // ABSORBS ITS OWN CLICKS. The whole card is a link to the fixture, so without
+        // this the panel could not be opened, read or selected without being navigated
+        // away from mid-sentence.
+        <div data-testid="quickscan-explanation"
+          onClick={(e) => e.stopPropagation()}
+          className="rounded-md bg-primary/5 border border-primary/20 p-2.5">
           <div className="flex gap-2">
             <Sparkles className="h-3.5 w-3.5 text-primary shrink-0 mt-0.5" />
             <p className="text-xs text-foreground/90 leading-relaxed">{explanation}</p>
           </div>
-          <button
-            data-testid="quickscan-hide-btn"
-            onClick={(e) => { e.stopPropagation(); setExplanation(null); }}
-            className="mt-1.5 ml-5 text-[10px] text-muted-foreground hover:text-foreground transition-colors"
-          >
-            Hide
-          </button>
+
+          <div className="mt-1.5 ml-5 flex items-center gap-3">
+            <button
+              data-testid="quickscan-expand-btn"
+              onClick={() => setExpanded((v) => !v)}
+              aria-expanded={expanded}
+              className="inline-flex items-center gap-1 text-[10px] text-primary hover:text-primary/80 transition-colors"
+            >
+              <ChevronDown className={`h-3 w-3 transition-transform duration-150 ${expanded ? "rotate-180" : ""}`} />
+              {expanded ? "Hide the numbers" : "Show the numbers"}
+            </button>
+            <button
+              data-testid="quickscan-hide-btn"
+              onClick={() => { setExplanation(null); setExpanded(false); }}
+              className="text-[10px] text-muted-foreground hover:text-foreground transition-colors"
+            >
+              Hide
+            </button>
+          </div>
+
+          {expanded && <Evidence r={r} nf={nf} />}
         </div>
       ) : (
         <button
@@ -178,6 +204,99 @@ function PairCard({ r, onClick }) {
           {loadingExp ? "Thinking…" : "Why this angle?"}
         </button>
       )}
+    </div>
+  );
+}
+
+
+// The second level: what the two headline averages are actually made of.
+//
+// The blurb above it is prose from the model. This is the arithmetic under the prose —
+// the sample behind each number and the recent games themselves — so someone who wants
+// to check the claim rather than take it can, without leaving the card.
+//
+// IT REPORTS THE VENUE FALLBACK. `_real_avg` drops a venue split when the pool is
+// thinner than three games and averages everything instead. That is the right call for
+// a projection and a lie in an evidence panel: a card headed "at home" listing eleven
+// games, most of them away, is worse than one that admits the split was not applied. So
+// where the fallback fired, it is said in words.
+
+const VENUE_WORD = { home: "home", away: "away" };
+
+function Side({ label, name, value, unit, data, accent }) {
+  const asked = VENUE_WORD[data?.venue_asked];
+  const fellBack = data && data.venue_used === "all" && asked;
+  return (
+    <div className="py-1.5">
+      <div className="flex items-baseline gap-2">
+        <span className="text-[10px] uppercase tracking-wider text-muted-foreground">{label}</span>
+        <span className="text-xs text-foreground truncate">{name}</span>
+        <span className={`ml-auto font-mono-data text-xs font-semibold ${accent}`}>
+          {value?.toFixed(1)} {unit}
+        </span>
+      </div>
+      {data && (
+        <div className="mt-1 flex items-center gap-1.5 flex-wrap">
+          <span className="text-[10px] text-muted-foreground">
+            {data.games} {fellBack ? "" : asked ? `${asked} ` : ""}game{data.games === 1 ? "" : "s"}
+          </span>
+          {data.recent?.length > 0 && (
+            <span className="flex gap-1" title="Most recent first">
+              {data.recent.map((v, i) => (
+                <span key={i}
+                  className="inline-flex h-4 min-w-4 px-1 items-center justify-center rounded bg-white/5 text-[10px] font-mono-data text-foreground/80">
+                  {v}
+                </span>
+              ))}
+            </span>
+          )}
+        </div>
+      )}
+      {fellBack && (
+        <p className="mt-1 flex items-start gap-1 text-[10px] text-amber-400/90 leading-snug">
+          <AlertTriangle className="h-3 w-3 shrink-0 mt-px" />
+          Fewer than 3 {asked} games, so this is all {data.games} games — not an {asked}-only figure.
+        </p>
+      )}
+    </div>
+  );
+}
+
+function Evidence({ r, nf }) {
+  const ev = r.evidence;
+  return (
+    <div data-testid="quickscan-evidence" className="mt-2 ml-5 border-t border-primary/15 pt-2">
+      {ev ? (
+        <div className="divide-y divide-border/40">
+          <Side label="Wins" name={r.name} value={r.team_for} unit="/g"
+            data={ev.team} accent="text-emerald-400" />
+          <Side label="Concedes" name={nf.opponent} value={r.opp_conceded} unit="/g"
+            data={ev.opponent} accent="text-amber-400" />
+        </div>
+      ) : (
+        // An older cached row from before the evidence shipped. Say so rather than
+        // rendering an empty panel that looks like the numbers are missing.
+        <p className="text-[10px] text-muted-foreground">
+          Sample detail isn't available for this row yet — it arrives with the next sync.
+        </p>
+      )}
+
+      <div className="mt-2 pt-2 border-t border-border/40 grid grid-cols-2 gap-x-3 gap-y-1 font-mono-data text-[10px]">
+        <span className="text-muted-foreground">Projected λ</span>
+        <span className="text-right text-foreground">{r.lambda?.toFixed(2)}</span>
+        <span className="text-muted-foreground">Line</span>
+        <span className="text-right text-foreground">{r.line}+ corners</span>
+        <span className="text-muted-foreground">Model probability</span>
+        <span className="text-right text-foreground">{r.prob?.toFixed(1)}%</span>
+        <span className="text-muted-foreground">Fair price</span>
+        <span className="text-right text-foreground">{r.fair_odds?.toFixed(2)}</span>
+      </div>
+
+      <p className="mt-2 text-[10px] text-muted-foreground leading-relaxed">
+        The projection is built from both averages, not just the first — a side that wins
+        a lot of corners against a defence that concedes few is not the same spot as one
+        drawn against a defence that leaks.
+      </p>
     </div>
   );
 }

@@ -2483,19 +2483,45 @@ async def scanner(league_id: Optional[str] = None, market: Optional[str] = None,
 MIN_VENUE_GAMES = 3
 
 
-def _real_avg(team, side, field):
+def _real_avg_detail(team, side, field, recent: int = 6):
+    """The average, AND the games it was actually computed over.
+
+    This exists because of the fallback three lines down. A venue pool thinner than
+    MIN_VENUE_GAMES is dropped in favour of every game, which is the right call for a
+    projection — a two-game home average is noise — and a trap for anything that shows
+    its working. A card headed "wins 6.8 at home" whose evidence panel then lists eleven
+    games, most of them away, is the sort of thing a paying subscriber spots before you
+    do, and it costs more trust than the fallback saves.
+
+    So the pool that was USED is reported alongside the pool that was ASKED for, and the
+    panel can say "not enough home games, so this is all games" instead of implying a
+    venue split that was never applied.
+    """
     rms = (team or {}).get("real_matches") or []
     if side == "home":
         pool = [m for m in rms if m["home"]]
     elif side == "away":
         pool = [m for m in rms if not m["home"]]
     else:
-        pool = rms
+        pool = list(rms)
+    used = side
     if len(pool) < MIN_VENUE_GAMES:
-        pool = rms                      # too thin to mean anything — fall back to everything
+        pool, used = rms, "all"         # too thin to mean anything — fall back to everything
     if not pool:
         return None
-    return sum(m[field] for m in pool) / len(pool)
+    vals = [m[field] for m in pool]
+    return {"avg": sum(vals) / len(vals), "games": len(pool),
+            "venue_asked": side, "venue_used": used,
+            # newest first, matching how streak rows hand back `recent`
+            "recent": vals[-recent:][::-1]}
+
+
+def _real_avg(team, side, field):
+    """Just the number. A thin wrapper ON PURPOSE: the evidence panel and the projection
+    have to be computing the same average, and the only way to guarantee that is for
+    there to be one implementation of it."""
+    d = _real_avg_detail(team, side, field)
+    return d["avg"] if d else None
 
 
 async def _next_fixtures(q):
@@ -2962,11 +2988,12 @@ async def _all_mismatches(within_days: Optional[int] = None, limit: int = 20):
                 continue
         venue = "home" if nf["is_home"] else "away"
         opp_venue = "away" if nf["is_home"] else "home"
-        team_for = _real_avg(t, venue, "corners_for")
         opp = teams_by_id.get(nf["opponent_team_id"])
-        opp_conc = (_real_avg(opp, opp_venue, "corners_against") if opp else None)
-        if team_for is None or opp_conc is None:
+        team_d = _real_avg_detail(t, venue, "corners_for")
+        opp_d = _real_avg_detail(opp, opp_venue, "corners_against") if opp else None
+        if team_d is None or opp_d is None:
             continue
+        team_for, opp_conc = team_d["avg"], opp_d["avg"]
         avg = league_avgs.get(t["league_id"], 5.0)
         if not (team_for >= avg * 1.1 and opp_conc >= avg * 1.1):
             continue
@@ -2980,7 +3007,20 @@ async def _all_mismatches(within_days: Optional[int] = None, limit: int = 20):
                     "team_for": round(team_for, 2),
                     "opp_conceded": round(opp_conc, 2), "lambda": lam, "line": line,
                     "prob": round(p * 100, 1), "fair_odds": fair_odds(p),
-                    "next_fixture": nf, "real_samples": t.get("real_samples", 0)})
+                    "next_fixture": nf, "real_samples": t.get("real_samples", 0),
+                    # What the two headline averages are actually made of — the sample
+                    # behind each, and the recent games themselves. Shipped with the row
+                    # rather than fetched on expand: it is a handful of integers, and a
+                    # second round trip to justify a number already on screen is a
+                    # spinner where an answer should be.
+                    "evidence": {
+                        "team": {"avg": round(team_d["avg"], 2), "games": team_d["games"],
+                                 "venue_asked": team_d["venue_asked"],
+                                 "venue_used": team_d["venue_used"], "recent": team_d["recent"]},
+                        "opponent": {"avg": round(opp_d["avg"], 2), "games": opp_d["games"],
+                                     "venue_asked": opp_d["venue_asked"],
+                                     "venue_used": opp_d["venue_used"], "recent": opp_d["recent"]},
+                    }})
     out.sort(key=lambda x: x["lambda"], reverse=True)
     return out[:limit]
 

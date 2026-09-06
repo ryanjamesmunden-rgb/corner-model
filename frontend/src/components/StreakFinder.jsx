@@ -8,6 +8,7 @@ import { withFlag } from "@/lib/countryFlag";
 import { kickoffLabel } from "@/lib/kickoff";
 import { streakShare } from "@/lib/shareText";
 import { COMFORT, comfortFilter, tightestWin, lastMargin } from "@/lib/cushion";
+import TierBadge from "@/components/TierBadge";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 
@@ -241,7 +242,10 @@ export default function StreakFinder({ leagueId }) {
                     <span className="text-foreground font-sans font-medium whitespace-nowrap">{r.name}</span>
                     <TeamStar teamId={r.team_id} teamName={r.name} />
                   </div>
-                  <div className="text-[10px] text-muted-foreground uppercase tracking-wider font-sans">{withFlag(r.league_id, r.league_name)}</div>
+                  <div className="flex items-center gap-1 text-[10px] text-muted-foreground uppercase tracking-wider font-sans">
+                    <span className="truncate">{withFlag(r.league_id, r.league_name)}</span>
+                    <TierBadge tier={r.tier} country={r.league_name} />
+                  </div>
                 </td>
                 <td className="px-2 py-1.5 sm:px-4 sm:py-2.5">
                   <span className={`inline-flex items-center gap-1 text-xs px-2 py-1 rounded border ${isSolid(r) ? SOLID : THIN}`}

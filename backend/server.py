@@ -1130,7 +1130,18 @@ async def health():
 
 @api_router.get("/leagues")
 async def get_leagues(user: dict = Depends(get_current_user)):
-    return await db.leagues.find({}, {"_id": 0}).to_list(100)
+    # Tier is OVERLAID FROM LEAGUE_META at read time, not read from the stored document.
+    # The sync writes it too, but a league doc only gets rewritten when that league next
+    # syncs — so reading the stored value would leave tiers missing for hours or days
+    # after a deploy, and "missing" renders as a team with no level against its name on
+    # the very board the field exists to label. The metadata is the source of truth here
+    # and the collection is a cache of it.
+    rows = await db.leagues.find({}, {"_id": 0}).to_list(100)
+    for r in rows:
+        meta = LEAGUE_META.get(r.get("league_id"))
+        if meta and meta.get("tier"):
+            r["tier"] = meta["tier"]
+    return rows
 
 
 _last_refresh = {}
@@ -2758,7 +2769,9 @@ async def streaks(league_id: Optional[str] = None, side: str = "overall", window
                                             bl_map.get(t["league_id"], 0.0))
         results.append({
             "team_id": t["team_id"], "name": t["name"], "league_id": t["league_id"],
-            "league_name": leagues.get(t["league_id"], ""), "side": side, "window": window,
+            "league_name": leagues.get(t["league_id"], ""),
+            "tier": (LEAGUE_META.get(t["league_id"]) or {}).get("tier"),
+            "side": side, "window": window,
             "direction": direction, "subject": subject,
             "min_hits": min_hits, "hits": hits, "voids": voids, "misses": misses,
             "settled": hits + misses, "line": line,
@@ -2962,7 +2975,9 @@ async def _all_mismatches(within_days: Optional[int] = None, limit: int = 20):
         line = max(3, round(lam) - 1)
         p = nb_ge(line, lam)
         out.append({"team_id": t["team_id"], "name": t["name"], "league_id": t["league_id"],
-                    "league_name": leagues.get(t["league_id"], ""), "team_for": round(team_for, 2),
+                    "league_name": leagues.get(t["league_id"], ""),
+                    "tier": (LEAGUE_META.get(t["league_id"]) or {}).get("tier"),
+                    "team_for": round(team_for, 2),
                     "opp_conceded": round(opp_conc, 2), "lambda": lam, "line": line,
                     "prob": round(p * 100, 1), "fair_odds": fair_odds(p),
                     "next_fixture": nf, "real_samples": t.get("real_samples", 0)})
@@ -2976,6 +2991,79 @@ async def top_mismatches(within_days: Optional[int] = None, limit: int = 20,
     if _cache_ok() and within_days == 7 and limit == 30:
         return await _screen("mismatches")
     return await _all_mismatches(within_days, limit)
+
+
+# ----------------------------- Perfect games -----------------------------
+# Where a RUN and a MATCHUP point at the same fixture.
+#
+# The two screens answer different questions and were never put side by side. Streaks
+# ask what a team keeps doing: this side has cleared 4+ corners in each of its last five.
+# Mismatches ask who they have drawn: this side wins corners at pace and the opponent
+# leaks them. Either alone is a lead. A team that appears in BOTH lists for the SAME
+# upcoming fixture is a team whose habit and whose opponent agree, which is the closest
+# this data gets to a reason to look hard at a game.
+#
+# THEY ARE NOT INDEPENDENT, and the screen has to say so rather than selling agreement
+# as confirmation. Both are driven partly by the same quantity — how many corners this
+# team wins — so a strong corner side will tend to show up in both lists whoever it is
+# playing. What is genuinely additional is the OPPONENT half of the mismatch: their
+# concession rate is measured on their games, not on the streak team's. So the honest
+# reading is "a good run, against someone who leaks", not "two models concurred".
+#
+# The two LINES can disagree, and both are returned rather than reconciled. The streak
+# line is the one history keeps clearing; the mismatch line comes off the projection for
+# this specific fixture. When the projection sits above the historical line, the matchup
+# is doing the work; when it sits below, the run is carrying it and the fixture is the
+# weaker half. Picking one to display would hide exactly that.
+
+@api_router.get("/perfect-games")
+async def perfect_games(within_days: int = 7, limit: int = 20, min_hits: int = 4,
+                        window: int = 5, side: str = "overall",
+                        user: dict = Depends(require_member)):
+    """Fixtures where a corner streak and a corner mismatch land on the same team."""
+    within = max(1, min(within_days, 60))
+    runs = await streaks(league_id="all", side=side, window=window, min_hits=min_hits,
+                         threshold=None, min_line=3, within_days=within, direction="over",
+                         subject="team", max_line=None, min_streak=MIN_STREAK_LEN, user=user)
+    # Unlimited on purpose: _all_mismatches sorts by lambda and truncates, so a small
+    # limit here would silently drop the pairing rather than the weakest mismatch.
+    mismatches = await _all_mismatches(within_days=within, limit=10000)
+
+    def fx_of(row):
+        return ((row.get("next_fixture") or {}).get("fixture_id"))
+
+    by_team_fixture = {(m["team_id"], fx_of(m)): m for m in mismatches if fx_of(m)}
+
+    out = []
+    for r in runs:
+        fixture_id = fx_of(r)
+        if not fixture_id:
+            continue                       # no next game — nothing to pair against
+        m = by_team_fixture.get((r["team_id"], fixture_id))
+        if not m:
+            continue                       # a run, but the matchup does not agree
+        proj = r.get("projection") or {}
+        out.append({
+            "team_id": r["team_id"], "name": r["name"],
+            "league_id": r["league_id"], "league_name": r["league_name"], "tier": r.get("tier"),
+            "next_fixture": r["next_fixture"],
+            "real_samples": r.get("real_samples", 0),
+            # the run
+            "streak": {"line": r["line"], "line_label": r["line_label"],
+                       "hits": r["hits"], "settled": r["settled"], "voids": r["voids"],
+                       "length": (r.get("streak") or {}).get("length", 0),
+                       "avg": r["avg"], "min_won": r["min_won"], "recent": r["recent"]},
+            # the matchup — opp_conceded is the half that is genuinely new information
+            "mismatch": {"team_for": m["team_for"], "opp_conceded": m["opp_conceded"],
+                         "lambda": m["lambda"], "line": m["line"], "prob": m["prob"],
+                         "fair_odds": m["fair_odds"]},
+            "projection": proj,
+        })
+
+    # Best evidence first: the longer run wins ties on the bigger projection, because a
+    # high lambda off two games is a smaller thing than a high lambda off ten.
+    out.sort(key=lambda x: (x["mismatch"]["lambda"], x["streak"]["length"]), reverse=True)
+    return out[:max(1, min(limit, 100))]
 
 
 def _venue_matches(team, venue):
@@ -3476,7 +3564,9 @@ async def top_corner_teams(side: str = "overall", window: int = 0, limit: int = 
         if s["played"] < 3:
             continue
         out.append({"team_id": t["team_id"], "name": t["name"], "league_id": t["league_id"],
-                    "league_name": leagues.get(t["league_id"], ""), "side": side, "window": window,
+                    "league_name": leagues.get(t["league_id"], ""),
+                    "tier": (LEAGUE_META.get(t["league_id"]) or {}).get("tier"),
+                    "side": side, "window": window,
                     "games": s["played"], "won_avg": s["for_avg"], "conceded_avg": s["against_avg"],
                     "total_avg": s["total_avg"], "real_samples": t.get("real_samples", 0),
                     "shots_for_avg": s["shots_for_avg"], "shots_against_avg": s["shots_against_avg"],

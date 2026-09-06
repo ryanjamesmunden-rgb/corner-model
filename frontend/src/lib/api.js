@@ -61,6 +61,7 @@ export const api = {
   chaseBoard: (params) => axios.get(`${API}/chase-board`, { params }).then((r) => r.data),
   fixtureBoard: (params) => axios.get(`${API}/fixture-board`, { params }).then((r) => r.data),
   topCornerTeams: (params) => axios.get(`${API}/top-corner-teams`, { params }).then((r) => r.data),
+  perfectGames: (params) => axios.get(`${API}/perfect-games`, { params }).then((r) => r.data),
   topMismatches: (params) => axios.get(`${API}/top-mismatches`, { params }).then((r) => r.data),
   exportMarkdown: () => axios.get(`${API}/export`, { responseType: "text" }).then((r) => r.data),
   exportStreaks: (days = 7) => axios.get(`${API}/export/streaks`, { params: { days }, responseType: "text" }).then((r) => r.data),

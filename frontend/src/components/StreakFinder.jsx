@@ -7,6 +7,8 @@ import ShareButtons from "@/components/ShareButtons";
 import { withFlag } from "@/lib/countryFlag";
 import { kickoffLabel } from "@/lib/kickoff";
 import { streakShare } from "@/lib/shareText";
+import { COMFORT, comfortFilter, tightestWin, lastMargin } from "@/lib/cushion";
+import TierBadge from "@/components/TierBadge";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 
@@ -57,6 +59,9 @@ export default function StreakFinder({ leagueId }) {
   const [preset, setPreset] = useState("5-5");
   const [threshold, setThreshold] = useState("auto");
   const [days, setDays] = useState("all");
+  // Applied on the client: the margin of every leg is already in each row, so
+  // narrowing by it costs nothing and does not need the scan re-run.
+  const [comfort, setComfort] = useState("any");
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(true);
 
@@ -97,11 +102,17 @@ export default function StreakFinder({ leagueId }) {
     loss: "bg-red-500/15 text-red-400",
   };
 
+  // NARROWED BEFORE ANYTHING ELSE READS IT, the count and the share text included. A
+  // post built from the unfiltered rows would advertise teams the screen is no longer
+  // showing, which is the drift lib/shareText exists to prevent.
+  const shown = rows.filter(comfortFilter(comfort));
+  const comfortMeta = COMFORT.find((c) => c.v === comfort) || COMFORT[0];
+
   // A postable summary of what's on screen — the same builder tools/social_draft.mjs
   // uses for the scheduled post, so the two can't drift. See lib/shareText.
   const presetMeta = PRESETS.find((x) => x.v === preset);
   const SHARE_ROWS = 6;
-  const buildShare = streakShare({ rows, subject, isUnder, side, presetLabel: presetMeta?.l || "" });
+  const buildShare = streakShare({ rows: shown, subject, isUnder, side, presetLabel: presetMeta?.l || "" });
 
   return (
     <section className="bg-card border border-border rounded-lg" data-testid="streak-finder">
@@ -114,13 +125,16 @@ export default function StreakFinder({ leagueId }) {
               ? "teams staying under the line (exact line = void, streak survives)"
               : "consistent corner-winners (real games only)"}
           </span>
-          {rows.length > 0 && (
+          {shown.length > 0 && (
             <span className="font-mono-data text-[10px] text-muted-foreground ml-1" data-testid="streak-count">
-              {rows.length} shown
+              {shown.length} shown
+              {shown.length !== rows.length && (
+                <span className="text-muted-foreground/60"> of {rows.length}</span>
+              )}
             </span>
           )}
         </div>
-        {rows.length > 0 && (
+        {shown.length > 0 && (
           <ShareButtons text={buildShare(SHARE_ROWS)} buildX={buildShare} className="lg:ml-2" />
         )}
         <div className="lg:ml-auto flex flex-wrap items-center gap-2">
@@ -158,6 +172,14 @@ export default function StreakFinder({ leagueId }) {
               ))}
             </SelectContent>
           </Select>
+          <Select value={comfort} onValueChange={setComfort}>
+            <SelectTrigger data-testid="streak-comfort" className="w-[170px] bg-[#121212] border-border text-xs h-8"><SelectValue /></SelectTrigger>
+            <SelectContent className="bg-[#121212] border-border">
+              {COMFORT.map((o) => (
+                <SelectItem key={o.v} value={o.v} className="text-xs" title={o.hint}>{o.l}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
           <Select value={days} onValueChange={setDays}>
             <SelectTrigger data-testid="streak-timeframe" className="w-[140px] bg-[#121212] border-border text-xs h-8"><SelectValue /></SelectTrigger>
             <SelectContent className="bg-[#121212] border-border">
@@ -184,6 +206,10 @@ export default function StreakFinder({ leagueId }) {
               <th className="text-left font-medium px-2 py-1.5 sm:px-4 sm:py-2.5">Streak</th>
               <th className="text-left font-medium px-2 py-1.5 sm:px-4 sm:py-2.5">Longest</th>
               <th className="text-right font-medium px-2 py-1.5 sm:px-4 sm:py-2.5">Avg</th>
+              <th className="text-left font-medium px-2 py-1.5 sm:px-4 sm:py-2.5"
+                title="How much room the run had. The first number is the tightest winning game in this window; 'last' is the newest one.">
+                Cushion
+              </th>
               <th className="text-left font-medium px-2 py-1.5 sm:px-4 sm:py-2.5 hidden md:table-cell">Recent ({side})</th>
               <th className="text-left font-medium px-2 py-1.5 sm:px-4 sm:py-2.5">Next</th>
               <th className="text-right font-medium px-2 py-1.5 sm:px-4 sm:py-2.5">{subject === "match" ? "Proj λ" : "Opp conc"}</th>
@@ -194,12 +220,16 @@ export default function StreakFinder({ leagueId }) {
           </thead>
           <tbody className="font-mono-data text-sm">
             {loading ? (
-              <tr><td colSpan={12} className="px-4 py-12 text-center text-muted-foreground animate-pulse">Scanning corner streaks…</td></tr>
-            ) : rows.length === 0 ? (
-              <tr><td colSpan={12} className="px-4 py-12 text-center text-muted-foreground">
-                No teams match this streak. Try {isUnder ? "a higher" : "a lower"} line or a wider window.
+              <tr><td colSpan={13} className="px-4 py-12 text-center text-muted-foreground animate-pulse">Scanning corner streaks…</td></tr>
+            ) : shown.length === 0 ? (
+              <tr><td colSpan={13} className="px-4 py-12 text-center text-muted-foreground">
+                {rows.length > 0
+                  // Blaming the line when the margin filter did the cutting sends people
+                  // to change the wrong control.
+                  ? `${rows.length} ${rows.length === 1 ? "run matches" : "runs match"} this streak, but none clear the "${comfortMeta.l.toLowerCase()}" margin. Loosen that first.`
+                  : `No teams match this streak. Try ${isUnder ? "a higher" : "a lower"} line or a wider window.`}
               </td></tr>
-            ) : rows.map((r) => (
+            ) : shown.map((r) => (
               <tr
                 key={r.team_id}
                 data-testid="streak-row"
@@ -212,7 +242,10 @@ export default function StreakFinder({ leagueId }) {
                     <span className="text-foreground font-sans font-medium whitespace-nowrap">{r.name}</span>
                     <TeamStar teamId={r.team_id} teamName={r.name} />
                   </div>
-                  <div className="text-[10px] text-muted-foreground uppercase tracking-wider font-sans">{withFlag(r.league_id, r.league_name)}</div>
+                  <div className="flex items-center gap-1 text-[10px] text-muted-foreground uppercase tracking-wider font-sans">
+                    <span className="truncate">{withFlag(r.league_id, r.league_name)}</span>
+                    <TierBadge tier={r.tier} country={r.league_name} />
+                  </div>
                 </td>
                 <td className="px-2 py-1.5 sm:px-4 sm:py-2.5">
                   <span className={`inline-flex items-center gap-1 text-xs px-2 py-1 rounded border ${isSolid(r) ? SOLID : THIN}`}
@@ -256,6 +289,34 @@ export default function StreakFinder({ leagueId }) {
                   ) : <span className="text-muted-foreground">—</span>}
                 </td>
                 <td className="px-2 py-1.5 sm:px-4 sm:py-2.5 text-right text-foreground">{r.avg.toFixed(1)}</td>
+                {/* CUSHION: the difference between a 5/5 that was never in doubt and a
+                    5/5 that was one corner from broken five times. Both print the same
+                    hit rate, and only one of them is a bet. */}
+                <td className="px-2 py-1.5 sm:px-4 sm:py-2.5 whitespace-nowrap">
+                  {(() => {
+                    const tight = tightestWin(r);
+                    const last = lastMargin(r);
+                    if (tight == null) return <span className="text-muted-foreground">—</span>;
+                    const cls = tight >= 3 ? "text-emerald-400"
+                      : tight >= 2 ? "text-primary"
+                      : tight >= 1 ? "text-amber-400" : "text-red-400";
+                    return (
+                      <span title={
+                        `Tightest win in this window cleared by ${tight}`
+                        + (last == null ? ". The last game did not win."
+                                        : `; the last game cleared by ${last}.`)
+                        + (tight === 0 ? " A margin of 0 means it landed exactly on the line — a win, but one corner from a miss."
+                                       : "")}>
+                        <span className={`font-semibold ${cls}`}>+{tight}</span>
+                        {last != null && (
+                          <span className="ml-1.5 text-[10px] text-muted-foreground font-sans">
+                            last +{last}
+                          </span>
+                        )}
+                      </span>
+                    );
+                  })()}
+                </td>
                 <td className="px-2 py-1.5 sm:px-4 sm:py-2.5 hidden md:table-cell">
                   <div className="flex gap-1">
                     {r.recent.map((m, i) => (

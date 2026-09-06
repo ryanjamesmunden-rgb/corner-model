@@ -31,10 +31,10 @@ function Item({ q, a }) {
   );
 }
 
-export default function Faq({ price, instant = true, hasTutorial = false, className = "" }) {
+export default function Faq({ price, instant = true, hasTutorial = false, support = "", className = "" }) {
   return (
     <div className={`space-y-6 ${className}`} data-testid="faq">
-      {faqSections({ price, instant, hasTutorial }).map((section) => (
+      {faqSections({ price, instant, hasTutorial, support }).map((section) => (
         <section key={section.title}>
           <h3 className="font-head font-semibold text-sm uppercase tracking-wider text-muted-foreground mb-1">
             {section.title}

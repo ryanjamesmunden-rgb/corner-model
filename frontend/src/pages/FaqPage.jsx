@@ -3,6 +3,7 @@ import { Link } from "react-router-dom";
 import { CornerDownRight, ArrowRight } from "lucide-react";
 import { api } from "@/lib/api";
 import Faq from "@/components/Faq";
+import { supportPhrase } from "@/lib/support";
 
 const PRICE = "£20";
 
@@ -15,6 +16,8 @@ const PRICE = "£20";
 export default function FaqPage() {
   const [instant, setInstant] = useState(true);
   const [hasTutorial, setHasTutorial] = useState(false);
+  // How to reach a person, named in the refund answer rather than left as "on request".
+  const [support, setSupport] = useState("");
 
   useEffect(() => {
     // Whether checkout grants access immediately depends on which one is live. Assume
@@ -23,6 +26,7 @@ export default function FaqPage() {
     api.config().then((c) => {
       setInstant(!!c?.stripe_ready);
       setHasTutorial(!!c?.tutorial_url);
+      setSupport(supportPhrase(c || {}));
     }).catch(() => {});
   }, []);
 
@@ -43,7 +47,7 @@ export default function FaqPage() {
           </p>
         </div>
 
-        <Faq price={PRICE} instant={instant} hasTutorial={hasTutorial} />
+        <Faq price={PRICE} instant={instant} hasTutorial={hasTutorial} support={support} />
 
         <div className="flex flex-wrap gap-3 pt-2">
           <Link to="/join"

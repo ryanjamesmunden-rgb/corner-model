@@ -5,6 +5,7 @@ import { LeagueContext } from "@/context/LeagueContext";
 import ExportMenu from "@/components/ExportMenu";
 import { api } from "@/lib/api";
 import SignIn from "@/components/SignIn";
+import SiteFooter from "@/components/SiteFooter";
 import { useAuth } from "@/context/AuthContext";
 import { dataHealth, healthTitle, freshnessLabel } from "@/lib/freshness";
 import {
@@ -143,6 +144,7 @@ export default function Layout({ children }) {
           </div>
         </header>
         <main className="max-w-[1600px] mx-auto px-3 sm:px-6 py-3 sm:py-6 fade-in">{children}</main>
+        <SiteFooter />
       </div>
     </LeagueContext.Provider>
   );

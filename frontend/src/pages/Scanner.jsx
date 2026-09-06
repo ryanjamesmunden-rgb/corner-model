@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Trophy, Flame, TrendingUp, Target } from "lucide-react";
+import { Trophy, Flame, TrendingUp, Target, Crosshair, BadgePercent } from "lucide-react";
 import { useLeague } from "@/context/LeagueContext";
 import HomeInsights from "@/components/HomeInsights";
 import FixtureBoard from "@/components/FixtureBoard";
@@ -8,13 +8,21 @@ import BestTeams from "@/components/BestTeams";
 import TrendFinder from "@/components/TrendFinder";
 import StreakFinder from "@/components/StreakFinder";
 import ChaseBoard from "@/components/ChaseBoard";
+import PerfectGames from "@/components/PerfectGames";
+import ValueBoard from "@/components/ValueBoard";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
 const TABS = [
   { v: "best", l: "Best Teams", icon: Trophy },
   { v: "form", l: "Hot Form", icon: TrendingUp },
   { v: "streaks", l: "Streaks", icon: Flame },
+  // Next to Streaks on purpose: it is the same runs, narrowed to the ones whose fixture
+  // agrees, so the tab someone reaches for after scanning streaks is the one beside it.
+  { v: "perfect", l: "Perfect Games", icon: Crosshair },
+  // Last, because it is the only tab that is empty until you have done something:
+  // it shows what YOUR entered prices found, not what the model found unprompted.
   { v: "chase", l: "Chase Board", icon: Target },
+  { v: "value", l: "Your Value Board", icon: BadgePercent },
 ];
 
 export default function Scanner() {
@@ -56,7 +64,9 @@ export default function Scanner() {
       {view === "best" && <BestTeams leagueId={leagueId} />}
       {view === "form" && <TrendFinder />}
       {view === "streaks" && <StreakFinder leagueId={leagueId} />}
+      {view === "perfect" && <PerfectGames />}
       {view === "chase" && <ChaseBoard leagueId="all" withinDays={7} limit={25} />}
+      {view === "value" && <ValueBoard />}
 
       <FixtureBoard leagueId="all" />
     </div>

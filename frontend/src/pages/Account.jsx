@@ -1,9 +1,12 @@
 import { useState, useEffect, useRef } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
-import { CreditCard, LogOut, ShieldCheck, Loader2, ExternalLink, CheckCircle2, XCircle, RotateCcw } from "lucide-react";
+import { CreditCard, LogOut, ShieldCheck, Loader2, ExternalLink, CheckCircle2, XCircle, RotateCcw, AlertTriangle, Mail, Send } from "lucide-react";
 import { toast } from "sonner";
 import { api } from "@/lib/api";
 import WelcomeVideo from "@/components/WelcomeVideo";
+import AccountTeams from "@/components/AccountTeams";
+import SupportCard from "@/components/SupportCard";
+import { supportRoutes } from "@/lib/support";
 import { useAuth } from "@/context/AuthContext";
 
 // Where a subscriber manages their subscription — and, above all, where they cancel it.
@@ -26,6 +29,18 @@ const fmtDate = (iso) => (iso
   ? new Date(iso).toLocaleDateString(undefined, { day: "numeric", month: "long", year: "numeric" })
   : "");
 
+// Greeting rather than a header. This page is otherwise a wall of status rows and a
+// cancel button, and the one place a subscriber lands after paying should sound like it
+// is run by the person whose picks they just bought — not like a billing portal. Time of
+// day rather than a fixed hello, because it costs nothing and reads as a site that is
+// awake.
+const greet = (name, now = new Date()) => {
+  const first = String(name || "").trim().split(/\s+/)[0];
+  const h = now.getHours();
+  const when = h < 12 ? "Morning" : h < 18 ? "Afternoon" : "Evening";
+  return first ? `${when}, ${first}` : "Your account";
+};
+
 function Row({ label, children }) {
   return (
     <div className="flex items-baseline justify-between gap-4 py-3 border-b border-border/60 last:border-0">
@@ -47,9 +62,12 @@ export default function Account() {
   // Held locally so the page updates the moment Stripe confirms, rather than waiting for
   // the next reload to reflect what the user just did.
   const [ends, setEnds] = useState(null);
-  // Runtime config, so the video can be swapped without a frontend rebuild.
-  const [tutorialUrl, setTutorialUrl] = useState("");
-  useEffect(() => { api.config().then((c) => setTutorialUrl(c?.tutorial_url || "")).catch(() => {}); }, []);
+  // Runtime config, so the video can be swapped without a frontend rebuild. Held whole
+  // rather than picking out one field, because the stalled-checkout box below needs the
+  // support routes out of the same payload.
+  const [config, setConfig] = useState(null);
+  useEffect(() => { api.config().then(setConfig).catch(() => setConfig({})); }, []);
+  const tutorialUrl = config?.tutorial_url || "";
   // renderButton DRAWS INTO a node rather than returning one — same pattern as SignIn.
   const signInSlot = useRef(null);
   useEffect(() => { if (!user) renderButton(signInSlot.current); }, [user, renderButton, clientId]);
@@ -64,12 +82,25 @@ export default function Account() {
   // playback and restarts the video under someone who had just pressed play. Asking the
   // API instead updates the same state without touching the page.
   const justPaid = params.get("checkout") === "success";
+  // GIVING UP HAS TO BE VISIBLE. The poll used to stop after ten tries and say nothing,
+  // which left the worst screen this site can produce: a green "Payment received" banner
+  // sitting above a section that reads "Not subscribed", indefinitely, with no next step
+  // offered. Someone who has just been charged £20 and is looking at that does not wait
+  // — they ask their bank, and a chargeback costs the fee, a penalty on top, and counts
+  // against the Stripe account.
+  //
+  // The money is safe either way: Stripe took the payment and the webhook is what grants
+  // access, so a webhook that has not arrived is a delay, not a lost £20. That is exactly
+  // what the timed-out state has to say, along with how to reach a person — see the
+  // banner below.
+  const [stalled, setStalled] = useState(false);
   useEffect(() => {
     if (!justPaid || member) return;
     let alive = true;
     let tries = 0;
     const tick = async () => {
-      if (!alive || tries >= 10) return;      // ~30s, then give up quietly
+      if (!alive) return;
+      if (tries >= 10) { setStalled(true); return; }   // ~30s, then say so
       tries += 1;
       try {
         const res = await api.me();
@@ -88,7 +119,8 @@ export default function Account() {
       <div className="max-w-lg mx-auto py-16 text-center" data-testid="account-signed-out">
         <h1 className="font-head text-2xl font-bold mb-2">Your account</h1>
         <p className="text-muted-foreground text-sm mb-6">
-          Sign in to see your membership and manage your subscription.
+          Sign in to follow your teams, keep your starred games, and manage or cancel
+          your subscription. Free, and about ten seconds.
         </p>
         <div className="flex justify-center" ref={signInSlot} />
       </div>
@@ -102,6 +134,21 @@ export default function Account() {
   // page says so outright rather than leaving someone wondering what happens next.
   const isGrandfathered = user.grandfathered;
   const ending = ends === null ? user.cancel_at_period_end : ends;
+
+  // One line that tells you where you stand, in the voice of the channel rather than of
+  // a payments processor. It is the first thing under the greeting because "am I still
+  // a member?" is the question that brought most people to this page.
+  const blurb = !member
+    ? `You're signed in, so your starred games and followed teams stick around. The
+       members' screens — streaks, mismatches, the full board — are still locked.`
+    : ending
+      ? `Winding down, but you're still in until the date below. Nothing else to do, and
+         you can put it back any time.`
+      : isStripe
+        ? `You're in — streaks, mismatches and the full board, all unlocked. Follow a few
+           teams below and the site starts working for you rather than the other way round.`
+        : `You've got the run of the place, on the house. Nothing to pay and nothing to
+           cancel.`;
 
   const openPortal = async () => {
     if (busy) return;
@@ -147,14 +194,71 @@ export default function Account() {
   return (
     <div className="max-w-lg mx-auto py-8 space-y-6" data-testid="account-page">
       <div>
-        <h1 className="font-head text-2xl font-bold">Your account</h1>
-        <p className="text-muted-foreground text-sm mt-1">{user.email}</p>
+        <div className="flex items-center gap-3">
+          {user.picture ? (
+            <img src={user.picture} alt="" referrerPolicy="no-referrer"
+              className="h-11 w-11 rounded-full border border-border shrink-0" />
+          ) : null}
+          <div className="min-w-0">
+            <h1 className="font-head text-2xl font-bold truncate">{greet(user.name)}</h1>
+            <p className="text-muted-foreground text-xs truncate">{user.email}</p>
+          </div>
+        </div>
+        <p className="text-sm text-muted-foreground mt-3">{blurb}</p>
       </div>
 
-      {justPaid && (
+      {justPaid && !member && !stalled && (
+        <div className="flex items-center gap-2 text-sm bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 rounded-lg px-4 py-3">
+          <Loader2 className="h-4 w-4 shrink-0 animate-spin" />
+          Payment received — setting up your membership…
+        </div>
+      )}
+
+      {justPaid && member && (
         <div className="flex items-center gap-2 text-sm bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 rounded-lg px-4 py-3">
           <CheckCircle2 className="h-4 w-4 shrink-0" />
-          Payment received — setting up your membership…
+          You're in. Everything below is unlocked.
+        </div>
+      )}
+
+      {/* The webhook did not arrive within half a minute. Amber, not red: nothing has
+          gone wrong with the payment, and saying so is the whole job of this box. */}
+      {justPaid && !member && stalled && (
+        <div className="text-sm bg-amber-500/10 border border-amber-500/30 rounded-lg px-4 py-3"
+          data-testid="checkout-stalled">
+          <p className="flex items-center gap-2 text-amber-400 font-medium">
+            <AlertTriangle className="h-4 w-4 shrink-0" />
+            Your payment went through, but access hasn't switched on yet
+          </p>
+          <p className="text-muted-foreground mt-2 leading-relaxed">
+            Stripe has your payment and it is safe — this last step is the site catching
+            up, and it usually takes seconds. Give the page a refresh in a minute. If it
+            still says this, tell me and I'll put it right by hand; you will not be
+            charged twice and you won't lose the month.
+          </p>
+          <div className="mt-3 flex flex-wrap items-center gap-2">
+            <button
+              onClick={() => window.location.reload()}
+              data-testid="checkout-stalled-retry"
+              className="inline-flex items-center gap-2 text-xs font-medium px-3 py-2 rounded-md bg-secondary border border-border hover:bg-white/10 transition-colors"
+            >
+              <RotateCcw className="h-3.5 w-3.5" /> Check again
+            </button>
+            {/* The contact route, HERE rather than only in the card further down. This is
+                the one moment on the site where someone is out of pocket and stuck, and
+                asking them to scroll for the way to say so is asking too much. */}
+            {supportRoutes(config || {}, "access", user).map((r) => (
+              <a key={r.kind} href={r.href}
+                target={r.kind === "telegram" ? "_blank" : undefined}
+                rel={r.kind === "telegram" ? "noreferrer" : undefined}
+                data-testid={`checkout-stalled-${r.kind}`}
+                className="inline-flex items-center gap-2 text-xs font-medium px-3 py-2 rounded-md bg-secondary border border-border hover:bg-white/10 transition-colors"
+              >
+                {r.kind === "telegram" ? <Send className="h-3.5 w-3.5" /> : <Mail className="h-3.5 w-3.5" />}
+                {r.kind === "telegram" ? "Message me" : "Email me"}
+              </a>
+            ))}
+          </div>
         </div>
       )}
 
@@ -302,6 +406,10 @@ export default function Account() {
         )}
       </section>
 
+      {/* Teams before the video: someone who has been here a week has watched it, and the
+          thing they came back to change is what the site follows for them. */}
+      <AccountTeams />
+
       {member && !justPaid && (
         <WelcomeVideo
           url={tutorialUrl}
@@ -309,6 +417,10 @@ export default function Account() {
           subtitle="Where the value is, how to read a streak, and what the projections mean."
         />
       )}
+
+      {/* Below billing on purpose. Cancelling is self-service and comes first; this is
+          for the things a button cannot settle — refunds above all. */}
+      <SupportCard config={config} showCancelPointer={member && (isStripe || user.has_billing)} />
 
       <a href="/faq" className="block text-sm text-primary hover:underline" data-testid="account-faq">
         Questions about your subscription

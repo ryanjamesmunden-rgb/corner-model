@@ -585,14 +585,28 @@ def build_markets(lambdas: dict, odds: Dict[str, float]) -> List[dict]:
     return rows
 
 
+def fixture_model_from(home: dict, away: dict, league: dict, odds: Dict[str, float]) -> dict:
+    """The model for one fixture, from documents ALREADY LOADED.
+
+    Split out so a screen that prices many fixtures at once can fetch its teams and
+    leagues in two queries instead of three per fixture. get_fixture_model below is the
+    single-fixture wrapper, and it stays a wrapper on purpose: two implementations of
+    this would eventually disagree, and a board whose EV differs from the fixture page's
+    EV for the same line is a board nobody can trust.
+    """
+    league = league or {}
+    ls = league.get("avg_shots") or REF_SHOTS
+    lb = league.get("avg_blocked") or 0.0
+    lambdas = expected_lambdas(home, away, ls, lb)
+    return {"lambdas": lambdas, "markets": build_markets(lambdas, odds),
+            "confidence": confidence_for(home, away)}
+
+
 async def get_fixture_model(fixture: dict, odds: Dict[str, float]) -> dict:
     home = await db.teams.find_one({"team_id": fixture["home_team_id"]}, {"_id": 0})
     away = await db.teams.find_one({"team_id": fixture["away_team_id"]}, {"_id": 0})
     league = await db.leagues.find_one({"league_id": fixture["league_id"]}, {"_id": 0}) or {}
-    ls = league.get("avg_shots") or REF_SHOTS
-    lb = league.get("avg_blocked") or 0.0
-    lambdas = expected_lambdas(home, away, ls, lb)
-    return {"lambdas": lambdas, "markets": build_markets(lambdas, odds), "confidence": confidence_for(home, away)}
+    return fixture_model_from(home, away, league, odds)
 
 
 # ----------------------------- Public access -----------------------------
@@ -1069,6 +1083,23 @@ JOIN_URL = os.environ.get("JOIN_URL", "").strip()
 # link outlives the deploy that was supposed to fix it.
 TUTORIAL_URL = os.environ.get("TUTORIAL_URL", "").strip()
 
+# Where a member goes when the site itself cannot help them: a refund under the
+# guarantee, a payment that did not land, an account they are locked out of.
+#
+# Runtime env vars for the same reason JOIN_URL is, and OPTIONAL by design: when neither
+# is set the frontend says plainly that the Telegram channel is the way through rather
+# than printing a mailto that goes nowhere. An address is never invented.
+#
+# There is a real reason to set one. /join and the FAQ both promise the month is
+# "refunded on request", and a promise to honour a request with nowhere to make it is
+# the exact failure that made this billing work necessary — someone who cannot reach you
+# does not give up, they ask their bank instead.
+SUPPORT_EMAIL = os.environ.get("SUPPORT_EMAIL", "").strip()
+# Stored bare so the frontend owns how it is displayed and linked; a pasted "@handle" or
+# a full t.me URL both reduce to the handle.
+SUPPORT_TELEGRAM = (os.environ.get("SUPPORT_TELEGRAM", "").strip()
+                    .rsplit("/", 1)[-1].lstrip("@"))
+
 
 @api_router.get("/config")
 async def public_config():
@@ -1076,6 +1107,7 @@ async def public_config():
     meant to be clicked by anyone, not a secret."""
     return {"join_url": JOIN_URL, "tutorial_url": TUTORIAL_URL,
             "google_client_id": auth.GOOGLE_CLIENT_ID,
+            "support_email": SUPPORT_EMAIL, "support_telegram": SUPPORT_TELEGRAM,
             # Whether checkout can run. The page falls back to the old payment link when
             # this is false, so the switchover needs no coordinated deploy.
             "stripe_ready": billing.configured()}
@@ -1112,7 +1144,18 @@ async def health():
 
 @api_router.get("/leagues")
 async def get_leagues(user: dict = Depends(get_current_user)):
-    return await db.leagues.find({}, {"_id": 0}).to_list(100)
+    # Tier is OVERLAID FROM LEAGUE_META at read time, not read from the stored document.
+    # The sync writes it too, but a league doc only gets rewritten when that league next
+    # syncs — so reading the stored value would leave tiers missing for hours or days
+    # after a deploy, and "missing" renders as a team with no level against its name on
+    # the very board the field exists to label. The metadata is the source of truth here
+    # and the collection is a cache of it.
+    rows = await db.leagues.find({}, {"_id": 0}).to_list(100)
+    for r in rows:
+        meta = LEAGUE_META.get(r.get("league_id"))
+        if meta and meta.get("tier"):
+            r["tier"] = meta["tier"]
+    return rows
 
 
 _last_refresh = {}
@@ -2408,7 +2451,14 @@ async def set_odds(fixture_id: str, body: OddsBody, user: dict = Depends(get_cur
         raise HTTPException(status_code=404, detail="Fixture not found")
     existing = await _odds_for(fixture_id)
     merged = {**existing, **{k: v for k, v in body.odds.items() if v and v > 1.0}}
-    await db.odds.update_one({"fixture_id": fixture_id}, {"$set": {"odds": merged}}, upsert=True)
+    # WHEN matters as much as what. A value board ranks lines by the gap between the
+    # model and a price you typed in, and a price typed in last Tuesday is not a price —
+    # it is a memory of one. Stamped here so the board can show its age and let someone
+    # tell a live edge from a stale one.
+    await db.odds.update_one(
+        {"fixture_id": fixture_id},
+        {"$set": {"odds": merged, "updated_at": datetime.now(timezone.utc).isoformat()}},
+        upsert=True)
     model = await get_fixture_model(fx, merged)
     return {"model": model, "odds": merged}
 
@@ -2447,6 +2497,106 @@ async def scanner(league_id: Optional[str] = None, market: Optional[str] = None,
     return results
 
 
+# ----------------------------- Value board -----------------------------
+# The best priced-up line on EACH game, once you have entered what the shop is offering.
+#
+# /scanner above returns every +EV market it can find, which sounds like more and reads
+# as less: one fixture whose whole ladder is a point over the model contributes six rows,
+# pushes the other games off the screen, and none of those six is a separate bet — you
+# are taking one of them. This returns ONE ROW PER FIXTURE, the best line on it, with the
+# runners-up folded in behind so the second choice is still visible.
+#
+# It is DRIVEN FROM THE ODDS, not from the fixture list. Only games with a price typed in
+# can have an edge at all, and those are a handful out of thousands — so the odds
+# collection is read first and the fixtures are fetched by id, rather than walking every
+# fixture asking whether anyone priced it. /scanner does the latter, capped at 200
+# fixtures, at four database round trips each.
+#
+# TWO THINGS THE SCREEN HAS TO SAY, because a board that ranks by EV invites both
+# mistakes:
+#
+#   - AGE. The edge is measured against a price you typed in. If that was three days ago
+#     the number on screen is arithmetic about a price that no longer exists. Every row
+#     carries how old its price is.
+#   - SELECTION. Sorting by EV sorts by how far the model disagrees with the market, and
+#     the top of that list is made of two things: real edges, and the lines where the
+#     model is most wrong. The biggest number on the board is the one most likely to be a
+#     modelling error rather than a gift, which is the opposite of how it looks.
+
+@api_router.get("/value-board")
+async def value_board(within_days: Optional[int] = 7, min_ev: float = 0.0,
+                      league_id: Optional[str] = None, limit: int = 40,
+                      user: dict = Depends(require_member)):
+    """Best positive-EV line per upcoming fixture, from prices you have entered."""
+    odds_docs = await db.odds.find({}, {"_id": 0}).to_list(5000)
+    priced = {d["fixture_id"]: d for d in odds_docs if d.get("odds")}
+    if not priced:
+        return []
+
+    q = {"fixture_id": {"$in": list(priced)}}
+    if league_id and league_id != "all":
+        q["league_id"] = league_id
+    fixtures = await db.fixtures.find(q, {"_id": 0}).to_list(5000)
+
+    now = datetime.now(timezone.utc)
+    horizon = now + timedelta(days=within_days) if within_days else None
+
+    # Batch the lookups the model needs. Three queries in total rather than three per
+    # fixture — the whole reason fixture_model_from was split out.
+    team_ids = {tid for fx in fixtures for tid in (fx["home_team_id"], fx["away_team_id"])}
+    teams = {t["team_id"]: t for t in
+             await db.teams.find({"team_id": {"$in": list(team_ids)}}, {"_id": 0}).to_list(10000)}
+    leagues = {l["league_id"]: l for l in await db.leagues.find({}, {"_id": 0}).to_list(200)}
+
+    out = []
+    for fx in fixtures:
+        try:
+            kickoff = datetime.fromisoformat((fx.get("date") or "").replace("Z", "+00:00"))
+        except Exception:
+            continue
+        if kickoff.tzinfo is None:
+            kickoff = kickoff.replace(tzinfo=timezone.utc)
+        # A price on a game that has kicked off is a record, not a bet.
+        if kickoff < now or (horizon and kickoff > horizon):
+            continue
+        home, away = teams.get(fx["home_team_id"]), teams.get(fx["away_team_id"])
+        if not home or not away:
+            continue
+
+        doc = priced[fx["fixture_id"]]
+        model = fixture_model_from(home, away, leagues.get(fx["league_id"], {}), doc["odds"])
+        live = [m for m in model["markets"] if m.get("ev") is not None and m["ev"] >= min_ev]
+        if not live:
+            continue
+        live.sort(key=lambda m: m["ev"], reverse=True)
+        best, rest = live[0], live[1:]
+
+        def shape(m):
+            return {"key": m["key"], "group": m["group"],
+                    "label": f"{m['group_label']} {m['label']}",
+                    "line": m["line"], "book_odds": m["book_odds"], "fair_odds": m["fair_odds"],
+                    "prob": m["prob"], "ev": m["ev"], "tier": m["tier"]}
+
+        out.append({
+            "fixture_id": fx["fixture_id"], "league_id": fx["league_id"],
+            "league_name": (leagues.get(fx["league_id"]) or {}).get("name", ""),
+            "tier": (LEAGUE_META.get(fx["league_id"]) or {}).get("tier"),
+            "home_name": fx["home_name"], "away_name": fx["away_name"],
+            "date": fx["date"], "round": fx.get("round"),
+            "best": shape(best),
+            # Capped: the point is the shortlist, and a fixture whose whole ladder is
+            # priced over would otherwise bring its whole ladder with it.
+            "alternatives": [shape(m) for m in rest[:3]],
+            "other_count": len(rest),
+            "priced_at": doc.get("updated_at"),      # None on rows entered before stamping
+            "confidence": model["confidence"],
+            "lambda_total": model["lambdas"]["total"],
+        })
+
+    out.sort(key=lambda r: r["best"]["ev"], reverse=True)
+    return out[:max(1, min(limit, 100))]
+
+
 # A venue split needs this many games before it is trusted on its own. Below it the
 # full history is used instead: a team promoted mid-table with one home game on record
 # was previously handed a "home average" of that single match, and that number then
@@ -2454,19 +2604,45 @@ async def scanner(league_id: Optional[str] = None, market: Optional[str] = None,
 MIN_VENUE_GAMES = 3
 
 
-def _real_avg(team, side, field):
+def _real_avg_detail(team, side, field, recent: int = 6):
+    """The average, AND the games it was actually computed over.
+
+    This exists because of the fallback three lines down. A venue pool thinner than
+    MIN_VENUE_GAMES is dropped in favour of every game, which is the right call for a
+    projection — a two-game home average is noise — and a trap for anything that shows
+    its working. A card headed "wins 6.8 at home" whose evidence panel then lists eleven
+    games, most of them away, is the sort of thing a paying subscriber spots before you
+    do, and it costs more trust than the fallback saves.
+
+    So the pool that was USED is reported alongside the pool that was ASKED for, and the
+    panel can say "not enough home games, so this is all games" instead of implying a
+    venue split that was never applied.
+    """
     rms = (team or {}).get("real_matches") or []
     if side == "home":
         pool = [m for m in rms if m["home"]]
     elif side == "away":
         pool = [m for m in rms if not m["home"]]
     else:
-        pool = rms
+        pool = list(rms)
+    used = side
     if len(pool) < MIN_VENUE_GAMES:
-        pool = rms                      # too thin to mean anything — fall back to everything
+        pool, used = rms, "all"         # too thin to mean anything — fall back to everything
     if not pool:
         return None
-    return sum(m[field] for m in pool) / len(pool)
+    vals = [m[field] for m in pool]
+    return {"avg": sum(vals) / len(vals), "games": len(pool),
+            "venue_asked": side, "venue_used": used,
+            # newest first, matching how streak rows hand back `recent`
+            "recent": vals[-recent:][::-1]}
+
+
+def _real_avg(team, side, field):
+    """Just the number. A thin wrapper ON PURPOSE: the evidence panel and the projection
+    have to be computing the same average, and the only way to guarantee that is for
+    there to be one implementation of it."""
+    d = _real_avg_detail(team, side, field)
+    return d["avg"] if d else None
 
 
 async def _next_fixtures(q):
@@ -2740,7 +2916,9 @@ async def streaks(league_id: Optional[str] = None, side: str = "overall", window
                                             bl_map.get(t["league_id"], 0.0))
         results.append({
             "team_id": t["team_id"], "name": t["name"], "league_id": t["league_id"],
-            "league_name": leagues.get(t["league_id"], ""), "side": side, "window": window,
+            "league_name": leagues.get(t["league_id"], ""),
+            "tier": (LEAGUE_META.get(t["league_id"]) or {}).get("tier"),
+            "side": side, "window": window,
             "direction": direction, "subject": subject,
             "min_hits": min_hits, "hits": hits, "voids": voids, "misses": misses,
             "settled": hits + misses, "line": line,
@@ -2931,11 +3109,12 @@ async def _all_mismatches(within_days: Optional[int] = None, limit: int = 20):
                 continue
         venue = "home" if nf["is_home"] else "away"
         opp_venue = "away" if nf["is_home"] else "home"
-        team_for = _real_avg(t, venue, "corners_for")
         opp = teams_by_id.get(nf["opponent_team_id"])
-        opp_conc = (_real_avg(opp, opp_venue, "corners_against") if opp else None)
-        if team_for is None or opp_conc is None:
+        team_d = _real_avg_detail(t, venue, "corners_for")
+        opp_d = _real_avg_detail(opp, opp_venue, "corners_against") if opp else None
+        if team_d is None or opp_d is None:
             continue
+        team_for, opp_conc = team_d["avg"], opp_d["avg"]
         avg = league_avgs.get(t["league_id"], 5.0)
         if not (team_for >= avg * 1.1 and opp_conc >= avg * 1.1):
             continue
@@ -2944,10 +3123,25 @@ async def _all_mismatches(within_days: Optional[int] = None, limit: int = 20):
         line = max(3, round(lam) - 1)
         p = nb_ge(line, lam)
         out.append({"team_id": t["team_id"], "name": t["name"], "league_id": t["league_id"],
-                    "league_name": leagues.get(t["league_id"], ""), "team_for": round(team_for, 2),
+                    "league_name": leagues.get(t["league_id"], ""),
+                    "tier": (LEAGUE_META.get(t["league_id"]) or {}).get("tier"),
+                    "team_for": round(team_for, 2),
                     "opp_conceded": round(opp_conc, 2), "lambda": lam, "line": line,
                     "prob": round(p * 100, 1), "fair_odds": fair_odds(p),
-                    "next_fixture": nf, "real_samples": t.get("real_samples", 0)})
+                    "next_fixture": nf, "real_samples": t.get("real_samples", 0),
+                    # What the two headline averages are actually made of — the sample
+                    # behind each, and the recent games themselves. Shipped with the row
+                    # rather than fetched on expand: it is a handful of integers, and a
+                    # second round trip to justify a number already on screen is a
+                    # spinner where an answer should be.
+                    "evidence": {
+                        "team": {"avg": round(team_d["avg"], 2), "games": team_d["games"],
+                                 "venue_asked": team_d["venue_asked"],
+                                 "venue_used": team_d["venue_used"], "recent": team_d["recent"]},
+                        "opponent": {"avg": round(opp_d["avg"], 2), "games": opp_d["games"],
+                                     "venue_asked": opp_d["venue_asked"],
+                                     "venue_used": opp_d["venue_used"], "recent": opp_d["recent"]},
+                    }})
     out.sort(key=lambda x: x["lambda"], reverse=True)
     return out[:limit]
 
@@ -2958,6 +3152,79 @@ async def top_mismatches(within_days: Optional[int] = None, limit: int = 20,
     if _cache_ok() and within_days == 7 and limit == 30:
         return await _screen("mismatches")
     return await _all_mismatches(within_days, limit)
+
+
+# ----------------------------- Perfect games -----------------------------
+# Where a RUN and a MATCHUP point at the same fixture.
+#
+# The two screens answer different questions and were never put side by side. Streaks
+# ask what a team keeps doing: this side has cleared 4+ corners in each of its last five.
+# Mismatches ask who they have drawn: this side wins corners at pace and the opponent
+# leaks them. Either alone is a lead. A team that appears in BOTH lists for the SAME
+# upcoming fixture is a team whose habit and whose opponent agree, which is the closest
+# this data gets to a reason to look hard at a game.
+#
+# THEY ARE NOT INDEPENDENT, and the screen has to say so rather than selling agreement
+# as confirmation. Both are driven partly by the same quantity — how many corners this
+# team wins — so a strong corner side will tend to show up in both lists whoever it is
+# playing. What is genuinely additional is the OPPONENT half of the mismatch: their
+# concession rate is measured on their games, not on the streak team's. So the honest
+# reading is "a good run, against someone who leaks", not "two models concurred".
+#
+# The two LINES can disagree, and both are returned rather than reconciled. The streak
+# line is the one history keeps clearing; the mismatch line comes off the projection for
+# this specific fixture. When the projection sits above the historical line, the matchup
+# is doing the work; when it sits below, the run is carrying it and the fixture is the
+# weaker half. Picking one to display would hide exactly that.
+
+@api_router.get("/perfect-games")
+async def perfect_games(within_days: int = 7, limit: int = 20, min_hits: int = 4,
+                        window: int = 5, side: str = "overall",
+                        user: dict = Depends(require_member)):
+    """Fixtures where a corner streak and a corner mismatch land on the same team."""
+    within = max(1, min(within_days, 60))
+    runs = await streaks(league_id="all", side=side, window=window, min_hits=min_hits,
+                         threshold=None, min_line=3, within_days=within, direction="over",
+                         subject="team", max_line=None, min_streak=MIN_STREAK_LEN, user=user)
+    # Unlimited on purpose: _all_mismatches sorts by lambda and truncates, so a small
+    # limit here would silently drop the pairing rather than the weakest mismatch.
+    mismatches = await _all_mismatches(within_days=within, limit=10000)
+
+    def fx_of(row):
+        return ((row.get("next_fixture") or {}).get("fixture_id"))
+
+    by_team_fixture = {(m["team_id"], fx_of(m)): m for m in mismatches if fx_of(m)}
+
+    out = []
+    for r in runs:
+        fixture_id = fx_of(r)
+        if not fixture_id:
+            continue                       # no next game — nothing to pair against
+        m = by_team_fixture.get((r["team_id"], fixture_id))
+        if not m:
+            continue                       # a run, but the matchup does not agree
+        proj = r.get("projection") or {}
+        out.append({
+            "team_id": r["team_id"], "name": r["name"],
+            "league_id": r["league_id"], "league_name": r["league_name"], "tier": r.get("tier"),
+            "next_fixture": r["next_fixture"],
+            "real_samples": r.get("real_samples", 0),
+            # the run
+            "streak": {"line": r["line"], "line_label": r["line_label"],
+                       "hits": r["hits"], "settled": r["settled"], "voids": r["voids"],
+                       "length": (r.get("streak") or {}).get("length", 0),
+                       "avg": r["avg"], "min_won": r["min_won"], "recent": r["recent"]},
+            # the matchup — opp_conceded is the half that is genuinely new information
+            "mismatch": {"team_for": m["team_for"], "opp_conceded": m["opp_conceded"],
+                         "lambda": m["lambda"], "line": m["line"], "prob": m["prob"],
+                         "fair_odds": m["fair_odds"]},
+            "projection": proj,
+        })
+
+    # Best evidence first: the longer run wins ties on the bigger projection, because a
+    # high lambda off two games is a smaller thing than a high lambda off ten.
+    out.sort(key=lambda x: (x["mismatch"]["lambda"], x["streak"]["length"]), reverse=True)
+    return out[:max(1, min(limit, 100))]
 
 
 def _venue_matches(team, venue):
@@ -3458,7 +3725,9 @@ async def top_corner_teams(side: str = "overall", window: int = 0, limit: int = 
         if s["played"] < 3:
             continue
         out.append({"team_id": t["team_id"], "name": t["name"], "league_id": t["league_id"],
-                    "league_name": leagues.get(t["league_id"], ""), "side": side, "window": window,
+                    "league_name": leagues.get(t["league_id"], ""),
+                    "tier": (LEAGUE_META.get(t["league_id"]) or {}).get("tier"),
+                    "side": side, "window": window,
                     "games": s["played"], "won_avg": s["for_avg"], "conceded_avg": s["against_avg"],
                     "total_avg": s["total_avg"], "real_samples": t.get("real_samples", 0),
                     "shots_for_avg": s["shots_for_avg"], "shots_against_avg": s["shots_against_avg"],

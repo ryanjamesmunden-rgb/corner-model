@@ -349,6 +349,7 @@ async def sync_league(hc, my_lid):
     await db.leagues.update_one({"league_id": my_lid},
                                 {"$set": {"league_id": my_lid, "name": meta["name"],
                                           "country": meta["country"], "data_source": "real",
+                                          "tier": meta.get("tier"),
                                           "season": season, "avg_shots": avg_shots,
                                           "avg_blocked": avg_blocked,
                                           "synced_at": datetime.now(timezone.utc).isoformat()}},

@@ -4,6 +4,7 @@ import { CornerDownRight, Check, ExternalLink, ArrowRight, Loader2 } from "lucid
 import { toast } from "sonner";
 import { api } from "@/lib/api";
 import Faq from "@/components/Faq";
+import { supportPhrase } from "@/lib/support";
 import { useAuth } from "@/context/AuthContext";
 
 // The subscription page the payment link points at.
@@ -58,6 +59,8 @@ export default function Join() {
   const [joinUrl, setJoinUrl] = useState(BUILD_JOIN_URL);
   const [configReached, setConfigReached] = useState(null);   // null = still asking
   const [stripeReady, setStripeReady] = useState(false);
+  // Named in the guarantee below and in the FAQ, so "just ask" says who to ask.
+  const [support, setSupport] = useState("");
   const [busy, setBusy] = useState(false);
   // Did they press Subscribe before signing in? Only then does signing in continue
   // straight to payment. Someone who signs in to look around must not be thrown at a
@@ -74,6 +77,7 @@ export default function Join() {
         setConfigReached(true);
         if (c?.join_url) setJoinUrl(c.join_url);
         setStripeReady(!!c?.stripe_ready);
+        setSupport(supportPhrase(c || {}));
       })
       .catch(() => setConfigReached(false));
   }, []);
@@ -271,7 +275,7 @@ export default function Join() {
             leave to find out whether they can cancel usually just leaves. */}
         <section data-testid="join-faq">
           <h2 className="font-head font-semibold text-lg mb-3">Questions</h2>
-          <Faq price={PRICE} instant={stripeReady} />
+          <Faq price={PRICE} instant={stripeReady} support={support} />
         </section>
 
         <section className="border border-border rounded-lg p-5" data-testid="join-guarantee">
@@ -279,7 +283,9 @@ export default function Join() {
           <p className="mt-2 text-sm text-muted-foreground leading-relaxed">
             Measured on the picks posted in the channel, flat 1 point per pick, at the odds shown
             when the pick went out. If that month's picks close below 0 points, that month's {PRICE} is
-            refunded on request within 14 days of month end — just ask.
+            refunded on request within 14 days of month end — {support
+              ? `just ${support}.`
+              : "just ask in the Telegram channel."}
           </p>
           <p className="mt-2 text-xs text-muted-foreground/70 leading-relaxed">
             Your own returns depend on your stakes, the prices you get and which picks you take, so

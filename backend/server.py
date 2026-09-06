@@ -585,14 +585,28 @@ def build_markets(lambdas: dict, odds: Dict[str, float]) -> List[dict]:
     return rows
 
 
+def fixture_model_from(home: dict, away: dict, league: dict, odds: Dict[str, float]) -> dict:
+    """The model for one fixture, from documents ALREADY LOADED.
+
+    Split out so a screen that prices many fixtures at once can fetch its teams and
+    leagues in two queries instead of three per fixture. get_fixture_model below is the
+    single-fixture wrapper, and it stays a wrapper on purpose: two implementations of
+    this would eventually disagree, and a board whose EV differs from the fixture page's
+    EV for the same line is a board nobody can trust.
+    """
+    league = league or {}
+    ls = league.get("avg_shots") or REF_SHOTS
+    lb = league.get("avg_blocked") or 0.0
+    lambdas = expected_lambdas(home, away, ls, lb)
+    return {"lambdas": lambdas, "markets": build_markets(lambdas, odds),
+            "confidence": confidence_for(home, away)}
+
+
 async def get_fixture_model(fixture: dict, odds: Dict[str, float]) -> dict:
     home = await db.teams.find_one({"team_id": fixture["home_team_id"]}, {"_id": 0})
     away = await db.teams.find_one({"team_id": fixture["away_team_id"]}, {"_id": 0})
     league = await db.leagues.find_one({"league_id": fixture["league_id"]}, {"_id": 0}) or {}
-    ls = league.get("avg_shots") or REF_SHOTS
-    lb = league.get("avg_blocked") or 0.0
-    lambdas = expected_lambdas(home, away, ls, lb)
-    return {"lambdas": lambdas, "markets": build_markets(lambdas, odds), "confidence": confidence_for(home, away)}
+    return fixture_model_from(home, away, league, odds)
 
 
 # ----------------------------- Public access -----------------------------
@@ -2437,7 +2451,14 @@ async def set_odds(fixture_id: str, body: OddsBody, user: dict = Depends(get_cur
         raise HTTPException(status_code=404, detail="Fixture not found")
     existing = await _odds_for(fixture_id)
     merged = {**existing, **{k: v for k, v in body.odds.items() if v and v > 1.0}}
-    await db.odds.update_one({"fixture_id": fixture_id}, {"$set": {"odds": merged}}, upsert=True)
+    # WHEN matters as much as what. A value board ranks lines by the gap between the
+    # model and a price you typed in, and a price typed in last Tuesday is not a price —
+    # it is a memory of one. Stamped here so the board can show its age and let someone
+    # tell a live edge from a stale one.
+    await db.odds.update_one(
+        {"fixture_id": fixture_id},
+        {"$set": {"odds": merged, "updated_at": datetime.now(timezone.utc).isoformat()}},
+        upsert=True)
     model = await get_fixture_model(fx, merged)
     return {"model": model, "odds": merged}
 
@@ -2474,6 +2495,106 @@ async def scanner(league_id: Optional[str] = None, market: Optional[str] = None,
                             "ev": m["ev"], "tier": m["tier"], "confidence": model["confidence"]})
     results.sort(key=lambda x: x["ev"], reverse=True)
     return results
+
+
+# ----------------------------- Value board -----------------------------
+# The best priced-up line on EACH game, once you have entered what the shop is offering.
+#
+# /scanner above returns every +EV market it can find, which sounds like more and reads
+# as less: one fixture whose whole ladder is a point over the model contributes six rows,
+# pushes the other games off the screen, and none of those six is a separate bet — you
+# are taking one of them. This returns ONE ROW PER FIXTURE, the best line on it, with the
+# runners-up folded in behind so the second choice is still visible.
+#
+# It is DRIVEN FROM THE ODDS, not from the fixture list. Only games with a price typed in
+# can have an edge at all, and those are a handful out of thousands — so the odds
+# collection is read first and the fixtures are fetched by id, rather than walking every
+# fixture asking whether anyone priced it. /scanner does the latter, capped at 200
+# fixtures, at four database round trips each.
+#
+# TWO THINGS THE SCREEN HAS TO SAY, because a board that ranks by EV invites both
+# mistakes:
+#
+#   - AGE. The edge is measured against a price you typed in. If that was three days ago
+#     the number on screen is arithmetic about a price that no longer exists. Every row
+#     carries how old its price is.
+#   - SELECTION. Sorting by EV sorts by how far the model disagrees with the market, and
+#     the top of that list is made of two things: real edges, and the lines where the
+#     model is most wrong. The biggest number on the board is the one most likely to be a
+#     modelling error rather than a gift, which is the opposite of how it looks.
+
+@api_router.get("/value-board")
+async def value_board(within_days: Optional[int] = 7, min_ev: float = 0.0,
+                      league_id: Optional[str] = None, limit: int = 40,
+                      user: dict = Depends(require_member)):
+    """Best positive-EV line per upcoming fixture, from prices you have entered."""
+    odds_docs = await db.odds.find({}, {"_id": 0}).to_list(5000)
+    priced = {d["fixture_id"]: d for d in odds_docs if d.get("odds")}
+    if not priced:
+        return []
+
+    q = {"fixture_id": {"$in": list(priced)}}
+    if league_id and league_id != "all":
+        q["league_id"] = league_id
+    fixtures = await db.fixtures.find(q, {"_id": 0}).to_list(5000)
+
+    now = datetime.now(timezone.utc)
+    horizon = now + timedelta(days=within_days) if within_days else None
+
+    # Batch the lookups the model needs. Three queries in total rather than three per
+    # fixture — the whole reason fixture_model_from was split out.
+    team_ids = {tid for fx in fixtures for tid in (fx["home_team_id"], fx["away_team_id"])}
+    teams = {t["team_id"]: t for t in
+             await db.teams.find({"team_id": {"$in": list(team_ids)}}, {"_id": 0}).to_list(10000)}
+    leagues = {l["league_id"]: l for l in await db.leagues.find({}, {"_id": 0}).to_list(200)}
+
+    out = []
+    for fx in fixtures:
+        try:
+            kickoff = datetime.fromisoformat((fx.get("date") or "").replace("Z", "+00:00"))
+        except Exception:
+            continue
+        if kickoff.tzinfo is None:
+            kickoff = kickoff.replace(tzinfo=timezone.utc)
+        # A price on a game that has kicked off is a record, not a bet.
+        if kickoff < now or (horizon and kickoff > horizon):
+            continue
+        home, away = teams.get(fx["home_team_id"]), teams.get(fx["away_team_id"])
+        if not home or not away:
+            continue
+
+        doc = priced[fx["fixture_id"]]
+        model = fixture_model_from(home, away, leagues.get(fx["league_id"], {}), doc["odds"])
+        live = [m for m in model["markets"] if m.get("ev") is not None and m["ev"] >= min_ev]
+        if not live:
+            continue
+        live.sort(key=lambda m: m["ev"], reverse=True)
+        best, rest = live[0], live[1:]
+
+        def shape(m):
+            return {"key": m["key"], "group": m["group"],
+                    "label": f"{m['group_label']} {m['label']}",
+                    "line": m["line"], "book_odds": m["book_odds"], "fair_odds": m["fair_odds"],
+                    "prob": m["prob"], "ev": m["ev"], "tier": m["tier"]}
+
+        out.append({
+            "fixture_id": fx["fixture_id"], "league_id": fx["league_id"],
+            "league_name": (leagues.get(fx["league_id"]) or {}).get("name", ""),
+            "tier": (LEAGUE_META.get(fx["league_id"]) or {}).get("tier"),
+            "home_name": fx["home_name"], "away_name": fx["away_name"],
+            "date": fx["date"], "round": fx.get("round"),
+            "best": shape(best),
+            # Capped: the point is the shortlist, and a fixture whose whole ladder is
+            # priced over would otherwise bring its whole ladder with it.
+            "alternatives": [shape(m) for m in rest[:3]],
+            "other_count": len(rest),
+            "priced_at": doc.get("updated_at"),      # None on rows entered before stamping
+            "confidence": model["confidence"],
+            "lambda_total": model["lambdas"]["total"],
+        })
+
+    out.sort(key=lambda r: r["best"]["ev"], reverse=True)
+    return out[:max(1, min(limit, 100))]
 
 
 # A venue split needs this many games before it is trusted on its own. Below it the

@@ -53,6 +53,7 @@ export const api = {
   fixture: (id) => axios.get(`${API}/fixtures/${id}`).then((r) => r.data),
   setOdds: (id, odds) => axios.post(`${API}/fixtures/${id}/odds`, { odds }).then((r) => r.data),
   scanner: (params) => axios.get(`${API}/scanner`, { params }).then((r) => r.data),
+  valueBoard: (params) => axios.get(`${API}/value-board`, { params }).then((r) => r.data),
   streaks: (params) => axios.get(`${API}/streaks`, { params }).then((r) => r.data),
   matchups: (id, side) => axios.get(`${API}/leagues/${id}/matchups`, { params: { side } }).then((r) => r.data),
   cornerTable: (id) => axios.get(`${API}/leagues/${id}/corner-table`).then((r) => r.data),

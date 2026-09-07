@@ -12,17 +12,20 @@ import PerfectGames from "@/components/PerfectGames";
 import ValueBoard from "@/components/ValueBoard";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
+// `short` is what a phone gets. Six full labels wrap to three rows on a 390px screen,
+// which is most of the viewport spent on navigation before any football appears — and
+// with a fixed-height list it was worse than that, see the note on TabsList below.
 const TABS = [
-  { v: "best", l: "Best Teams", icon: Trophy },
-  { v: "form", l: "Hot Form", icon: TrendingUp },
-  { v: "streaks", l: "Streaks", icon: Flame },
+  { v: "best", l: "Best Teams", short: "Teams", icon: Trophy },
+  { v: "form", l: "Hot Form", short: "Form", icon: TrendingUp },
+  { v: "streaks", l: "Streaks", short: "Streaks", icon: Flame },
   // Next to Streaks on purpose: it is the same runs, narrowed to the ones whose fixture
   // agrees, so the tab someone reaches for after scanning streaks is the one beside it.
-  { v: "perfect", l: "Perfect Games", icon: Crosshair },
+  { v: "perfect", l: "Perfect Games", short: "Perfect", icon: Crosshair },
   // Last, because it is the only tab that is empty until you have done something:
   // it shows what YOUR entered prices found, not what the model found unprompted.
-  { v: "chase", l: "Chase Board", icon: Target },
-  { v: "value", l: "Your Value Board", icon: BadgePercent },
+  { v: "chase", l: "Chase Board", short: "Chase", icon: Target },
+  { v: "value", l: "Your Value Board", short: "Value", icon: BadgePercent },
 ];
 
 export default function Scanner() {
@@ -51,11 +54,20 @@ export default function Scanner() {
           arriving below a full fixture board — a scroll away from the headline that
           promised it. Fixtures are still there, one scroll down, which is where someone
           looking for a specific game goes anyway. */}
+      {/* h-auto, NOT the h-10 this used to carry. TabsList sets a fixed height, and a
+          fixed height with flex-wrap is a trap: the tabs wrapped onto three rows on a
+          phone while the box stayed one row tall, so rows two and three rendered
+          OUTSIDE it and landed on top of the panel below. The tabs looked like they had
+          been printed over the content. Height now follows the rows, and the shorter
+          mobile labels keep it to two of them. */}
       <Tabs value={view} onValueChange={setView}>
-        <TabsList className="bg-secondary h-10 flex-wrap">
+        <TabsList className="bg-secondary h-auto flex-wrap justify-start gap-1 p-1">
           {TABS.map((t) => (
-            <TabsTrigger key={t.v} value={t.v} data-testid={`vf-tab-${t.v}`} className="text-sm px-4 h-8 gap-2">
-              <t.icon className="h-4 w-4" /> {t.l}
+            <TabsTrigger key={t.v} value={t.v} data-testid={`vf-tab-${t.v}`}
+              className="text-xs sm:text-sm px-2.5 sm:px-4 h-8 gap-1.5 sm:gap-2">
+              <t.icon className="h-4 w-4 shrink-0" />
+              <span className="sm:hidden">{t.short}</span>
+              <span className="hidden sm:inline">{t.l}</span>
             </TabsTrigger>
           ))}
         </TabsList>

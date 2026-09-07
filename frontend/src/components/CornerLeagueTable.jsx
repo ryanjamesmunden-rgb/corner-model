@@ -38,7 +38,7 @@ export default function CornerLeagueTable({ leagueId }) {
           <tbody className="font-mono-data text-xs">
             {loading ? (
               <tr><td colSpan={4} className="px-3 py-10 text-center text-muted-foreground animate-pulse">Loading…</td></tr>
-            ) : data.teams.length === 0 ? (
+            ) : !data.teams?.length ? (
               <tr><td colSpan={4} className="px-3 py-10 text-center text-muted-foreground text-[11px]">No corner data for this league yet.</td></tr>
             ) : data.teams.map((t, i) => (
               <tr key={t.team_id} data-testid="corner-table-row" className="border-b border-border/40 hover:bg-white/5 transition-colors duration-150">

@@ -6,6 +6,10 @@ import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
 const SIDES = [{ v: "overall", l: "Overall" }, { v: "home", l: "Home" }, { v: "away", l: "Away" }];
 
+// Looked up by a value from the API, so it needs a fallback. The endpoint only ever
+// emits none/decent/strong today, but an unrecognised tier here is not a missing chip —
+// it is `undefined.row` on the next line, an uncaught throw, and the whole page replaced
+// by an error panel because one row had a value nobody expected.
 const tierStyle = {
   strong: { row: "#10B981", chip: "bg-emerald-500/15 text-emerald-400 border-emerald-500/30", label: "Mismatch" },
   decent: { row: "#F59E0B", chip: "bg-amber-500/15 text-amber-400 border-amber-500/30", label: "Lean" },
@@ -60,10 +64,10 @@ export default function MatchupTable({ leagueId }) {
           <tbody className="font-mono-data text-sm">
             {loading ? (
               <tr><td colSpan={8} className="px-4 py-12 text-center text-muted-foreground animate-pulse">Loading matchups…</td></tr>
-            ) : data.teams.length === 0 ? (
+            ) : !data.teams?.length ? (
               <tr><td colSpan={8} className="px-4 py-12 text-center text-muted-foreground">No data for this league yet.</td></tr>
             ) : data.teams.map((t, i) => {
-              const st = tierStyle[t.tier];
+              const st = tierStyle[t.tier] || tierStyle.none;
               const p = t.projection;
               return (
                 <tr

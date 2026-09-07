@@ -8,6 +8,7 @@ import CornerLeagueTable from "@/components/CornerLeagueTable";
 import SyncPanel from "@/components/SyncPanel";
 import BacktestPanel from "@/components/BacktestPanel";
 import ToolsPanel from "@/components/ToolsPanel";
+import ErrorBoundary from "@/components/ErrorBoundary";
 
 // Owner tooling is hidden unless it has already been unlocked on this browser, or the
 // page is opened with ?tools=1. It ran the analysis scripts from a phone, which is
@@ -31,12 +32,16 @@ export default function Dashboard() {
   const { leagueId, leagues } = useLeague();
   const [teams, setTeams] = useState([]);
   const [split, setSplit] = useState("overall");
-  const [window, setWindow] = useState("5");
+  // NOT `window` — that shadowed the global inside this component. Nothing here happened
+  // to use the real one, so it was harmless and invisible, which is exactly what makes it
+  // worth removing: the next person to reach for window.location or window.innerWidth in
+  // this file would get the string "5" and no clue why.
+  const [win, setWin] = useState("5");
   const league = leagues.find((l) => l.league_id === leagueId);
 
   useEffect(() => {
-    api.teams(leagueId, split, window).then(setTeams).catch(() => setTeams([]));
-  }, [leagueId, split, window]);
+    api.teams(leagueId, split, win).then(setTeams).catch(() => setTeams([]));
+  }, [leagueId, split, win]);
 
   return (
     <div className="space-y-3 sm:space-y-6" data-testid="dashboard-page">
@@ -63,7 +68,12 @@ export default function Dashboard() {
 
       <div className="grid grid-cols-1 lg:grid-cols-[1fr_300px] gap-6 items-start">
         <div className="space-y-6 min-w-0">
-          <MatchupTable leagueId={leagueId} />
+          {/* Per-table, as on the Value Finder. These two read different envelopes off
+              two different endpoints, and a field missing from one should cost that
+              table rather than the whole Leagues page. */}
+          <ErrorBoundary label="The matchup table" resetKey={leagueId}>
+            <MatchupTable leagueId={leagueId} />
+          </ErrorBoundary>
 
           <section className="bg-card border border-border rounded-lg">
             <div className="flex flex-col sm:flex-row sm:items-center gap-3 px-4 py-3 border-b border-border">
@@ -74,7 +84,7 @@ export default function Dashboard() {
                     {SPLITS.map((s) => <TabsTrigger key={s.v} value={s.v} data-testid={`split-${s.v}`} className="text-xs px-2.5 h-6">{s.l}</TabsTrigger>)}
                   </TabsList>
                 </Tabs>
-                <Tabs value={window} onValueChange={setWindow}>
+                <Tabs value={win} onValueChange={setWin}>
                   <TabsList className="bg-secondary h-8">
                     {WINDOWS.map((w) => <TabsTrigger key={w.v} value={w.v} data-testid={`window-${w.v}`} className="text-xs px-2.5 h-6">{w.l}</TabsTrigger>)}
                   </TabsList>
@@ -110,7 +120,9 @@ export default function Dashboard() {
           </section>
         </div>
 
-        <CornerLeagueTable leagueId={leagueId} />
+        <ErrorBoundary label="The corner table" resetKey={leagueId}>
+          <CornerLeagueTable leagueId={leagueId} />
+        </ErrorBoundary>
       </div>
 
       <SyncPanel />

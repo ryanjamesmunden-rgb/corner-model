@@ -26,6 +26,27 @@ axios.interceptors.request.use((cfg) => {
   return cfg;
 });
 
+// Preview metadata rides on the RESPONSE HEADERS, not in the body.
+//
+// The paid boards return a list, and half a dozen components already destructure that
+// list. Wrapping it in {rows, preview, total} to carry two extra facts would have meant
+// touching every one of them, so the facts travel beside the body and are attached to it
+// here: `.length`, `.map` and every existing read keep working, and a component that
+// does not care never notices.
+//
+// `total` is how many rows a MEMBER would have got. When the headers are missing — an
+// older backend, or a CORS policy that has not caught up — this falls back to "not a
+// preview", which shows whatever arrived rather than inventing a wall over real data.
+const withPreview = (r) => {
+  const body = r.data;
+  if (body && typeof body === "object") {
+    const total = Number(r.headers?.["x-total-rows"]);
+    body.preview = r.headers?.["x-preview"] === "true";
+    body.total = Number.isFinite(total) ? total : undefined;
+  }
+  return body;
+};
+
 export const api = {
   config: () => axios.get(`${API}/config`).then((r) => r.data),
   signInWithGoogle: (credential) =>
@@ -53,17 +74,17 @@ export const api = {
   fixture: (id) => axios.get(`${API}/fixtures/${id}`).then((r) => r.data),
   setOdds: (id, odds) => axios.post(`${API}/fixtures/${id}/odds`, { odds }).then((r) => r.data),
   scanner: (params) => axios.get(`${API}/scanner`, { params }).then((r) => r.data),
-  valueBoard: (params) => axios.get(`${API}/value-board`, { params }).then((r) => r.data),
-  streaks: (params) => axios.get(`${API}/streaks`, { params }).then((r) => r.data),
+  valueBoard: (params) => axios.get(`${API}/value-board`, { params }).then(withPreview),
+  streaks: (params) => axios.get(`${API}/streaks`, { params }).then(withPreview),
   matchups: (id, side) => axios.get(`${API}/leagues/${id}/matchups`, { params: { side } }).then((r) => r.data),
   cornerTable: (id) => axios.get(`${API}/leagues/${id}/corner-table`).then((r) => r.data),
-  trends: (params) => axios.get(`${API}/trends`, { params }).then((r) => r.data),
+  trends: (params) => axios.get(`${API}/trends`, { params }).then(withPreview),
   bestBets: () => axios.get(`${API}/best-bets`).then((r) => r.data),
-  chaseBoard: (params) => axios.get(`${API}/chase-board`, { params }).then((r) => r.data),
+  chaseBoard: (params) => axios.get(`${API}/chase-board`, { params }).then(withPreview),
   fixtureBoard: (params) => axios.get(`${API}/fixture-board`, { params }).then((r) => r.data),
   topCornerTeams: (params) => axios.get(`${API}/top-corner-teams`, { params }).then((r) => r.data),
-  perfectGames: (params) => axios.get(`${API}/perfect-games`, { params }).then((r) => r.data),
-  topMismatches: (params) => axios.get(`${API}/top-mismatches`, { params }).then((r) => r.data),
+  perfectGames: (params) => axios.get(`${API}/perfect-games`, { params }).then(withPreview),
+  topMismatches: (params) => axios.get(`${API}/top-mismatches`, { params }).then(withPreview),
   exportMarkdown: () => axios.get(`${API}/export`, { responseType: "text" }).then((r) => r.data),
   exportStreaks: (days = 7) => axios.get(`${API}/export/streaks`, { params: { days }, responseType: "text" }).then((r) => r.data),
   exportCsv: (type) => axios.get(`${API}/export/csv`, { params: { type }, responseType: "text" }).then((r) => r.data),

@@ -11,7 +11,6 @@ import StreakFinder from "@/components/StreakFinder";
 import ChaseBoard from "@/components/ChaseBoard";
 import PerfectGames from "@/components/PerfectGames";
 import ValueBoard from "@/components/ValueBoard";
-import MembersOnly from "@/components/MembersOnly";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
 // `short` is what a phone gets. Six full labels wrap to three rows on a 390px screen,
@@ -30,18 +29,17 @@ const TABS = [
   { v: "value", l: "Your Value Board", short: "Value", icon: BadgePercent },
 ];
 
-// EVERY TAB HERE EXCEPT "best" IS THE PAID PRODUCT. /streaks the page knew that and
-// wrapped itself in MembersOnly; these tabs are a second route to the same components
-// and never did, so a signed-out visitor got the component, the component got a 402, and
-// the 402 was caught and rendered as an empty table reading "No teams match this
-// streak". The site told people its product was empty — the single worst outcome for
-// anyone arriving from the free channel.
+// WHICH TABS ARE THE PAID PRODUCT — used for the padlock, and nothing else now. /streaks the page knew that and
+// these tabs reached them ungated, so a signed-out visitor got the component, the
+// component got a 402, and the 402 was caught and rendered as an empty table reading
+// "No teams match this streak" — the site telling people its product was empty.
 //
-// The wall says what is behind it, which is the whole reason MembersOnly takes a blurb:
-// "members only" tells you nothing about whether it is worth £20; naming what is in
-// there does. Best Teams stays open on purpose — it is the tab the page opens on, so a
-// visitor lands on real football rather than a paywall, and it is the teaser that makes
-// the rest worth paying for.
+// They are PREVIEWS now rather than walls: the API returns the first few rows to anyone
+// and the whole board to members, and each screen says what it is holding back. Best
+// Teams is open in full — it is the tab the page opens on, so a visitor lands on real
+// football rather than a sales prompt.
+//
+// This map is only the padlock's list of which tabs are the paid ones.
 const GATED = {
   form: {
     title: "Hot form",
@@ -118,17 +116,17 @@ export default function Scanner() {
 
       {view === "best" && <BestTeams leagueId={leagueId} />}
 
-      {/* MembersOnly returns the wall INSTEAD of its children, so a non-member never
-          mounts these and never fires the request that would 402. */}
-      {GATED[view] && (
-        <MembersOnly title={GATED[view].title} blurb={GATED[view].blurb}>
-          {view === "form" && <TrendFinder />}
-          {view === "streaks" && <StreakFinder leagueId={leagueId} />}
-          {view === "perfect" && <PerfectGames />}
-          {view === "chase" && <ChaseBoard leagueId="all" withinDays={7} limit={25} />}
-          {view === "value" && <ValueBoard />}
-        </MembersOnly>
-      )}
+      {/* A TASTE, NOT A WALL. These boards used to render a hard MembersOnly panel to
+          anyone who had not paid, which asks for £20 on the strength of an assertion.
+          The server now returns the first few rows to everyone and the whole board to
+          members, and each screen shows what it is holding back underneath. The rows do
+          the selling; the strip only does the asking. Trimming happens in the API, not
+          here — see _preview in server.py — so the rest never reaches the browser. */}
+      {view === "form" && <TrendFinder />}
+      {view === "streaks" && <StreakFinder leagueId={leagueId} />}
+      {view === "perfect" && <PerfectGames />}
+      {view === "chase" && <ChaseBoard leagueId="all" withinDays={7} limit={25} />}
+      {view === "value" && <ValueBoard />}
 
       <FixtureBoard leagueId="all" />
     </div>

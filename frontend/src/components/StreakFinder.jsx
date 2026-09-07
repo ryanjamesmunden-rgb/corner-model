@@ -9,6 +9,7 @@ import { kickoffLabel } from "@/lib/kickoff";
 import { streakShare } from "@/lib/shareText";
 import { COMFORT, comfortFilter, tightestWin, lastMargin } from "@/lib/cushion";
 import TierBadge from "@/components/TierBadge";
+import PreviewWall from "@/components/PreviewWall";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 
@@ -70,6 +71,8 @@ export default function StreakFinder({ leagueId }) {
   const [showFilters, setShowFilters] = useState(false);
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(true);
+  // Set by the API when the server trimmed the board for a non-member.
+  const [preview, setPreview] = useState(null);
 
   const ladder = LADDERS[`${direction}-${subject}`] || [];
   const isUnder = direction === "under";
@@ -87,7 +90,10 @@ export default function StreakFinder({ leagueId }) {
     if (threshold !== "auto") params.threshold = threshold;
     if (days !== "all") params.within_days = days;
     setLoading(true);
-    api.streaks(params).then(setRows).catch(() => setRows([])).finally(() => setLoading(false));
+    api.streaks(params)
+      .then((d) => { setRows(d); setPreview(d?.preview ? { total: d.total } : null); })
+      .catch(() => { setRows([]); setPreview(null); })
+      .finally(() => setLoading(false));
   }, [scope, side, direction, subject, preset, threshold, days, leagueId, isUnder]);
 
   // COLOUR MEANS QUALITY, NOT DIRECTION — matching the fixture board and Best Bets.
@@ -410,6 +416,10 @@ export default function StreakFinder({ leagueId }) {
           </tbody>
         </table>
       </div>
+
+      {/* The board was trimmed by the server, not hidden here — see _preview in
+          server.py. This only says so. */}
+      {preview && <PreviewWall total={preview.total} shown={shown.length} noun="teams" />}
     </section>
   );
 }

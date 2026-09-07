@@ -2,6 +2,7 @@ import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { BadgePercent, ArrowRight, Info, ChevronDown } from "lucide-react";
 import { api, tierMeta } from "@/lib/api";
+import PreviewWall from "@/components/PreviewWall";
 import { withFlag } from "@/lib/countryFlag";
 import { kickoffLabel } from "@/lib/kickoff";
 import { priceFreshness } from "@/lib/priceAge";
@@ -54,6 +55,8 @@ export default function ValueBoard() {
   const [floor, setFloor] = useState("0");
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(true);
+  // Set by the API when the server trimmed this board for a non-member.
+  const [preview, setPreview] = useState(null);
   const [open, setOpen] = useState({});          // fixture_id -> alternatives shown
 
   useEffect(() => {
@@ -61,8 +64,11 @@ export default function ValueBoard() {
     const params = { min_ev: Number(floor), limit: 40 };
     if (days !== "0") params.within_days = Number(days);
     api.valueBoard(params)
-      .then((d) => setRows(Array.isArray(d) ? d : []))
-      .catch(() => setRows([]))
+      .then((d) => {
+        setRows(Array.isArray(d) ? d : []);
+        setPreview(d?.preview ? { total: d.total } : null);
+      })
+      .catch(() => { setRows([]); setPreview(null); })
       .finally(() => setLoading(false));
   }, [days, floor]);
 
@@ -182,6 +188,8 @@ export default function ValueBoard() {
           })}
         </div>
       )}
+
+      {preview && <PreviewWall total={preview.total} shown={rows.length} noun="games" />}
 
       {/* THE SELECTION EFFECT, said out loud. A board sorted by EV is sorted by how far
           the model disagrees with the market, and the top of it is a mix of real edges

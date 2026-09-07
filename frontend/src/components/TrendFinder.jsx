@@ -2,6 +2,7 @@ import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { TrendingUp, ArrowRight, ArrowUpRight } from "lucide-react";
 import { api } from "@/lib/api";
+import PreviewWall from "@/components/PreviewWall";
 import TeamStar from "@/components/TeamStar";
 import { withFlag } from "@/lib/countryFlag";
 import { useLeague } from "@/context/LeagueContext";
@@ -22,11 +23,15 @@ export default function TrendFinder() {
   const [metric, setMetric] = useState("total");
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(true);
+  // Set by the API when the server trimmed this board for a non-member.
+  const [preview, setPreview] = useState(null);
 
   useEffect(() => {
     setLoading(true);
     api.trends({ league_id: scope === "current" ? leagueId : "all", window: win, metric, side })
-      .then(setRows).catch(() => setRows([])).finally(() => setLoading(false));
+      .then((d) => { setRows(d); setPreview(d?.preview ? { total: d.total } : null); })
+      .catch(() => { setRows([]); setPreview(null); })
+      .finally(() => setLoading(false));
   }, [scope, leagueId, win, metric, side]);
 
   const fmt = (d) => new Date(d).toLocaleDateString(undefined, { month: "short", day: "numeric" });
@@ -115,6 +120,7 @@ export default function TrendFinder() {
           </tbody>
         </table>
       </div>
+      {preview && <PreviewWall total={preview.total} shown={rows.length} noun="teams" />}
     </section>
   );
 }

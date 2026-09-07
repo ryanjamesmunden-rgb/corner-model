@@ -257,6 +257,24 @@ export default function FixtureDetail() {
   );
 }
 
+// The key for the bands above. Colour is only useful if its meaning is stated — the
+// fixture board learned the same lesson.
+function BandKey({ note }) {
+  return (
+    <div className="px-3 py-2 border-t border-border flex items-center gap-2 flex-wrap text-[10px] text-muted-foreground">
+      {[70, 50, 30, 0].map((p) => {
+        const c = band(p);
+        return (
+          <span key={p} className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded border font-mono-data ${c.chip} ${c.text}`}>
+            {p === 70 ? "70%+" : p === 50 ? "50-69%" : p === 30 ? "30-49%" : "<30%"} {c.label}
+          </span>
+        );
+      })}
+      {note && <span className="w-full">{note}</span>}
+    </div>
+  );
+}
+
 // Prices in bulk, because that is how they arrive: copied off a bookmaker's coupon as
 // a block of lines. Typing eight totals into eight boxes is eight chances to fat-finger
 // a price into the wrong row, and the parser behind this already handled the block —

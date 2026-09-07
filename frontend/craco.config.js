@@ -72,10 +72,36 @@ if (config.enableHealthCheck) {
 let webpackConfig = {
   eslint: {
     configure: {
+      // CATCHING UNDEFINED REFERENCES IS THE POINT OF THIS BLOCK. `configure` REPLACES
+      // Create React App's own eslint config rather than extending it, and that config
+      // is where these rules would otherwise have come from. Without them the build
+      // happily compiles a file referencing a component nobody defines: valid syntax,
+      // valid JSX, and a ReferenceError the moment it renders — which unmounts the whole
+      // React tree and leaves a white screen, with nothing in the build log to explain
+      // it.
+      //
+      // Not hypothetical. A component deleted by an over-wide edit left two call sites
+      // pointing at nothing, and the build went green all the way to production.
       extends: ["plugin:react-hooks/recommended"],
+      // no-undef needs to know what counts as already-defined, or it flags `window`,
+      // `document` and `process` on every file. eslint-config-react-app would supply
+      // this, but it is a transitive dependency of react-scripts rather than a direct
+      // one, and adding a package to this tree to get a lint rule is a poor trade — the
+      // resolutions block in package.json is evidence enough of how delicate it is.
+      env: { browser: true, node: true, es2021: true, jest: true },
+      plugins: ["react"],
       rules: {
         "react-hooks/rules-of-hooks": "error",
         "react-hooks/exhaustive-deps": "warn",
+        // Stated explicitly rather than inherited, so that narrowing `extends` again
+        // cannot silently switch them back off.
+        "no-undef": "error",
+        // AND THIS ONE, which is the rule that actually catches it. no-undef inspects
+        // plain identifiers; it does not look at JSX tag names, so `<BandKey />` with no
+        // BandKey anywhere sails straight past it. Verified the hard way: with only
+        // no-undef on, deleting the definition and leaving both call sites still
+        // compiled successfully.
+        "react/jsx-no-undef": "error",
       },
     },
   },

@@ -375,14 +375,36 @@ function TotalCorners({ markets, home, away, homeName, awayName,
     .map((m) => ({ ...m, plus: Math.ceil(m.line ?? parseFloat(String(m.key).split("_").pop())) }))
     .filter((r) => Number.isFinite(r.plus));
 
-  const totals = (team) => (team?.recent || []).map((g) => g.total).filter((t) => t != null);
+  // Newest first, as the API hands them over. Kept as games rather than bare numbers so
+  // each one can be shown and coloured individually.
+  const totals = (team) => (team?.recent || []).filter((g) => g.total != null);
   const homeTotals = totals(home);
   const awayTotals = totals(away);
   const sample = homeTotals.length + awayTotals.length;
 
   if (!rows.length) return null;
 
-  const hits = (arr, plus) => arr.filter((t) => t >= plus).length;
+  const hits = (arr, plus) => arr.filter((g) => g.total >= plus).length;
+
+  // WHAT ACTUALLY HAPPENED, game by game, instead of a ratio. "4/4" says a line kept
+  // clearing; it does not say whether that was 12, 11, 13, 12 — miles clear — or 8, 8,
+  // 8, 8 against a line of 8, which is four coin flips that all landed the right way.
+  // The numbers are the evidence; the fraction was only ever a summary of them.
+  const CHIPS = 4;
+  const Chips = ({ games, plus, label, title }) => (
+    <span className="inline-flex items-center gap-1" title={title}>
+      <span className="text-[9px] text-muted-foreground/70 w-3">{label}</span>
+      {games.length === 0 ? <span className="text-muted-foreground text-xs">—</span>
+        : games.slice(0, CHIPS).map((g, i) => (
+          <span key={i}
+            title={`${g.total} corners ${g.home ? "vs" : "@"} ${g.opponent}`}
+            className={`inline-flex h-5 min-w-5 px-1 items-center justify-center rounded text-[10px] ${
+              g.total >= plus ? "bg-emerald-500/20 text-emerald-400" : "bg-red-500/15 text-red-400"}`}>
+            {g.total}
+          </span>
+        ))}
+    </span>
+  );
 
   return (
     <div className="bg-card border border-border rounded-lg overflow-hidden"
@@ -405,14 +427,18 @@ function TotalCorners({ markets, home, away, homeName, awayName,
       <table className="w-full">
         <thead>
           <tr className="border-b border-border text-muted-foreground text-[10px] uppercase tracking-wider">
+            {/* NINE COLUMNS DOWN TO SEVEN. Home count, Away count and a progress bar all
+                said the same thing three ways; the last four games from each side say it
+                better and in less room. Model folds under Fair, being the same fact as a
+                percentage. */}
             <th className="text-left font-medium px-3 py-2">Line</th>
-            <th className="text-right font-medium px-3 py-2" title={homeName}>Home</th>
-            <th className="text-right font-medium px-3 py-2" title={awayName}>Away</th>
-            <th className="text-left font-medium px-3 py-2 w-full">Landed in</th>
+            <th className="text-left font-medium px-3 py-2 w-full"
+              title="The last four match totals for each side, newest first. Green cleared this line, red did not.">
+              Recent — {homeName} / {awayName}
+            </th>
+            <th className="text-right font-medium px-3 py-2" title="Across both sides' recent games">Landed</th>
             <th className="text-right font-medium px-3 py-2"
-              title="The model's probability this line clears">Model</th>
-            <th className="text-right font-medium px-3 py-2"
-              title="The price that probability is worth — no margin, no juice">Fair</th>
+              title="The price the model's probability is worth — no margin, no juice — with that probability beneath">Fair</th>
             <th className="text-right font-medium px-3 py-2"
               title="What you can actually get. Type it in and the gap and EV fill themselves">Your price</th>
             <th className="text-right font-medium px-3 py-2"
@@ -437,28 +463,25 @@ function TotalCorners({ markets, home, away, homeName, awayName,
                 <td className="px-3 py-2 whitespace-nowrap">
                   <span className={`text-xs px-1.5 py-0.5 rounded border ${c.chip} ${c.text}`}>{m.plus}+</span>
                 </td>
-                <td className="px-3 py-2 text-right text-muted-foreground text-xs">
-                  {homeTotals.length ? `${h}/${homeTotals.length}` : "—"}
-                </td>
-                <td className="px-3 py-2 text-right text-muted-foreground text-xs">
-                  {awayTotals.length ? `${a}/${awayTotals.length}` : "—"}
-                </td>
                 <td className="px-3 py-2 w-full">
+                  <span className="flex items-center gap-3 flex-wrap">
+                    <Chips games={homeTotals} plus={m.plus} label="H" title={homeName} />
+                    <Chips games={awayTotals} plus={m.plus} label="A" title={awayName} />
+                  </span>
+                </td>
+                <td className="px-3 py-2 text-right whitespace-nowrap">
                   {pct == null ? <span className="text-muted-foreground text-xs">—</span> : (
-                    <div className="flex items-center gap-2">
-                      <span className={`${c.text} font-semibold w-14 shrink-0`}>{h + a}/{sample}</span>
-                      <div className="h-1.5 rounded-full bg-white/5 overflow-hidden flex-1 min-w-[40px] max-w-[200px]">
-                        <div className={`h-full rounded-full ${c.bar}`} style={{ width: `${pct}%` }} />
-                      </div>
-                      <span className={`${c.text} text-xs w-9 text-right`}>{pct}%</span>
-                    </div>
+                    <span className={c.text}>
+                      <span className="font-semibold">{h + a}/{sample}</span>
+                      <span className="ml-1 text-[10px]">{pct}%</span>
+                    </span>
                   )}
                 </td>
-                <td className="px-3 py-2 text-right text-muted-foreground text-xs">
-                  {m.prob != null ? `${Math.round(m.prob)}%` : "—"}
-                </td>
-                <td className="px-3 py-2 text-right text-foreground">
+                <td className="px-3 py-2 text-right text-foreground leading-tight">
                   {m.fair_odds?.toFixed(2) ?? "—"}
+                  <span className="block text-[10px] text-muted-foreground font-sans">
+                    {m.prob != null ? `${Math.round(m.prob)}%` : ""}
+                  </span>
                 </td>
                 <td className="px-3 py-2 text-right">
                   <input

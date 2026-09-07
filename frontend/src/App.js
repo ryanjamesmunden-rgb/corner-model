@@ -1,4 +1,5 @@
 import "@/App.css";
+import ErrorBoundary from "@/components/ErrorBoundary";
 import { lazy, Suspense } from "react";
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { Toaster } from "sonner";
@@ -35,6 +36,10 @@ const page = (Component) => (
 
 function AppRouter() {
   return (
+    // OUTERMOST CATCH. Anything that throws below this shows a panel instead of
+    // unmounting the app — see components/ErrorBoundary. Individual boards wrap
+    // themselves too, so a broken board loses its own panel rather than its page.
+    <ErrorBoundary label="This page">
     <Routes>
       <Route path="/dashboard" element={page(Dashboard)} />
       <Route path="/scanner" element={page(Scanner)} />
@@ -56,6 +61,7 @@ function AppRouter() {
       } />
       <Route path="*" element={<Navigate to="/scanner" replace />} />
     </Routes>
+    </ErrorBoundary>
   );
 }
 

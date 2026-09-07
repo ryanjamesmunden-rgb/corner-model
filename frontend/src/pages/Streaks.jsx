@@ -4,6 +4,7 @@ import { useLeague } from "@/context/LeagueContext";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import TrendFinder from "@/components/TrendFinder";
 import StreakFinder from "@/components/StreakFinder";
+import ErrorBoundary from "@/components/ErrorBoundary";
 
 export default function Streaks() {
   const { leagueId } = useLeague();
@@ -30,7 +31,10 @@ export default function Streaks() {
         </TabsList>
       </Tabs>
 
-      {view === "form" ? <TrendFinder /> : <StreakFinder leagueId={leagueId} />}
+      <ErrorBoundary label={view === "form" ? "Hot form" : "The streak finder"}
+        resetKey={`${view}-${leagueId}`}>
+        {view === "form" ? <TrendFinder /> : <StreakFinder leagueId={leagueId} />}
+      </ErrorBoundary>
     </div>
   );
 }

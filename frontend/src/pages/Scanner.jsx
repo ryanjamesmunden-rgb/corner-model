@@ -11,6 +11,7 @@ import StreakFinder from "@/components/StreakFinder";
 import ChaseBoard from "@/components/ChaseBoard";
 import PerfectGames from "@/components/PerfectGames";
 import ValueBoard from "@/components/ValueBoard";
+import ErrorBoundary from "@/components/ErrorBoundary";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
 // `short` is what a phone gets. Six full labels wrap to three rows on a 390px screen,
@@ -83,7 +84,9 @@ export default function Scanner() {
 
       <IntroBanner />
 
-      <HomeInsights />
+      <ErrorBoundary label="Best bets today">
+        <HomeInsights />
+      </ErrorBoundary>
 
       {/* The board comes BEFORE the fixture list. The page is titled "Best Corner Teams
           & Streaks" and opens on the Best Teams tab, so the thing it is named after was
@@ -114,7 +117,14 @@ export default function Scanner() {
         </TabsList>
       </Tabs>
 
-      {view === "best" && <BestTeams leagueId={leagueId} />}
+      {/* PER-BOARD, not just per-page. These six read six different shapes off the API,
+          and a field missing from one of them should cost that board and nothing else —
+          the tabs, the fixture list below and the way out to /account all keep working.
+          resetKey means switching tab or league gives a failed board another go rather
+          than leaving it broken until a reload. */}
+      <ErrorBoundary label={`The ${TABS.find((t) => t.v === view)?.l || "board"} board`}
+        resetKey={`${view}-${leagueId}`}>
+        {view === "best" && <BestTeams leagueId={leagueId} />}
 
       {/* A TASTE, NOT A WALL. These boards used to render a hard MembersOnly panel to
           anyone who had not paid, which asks for £20 on the strength of an assertion.
@@ -127,8 +137,11 @@ export default function Scanner() {
       {view === "perfect" && <PerfectGames />}
       {view === "chase" && <ChaseBoard leagueId="all" withinDays={7} limit={25} />}
       {view === "value" && <ValueBoard />}
+      </ErrorBoundary>
 
-      <FixtureBoard leagueId="all" />
+      <ErrorBoundary label="The fixture list" resetKey={leagueId}>
+        <FixtureBoard leagueId="all" />
+      </ErrorBoundary>
     </div>
   );
 }

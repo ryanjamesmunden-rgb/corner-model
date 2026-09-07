@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
-import { Flame, ArrowRight, Target, TrendingDown, History } from "lucide-react";
+import { Flame, ArrowRight, Target, TrendingDown, History, SlidersHorizontal, ChevronDown } from "lucide-react";
 import { api } from "@/lib/api";
 import TeamStar from "@/components/TeamStar";
 import ShareButtons from "@/components/ShareButtons";
@@ -47,6 +47,7 @@ const LADDERS = {
 const MIN_LINE = { team: 3, match: 7 };
 
 const lineLabel = (line, direction) => (direction === "under" ? `U ${line}` : `${line}+`);
+const presetLabelOf = (v) => PRESETS.find((p) => p.v === v)?.l || v;
 const fmtDate = (d) => (d ? new Date(d).toLocaleDateString(undefined, { month: "short", day: "numeric" }) : "");
 
 // Global cross-league corner streak finder: overs and unders, team corners or match totals.
@@ -62,6 +63,11 @@ export default function StreakFinder({ leagueId }) {
   // Applied on the client: the margin of every leg is already in each row, so
   // narrowing by it costs nothing and does not need the scan re-run.
   const [comfort, setComfort] = useState("any");
+  // Eight controls is a sensible toolbar on a desktop and most of a phone screen
+  // spent on knobs before any football appears. Collapsed below lg, with a line
+  // saying what is currently applied so the state is never hidden — only the
+  // controls are.
+  const [showFilters, setShowFilters] = useState(false);
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(true);
 
@@ -108,6 +114,19 @@ export default function StreakFinder({ leagueId }) {
   const shown = rows.filter(comfortFilter(comfort));
   const comfortMeta = COMFORT.find((c) => c.v === comfort) || COMFORT[0];
 
+  // What is applied, in words. Only the four that change what you are looking AT are
+  // spelled out; the rest are counted, because a summary as long as the toolbar it
+  // replaces has not saved anybody anything.
+  const extras = [
+    threshold !== "auto", days !== "all", scope !== "all", comfort !== "any",
+  ].filter(Boolean).length;
+  const filterSummary = [
+    isUnder ? "Under" : "Over",
+    subject === "match" ? "Match total" : "Team corners",
+    SIDES.find((x) => x.v === side)?.l,
+    presetLabelOf(preset),
+  ].filter(Boolean).join(" · ") + (extras ? ` · +${extras}` : "");
+
   // A postable summary of what's on screen — the same builder tools/social_draft.mjs
   // uses for the scheduled post, so the two can't drift. See lib/shareText.
   const presetMeta = PRESETS.find((x) => x.v === preset);
@@ -137,7 +156,20 @@ export default function StreakFinder({ leagueId }) {
         {shown.length > 0 && (
           <ShareButtons text={buildShare(SHARE_ROWS)} buildX={buildShare} className="lg:ml-2" />
         )}
-        <div className="lg:ml-auto flex flex-wrap items-center gap-2">
+        {/* MOBILE ONLY. Below lg the controls fold away behind this, and the line under
+            it says what is applied — hiding a knob is fine, hiding the setting is not. */}
+        <button
+          onClick={() => setShowFilters((v) => !v)}
+          data-testid="streak-filters-toggle"
+          aria-expanded={showFilters}
+          className="lg:hidden flex items-center gap-2 text-xs px-2.5 py-1.5 rounded-md bg-secondary border border-border text-muted-foreground hover:text-foreground transition-colors"
+        >
+          <SlidersHorizontal className="h-3.5 w-3.5 shrink-0" />
+          <span className="text-foreground/80 truncate">{filterSummary}</span>
+          <ChevronDown className={`h-3.5 w-3.5 shrink-0 ml-auto transition-transform duration-150 ${showFilters ? "rotate-180" : ""}`} />
+        </button>
+
+        <div className={`${showFilters ? "flex" : "hidden"} lg:flex lg:ml-auto flex-wrap items-center gap-2`}>
           <Tabs value={direction} onValueChange={switchTo(setDirection)}>
             <TabsList className="bg-secondary h-8">
               {DIRECTIONS.map((d) => (
@@ -146,7 +178,7 @@ export default function StreakFinder({ leagueId }) {
             </TabsList>
           </Tabs>
           <Select value={subject} onValueChange={switchTo(setSubject)}>
-            <SelectTrigger data-testid="streak-subject" className="w-[140px] bg-[#121212] border-border text-xs h-8"><SelectValue /></SelectTrigger>
+            <SelectTrigger data-testid="streak-subject" className="w-full sm:w-[140px] bg-[#121212] border-border text-xs h-8"><SelectValue /></SelectTrigger>
             <SelectContent className="bg-[#121212] border-border">
               {SUBJECTS.map((o) => <SelectItem key={o.v} value={o.v} className="text-xs">{o.l}</SelectItem>)}
             </SelectContent>
@@ -156,13 +188,18 @@ export default function StreakFinder({ leagueId }) {
               {SIDES.map((s) => <TabsTrigger key={s.v} value={s.v} data-testid={`streak-side-${s.v}`} className="text-xs px-2.5 h-6">{s.l}</TabsTrigger>)}
             </TabsList>
           </Tabs>
-          <Tabs value={preset} onValueChange={setPreset}>
-            <TabsList className="bg-secondary h-8">
+          {/* Eight presets in one un-wrapping inline-flex row ran off the right edge of a
+              phone, taking the last two windows with it — 11/15 and 15/20 could not be
+              reached at all. Wraps now, and the height follows the rows rather than
+              being pinned at h-8 (the same trap that had the page's own tab strip
+              printing over the panel below it). */}
+          <Tabs value={preset} onValueChange={setPreset} className="max-w-full">
+            <TabsList className="bg-secondary h-auto flex-wrap justify-start gap-0.5 p-1">
               {PRESETS.map((p) => <TabsTrigger key={p.v} value={p.v} data-testid={`streak-preset-${p.v}`} className="text-xs px-2 h-6 font-mono-data">{p.l}</TabsTrigger>)}
             </TabsList>
           </Tabs>
           <Select value={threshold} onValueChange={setThreshold}>
-            <SelectTrigger data-testid="streak-threshold" className="w-[150px] bg-[#121212] border-border text-xs h-8"><SelectValue /></SelectTrigger>
+            <SelectTrigger data-testid="streak-threshold" className="w-full sm:w-[150px] bg-[#121212] border-border text-xs h-8"><SelectValue /></SelectTrigger>
             <SelectContent className="bg-[#121212] border-border">
               <SelectItem value="auto" className="text-xs">Best line (auto)</SelectItem>
               {ladder.map((l) => (
@@ -173,7 +210,7 @@ export default function StreakFinder({ leagueId }) {
             </SelectContent>
           </Select>
           <Select value={comfort} onValueChange={setComfort}>
-            <SelectTrigger data-testid="streak-comfort" className="w-[170px] bg-[#121212] border-border text-xs h-8"><SelectValue /></SelectTrigger>
+            <SelectTrigger data-testid="streak-comfort" className="w-full sm:w-[170px] bg-[#121212] border-border text-xs h-8"><SelectValue /></SelectTrigger>
             <SelectContent className="bg-[#121212] border-border">
               {COMFORT.map((o) => (
                 <SelectItem key={o.v} value={o.v} className="text-xs" title={o.hint}>{o.l}</SelectItem>
@@ -181,13 +218,13 @@ export default function StreakFinder({ leagueId }) {
             </SelectContent>
           </Select>
           <Select value={days} onValueChange={setDays}>
-            <SelectTrigger data-testid="streak-timeframe" className="w-[140px] bg-[#121212] border-border text-xs h-8"><SelectValue /></SelectTrigger>
+            <SelectTrigger data-testid="streak-timeframe" className="w-full sm:w-[140px] bg-[#121212] border-border text-xs h-8"><SelectValue /></SelectTrigger>
             <SelectContent className="bg-[#121212] border-border">
               {TIMEFRAMES.map((o) => <SelectItem key={o.v} value={o.v} className="text-xs">{o.l}</SelectItem>)}
             </SelectContent>
           </Select>
           <Select value={scope} onValueChange={setScope}>
-            <SelectTrigger data-testid="streak-scope" className="w-[130px] bg-[#121212] border-border text-xs h-8"><SelectValue /></SelectTrigger>
+            <SelectTrigger data-testid="streak-scope" className="w-full sm:w-[130px] bg-[#121212] border-border text-xs h-8"><SelectValue /></SelectTrigger>
             <SelectContent className="bg-[#121212] border-border">
               <SelectItem value="all" className="text-xs">All Leagues</SelectItem>
               <SelectItem value="current" className="text-xs">This League</SelectItem>

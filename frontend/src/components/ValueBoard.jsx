@@ -27,11 +27,18 @@ const WINDOWS = [
   { v: "14", l: "Next 14 days" },
   { v: "0", l: "All upcoming" },
 ];
+// "All priced games" exists so an empty board can be told apart from a broken one.
+// The default only shows lines the model rates ABOVE your price, and a bookmaker's
+// margin means most entered prices are below it — so a board that is working perfectly
+// and a board that never received your prices look identical. Dropping the floor below
+// zero shows every game you have priced, negative edges included, which answers "did my
+// odds land?" in one click.
 const FLOORS = [
   { v: "0", l: "Any edge" },
   { v: "2", l: "2%+" },
   { v: "5", l: "5%+" },
   { v: "10", l: "10%+" },
+  { v: "-100", l: "All priced games" },
 ];
 
 function Line({ m, muted = false }) {
@@ -116,7 +123,14 @@ export default function ValueBoard() {
             This fills up from prices you type in on a fixture page — open a game, put the
             shop's odds in the <span className="text-foreground">Your price</span> column, and
             anything the model rates above that price lands here.
-            {floor !== "0" && " You may also just be filtering too hard for what you've entered."}
+          </p>
+          <p className="mt-2 text-xs max-w-md mx-auto leading-relaxed">
+            {Number(floor) < 0
+              ? "Nothing at all — so the prices either aren't saved against these fixtures, or every game you priced has already kicked off or is outside the window above."
+              : <>Already entered some? Switch the filter to{" "}
+                 <span className="text-foreground">All priced games</span> — that shows every
+                 game you've priced including the ones with no edge, which tells you straight
+                 away whether your odds are landing.</>}
           </p>
         </div>
       ) : (

@@ -313,11 +313,22 @@ async def sync_league(hc, my_lid):
                                          "date": (now.replace(microsecond=0)).isoformat()},
                              "teams": {"home": {"id": ids[i], "name": team_names[ids[i]]},
                                        "away": {"id": ids[i + 1], "name": team_names[ids[i + 1]]}}})
-    import uuid
     for f in upcoming:
         hid, aid = f["teams"]["home"]["id"], f["teams"]["away"]["id"]
         fixture_docs.append({
-            "fixture_id": str(uuid.uuid4()), "league_id": my_lid,
+            # DERIVED FROM THE PROVIDER'S ID, not a fresh uuid4 per run.
+            #
+            # This block deletes every fixture in the league and re-inserts it, so a
+            # random id meant the SAME real match got a different fixture_id every
+            # twelve hours. Everything keyed to a fixture — the odds someone typed in,
+            # their starred games — pointed at a row that no longer existed by the next
+            # sync, and silently matched nothing. The value board joins odds to fixtures
+            # on this id, which is why it kept coming up empty however many prices went
+            # in.
+            #
+            # api_fixture_id was already being stored two lines down; it just was not
+            # being used as the key. Same shape as the team ids below.
+            "fixture_id": f"{my_lid}-{f['fixture']['id']}", "league_id": my_lid,
             # real API-Football id (synthesized fallback fixtures get a string id,
             # which settlement treats as unsettleable rather than guessing)
             "api_fixture_id": f["fixture"]["id"],
@@ -329,15 +340,19 @@ async def sync_league(hc, my_lid):
     if fixture_docs:
         await db.fixtures.insert_many(fixture_docs)
 
-    # Clear any stored odds for these fixtures.
+    # THE ODDS DELETE IS GONE, and removing it is not optional now.
     #
-    # This used to SYNTHESISE bookmaker odds — the model's own fair price multiplied by a
-    # random 0.9-1.18 — "so scanner has content". They looked real, auto-filled the odds
-    # boxes, and every EV and value tier computed from them was therefore noise: EV came
-    # out as that random multiplier minus one. Fabricated prices are worse than none, so
-    # the generation is gone and the delete stays, which clears the ones already stored.
-    # Odds now only ever come from a person entering them.
-    await db.odds.delete_many({"fixture_id": {"$in": [f["fixture_id"] for f in fixture_docs]}})
+    # It existed to clear fabricated prices: the sync used to synthesise bookmaker odds —
+    # the model's own fair price times a random 0.9-1.18 — so every EV computed from one
+    # was that multiplier minus one, dressed up as an edge. The generator was deleted
+    # long ago and this line was what swept up what it had left behind.
+    #
+    # It was harmless only because the ids above were random: it deleted odds for
+    # fixture_ids invented microseconds earlier, so it always matched nothing. Now that
+    # the ids are stable it would match everything — and the only thing writing to this
+    # collection today is a person typing a price in. Leaving it would have turned a
+    # no-op into "every sync wipes the odds you entered", which is a worse bug than the
+    # one above.
 
     all_shots = [m.get("shots_for", 0) for t in team_docs for m in (t.get("real_matches") or [])]
     avg_shots = round(sum(all_shots) / len(all_shots), 2) if all_shots else None
@@ -355,7 +370,7 @@ async def sync_league(hc, my_lid):
                                           "synced_at": datetime.now(timezone.utc).isoformat()}},
                                 upsert=True)
     # `odds_docs` used to be built here by the synthetic-odds generator. That generator was
-    # deleted (see the note above db.odds.delete_many) but this line kept referencing it,
+    # deleted (see the note where the odds wipe used to be) but this line kept referencing it,
     # so the last statement of every league sync was a NameError — caught by main()'s
     # per-league handler and recorded as an error AFTER all the writes had landed. Latent
     # rather than fatal today only because the leagues are failing earlier than this.

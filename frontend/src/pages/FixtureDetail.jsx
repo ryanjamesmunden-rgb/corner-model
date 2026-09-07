@@ -98,13 +98,13 @@ export default function FixtureDetail() {
   ];
 
   return (
-    <div className="space-y-3 sm:space-y-6" data-testid="fixture-detail-page">
+    <div className="space-y-2.5 sm:space-y-4" data-testid="fixture-detail-page">
       <button onClick={() => navigate(-1)} data-testid="back-btn" className="flex items-center gap-2 text-sm text-muted-foreground hover:text-foreground transition-colors duration-150">
         <ArrowLeft className="h-4 w-4" /> Back
       </button>
 
       {/* Header */}
-      <div className="bg-card border border-border rounded-lg p-5 flex flex-col sm:flex-row sm:items-center gap-4">
+      <div className="bg-card border border-border rounded-lg p-3.5 sm:p-5 flex flex-col sm:flex-row sm:items-center gap-3 sm:gap-4">
         <div className="flex-1">
           {/* The most natural place to save a game is the game's own page — this was the
               one surface the star was missing from, which is most of why it could not
@@ -122,7 +122,9 @@ export default function FixtureDetail() {
             )}
           </p>
         </div>
-        <div className="flex gap-3">
+        {/* Wraps on a phone instead of running off the edge, and the confidence chip
+            goes with them rather than being pushed onto its own line. */}
+        <div className="flex flex-wrap gap-2 sm:gap-3">
           <Metric label="λ Home" value={model.lambdas.home.toFixed(2)} />
           <Metric label="λ Away" value={model.lambdas.away.toFixed(2)} />
           <Metric label="λ Total" value={model.lambdas.total.toFixed(2)} accent />
@@ -133,11 +135,6 @@ export default function FixtureDetail() {
         </div>
       </div>
 
-      {/* TOTAL CORNERS FIRST, and across the full width. It is the market with the most
-          liquidity and the one most people are actually pricing, and it now carries a
-          full ladder — landed, model, fair, your price, gap, EV — which does not fit in
-          a third of a row. The team tables get half each below instead of a third, which
-          they needed anyway. */}
       {/* THE BULK ENTRY BOX. This parser was written, complete, and never rendered —
           `handlePaste` had no caller, so filling a ladder meant eight separate inputs
           and eight round trips. Prices arrive from a bookmaker as a block of text, so
@@ -154,20 +151,12 @@ export default function FixtureDetail() {
         awayName={fixture.away_name}
       />
 
-      <TotalCorners
-        markets={model.markets}
-        home={home_team}
-        away={away_team}
-        homeName={fixture.home_name}
-        awayName={fixture.away_name}
-        odds={odds}
-        setOdds={setOdds}
-        submitOdds={submitOdds}
-        flash={flash}
-      />
-
-      {/* Markets */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+      {/* TEAM CORNERS FIRST — this used to lead with the match total, and that was the
+          wrong way round for the bet rather than for the layout. A team line needs ONE
+          side to do what it has been doing; a match total needs both, and the second
+          team is a whole extra way to be wrong that you are not being paid extra for.
+          The page should open on the market with the fewer moving parts. */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-3 sm:gap-4">
         {groups.map((g) => (
           <div key={g.key} className="bg-card border border-border rounded-lg overflow-hidden">
             <div className="px-4 py-3 border-b border-border flex items-center gap-2">
@@ -180,9 +169,14 @@ export default function FixtureDetail() {
               <thead>
                 <tr className="border-b border-border text-muted-foreground text-[10px] uppercase tracking-wider">
                   <th className="text-left font-medium px-3 py-2">Line</th>
-                  <th className="text-left font-medium px-3 py-2"
+                  {/* w-full on the BAR column. A six-column table in a wide card
+                      distributes its slack evenly, which flung Line, Prob, Fair, Book
+                      and EV to the far corners with a hand's width of nothing between
+                      them. Letting the one elastic column swallow the extra space keeps
+                      the numbers together and readable as a row. */}
+                  <th className="text-left font-medium px-3 py-2 w-full"
                     title="How often this team ACTUALLY hit the line, in its games on this venue">Landed</th>
-                  <th className="text-right font-medium px-3 py-2">Prob</th>
+                  <th className="text-right font-medium px-3 py-2 whitespace-nowrap">Prob</th>
                   <th className="text-right font-medium px-3 py-2">Fair</th>
                   <th className="text-right font-medium px-3 py-2">Book</th>
                   <th className="text-right font-medium px-3 py-2">EV</th>
@@ -210,11 +204,11 @@ export default function FixtureDetail() {
                           {m.label}
                         </span>
                       </td>
-                      <td className="px-3 py-2">
+                      <td className="px-3 py-2 w-full">
                         {pct == null ? <span className="text-muted-foreground text-xs">—</span> : (
                           <div className="flex items-center gap-2">
                             <span className={`${c.text} text-xs font-semibold w-9 shrink-0`}>{hit}/{played.length}</span>
-                            <div className="h-1.5 rounded-full bg-white/5 overflow-hidden flex-1 min-w-[28px]">
+                            <div className="h-1.5 rounded-full bg-white/5 overflow-hidden flex-1 min-w-[28px] max-w-[150px]">
                               <div className={`h-full rounded-full ${c.bar}`} style={{ width: `${pct}%` }} />
                             </div>
                             <span className={`${c.text} text-xs w-8 text-right`}>{pct}%</span>
@@ -248,8 +242,23 @@ export default function FixtureDetail() {
         ))}
       </div>
 
+      {/* Below the team tables now, and it says why. A total is not a worse market, it
+          is a market with one more assumption in it, and the page should not present the
+          two as interchangeable just because they sit on the same fixture. */}
+      <TotalCorners
+        markets={model.markets}
+        home={home_team}
+        away={away_team}
+        homeName={fixture.home_name}
+        awayName={fixture.away_name}
+        odds={odds}
+        setOdds={setOdds}
+        submitOdds={submitOdds}
+        flash={flash}
+      />
+
       {/* Team breakdowns */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-3 sm:gap-4">
         <TeamBreakdown team={home_team} title={fixture.home_name} highlight="home" />
         <TeamBreakdown team={away_team} title={fixture.away_name} highlight="away" />
       </div>
@@ -381,6 +390,11 @@ function TotalCorners({ markets, home, away, homeName, awayName,
       <div className="px-4 py-3 border-b border-border flex items-center gap-2">
         <TrendingUp className="h-4 w-4 text-muted-foreground" />
         <h3 className="font-head font-semibold text-sm">Total Match Corners</h3>
+        {/* Stated on the card, not just in the layout: someone who scrolled straight
+            here should still meet the caveat that put it second. */}
+        <span className="hidden sm:inline text-[11px] text-muted-foreground">
+          needs both sides to turn up — the team lines above need one
+        </span>
         <span className="ml-auto font-mono-data text-[10px] text-muted-foreground"
           title={`${homeTotals.length} ${homeName} games + ${awayTotals.length} ${awayName} games`}>
           {sample} games
@@ -394,7 +408,7 @@ function TotalCorners({ markets, home, away, homeName, awayName,
             <th className="text-left font-medium px-3 py-2">Line</th>
             <th className="text-right font-medium px-3 py-2" title={homeName}>Home</th>
             <th className="text-right font-medium px-3 py-2" title={awayName}>Away</th>
-            <th className="text-left font-medium px-3 py-2">Landed in</th>
+            <th className="text-left font-medium px-3 py-2 w-full">Landed in</th>
             <th className="text-right font-medium px-3 py-2"
               title="The model's probability this line clears">Model</th>
             <th className="text-right font-medium px-3 py-2"
@@ -429,11 +443,11 @@ function TotalCorners({ markets, home, away, homeName, awayName,
                 <td className="px-3 py-2 text-right text-muted-foreground text-xs">
                   {awayTotals.length ? `${a}/${awayTotals.length}` : "—"}
                 </td>
-                <td className="px-3 py-2">
+                <td className="px-3 py-2 w-full">
                   {pct == null ? <span className="text-muted-foreground text-xs">—</span> : (
                     <div className="flex items-center gap-2">
                       <span className={`${c.text} font-semibold w-14 shrink-0`}>{h + a}/{sample}</span>
-                      <div className="h-1.5 rounded-full bg-white/5 overflow-hidden flex-1 min-w-[40px]">
+                      <div className="h-1.5 rounded-full bg-white/5 overflow-hidden flex-1 min-w-[40px] max-w-[200px]">
                         <div className={`h-full rounded-full ${c.bar}`} style={{ width: `${pct}%` }} />
                       </div>
                       <span className={`${c.text} text-xs w-9 text-right`}>{pct}%</span>
@@ -483,6 +497,13 @@ function TotalCorners({ markets, home, away, homeName, awayName,
           and EV fill in. +5% EV means that for every £10 staked, the model reckons you
           are getting £10.50 of value — over one bet that is nothing, over a season it is
           the whole game.
+        </p>
+        <p>
+          <span className="text-foreground">One more assumption than a team line.</span>{" "}
+          A team total needs that side to keep doing what it has been doing. A match total
+          needs both of them to, and the opponent is a second way to be wrong that the
+          price does not pay you extra for. Where a team line and this one point at the
+          same game, the team line is usually the cleaner bet.
         </p>
         <p>
           <span className="text-foreground">Check it against Landed.</span> The model

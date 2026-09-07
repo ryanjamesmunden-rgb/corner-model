@@ -2,6 +2,7 @@ import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { Target, Flame, ArrowRight, Plus, Zap } from "lucide-react";
 import { api, tierMeta } from "@/lib/api";
+import PreviewWall from "@/components/PreviewWall";
 import { withFlag } from "@/lib/countryFlag";
 
 const fmtDate = (d) => (d ? new Date(d).toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" }) : "");
@@ -10,12 +11,19 @@ export default function ChaseBoard({ leagueId = "all", withinDays = 7, limit = 2
   const navigate = useNavigate();
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(true);
+  // Set by the API when the server trimmed this board for a non-member.
+  const [preview, setPreview] = useState(null);
 
   useEffect(() => {
     setLoading(true);
     api.chaseBoard({ league_id: leagueId, within_days: withinDays, limit })
-      .then((d) => setRows(d.board || []))
-      .catch(() => setRows([]))
+      .then((d) => {
+        setRows(d.board || []);
+        // chase-board answers with a dict, so the flags sit on the envelope; `count`
+        // is the full number even when `board` has been trimmed.
+        setPreview(d?.preview ? { total: d.total ?? d.count } : null);
+      })
+      .catch(() => { setRows([]); setPreview(null); })
       .finally(() => setLoading(false));
   }, [leagueId, withinDays, limit]);
 
@@ -104,6 +112,7 @@ export default function ChaseBoard({ leagueId = "all", withinDays = 7, limit = 2
           </tbody>
         </table>
       </div>
+      {preview && <PreviewWall total={preview.total} shown={rows.length} noun="spots" />}
       {/* Measured, and it does not rank. Saying so on the panel matters more than the
           panel looking authoritative — the row order is a filter, not a pick order. */}
       <p className="px-2 py-1.5 sm:px-4 sm:py-2.5 border-t border-border text-[10px] text-muted-foreground">

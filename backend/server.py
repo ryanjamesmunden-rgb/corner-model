@@ -2526,12 +2526,13 @@ async def scanner(league_id: Optional[str] = None, market: Optional[str] = None,
 @api_router.get("/value-board")
 async def value_board(within_days: Optional[int] = 7, min_ev: float = 0.0,
                       league_id: Optional[str] = None, limit: int = 40,
-                      user: dict = Depends(require_member)):
+                      response: Response = None,
+                      user: dict = Depends(get_current_user)):
     """Best positive-EV line per upcoming fixture, from prices you have entered."""
     odds_docs = await db.odds.find({}, {"_id": 0}).to_list(5000)
     priced = {d["fixture_id"]: d for d in odds_docs if d.get("odds")}
     if not priced:
-        return []
+        return _preview([], user, response)
 
     q = {"fixture_id": {"$in": list(priced)}}
     if league_id and league_id != "all":
@@ -2594,7 +2595,7 @@ async def value_board(within_days: Optional[int] = 7, min_ev: float = 0.0,
         })
 
     out.sort(key=lambda r: r["best"]["ev"], reverse=True)
-    return out[:max(1, min(limit, 100))]
+    return _preview(out[:max(1, min(limit, 100))], user, response)
 
 
 # A venue split needs this many games before it is trusted on its own. Below it the
@@ -2681,6 +2682,40 @@ STREAK_LADDERS = {"team": list(range(1, 16)), "match": list(range(1, 31))}
 #   - a team with barely any history, so its whole record is one or two games
 # Both are the same complaint: the row claims a pattern the sample cannot support.
 MIN_STREAK_LEN = 2
+
+
+# How much of a paid board somebody who has not paid gets to see.
+#
+# Three rows rather than none. A hard wall proves nothing: it asks for £20 on trust, and
+# the only evidence it offers that the product is worth having is that it exists. Three
+# real rows — team, line, record intact — let a visitor check the thing is any good
+# before paying for it, and the count of what is hidden does the selling that an empty
+# screen cannot.
+#
+# TRIMMED ON THE SERVER, never in the browser. Hiding rows client-side ships the whole
+# board to anyone who opens devtools; that is not a preview, it is the product with a
+# blindfold laid over it.
+PREVIEW_ROWS = 3
+
+
+def _preview(rows, user: dict, response, limit: int = PREVIEW_ROWS):
+    """Trim a members-only board to a taste, and describe the trim in the headers.
+
+    `response is None` means this was called INTERNALLY by another endpoint rather than
+    served over HTTP — perfect_games builds on streaks, best_bets on both — and an
+    internal caller needs the whole list to work from. Trimming happens once, at the
+    boundary that actually answers a visitor, so a preview can never be computed from an
+    already-trimmed list.
+    """
+    if response is None:
+        return rows
+    total = len(rows)
+    response.headers["X-Total-Rows"] = str(total)
+    if user.get("member"):
+        response.headers["X-Preview"] = "false"
+        return rows
+    response.headers["X-Preview"] = "true"
+    return rows[:max(0, limit)]
 # Default ceiling for under streaks: above these a line is true so often it says nothing.
 UNDER_LINE_CAP = {"team": 8, "match": 12}
 
@@ -2819,7 +2854,8 @@ async def streaks(league_id: Optional[str] = None, side: str = "overall", window
                   within_days: Optional[int] = None, direction: str = "over",
                   subject: str = "team", max_line: Optional[int] = None,
                   min_streak: int = MIN_STREAK_LEN,
-                  user: dict = Depends(require_member)):
+                  response: Response = None,
+                  user: dict = Depends(get_current_user)):
     """Teams that keep landing the same side of a corner line over recent REAL games —
     e.g. 4+ team corners in 5/5 home games, or the match total under 10 in 8 of the last 10.
 
@@ -2830,7 +2866,7 @@ async def streaks(league_id: Optional[str] = None, side: str = "overall", window
             and min_hits == 5 and threshold is None and min_line == 3
             and within_days is None and direction == "over" and subject == "team"
             and max_line is None and min_streak == MIN_STREAK_LEN):
-        return await _screen("streaks")
+        return _preview(await _screen("streaks"), user, response)
     q = {} if not league_id or league_id == "all" else {"league_id": league_id}
     teams = await db.teams.find(q, {"_id": 0}).to_list(5000)
     teams_by_id = {t["team_id"]: t for t in teams}
@@ -2934,7 +2970,7 @@ async def streaks(league_id: Optional[str] = None, side: str = "overall", window
         results.sort(key=lambda x: (-x["line"], x["hits"], x["streak"]["length"], -x["avg"]), reverse=True)
     else:
         results.sort(key=lambda x: (x["line"], x["hits"], x["streak"]["length"], x["avg"]), reverse=True)
-    return results
+    return _preview(results, user, response)
 
 
 @api_router.get("/features/coverage")
@@ -3040,7 +3076,8 @@ async def matchups(league_id: str, side: str = "overall", user: dict = Depends(g
 
 @api_router.get("/trends")
 async def trends(league_id: Optional[str] = None, window: int = 5, metric: str = "total",
-                 side: str = "overall", user: dict = Depends(require_member)):
+                 side: str = "overall", response: Response = None,
+                 user: dict = Depends(get_current_user)):
     """Teams currently averaging MORE corners than their season baseline (hot form), by venue."""
     q = {} if not league_id or league_id == "all" else {"league_id": league_id}
     teams = await db.teams.find(q, {"_id": 0}).to_list(1000)
@@ -3076,7 +3113,7 @@ async def trends(league_id: Optional[str] = None, window: int = 5, metric: str =
                     "delta": delta, "real_samples": t.get("real_samples", 0),
                     "next_fixture": next_fx.get(t["team_id"])})
     out.sort(key=lambda x: x["delta"], reverse=True)
-    return out
+    return _preview(out, user, response)
 
 
 async def _all_mismatches(within_days: Optional[int] = None, limit: int = 20):
@@ -3148,10 +3185,11 @@ async def _all_mismatches(within_days: Optional[int] = None, limit: int = 20):
 
 @api_router.get("/top-mismatches")
 async def top_mismatches(within_days: Optional[int] = None, limit: int = 20,
-                         user: dict = Depends(require_member)):
+                         response: Response = None,
+                         user: dict = Depends(get_current_user)):
     if _cache_ok() and within_days == 7 and limit == 30:
-        return await _screen("mismatches")
-    return await _all_mismatches(within_days, limit)
+        return _preview(await _screen("mismatches"), user, response)
+    return _preview(await _all_mismatches(within_days, limit), user, response)
 
 
 # ----------------------------- Perfect games -----------------------------
@@ -3180,7 +3218,8 @@ async def top_mismatches(within_days: Optional[int] = None, limit: int = 20,
 @api_router.get("/perfect-games")
 async def perfect_games(within_days: int = 7, limit: int = 20, min_hits: int = 4,
                         window: int = 5, side: str = "overall",
-                        user: dict = Depends(require_member)):
+                        response: Response = None,
+                        user: dict = Depends(get_current_user)):
     """Fixtures where a corner streak and a corner mismatch land on the same team."""
     within = max(1, min(within_days, 60))
     runs = await streaks(league_id="all", side=side, window=window, min_hits=min_hits,
@@ -3224,7 +3263,7 @@ async def perfect_games(within_days: int = 7, limit: int = 20, min_hits: int = 4
     # Best evidence first: the longer run wins ties on the bigger projection, because a
     # high lambda off two games is a smaller thing than a high lambda off ten.
     out.sort(key=lambda x: (x["mismatch"]["lambda"], x["streak"]["length"]), reverse=True)
-    return out[:max(1, min(limit, 100))]
+    return _preview(out[:max(1, min(limit, 100))], user, response)
 
 
 def _venue_matches(team, venue):
@@ -3330,11 +3369,17 @@ async def _chase_board(within_days: int = 7, limit: int = 25, league_id: Optiona
 
 @api_router.get("/chase-board")
 async def chase_board(within_days: int = 7, limit: int = 25, league_id: Optional[str] = None,
-                      user: dict = Depends(require_member)):
+                      response: Response = None,
+                      user: dict = Depends(get_current_user)):
     if _cache_ok() and within_days == 7 and limit == 25 and league_id in (None, "all"):
-        return await _screen("chase")
+        cached = await _screen("chase")
+        # This one answers with a dict, so the list inside it is what gets trimmed — and
+        # `count` keeps reporting the FULL number, which is exactly what the preview
+        # wants to tell the reader.
+        return {**cached, "board": _preview(cached.get("board", []), user, response)}
     board = await _chase_board(within_days, min(max(limit, 1), 100), league_id)
-    return {"within_days": within_days, "count": len(board), "board": board}
+    return {"within_days": within_days, "count": len(board),
+            "board": _preview(board, user, response)}
 
 
 # ----------------------------- Fixture board (home page) -----------------------------
@@ -3960,7 +4005,7 @@ async def share_rows(days: int = 3, limit: int = 12, token: Optional[str] = None
 @api_router.get("/export/streaks")
 async def export_streaks(days: int = 7, window: int = 5, min_hits: int = 5,
                          side: str = "overall", league_id: Optional[str] = None,
-                         user: dict = Depends(get_current_user)):
+                         user: dict = Depends(require_member)):
     """Every streak angle — overs and unders, team corners and match totals — on the
     fixtures kicking off in the next `days`, grouped by fixture. Markdown, built to be
     pasted straight into a chat.
@@ -4100,7 +4145,13 @@ async def export_streaks(days: int = 7, window: int = 5, min_hits: int = 5,
 
 
 @api_router.get("/export")
-async def export_report(user: dict = Depends(get_current_user)):
+# MEMBERS ONLY, and it was not. The report and the streak export assemble the same
+# boards the paid screens show — every streak, every mismatch, the whole chase board —
+# and both were reachable by anyone, from an Export button sitting in the header on
+# every page. Calling streaks() from inside another endpoint never runs its dependency,
+# so gating the screen never gated the download; the paywall had a side door with a
+# label on it.
+async def export_report(user: dict = Depends(require_member)):
     from fastapi.responses import PlainTextResponse
     leagues = await db.leagues.find({}, {"_id": 0}).to_list(100)
     leagues.sort(key=lambda l: (l.get("country", ""), l.get("name", "")))
@@ -4332,6 +4383,11 @@ app.add_middleware(
     allow_origins=os.environ.get('CORS_ORIGINS', '*').split(','),
     allow_methods=["*"],
     allow_headers=["*"],
+    # The frontend is served from a different origin to this API, so a custom response
+    # header is unreadable to it unless it is named here. Without this the preview
+    # boards still trim correctly but cannot say how many rows are being held back,
+    # which is the half that does the persuading.
+    expose_headers=["X-Total-Rows", "X-Preview"],
 )
 
 

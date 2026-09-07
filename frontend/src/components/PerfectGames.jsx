@@ -2,6 +2,7 @@ import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { Crosshair, ArrowRight, Info } from "lucide-react";
 import { api } from "@/lib/api";
+import PreviewWall from "@/components/PreviewWall";
 import { withFlag } from "@/lib/countryFlag";
 import { kickoffLabel } from "@/lib/kickoff";
 import { tightestWin } from "@/lib/cushion";
@@ -40,12 +41,17 @@ export default function PerfectGames() {
   const [minHits, setMinHits] = useState("4");
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(true);
+  // Set by the API when the server trimmed this board for a non-member.
+  const [preview, setPreview] = useState(null);
 
   useEffect(() => {
     setLoading(true);
     api.perfectGames({ within_days: Number(days), min_hits: Number(minHits), limit: 30 })
-      .then((d) => setRows(Array.isArray(d) ? d : []))
-      .catch(() => setRows([]))
+      .then((d) => {
+        setRows(Array.isArray(d) ? d : []);
+        setPreview(d?.preview ? { total: d.total } : null);
+      })
+      .catch(() => { setRows([]); setPreview(null); })
       .finally(() => setLoading(false));
   }, [days, minHits]);
 
@@ -180,6 +186,8 @@ export default function PerfectGames() {
           </tbody>
         </table>
       </div>
+
+      {preview && <PreviewWall total={preview.total} shown={rows.length} noun="games" />}
 
       {/* THE CAVEAT IS PART OF THE FEATURE. "Perfect" plus two green ticks is exactly the
           screen someone over-stakes off, and the two signals are not independent. */}

@@ -1,7 +1,9 @@
 import { useState } from "react";
 import { toast } from "sonner";
-import { Download, Copy, FileText, Table, Loader2, Flame } from "lucide-react";
+import { Download, Copy, FileText, Table, Loader2, Flame, Lock } from "lucide-react";
 import { api } from "@/lib/api";
+import { useAuth } from "@/context/AuthContext";
+import { Link } from "react-router-dom";
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel,
   DropdownMenuSeparator, DropdownMenuTrigger,
@@ -17,7 +19,22 @@ function download(text, filename, mime) {
   URL.revokeObjectURL(url);
 }
 
+// THE PAYWALL HAD A SIDE DOOR HERE, with a label on it.
+//
+// "Copy this week's streaks" and the markdown report assemble the same boards the paid
+// screens show — every streak, every mismatch, the whole chase board — and this menu
+// sits in the header on every page, for everybody. Gating the screens never gated these,
+// because calling streaks() from inside another endpoint does not run its dependency. A
+// signed-out visitor could take the entire product in one click.
+//
+// Both are members-only on the server now. They are still LISTED for a non-member, with
+// a padlock and a route to /join, because a menu that silently loses two of its five
+// items teaches nobody that there is something worth paying for.
+//
+// The CSVs stay open: team averages and fixture projections are the same numbers the
+// free boards already show, so gating the download would only be theatre.
 export default function ExportMenu() {
+  const { member } = useAuth();
   const [busy, setBusy] = useState(false);
 
   const run = async (fn) => {
@@ -59,6 +76,14 @@ export default function ExportMenu() {
       <DropdownMenuContent align="end" className="bg-[#121212] border-border w-56">
         <DropdownMenuLabel className="text-xs text-muted-foreground">Export all model stats</DropdownMenuLabel>
         <DropdownMenuSeparator className="bg-border" />
+        {!member && (
+          <DropdownMenuItem asChild className="text-sm gap-2 cursor-pointer" data-testid="export-locked">
+            <Link to="/join">
+              <Lock className="h-4 w-4" /> Full exports are for members
+            </Link>
+          </DropdownMenuItem>
+        )}
+        {member && (<>
         <DropdownMenuItem data-testid="export-copy-md" onClick={copyMd} className="text-sm gap-2 cursor-pointer">
           <Copy className="h-4 w-4" /> Copy for Claude (markdown)
         </DropdownMenuItem>
@@ -73,6 +98,7 @@ export default function ExportMenu() {
         <DropdownMenuItem data-testid="export-dl-md" onClick={dlMd} className="text-sm gap-2 cursor-pointer">
           <FileText className="h-4 w-4" /> Download .md
         </DropdownMenuItem>
+        </>)}
         <DropdownMenuSeparator className="bg-border" />
         <DropdownMenuItem data-testid="export-csv-teams" onClick={() => dlCsv("teams")} className="text-sm gap-2 cursor-pointer">
           <Table className="h-4 w-4" /> Download teams CSV

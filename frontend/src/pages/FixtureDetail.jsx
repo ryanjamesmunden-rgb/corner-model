@@ -149,6 +149,7 @@ export default function FixtureDetail() {
           visitor who has never used the site can read, and everything below is the detail
           behind it rather than the other way round. */}
       <ProbabilityChart distribution={model.distribution} lambdas={model.lambdas}
+        markets={model.markets} leagueId={fixture.league_id} kickoff={fixture.date}
         homeName={fixture.home_name} awayName={fixture.away_name} />
 
       {/* Who is playing, in words. */}

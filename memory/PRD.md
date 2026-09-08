@@ -586,6 +586,32 @@ Both new tools are in the Tools panel (`POST /api/tools/backfill-goals`), so no 
 - **Security**: the app is public and the backfill spends API credits, so these are gated behind a `TOOLS_TOKEN` env var and return **503 when it is unset** — disabled by default, opt-in only. Token compared with `secrets.compare_digest`. Every subprocess argument is built from validated values (league ids checked against `MANAGED_LEAGUE_IDS`, mode from an enum, limit clamped 1-500) — no raw user string reaches argv. Per-script cooldowns (backfill 10min, measure 2min) and a one-run-at-a-time guard.
 - The frontend keeps the token in `localStorage` only (`cm2_tools_token`), with a "Forget token" control.
 
+### Share the chance, not the price (2026-09-08)
+A fixture as an Instagram Story: the probability goes out in public, the model's price is
+blurred. "59% chance of 10+ corners" is a claim a reader can weigh, argue with and
+remember; the price is the reason to open the site.
+
+- **`renderFixtureStory`** draws the curve (same bars the page shows, from the backend's
+  pmf), the headline percentage, and the three markets — match total, home team, away team
+  — each with its probability sharp and its price behind a blur.
+- **Blurred, not omitted.** An absent price reads as a site that has not got one; a blurred
+  price reads as a number being withheld. The blur sits over the REAL price, because a blur
+  over a placeholder is a lie about what is being held back.
+- **The picture follows the page.** Switching group or moving the line re-derives the
+  headline from the SAME bars the chart draws, so a reader who moved to 7+ shares 7+. The
+  overridden row is computed from `dist` rather than looked up in `markets`, because a
+  reader can pick a count the market ladder has no row for.
+- `StoryButton` gained an optional `render`, so the fixture story reuses the share-sheet /
+  desktop-download / AbortError path rather than duplicating it.
+- **The story palette was still pre-rebrand** (`#0A0A0A` on `#00E5FF`) — a story drawn with
+  it now reads as a different product to the page it links to. Updated to the current
+  tokens.
+- Two bugs the render caught that a code read would not have: the call-to-action pill sat
+  ON the third market row (rows are now sized to the band above it), and an 8px corner
+  radius on a 4px tail bar drew as a curved tick rather than a bar (radius is now clamped
+  by height as well as width).
+- `frontend/src/lib/fixtureStory.test.js`: 13 tests pinning which half goes public.
+
 ### Rebrand: colour that means something, and a chart instead of a number (2026-09-08)
 "Looks like it's from the Matrix — slick and robotic, but not professional or user
 friendly." Pure black plus cyan plus monospace everywhere read as a terminal, and the

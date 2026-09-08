@@ -46,6 +46,18 @@ module.exports = {
         border: 'hsl(var(--border))',
         input: 'hsl(var(--input))',
         ring: 'hsl(var(--ring))',
+        // The four meanings. Alpha-capable (`bg-tone-strong/10`) because every chip is a
+        // tinted fill plus a solid border and text in the same hue.
+        tone: {
+          strong: 'hsl(var(--tone-strong) / <alpha-value>)',
+          streak: 'hsl(var(--tone-streak) / <alpha-value>)',
+          under: 'hsl(var(--tone-under) / <alpha-value>)',
+          edge: 'hsl(var(--tone-edge) / <alpha-value>)',
+          'strong-fg': 'hsl(var(--tone-strong-fg) / <alpha-value>)',
+          'streak-fg': 'hsl(var(--tone-streak-fg) / <alpha-value>)',
+          'under-fg': 'hsl(var(--tone-under-fg) / <alpha-value>)',
+          'edge-fg': 'hsl(var(--tone-edge-fg) / <alpha-value>)',
+        },
         chart: {
           '1': 'hsl(var(--chart-1))',
           '2': 'hsl(var(--chart-2))',

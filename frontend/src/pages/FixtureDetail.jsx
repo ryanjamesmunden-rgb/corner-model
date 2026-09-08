@@ -1,8 +1,11 @@
 import { useState, useEffect, useCallback } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { toast } from "sonner";
-import { ArrowLeft, TrendingUp, ClipboardPaste } from "lucide-react";
+import {
+  ArrowLeft, TrendingUp, TrendingDown, ClipboardPaste, Flame, Shield, MapPin, Swords, Eye,
+} from "lucide-react";
 import StarButton from "@/components/StarButton";
+import ProbabilityChart from "@/components/ProbabilityChart";
 import { api, tierMeta, confMeta } from "@/lib/api";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 
@@ -10,11 +13,17 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 // Shared by the match-total table and the team-corner tables so the two cannot show the
 // same number in different colours — the team tables previously had NO colour at all,
 // which made a 78% line and a 22% line look equally worth reading.
+//
+// How reliable a rate is, is an ORDINAL question, so the top two bands are one hue at two
+// intensities rather than two different colours. Cyan used to sit in the middle of this
+// ladder, which spent the brand colour on a status and made "playable" look like a button.
+// Amber marks where the evidence gets thin — what amber means everywhere else on the site
+// — and the bottom band recedes entirely.
 const band = (pct) =>
-  pct >= 70 ? { text: "text-emerald-400", bar: "bg-emerald-500", chip: "bg-emerald-500/15 border-emerald-500/30", label: "reliable" }
-  : pct >= 50 ? { text: "text-primary", bar: "bg-primary", chip: "bg-primary/15 border-primary/30", label: "playable" }
-  : pct >= 30 ? { text: "text-amber-400", bar: "bg-amber-500", chip: "bg-amber-500/15 border-amber-500/30", label: "thin" }
-  : { text: "text-muted-foreground/60", bar: "bg-zinc-600", chip: "border-border/60", label: "unlikely" };
+  pct >= 70 ? { text: "text-tone-strong-fg", bar: "bg-tone-strong", chip: "bg-tone-strong/20 border-tone-strong/45", label: "reliable" }
+  : pct >= 50 ? { text: "text-tone-strong-fg/80", bar: "bg-tone-strong/60", chip: "bg-tone-strong/10 border-tone-strong/25", label: "playable" }
+  : pct >= 30 ? { text: "text-tone-streak-fg", bar: "bg-tone-streak", chip: "bg-tone-streak/15 border-tone-streak/40", label: "thin" }
+  : { text: "text-muted-foreground/60", bar: "bg-slate-600", chip: "border-border/60", label: "unlikely" };
 
 const WINDOW_LABELS = { "3": "L3", "5": "L5", "10": "L10", "0": "Season" };
 
@@ -90,6 +99,7 @@ export default function FixtureDetail() {
   if (!data) return <div className="py-20 text-center text-muted-foreground animate-pulse font-mono-data text-sm">Loading fixture…</div>;
 
   const { fixture, model, home_team, away_team } = data;
+  const keyFactors = data.key_factors || {};
   // Every market — totals included — now carries fair odds, your price and the EV
   // between them. See TotalCorners for why totals were the exception and no longer are.
   const groups = [
@@ -134,6 +144,20 @@ export default function FixtureDetail() {
           </div>
         </div>
       </div>
+
+      {/* The headline answer, drawn. This leads the page on purpose: it is the one thing a
+          visitor who has never used the site can read, and everything below is the detail
+          behind it rather than the other way round. */}
+      <ProbabilityChart distribution={model.distribution} lambdas={model.lambdas}
+        homeName={fixture.home_name} awayName={fixture.away_name} />
+
+      {/* Who is playing, in words. */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-3 sm:gap-4">
+        <TeamRead name={fixture.home_name} profile={home_team.profile} where="home" />
+        <TeamRead name={fixture.away_name} profile={away_team.profile} where="away" />
+      </div>
+
+      <KeyFactors factors={keyFactors} homeName={fixture.home_name} awayName={fixture.away_name} />
 
       {/* THE BULK ENTRY BOX. This parser was written, complete, and never rendered —
           `handlePaste` had no caller, so filling a ladder meant eight separate inputs
@@ -881,5 +905,122 @@ function GoalDetail({ profile, highlight, split }) {
         </div>
       )}
     </div>
+  );
+}
+
+// ----------------------------- A plain-English read on a team -----------------------------
+// The site had the numbers and never said what they meant. "4.33 / 5.67 / 10.00" is a fact;
+// "wins a lot of corners but leaks them at the other end" is a read, and only one of those
+// tells a newcomer whether to care. Every trait comes from the backend with the average it
+// was derived from, so nothing here is prose invented in the browser.
+const TRAIT_TONE = {
+  strong: "text-tone-strong-fg border-tone-strong/50 bg-tone-strong/15",
+  streak: "text-tone-streak-fg border-tone-streak/50 bg-tone-streak/15",
+  under: "text-tone-under-fg border-tone-under/50 bg-tone-under/15",
+  edge: "text-tone-edge-fg border-tone-edge/50 bg-tone-edge/15",
+};
+const TRAIT_ICON = { attack: Flame, defence: Shield, venue: MapPin };
+
+function TeamRead({ name, profile, where }) {
+  if (!profile) return null;
+  return (
+    <div className="bg-card border border-border rounded-lg p-4" data-testid={`team-read-${where}`}>
+      <div className="flex items-center gap-2 mb-2">
+        <h3 className="font-head font-semibold text-sm truncate" title={name}>{name}</h3>
+        <span className="ml-auto shrink-0 font-mono-data text-[10px] text-muted-foreground">
+          {profile.games} {where} game{profile.games === 1 ? "" : "s"}
+        </span>
+      </div>
+      {profile.traits?.length > 0 && (
+        <div className="flex flex-wrap gap-1.5 mb-2">
+          {profile.traits.map((t) => {
+            const Icon = TRAIT_ICON[t.key] || Flame;
+            return (
+              <span key={t.key} data-testid={`trait-${where}-${t.key}`}
+                title={`${t.value} vs ${t.league_avg} league average`}
+                className={`inline-flex items-center gap-1 text-[11px] px-2 py-0.5 rounded-full border ${TRAIT_TONE[t.tone]}`}>
+                <Icon className="h-3 w-3" /> {t.label}
+                {t.delta_pct != null && (
+                  <span className="font-mono-data opacity-80">
+                    {t.delta_pct > 0 ? "+" : ""}{t.delta_pct}%
+                  </span>
+                )}
+              </span>
+            );
+          })}
+        </div>
+      )}
+      <p className="text-xs text-muted-foreground leading-relaxed">{profile.summary}</p>
+    </div>
+  );
+}
+
+// ----------------------------- What could change the game -----------------------------
+// A corner count is decided by who has to chase. The backed team scoring first is the main
+// way a corners-over dies; the opponent going a goal or a man down is the way it runs away.
+// These are measured from this team's own games — except the red-card row, which carries no
+// number because the provider data has no cards in it, and says so rather than implying one.
+const FACTOR_META = {
+  risk: { icon: TrendingDown, cls: "text-tone-under-fg border-tone-under/40 bg-tone-under/10", word: "Risk" },
+  boost: { icon: TrendingUp, cls: "text-tone-strong-fg border-tone-strong/40 bg-tone-strong/10", word: "Helps" },
+  watch: { icon: Eye, cls: "text-tone-streak-fg border-tone-streak/40 bg-tone-streak/10", word: "Watch" },
+};
+
+function KeyFactors({ factors, homeName, awayName }) {
+  const sides = [["home", homeName], ["away", awayName]].filter(([k]) => (factors[k] || []).length);
+  const [side, setSide] = useState(sides[0]?.[0] || "home");
+  if (!sides.length) return null;
+  const rows = factors[side] || [];
+
+  return (
+    <section className="bg-card border border-border rounded-lg overflow-hidden" data-testid="key-factors">
+      <div className="px-4 py-3 border-b border-border flex items-center gap-2 flex-wrap">
+        <Swords className="h-4 w-4 text-primary" />
+        <h3 className="font-head font-semibold text-sm">What could change this</h3>
+        {sides.length > 1 && (
+          <div className="ml-auto flex rounded-md bg-secondary p-0.5">
+            {sides.map(([k, label]) => (
+              <button key={k} data-testid={`kf-side-${k}`} onClick={() => setSide(k)}
+                className={`text-[11px] px-2 py-1 rounded transition-colors max-w-[110px] truncate ${
+                  side === k ? "bg-primary text-primary-foreground font-medium" : "text-muted-foreground"}`}>
+                {label}
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+      <ul className="divide-y divide-border">
+        {rows.map((f) => {
+          const m = FACTOR_META[f.kind] || FACTOR_META.watch;
+          const Icon = m.icon;
+          return (
+            <li key={f.key} className="px-4 py-3 flex gap-3" data-testid={`kf-${f.key}`}>
+              <span className={`shrink-0 h-6 w-6 rounded-full border grid place-items-center ${m.cls}`}>
+                <Icon className="h-3 w-3" />
+              </span>
+              <div className="min-w-0">
+                <p className="text-sm font-medium flex items-center gap-2 flex-wrap">
+                  {f.title}
+                  <span className={`text-[9px] uppercase tracking-wider px-1.5 py-0.5 rounded border ${m.cls}`}>
+                    {m.word}
+                  </span>
+                  {f.measured === false && (
+                    <span className="text-[9px] uppercase tracking-wider text-muted-foreground border border-border px-1.5 py-0.5 rounded">
+                      not in the data
+                    </span>
+                  )}
+                </p>
+                <p className="text-xs text-muted-foreground mt-1 leading-relaxed">{f.detail}</p>
+                {f.games != null && (
+                  <p className="text-[10px] text-muted-foreground/70 mt-1 font-mono-data">
+                    from {f.games} game{f.games === 1 ? "" : "s"}
+                  </p>
+                )}
+              </div>
+            </li>
+          );
+        })}
+      </ul>
+    </section>
   );
 }

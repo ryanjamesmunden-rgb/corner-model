@@ -1,114 +1,111 @@
-/**
- * The vivid colours are a STRENGTH LADDER on streaks — orange live, cyan strong, green
- * solid — because a streak is most of what the board is made of and how good it is, is
- * the thing worth knowing at a glance.
- *
- * Two rules sit outside the ladder and are the ones worth defending in tests:
- *   - an UNDER is red at any strength, because direction is not a confidence level and
- *     mistaking an under for an over is the expensive error;
- *   - mismatch and chase stay muted, so they cannot be mistaken for a streak.
- */
-import { toneFor, toneLabel, SOLID_RUN } from "./angleTone";
+import { TONE, SOLID_RUN, toneFor, toneOf, toneClass, toneLabel, toneIcon } from "./angleTone";
 
-const cls = (kind, strong, run) => {
-  const t = toneFor(kind, strong, run);
-  return strong ? t.on : t.off;
-};
+// The board's whole job is telling you at a glance why a game is on it. These pin the two
+// rules that make that work: one colour means exactly one thing, and no meaning is ever
+// carried by colour alone.
 
-describe("the streak ladder", () => {
-  test("a short live streak is orange", () => {
-    expect(cls("over_team", false, 2)).toMatch(/amber/);
-    expect(toneLabel("over_team", false, 2)).toBe("live streak");
+describe("four meanings, four colours", () => {
+  it("has exactly four tones", () => {
+    expect(Object.keys(TONE).sort()).toEqual(["edge", "streak", "strong", "under"]);
   });
 
-  test("a real run is cyan", () => {
-    expect(cls("over_team", true, 3)).toMatch(/cyan/);
-    expect(toneLabel("over_team", true, 4)).toBe("strong streak");
+  it("gives every tone an icon and a label, because colour alone is not legal here", () => {
+    // Worst all-pairs CVD separation in this palette is 6.9 (green vs rose under
+    // deuteranopia), which is only permitted alongside a second channel.
+    Object.values(TONE).forEach((t) => {
+      expect(typeof t.icon).toBe("string");
+      expect(t.icon.length).toBeGreaterThan(0);
+      expect(typeof t.label).toBe("string");
+      expect(t.label.length).toBeGreaterThan(0);
+    });
   });
 
-  test("a long run is green — the solid pick", () => {
-    expect(cls("over_team", true, SOLID_RUN)).toMatch(/emerald/);
-    expect(cls("over_team", true, 19)).toMatch(/emerald/);
-    expect(toneLabel("over_team", true, 12)).toBe("solid pick");
+  it("never reuses one hue for two meanings", () => {
+    const bars = Object.values(TONE).map((t) => t.bar);
+    expect(new Set(bars).size).toBe(bars.length);
   });
 
-  test("the ladder rungs are all different", () => {
-    const live = cls("over_team", false, 2);
-    const strong = cls("over_team", true, 3);
-    const solid = cls("over_team", true, 9);
-    expect(new Set([live, strong, solid]).size).toBe(3);
-  });
-
-  test("the solid threshold is inclusive, so a run exactly at it is green", () => {
-    expect(cls("over_team", true, SOLID_RUN - 1)).toMatch(/cyan/);
-    expect(cls("over_team", true, SOLID_RUN)).toMatch(/emerald/);
-  });
-
-  test("a match-total streak climbs the same ladder", () => {
-    expect(cls("over_match", true, 19)).toMatch(/emerald/);
-    expect(cls("over_match", true, 3)).toMatch(/cyan/);
-    expect(cls("over_match", false, 1)).toMatch(/amber/);
+  it("keeps cyan out of the status palette — it is the brand, not a meaning", () => {
+    const all = JSON.stringify(TONE);
+    expect(all).not.toMatch(/cyan/);
+    expect(all).not.toMatch(/primary/);
   });
 });
 
-describe("unders never climb it", () => {
-  test("an under is red at every strength and every run length", () => {
-    for (const [strong, run] of [[false, 1], [true, 3], [true, 20]]) {
-      for (const kind of ["under_team", "under_match"]) {
-        expect(cls(kind, strong, run)).toMatch(/red/);
-      }
-    }
+describe("an under is never green", () => {
+  // Mistaking an under for an over is the expensive error, so direction wins over strength.
+  it.each([
+    ["under_match", true, 20],
+    ["under_match", false, 0],
+    ["under_team", true, 99],
+  ])("%s stays the under tone at strong=%s run=%s", (kind, strong, run) => {
+    expect(toneOf(kind, strong, run)).toBe(TONE.under);
   });
 
-  test("a long under run does NOT go green", () => {
-    // the trap: 18-game under runs are common, and green means "back it"
-    expect(cls("under_team", true, 18)).not.toMatch(/emerald/);
-    expect(toneLabel("under_team", true, 18)).toBe("under streak");
-  });
-
-  test("an over and an under of equal strength never look alike", () => {
-    expect(cls("over_team", true, 9)).not.toBe(cls("under_team", true, 9));
+  it("says so in the label whatever the run length", () => {
+    expect(toneLabel("under_match", true, 30)).toBe("under streak");
   });
 });
 
-describe("mismatch and chase stay out of the way", () => {
-  test("neither borrows a ladder colour", () => {
-    for (const kind of ["mismatch", "chase"]) {
-      for (const strong of [true, false]) {
-        expect(cls(kind, strong, 0)).not.toMatch(/emerald|cyan|amber|red/);
-      }
-    }
+describe("mismatches get their own colour now", () => {
+  it("tones a mismatch as an edge rather than hiding it in grey", () => {
+    expect(toneOf("mismatch", false, 0)).toBe(TONE.edge);
+    expect(toneOf("chase", true, 4)).toBe(TONE.edge);
   });
 
-  test("both are muted greys, and distinguishable from each other", () => {
-    expect(cls("mismatch", true, 0)).toMatch(/zinc/);
-    expect(cls("chase", true, 0)).toMatch(/zinc/);
-    expect(cls("mismatch", true, 0)).not.toBe(cls("chase", true, 0));
-  });
-
-  test("a mismatch does not change with a run length it does not have", () => {
-    expect(cls("mismatch", true, 0)).toBe(cls("mismatch", true, 12));
-  });
-
-  test("they are named for what they are", () => {
-    expect(toneLabel("mismatch", true, 0)).toBe("mismatch");
-    expect(toneLabel("chase", true, 0)).toBe("chase spot");
+  it("is visually distinct from a strong over", () => {
+    expect(TONE.edge.bar).not.toBe(TONE.strong.bar);
   });
 });
 
-describe("robustness", () => {
-  test("a missing run length degrades to the lowest rung, never the highest", () => {
-    expect(cls("over_team", true, undefined)).toMatch(/cyan/);
-    expect(cls("over_team", true, undefined)).not.toMatch(/emerald/);
+describe("strength is intensity within one hue, not a second hue", () => {
+  it("uses the same green for a strong run and a solid one", () => {
+    expect(toneOf("over_team", true, SOLID_RUN)).toBe(TONE.strong);
+    expect(toneOf("over_team", true, SOLID_RUN - 3)).toBe(TONE.strong);
   });
 
-  test("weak angles keep their colour and drop the fill", () => {
-    expect(cls("under_team", false, 1)).toMatch(/bg-transparent/);
-    expect(cls("over_team", true, 9)).toMatch(/bg-emerald/);
+  it("fills the chip only once the run is long enough", () => {
+    expect(toneClass("over_team", true, SOLID_RUN)).toBe(TONE.strong.on);
+    expect(toneClass("over_team", true, SOLID_RUN - 1)).toBe(TONE.strong.off);
   });
 
-  test("an unknown kind renders something rather than throwing", () => {
-    expect(() => cls("something_new", true, 4)).not.toThrow();
-    expect(cls("something_new", true, 4)).toEqual(expect.any(String));
+  it("treats an unproven over as its own state, not a dim green", () => {
+    expect(toneOf("over_team", false, 2)).toBe(TONE.streak);
+    expect(toneClass("over_team", false, 2)).toBe(TONE.streak.off);
+  });
+});
+
+describe("labels stay honest about the evidence", () => {
+  it.each([
+    ["over_team", true, SOLID_RUN, "solid pick"],
+    ["over_team", true, SOLID_RUN - 1, "strong streak"],
+    ["over_team", false, 1, "live streak"],
+    ["mismatch", false, 0, "mismatch"],
+    ["chase", false, 0, "chase spot"],
+  ])("%s/%s/%s reads as %s", (kind, strong, run, want) => {
+    expect(toneLabel(kind, strong, run)).toBe(want);
+  });
+});
+
+describe("edge cases do not throw", () => {
+  it.each([[undefined], [null], [""], [123]])("handles kind=%s", (kind) => {
+    expect(() => toneClass(kind, false, 0)).not.toThrow();
+    expect(Object.values(TONE)).toContain(toneOf(kind, false, 0));
+  });
+
+  it("defaults a missing run length to unproven", () => {
+    expect(toneOf("over_team", false)).toBe(TONE.streak);
+  });
+
+  it("exposes an icon for every angle kind", () => {
+    ["over_team", "under_match", "mismatch", "chase"].forEach((k) => {
+      expect(toneIcon(k, true, 7)).toBeTruthy();
+    });
+  });
+
+  it("toneFor ignores strength and answers on kind alone", () => {
+    expect(toneFor("mismatch")).toBe(TONE.edge);
+    expect(toneFor("under_match")).toBe(TONE.under);
+    expect(toneFor("over_team")).toBe(TONE.strong);
   });
 });

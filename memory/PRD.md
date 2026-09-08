@@ -586,6 +586,46 @@ Both new tools are in the Tools panel (`POST /api/tools/backfill-goals`), so no 
 - **Security**: the app is public and the backfill spends API credits, so these are gated behind a `TOOLS_TOKEN` env var and return **503 when it is unset** — disabled by default, opt-in only. Token compared with `secrets.compare_digest`. Every subprocess argument is built from validated values (league ids checked against `MANAGED_LEAGUE_IDS`, mode from an enum, limit clamped 1-500) — no raw user string reaches argv. Per-script cooldowns (backfill 10min, measure 2min) and a one-run-at-a-time guard.
 - The frontend keeps the token in `localStorage` only (`cm2_tools_token`), with a "Forget token" control.
 
+### Rebrand: colour that means something, and a chart instead of a number (2026-09-08)
+"Looks like it's from the Matrix — slick and robotic, but not professional or user
+friendly." Pure black plus cyan plus monospace everywhere read as a terminal, and the
+numbers were never translated into anything a newcomer could act on.
+
+- **Surface lifted off pure black** (`0 0% 4%` -> `215 30% 6%`), very slightly blue, so
+  panels separate by their own colour rather than by a border alone.
+- **FOUR tones, each meaning exactly one thing**: strong (green), streak (amber), under
+  (rose), edge/mismatch (violet). Validated with the palette checker on this surface —
+  lightness band, chroma floor, normal-vision separation and contrast all pass. Worst
+  all-pairs CVD separation is **6.9** (green vs rose under deuteranopia, the one pair
+  colour cannot fix), which is legal ONLY with a second channel, so **every tone carries an
+  icon and a word**. `angleTone.js` enforces this and a test asserts it. Do not add a fifth
+  hue without re-running the validator.
+- **Five hues would not separate** (emerald vs cyan came out at 11.8 normal-vision, below
+  the hard floor of 15), so the strength ladder collapsed: "solid" and "strong streak" are
+  now one green at two intensities — an ORDINAL question answered with intensity, not a
+  second hue. That freed a colour for **mismatches**, which were previously zinc and
+  invisible despite being a headline reason a game is on the board.
+- **Cyan is no longer a status.** It is the brand and the interface — links, focus, the
+  highlighted region of a chart. A colour cannot mean "strong streak" in one place and
+  "button" in another.
+- **`ProbabilityChart`**: one bar per corner count, counts that win the bet filled in. 54%
+  off a tight distribution and 54% off a flat one are different bets and the bare
+  percentage hid which you had. Bars come from the backend's `corner_distribution` — the
+  SAME pmf that prices the market (NB for teams, Poisson for totals) — never a JS
+  reimplementation, and a test asserts the bars at/above a line sum to the priced
+  P(>= line). Tap a bar or a line button to move the line.
+- **`team_profile`**: a plain-English read per side (big corner threat / leaks corners /
+  strong defence / much better at home), each trait carrying the average it came from and
+  the games behind it. Silent below `PROFILE_MIN_GAMES`.
+- **`key_factors`**: what could change the game, measured — the backed team scoring first
+  (from `goal_profile`), and corners when trailing vs leading (from the game-state split),
+  which is the same intuition quantified. **Red cards are NOT in the data at all** (the
+  sync collects shots, on-target, blocked and dangerous attacks, no cards), so that row
+  carries no number and is labelled "not in the data" rather than implying one.
+- `backend/tests/test_presentation.py`: 21 tests. `angleTone.test.js` rewritten to the
+  four meanings. 299 backend, 54 frontend. Verified by rendering the built bundle at
+  390x844 and 1280x900.
+
 ### v4 goes live: the opponent's defending now moves the price (2026-09-01)
 **The bug, in the user's words:** clicking a fair price on the fixture page showed how
 often the line had landed, but nothing "changed the odds based on how many corners or

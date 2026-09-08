@@ -2526,18 +2526,32 @@ async def scanner(league_id: Optional[str] = None, market: Optional[str] = None,
 @api_router.get("/value-board")
 async def value_board(within_days: Optional[int] = 7, min_ev: float = 0.0,
                       league_id: Optional[str] = None, limit: int = 40,
+                      explain: bool = False,
                       response: Response = None,
                       user: dict = Depends(get_current_user)):
-    """Best positive-EV line per upcoming fixture, from prices you have entered."""
+    """Best positive-EV line per upcoming fixture, from prices you have entered.
+
+    `explain=1` returns the FUNNEL instead of the rows: how many priced fixtures there
+    are and how many survive each filter. An empty board has half a dozen innocent
+    causes — nothing stored, ids that no longer match a fixture, every game kicked off,
+    no line carrying a book price — and they are indistinguishable from the outside.
+    Guessing between them from the code costs more than counting them costs to add.
+    """
     odds_docs = await db.odds.find({}, {"_id": 0}).to_list(5000)
     priced = {d["fixture_id"]: d for d in odds_docs if d.get("odds")}
+    funnel = {"odds_docs": len(odds_docs), "priced_fixtures": len(priced),
+              "matched_fixtures": 0, "in_window": 0, "teams_found": 0, "with_any_ev": 0,
+              "passed_min_ev": 0}
     if not priced:
+        if explain:
+            return {"funnel": funnel, "note": "no odds stored at all"}
         return _preview([], user, response)
 
     q = {"fixture_id": {"$in": list(priced)}}
     if league_id and league_id != "all":
         q["league_id"] = league_id
     fixtures = await db.fixtures.find(q, {"_id": 0}).to_list(5000)
+    funnel["matched_fixtures"] = len(fixtures)
 
     now = datetime.now(timezone.utc)
     horizon = now + timedelta(days=within_days) if within_days else None
@@ -2560,15 +2574,23 @@ async def value_board(within_days: Optional[int] = 7, min_ev: float = 0.0,
         # A price on a game that has kicked off is a record, not a bet.
         if kickoff < now or (horizon and kickoff > horizon):
             continue
+        funnel["in_window"] += 1
         home, away = teams.get(fx["home_team_id"]), teams.get(fx["away_team_id"])
         if not home or not away:
             continue
+        funnel["teams_found"] += 1
 
         doc = priced[fx["fixture_id"]]
         model = fixture_model_from(home, away, leagues.get(fx["league_id"], {}), doc["odds"])
-        live = [m for m in model["markets"] if m.get("ev") is not None and m["ev"] >= min_ev]
+        # Split in two so the funnel can tell "no price on any market this model builds"
+        # — a stored key that matches nothing — from "priced, but none clears the floor".
+        priced_markets = [m for m in model["markets"] if m.get("ev") is not None]
+        if priced_markets:
+            funnel["with_any_ev"] += 1
+        live = [m for m in priced_markets if m["ev"] >= min_ev]
         if not live:
             continue
+        funnel["passed_min_ev"] += 1
         live.sort(key=lambda m: m["ev"], reverse=True)
         best, rest = live[0], live[1:]
 
@@ -2595,6 +2617,15 @@ async def value_board(within_days: Optional[int] = 7, min_ev: float = 0.0,
         })
 
     out.sort(key=lambda r: r["best"]["ev"], reverse=True)
+    if explain:
+        # A sample of each side of the join. When odds were stored against ids the sync
+        # has since replaced, the two lists simply do not look like each other — which is
+        # visible at a glance in a way a count is not.
+        return {"funnel": funnel,
+                "odds_keyed_to": sorted(priced)[:5],
+                "fixtures_matched": sorted(f["fixture_id"] for f in fixtures)[:5],
+                "sample_market_keys": sorted(list(priced.values())[0]["odds"])[:8] if priced else [],
+                "now": now.isoformat(), "within_days": within_days, "min_ev": min_ev}
     return _preview(out[:max(1, min(limit, 100))], user, response)
 
 

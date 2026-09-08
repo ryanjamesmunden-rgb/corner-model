@@ -21,13 +21,18 @@ import { renderStory } from "@/lib/storyImage";
  * board underneath changes with every filter, and a stale story is worse than a slow one
  * — it would post yesterday's games under tonight's headline.
  */
-export default function StoryButton({ days = [], cta, className = "" }) {
+export default function StoryButton({ days = [], cta, className = "",
+                                      render, label: labelOverride, title: titleOverride }) {
   const [busy, setBusy] = useState(false);
 
+  // `render` lets a caller draw something other than a board list — the fixture story is a
+  // different picture entirely. Everything below it (the share sheet, the desktop
+  // fallback, the AbortError handling) is the fiddly part and is worth having only once.
   const draw = async (day) => {
     const canvas = document.createElement("canvas");
-    renderStory(canvas, { title: day.title, subtitle: day.subtitle, rows: day.rows,
-                          totalCount: day.totalCount, cta });
+    if (render) render(canvas, day);
+    else renderStory(canvas, { title: day.title, subtitle: day.subtitle, rows: day.rows,
+                               totalCount: day.totalCount, cta });
     const blob = await new Promise((res) => canvas.toBlob(res, "image/png"));
     if (!blob) throw new Error("canvas produced nothing");
     return new File([blob], `corner-model-${day.key}.png`, { type: "image/png" });
@@ -67,13 +72,14 @@ export default function StoryButton({ days = [], cta, className = "" }) {
     }
   };
 
-  const label = days.length > 1 ? `${days.length} stories` : "Story";
+  const label = labelOverride || (days.length > 1 ? `${days.length} stories` : "Story");
   return (
     <button
       onClick={make}
       disabled={busy || !days.length}
       data-testid="story-button"
-      title={`Instagram ${days.length > 1 ? "Stories" : "Story"} — the games, with the model blurred out`}
+      title={titleOverride
+        || `Instagram ${days.length > 1 ? "Stories" : "Story"} — the games, with the model blurred out`}
       className={"flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-md border border-border "
         + "bg-secondary text-muted-foreground hover:text-foreground hover:bg-white/10 "
         + "transition-colors duration-150 disabled:opacity-50 " + className}

@@ -33,14 +33,18 @@ export const STORY_W = 1080;
 export const STORY_H = 1920;
 
 // Lifted from index.css so the story looks like the site rather than merely near it.
+// These are the REBRAND values — the previous set (#0A0A0A on #00E5FF) was the pre-rebrand
+// theme and a story drawn with it now reads as a different product to the page it links to.
 const C = {
-  bg: "#0A0A0A",
-  card: "#141416",
-  border: "#292930",
-  text: "#F4F4F5",
-  muted: "#9B9BA3",
-  primary: "#00E5FF",     // --primary 187 100% 50%
-  solid: "#10B981",       // the emerald a solid run wears on the board
+  bg: "#0B0F14",          // --background 215 30% 6%
+  card: "#11161D",        // --card
+  secondary: "#1A2028",
+  border: "#282F39",
+  text: "#F3F5F7",
+  muted: "#98A4B3",
+  primary: "#14DBF5",     // --primary 187 92% 52%
+  solid: "#39D0A3",       // --tone-strong-fg, the green a solid run wears on the board
+  dim: "#3B4654",         // counts that lose the bet, in the chart
 };
 
 const FONT_HEAD = "'Outfit', 'Manrope', system-ui, sans-serif";
@@ -366,4 +370,218 @@ export const mismatchStoryDays = (rows = [], { weekendRows = 3, weekdayRows = 6 
         totalCount: day.rows.length,
       };
     });
+};
+
+// ----------------------------- One fixture, as a picture -----------------------------
+//
+// The board stories tease a LIST. This teases a SINGLE GAME, and the split is different
+// again: here the PROBABILITY is the whole point of posting — "59% chance of 10+ corners"
+// is a claim a reader can weigh, argue with and remember — while the model's price is the
+// thing worth clicking for. So the percentage goes out sharp and the price goes out
+// blurred, in the slot where a price obviously belongs.
+//
+// Blurred rather than absent, deliberately. An omitted price reads as a site that does not
+// have one; a blurred price reads as a number being withheld, which is the difference
+// between looking incomplete and looking like there is something behind the door.
+
+/** The line this market is really about: the one nearest the projection. */
+const featureLine = (rows, lam) => {
+  if (!rows.length) return null;
+  const target = Math.max(1, Math.round(lam || 0));
+  return rows.reduce((best, r) => {
+    const k = Math.ceil(r.line ?? parseFloat(String(r.key).split("_").pop()));
+    const bk = Math.ceil(best.line ?? parseFloat(String(best.key).split("_").pop()));
+    return Math.abs(k - target) < Math.abs(bk - target) ? r : best;
+  });
+};
+
+/**
+ * The three markets a fixture story shows, each at its headline line.
+ *
+ * Returns [] rather than half a story when the model has no markets, so a caller can
+ * disable the button instead of producing a picture with empty rows on it.
+ */
+export const fixtureStoryMarkets = (markets = [], lambdas = {}, { homeName, awayName } = {}) =>
+  [["total", "Match total"], ["home", homeName], ["away", awayName]]
+    .map(([group, label]) => {
+      const row = featureLine((markets || []).filter((m) => m.group === group), lambdas[group]);
+      if (!row || row.prob == null) return null;
+      const k = Math.ceil(row.line ?? parseFloat(String(row.key).split("_").pop()));
+      return {
+        group,
+        label: label || group,
+        line: k,
+        prob: row.prob,
+        // Carried so the blurred slot has real text under it — a blur over a placeholder
+        // is a lie about what is being withheld, and the shape of a real number is part
+        // of what makes the tease read as one.
+        price: row.fair_odds != null ? Number(row.fair_odds).toFixed(2) : null,
+      };
+    })
+    .filter(Boolean);
+
+/** The curve, drawn as bars. Counts that win the bet are lit; the rest recede. */
+const drawCurve = (ctx, dist, line, { x, y, w, h }) => {
+  if (!dist?.length) return;
+  const peak = Math.max(...dist.map((d) => d.p)) || 1;
+  const gap = 6;
+  const bw = (w - gap * (dist.length - 1)) / dist.length;
+  dist.forEach((d, i) => {
+    const bh = Math.max(4, (d.p / peak) * h);
+    const bx = x + i * (bw + gap);
+    ctx.fillStyle = d.k >= line ? C.primary : C.dim;
+    // Radius clamped by HEIGHT as well as width: the tails of a corner distribution are
+    // a few pixels tall, and an 8px corner on a 4px bar draws as a curved tick rather
+    // than a bar — which is what the first render of this actually did.
+    roundRect(ctx, bx, y + h - bh, bw, bh, Math.min(8, bw / 2, bh / 2));
+    ctx.fill();
+  });
+  // Only the ends and the line itself are labelled. A number under all twenty bars is
+  // unreadable at story size and adds nothing a reader is going to act on.
+  ctx.fillStyle = C.muted;
+  ctx.font = `500 24px ${FONT_DATA}`;
+  ctx.textAlign = "center";
+  [dist[0].k, line, dist[dist.length - 1].k].forEach((k) => {
+    const i = dist.findIndex((d) => d.k === k);
+    if (i < 0) return;
+    ctx.fillStyle = k === line ? C.primary : C.muted;
+    ctx.fillText(String(k), x + i * (bw + gap) + bw / 2, y + h + 30);
+  });
+  ctx.textAlign = "left";
+};
+
+/**
+ * One fixture as a Story: the curve, the headline probability, and the three markets with
+ * their prices held back.
+ *
+ * `dist` is the distribution for `group` — the same rows the site's chart draws, which
+ * come from the backend's pmf. Drawing a curve here from some other maths would put a
+ * different shape on the internet to the one the page shows.
+ */
+export const renderFixtureStory = (canvas, {
+  homeName = "", awayName = "", leagueId = "", kickoff = "",
+  dist = [], group = "total", markets = [],
+  cta = "Model price on the site", brand = "CORNER MODEL", blurRadius = 14,
+} = {}) => {
+  canvas.width = STORY_W;
+  canvas.height = STORY_H;
+  const ctx = canvas.getContext("2d");
+
+  ctx.fillStyle = C.bg;
+  ctx.fillRect(0, 0, STORY_W, STORY_H);
+  const glow = ctx.createRadialGradient(STORY_W / 2, 240, 60, STORY_W / 2, 240, 900);
+  glow.addColorStop(0, "rgba(20,219,245,0.16)");
+  glow.addColorStop(1, "rgba(20,219,245,0)");
+  ctx.fillStyle = glow;
+  ctx.fillRect(0, 0, STORY_W, 1100);
+
+  ctx.textBaseline = "middle";
+  ctx.fillStyle = C.primary;
+  ctx.font = `700 30px ${FONT_HEAD}`;
+  ctx.letterSpacing = "6px";
+  ctx.fillText(brand, 72, 180);
+  ctx.letterSpacing = "0px";
+
+  // The fixture, on two lines. Team names are long and unpredictable, and one line of
+  // "Borussia Monchengladbach v Eintracht Frankfurt" shrinks to unreadable.
+  ctx.fillStyle = C.text;
+  ctx.font = fitFont(ctx, homeName, { size: 68, max: STORY_W - 144, family: FONT_HEAD });
+  ctx.fillText(homeName, 72, 272);
+  ctx.fillStyle = C.muted;
+  ctx.font = `500 34px ${FONT_BODY}`;
+  ctx.fillText("v", 72, 336);
+  ctx.fillStyle = C.text;
+  ctx.font = fitFont(ctx, awayName, { size: 68, max: STORY_W - 200, family: FONT_HEAD });
+  ctx.fillText(awayName, 118, 336);
+
+  const useFlags = flagsRender(ctx);
+  const flag = useFlags ? flagFor(leagueId) : null;
+  const where = [flag || countryCodeFor(leagueId), kickoff].filter(Boolean).join("  ·  ");
+  if (where) {
+    ctx.fillStyle = C.muted;
+    ctx.font = `500 30px ${FONT_BODY}`;
+    ctx.fillText(where, 72, 404);
+  }
+
+  const head = markets.find((m) => m.group === group) || markets[0];
+
+  // THE NUMBER. This is what the post is for, so it is the biggest thing on the image.
+  if (head) {
+    ctx.fillStyle = C.primary;
+    ctx.font = `700 150px ${FONT_DATA}`;
+    ctx.fillText(`${Math.round(head.prob)}%`, 72, 560);
+    ctx.fillStyle = C.text;
+    ctx.font = `600 40px ${FONT_HEAD}`;
+    ctx.fillText(`chance of ${head.line}+ ${head.group === "total" ? "match corners" : "corners"}`, 72, 654);
+    if (head.group !== "total") {
+      ctx.fillStyle = C.muted;
+      ctx.font = `500 32px ${FONT_BODY}`;
+      ctx.fillText(head.label, 72, 706);
+    }
+  }
+
+  drawCurve(ctx, dist, head?.line ?? 0, { x: 72, y: 780, w: STORY_W - 144, h: 300 });
+
+  // The three markets. Probability sharp, price blurred.
+  //
+  // Sized to END ABOVE the call to action rather than at a fixed offset: three rows at the
+  // old spacing ran under the pill and cut the away team's row in half. The band is what is
+  // actually available, so a fourth market would tighten rather than overflow.
+  const rowsTop = 1130;
+  const rowsBottom = STORY_H - 380;
+  const gap = 16;
+  const rowH = Math.min(132, Math.floor((rowsBottom - rowsTop - gap * (markets.length - 1))
+                                        / Math.max(1, markets.length)));
+  let y = rowsTop;
+  markets.forEach((m) => {
+    const h = rowH;
+    ctx.fillStyle = C.card;
+    roundRect(ctx, 72, y, STORY_W - 144, h, 20);
+    ctx.fill();
+    ctx.strokeStyle = m.group === group ? `${C.primary}55` : C.border;
+    ctx.lineWidth = 2;
+    ctx.stroke();
+
+    const mid = y + h / 2;
+    ctx.fillStyle = C.text;
+    ctx.font = `600 34px ${FONT_HEAD}`;
+    ctx.textBaseline = "middle";
+    ctx.fillText(m.label, 116, mid - 20);
+    ctx.fillStyle = C.muted;
+    ctx.font = `500 28px ${FONT_BODY}`;
+    ctx.fillText(`${m.line}+ corners`, 116, mid + 22);
+
+    // Probability — the half that goes out in public.
+    ctx.fillStyle = C.primary;
+    ctx.font = `700 46px ${FONT_DATA}`;
+    ctx.textAlign = "right";
+    ctx.fillText(`${Math.round(m.prob)}%`, STORY_W - 260, mid);
+
+    // Price — the half that does not. Real text under the blur.
+    blurred(ctx, () => {
+      ctx.fillStyle = C.solid;
+      ctx.font = `700 44px ${FONT_DATA}`;
+      ctx.fillText(m.price || "0.00", STORY_W - 116, mid - 14);
+      ctx.fillStyle = C.muted;
+      ctx.font = `500 22px ${FONT_BODY}`;
+      ctx.fillText("model price", STORY_W - 116, mid + 28);
+    }, blurRadius);
+    ctx.textAlign = "left";
+    y += h + gap;
+  });
+
+  const ctaY = STORY_H - 340;
+  ctx.fillStyle = C.primary;
+  roundRect(ctx, 72, ctaY, STORY_W - 144, 108, 54);
+  ctx.fill();
+  ctx.fillStyle = "#00181C";
+  ctx.font = `700 38px ${FONT_HEAD}`;
+  ctx.textAlign = "center";
+  ctx.fillText(cta, STORY_W / 2, ctaY + 56);
+  ctx.fillStyle = C.muted;
+  ctx.font = `500 26px ${FONT_BODY}`;
+  ctx.fillText("corner-model", STORY_W / 2, ctaY + 168);
+  ctx.textAlign = "left";
+
+  return canvas;
 };

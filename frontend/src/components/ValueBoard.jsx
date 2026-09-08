@@ -21,24 +21,26 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 // and those six are not six bets — you are taking one. The runners-up fold in behind the
 // row instead.
 
+// BOTH FILTERS DEFAULT TO SHOWING EVERYTHING, and that is the whole lesson of this
+// screen. It shipped defaulting to "next 7 days" AND "only lines with a positive edge",
+// and a bookmaker's margin means most prices you type in sit BELOW fair — so the normal
+// result of pasting a card of real odds was an empty board. Nothing was broken, and
+// there was no way to tell that from the outside.
+//
+// A board whose job is "show me what I have priced" must not open by hiding most of it.
+// Narrowing is a decision the reader makes once they can see what they are narrowing.
 const WINDOWS = [
+  { v: "0", l: "All upcoming" },
   { v: "3", l: "Next 3 days" },
   { v: "7", l: "Next 7 days" },
   { v: "14", l: "Next 14 days" },
-  { v: "0", l: "All upcoming" },
 ];
-// "All priced games" exists so an empty board can be told apart from a broken one.
-// The default only shows lines the model rates ABOVE your price, and a bookmaker's
-// margin means most entered prices are below it — so a board that is working perfectly
-// and a board that never received your prices look identical. Dropping the floor below
-// zero shows every game you have priced, negative edges included, which answers "did my
-// odds land?" in one click.
 const FLOORS = [
-  { v: "0", l: "Any edge" },
+  { v: "-100", l: "Everything I've priced" },
+  { v: "0", l: "Positive edge only" },
   { v: "2", l: "2%+" },
   { v: "5", l: "5%+" },
   { v: "10", l: "10%+" },
-  { v: "-100", l: "All priced games" },
 ];
 
 function Line({ m, muted = false }) {
@@ -58,8 +60,8 @@ function Line({ m, muted = false }) {
 
 export default function ValueBoard() {
   const navigate = useNavigate();
-  const [days, setDays] = useState("7");
-  const [floor, setFloor] = useState("0");
+  const [days, setDays] = useState("0");
+  const [floor, setFloor] = useState("-100");
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(true);
   // Set by the API when the server trimmed this board for a non-member.
@@ -86,7 +88,7 @@ export default function ValueBoard() {
           <BadgePercent className="h-4 w-4 text-primary" />
           <h2 className="font-head font-semibold text-lg">Your Value Board</h2>
           <span className="text-xs text-muted-foreground hidden sm:inline">
-            the best edge you've found on each game
+            every game you've priced, best line first
           </span>
           {rows.length > 0 && (
             <span className="font-mono-data text-[10px] text-muted-foreground ml-1" data-testid="value-count">
@@ -125,12 +127,12 @@ export default function ValueBoard() {
             anything the model rates above that price lands here.
           </p>
           <p className="mt-2 text-xs max-w-md mx-auto leading-relaxed">
-            {Number(floor) < 0
-              ? "Nothing at all — so the prices either aren't saved against these fixtures, or every game you priced has already kicked off or is outside the window above."
-              : <>Already entered some? Switch the filter to{" "}
-                 <span className="text-foreground">All priced games</span> — that shows every
-                 game you've priced including the ones with no edge, which tells you straight
-                 away whether your odds are landing.</>}
+            {Number(floor) < 0 && days === "0"
+              ? "Both filters are wide open, so this really is everything: any price you've entered is either on a game that has already kicked off, or isn't saved against that fixture."
+              : <>Two filters above can hide games you have priced. Set the edge to{" "}
+                 <span className="text-foreground">Everything I've priced</span> and the window
+                 to <span className="text-foreground">All upcoming</span> before concluding
+                 anything is missing.</>}
           </p>
         </div>
       ) : (

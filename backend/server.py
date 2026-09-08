@@ -566,6 +566,29 @@ def confidence_for(home: dict, away: dict) -> dict:
     return {"score": round(score * 100), "label": label}
 
 
+# ----------------------------- Shape of the projection -----------------------------
+# A single percentage tells you the model's answer but not how confident the shape of it
+# is. 55% off a tight distribution and 55% off a flat one are very different bets, and the
+# number alone hides that. These serve the curve behind the number so the site can DRAW
+# it — the same pmf pricing uses, never a reimplementation in JavaScript, because a chart
+# that disagrees with the price is worse than no chart.
+
+DIST_TAIL = 0.001   # stop once the remaining tail is this thin; keeps the x-axis readable
+
+
+def corner_distribution(lam: float, group: str, max_k: int = 30) -> List[dict]:
+    """P(exactly k corners) for each plausible k, as [{k, p}].
+
+    Uses the same pmf as the price: NB for team lines, Poisson for match totals. Trimmed
+    at both ends where the probability is negligible, so the chart spans the range that
+    actually happens rather than a long flat tail nobody needs to look at."""
+    pmf = poisson_pmf if group == "total" else nb_pmf
+    rows = [{"k": k, "p": round(pmf(k, lam), 5)} for k in range(0, max_k + 1)]
+    lo = next((i for i, r in enumerate(rows) if r["p"] >= DIST_TAIL), 0)
+    hi = next((i for i in range(len(rows) - 1, -1, -1) if rows[i]["p"] >= DIST_TAIL), len(rows) - 1)
+    return rows[lo:hi + 1]
+
+
 def build_markets(lambdas: dict, odds: Dict[str, float]) -> List[dict]:
     rows = []
     specs = [("total", "Total", lambdas["total"], TOTAL_LINES),
@@ -585,7 +608,8 @@ def build_markets(lambdas: dict, odds: Dict[str, float]) -> List[dict]:
     return rows
 
 
-def fixture_model_from(home: dict, away: dict, league: dict, odds: Dict[str, float]) -> dict:
+def fixture_model_from(home: dict, away: dict, league: dict, odds: Dict[str, float],
+                       with_distribution: bool = False) -> dict:
     """The model for one fixture, from documents ALREADY LOADED.
 
     Split out so a screen that prices many fixtures at once can fetch its teams and
@@ -598,15 +622,21 @@ def fixture_model_from(home: dict, away: dict, league: dict, odds: Dict[str, flo
     ls = league.get("avg_shots") or REF_SHOTS
     lb = league.get("avg_blocked") or 0.0
     lambdas = expected_lambdas(home, away, ls, lb)
-    return {"lambdas": lambdas, "markets": build_markets(lambdas, odds),
-            "confidence": confidence_for(home, away)}
+    out = {"lambdas": lambdas, "markets": build_markets(lambdas, odds),
+           "confidence": confidence_for(home, away)}
+    # OPT-IN, because it is ~60 rows per fixture and the boards price dozens at a time.
+    # Only the single-fixture screens draw the curve, so only they ask for it.
+    if with_distribution:
+        out["distribution"] = {g: corner_distribution(lambdas[g], g)
+                               for g in ("total", "home", "away")}
+    return out
 
 
 async def get_fixture_model(fixture: dict, odds: Dict[str, float]) -> dict:
     home = await db.teams.find_one({"team_id": fixture["home_team_id"]}, {"_id": 0})
     away = await db.teams.find_one({"team_id": fixture["away_team_id"]}, {"_id": 0})
     league = await db.leagues.find_one({"league_id": fixture["league_id"]}, {"_id": 0}) or {}
-    return fixture_model_from(home, away, league, odds)
+    return fixture_model_from(home, away, league, odds, with_distribution=True)
 
 
 # ----------------------------- Public access -----------------------------
@@ -2375,6 +2405,155 @@ async def get_fixtures(league_id: str, user: dict = Depends(get_current_user)):
     return out
 
 
+# ----------------------------- Reading a team in plain English -----------------------------
+# The site had the numbers and never said what they MEANT. "4.33 / 5.67 / 10.00" is a fact;
+# "wins a lot of corners but leaks them at the other end" is a read, and only one of those
+# tells a newcomer whether to care.
+#
+# Every trait carries the number it came from and the games behind it. Nothing here is
+# generated prose — each is a threshold on a measured average, so it cannot say something
+# the data does not, and it stays silent rather than guessing when the sample is thin.
+
+PROFILE_MIN_GAMES = 4      # below this a "trait" is noise wearing a confident sentence
+BIG_EDGE, MILD_EDGE = 1.20, 1.08
+
+
+def _trait(key, label, text, value, league_avg, tone):
+    return {"key": key, "label": label, "text": text, "value": round(value, 2),
+            "league_avg": round(league_avg, 2),
+            "delta_pct": round((value / league_avg - 1) * 100) if league_avg else None,
+            "tone": tone}
+
+
+def team_profile(team: dict, venue: str, league_avg: float) -> dict:
+    """A short read on a team at the venue it is about to play, from its own corner record.
+
+    `league_avg` is corners won per team per game, so it is the yardstick for BOTH sides of
+    the ledger: winning more than it is a good attack, conceding more than it is a leaky
+    defence."""
+    pool = _venue_matches(team, venue)
+    games = len(pool)
+    out = {"venue": venue, "games": games, "traits": [], "summary": None}
+    if games < PROFILE_MIN_GAMES or not league_avg:
+        out["summary"] = f"Only {games} game(s) on this venue — too few to read anything into."
+        return out
+
+    won = sum(m["corners_for"] for m in pool) / games
+    conceded = sum(m["corners_against"] for m in pool) / games
+    where = "at home" if venue == "home" else "away from home"
+
+    if won >= league_avg * BIG_EDGE:
+        out["traits"].append(_trait("attack", "Big corner threat",
+            f"Wins {won:.1f} corners a game {where} — well above the {league_avg:.1f} average.",
+            won, league_avg, "strong"))
+    elif won >= league_avg * MILD_EDGE:
+        out["traits"].append(_trait("attack", "Good for corners",
+            f"Wins {won:.1f} a game {where}, a bit above average.", won, league_avg, "streak"))
+    elif won <= league_avg / BIG_EDGE:
+        out["traits"].append(_trait("attack", "Quiet attack",
+            f"Only {won:.1f} corners a game {where} — below the {league_avg:.1f} average.",
+            won, league_avg, "under"))
+
+    # Corners CONCEDED. High is the interesting one here: it is the half of a mismatch the
+    # opposing team's price is built on.
+    if conceded >= league_avg * BIG_EDGE:
+        out["traits"].append(_trait("defence", "Leaks corners",
+            f"Concedes {conceded:.1f} a game {where} — the sort of defence that feeds the "
+            f"other side's corner count.", conceded, league_avg, "edge"))
+    elif conceded <= league_avg / BIG_EDGE:
+        out["traits"].append(_trait("defence", "Strong defence",
+            f"Concedes just {conceded:.1f} a game {where}, one of the tighter records here.",
+            conceded, league_avg, "strong"))
+
+    # Does this team travel? Only worth saying when both splits have enough games.
+    other = _venue_matches(team, "away" if venue == "home" else "home")
+    if len(other) >= PROFILE_MIN_GAMES:
+        other_won = sum(m["corners_for"] for m in other) / len(other)
+        if won >= other_won * BIG_EDGE:
+            out["traits"].append(_trait("venue", f"Much better {where}",
+                f"{won:.1f} corners a game {where} against {other_won:.1f} elsewhere.",
+                won, other_won, "strong"))
+        elif other_won >= won * BIG_EDGE:
+            out["traits"].append(_trait("venue", f"Weaker {where}",
+                f"Only {won:.1f} {where} against {other_won:.1f} elsewhere.",
+                won, other_won, "under"))
+
+    out["summary"] = (" ".join(t["text"] for t in out["traits"])
+                      if out["traits"] else
+                      f"Nothing unusual — around the league average at both ends "
+                      f"({won:.1f} won, {conceded:.1f} conceded {where}).")
+    return out
+
+
+# ----------------------------- What could change the game -----------------------------
+# The scenarios that decide a corner bet after kick-off. A corner count is driven by who
+# has to chase: a team that goes ahead early can stop attacking, and a team behind piles
+# forward. So the risk to a corners-over is the backed team scoring FIRST, and the gift is
+# the other side going down to ten or falling behind.
+#
+# Each factor is measured or it is not shown, with ONE exception that is labelled as such:
+# red cards are not in the data at all (the sync collects shots, on-target, blocked and
+# dangerous attacks — no cards), so that entry carries no number and says why.
+
+def key_factors(team: dict, opp: dict, venue: str, team_name: str, opp_name: str) -> List[dict]:
+    """Ranked list of what would help or hurt a corners-over on `team`."""
+    out = []
+    opp_venue = "away" if venue == "home" else "home"
+    gp = goal_profile(team.get("real_matches") or [], venue)
+    fg = gp.get("first_goal") or {}
+    states = team_state_splits(team.get("real_matches") or [], venue)
+    ht = (states.get("ht") or {})
+
+    # RISK: this team scores early and stops needing corners.
+    pct, when = fg.get("scored_first_pct"), fg.get("avg_first_scored_min")
+    if pct is not None and gp.get("games", 0) >= PROFILE_MIN_GAMES:
+        detail = f"{team_name} score first in {pct:.0f}% of these games"
+        if when is not None:
+            detail += f", on average around {when:.0f}'"
+        out.append({"key": "early_goal", "kind": "risk", "title": "An early goal for them",
+                    "detail": detail + ". A side that goes in front early can settle and "
+                              "stop forcing the play, which is what flattens a corner count.",
+                    "games": gp["games"]})
+
+    # The same idea, but MEASURED on this team rather than argued: corners in games they
+    # led at the break versus games they trailed.
+    lead, trail = ht.get("leading") or {}, ht.get("trailing") or {}
+    if (lead.get("won") is not None and trail.get("won") is not None
+            and lead.get("games", 0) >= 2 and trail.get("games", 0) >= 2):
+        gap = trail["won"] - lead["won"]
+        if abs(gap) >= 0.5:
+            chasing = gap > 0
+            out.append({
+                "key": "chase", "kind": "boost" if chasing else "risk",
+                "title": "Chasing suits them" if chasing else "They fade when behind",
+                "detail": (f"{trail['won']:.1f} corners a game when behind at half-time "
+                           f"({trail['games']} games) against {lead['won']:.1f} when ahead "
+                           f"({lead['games']}). "
+                           + ("Falling behind is good news for this bet."
+                              if chasing else
+                              "Going behind has not made them attack more.")),
+                "games": trail["games"] + lead["games"]})
+
+    # BOOST: the opponent is the one who tends to be chasing.
+    opp_gp = goal_profile(opp.get("real_matches") or [], opp_venue) if opp else {}
+    opp_pct = (opp_gp.get("first_goal") or {}).get("scored_first_pct")
+    if opp_pct is not None and opp_gp.get("games", 0) >= PROFILE_MIN_GAMES and opp_pct <= 40:
+        out.append({"key": "opp_slow", "kind": "boost", "title": f"{opp_name} rarely lead",
+                    "detail": f"They score first in only {opp_pct:.0f}% of their games here, "
+                              "so this is more often played on your team's terms.",
+                    "games": opp_gp["games"]})
+
+    # NOT MEASURED — and said so. Included because it genuinely decides these bets, but it
+    # carries no number because the provider data behind this site has no cards in it.
+    out.append({"key": "red_card", "kind": "watch", "title": "A red card either way",
+                "detail": f"A sending-off for {opp_name} is the best thing that can happen to "
+                          f"a corners-over — ten men defend deeper and concede more. One for "
+                          f"{team_name} is the worst. Cards are not in this site's data, so "
+                          "this is a scenario to watch, not a number.",
+                "games": None, "measured": False})
+    return out
+
+
 @api_router.get("/fixtures/{fixture_id}")
 async def fixture_detail(fixture_id: str, user: dict = Depends(get_current_user)):
     fx = await db.fixtures.find_one({"fixture_id": fixture_id}, {"_id": 0})
@@ -2407,6 +2586,13 @@ async def fixture_detail(fixture_id: str, user: dict = Depends(get_current_user)
     def intent(team):
         return {sp: intent_breakdown(team, sp, ls, lb) for sp in ["home", "away", "overall"]}
 
+    # League corners-per-team-per-game, the yardstick every trait is measured against.
+    # Computed from the teams in this league rather than stored on the league doc, so it is
+    # right the moment the code deploys instead of after the next sync.
+    lg_teams = await db.teams.find({"league_id": fx["league_id"]}, {"_id": 0}).to_list(60)
+    lg_vals = [m["corners_for"] for t in lg_teams for m in _src(t)]
+    lg_avg = (sum(lg_vals) / len(lg_vals)) if lg_vals else 0.0
+
     def recent(team):
         rms = team.get("real_matches") or []
         return [{"date": m["date"], "opponent": m["opponent"], "home": m["home"],
@@ -2429,14 +2615,19 @@ async def fixture_detail(fixture_id: str, user: dict = Depends(get_current_user)
                     for side in ("for", "against")}}
                 for m in reversed(rms)]
 
-    return {"fixture": fx, "model": model,
+    return {"fixture": fx, "model": model, "league_avg_corners": round(lg_avg, 2),
+            "key_factors": {
+                "home": key_factors(home, away, "home", home["name"], away["name"]),
+                "away": key_factors(away, home, "away", away["name"], home["name"])},
             "home_team": {"name": home["name"], "splits": splits(home), "features": features(home),
                           "state_splits": states(home), "goal_profile": goals(home),
                           "intent": intent(home), "recent": recent(home),
+                          "profile": team_profile(home, "home", lg_avg),
                           "real_samples": home.get("real_samples", 0)},
             "away_team": {"name": away["name"], "splits": splits(away), "features": features(away),
                           "state_splits": states(away), "goal_profile": goals(away),
                           "intent": intent(away), "recent": recent(away),
+                          "profile": team_profile(away, "away", lg_avg),
                           "real_samples": away.get("real_samples", 0)}}
 
 

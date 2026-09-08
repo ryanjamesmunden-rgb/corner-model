@@ -3,27 +3,56 @@
 @tailwind components;
 @tailwind utilities;
 
+/* SURFACES. The site used to sit on pure black (0 0% 4%) with cyan on top, which read as
+   a terminal rather than a product. These are the same dark, technical feel a couple of
+   degrees warmer and very slightly blue, so panels separate from the page by their own
+   colour instead of by a border alone. */
 :root {
-  --background: 0 0% 4%;
-  --foreground: 240 5% 96%;
-  --card: 0 0% 7%;
-  --card-foreground: 240 5% 96%;
-  --popover: 0 0% 7%;
-  --popover-foreground: 240 5% 96%;
-  --primary: 187 100% 50%;
-  --primary-foreground: 0 0% 0%;
-  --secondary: 0 0% 10%;
-  --secondary-foreground: 240 5% 96%;
-  --muted: 0 0% 10%;
-  --muted-foreground: 240 4% 64%;
-  --accent: 0 0% 10%;
-  --accent-foreground: 240 5% 96%;
-  --destructive: 0 84% 60%;
+  --background: 215 30% 6%;
+  --foreground: 214 20% 96%;
+  --card: 216 26% 9%;
+  --card-foreground: 214 20% 96%;
+  --popover: 216 26% 9%;
+  --popover-foreground: 214 20% 96%;
+  --primary: 187 92% 52%;
+  --primary-foreground: 215 40% 5%;
+  --secondary: 216 22% 13%;
+  --secondary-foreground: 214 20% 96%;
+  --muted: 216 22% 13%;
+  --muted-foreground: 215 15% 65%;
+  --accent: 216 22% 13%;
+  --accent-foreground: 214 20% 96%;
+  --destructive: 344 68% 50%;
   --destructive-foreground: 0 0% 98%;
-  --border: 240 4% 16%;
-  --input: 240 4% 16%;
-  --ring: 187 100% 50%;
-  --radius: 0.375rem;
+  --border: 216 18% 19%;
+  --input: 216 18% 19%;
+  --ring: 187 92% 52%;
+  --radius: 0.5rem;
+
+  /* THE FOUR TONES. Every coloured thing on the site is one of these, and each one means
+     exactly one thing:
+       strong  a solid, well-evidenced pick
+       streak  a run that is live but needs watching
+       under   the bet is that something does NOT happen
+       edge    a mismatch — the opponent is the reason this is here
+
+     Validated on this surface with the palette checker: lightness band, chroma floor,
+     normal-vision separation and contrast all pass; worst all-pairs CVD separation is
+     6.9 (green vs rose under deuteranopia — the one pair colour cannot fix). That is
+     inside the band that is legal ONLY with a second channel, so EVERY tone chip carries
+     an icon and a word as well as its colour. Never ship one as colour alone. */
+  --tone-strong: 162 88% 35%;
+  --tone-streak: 32 92% 44%;
+  --tone-under: 344 68% 50%;
+  --tone-edge: 262 83% 58%;
+
+  /* Lighter steps of the SAME hues, for text and icons. The validated values above are
+     mark colours — sized for a filled bar against the surface — and are too dark to read
+     as 11px type on it. Fills use the mark, words use these. */
+  --tone-strong-fg: 162 62% 52%;
+  --tone-streak-fg: 32 94% 58%;
+  --tone-under-fg: 344 88% 68%;
+  --tone-edge-fg: 262 92% 76%;
 }
 
 * { border-color: hsl(var(--border)); }

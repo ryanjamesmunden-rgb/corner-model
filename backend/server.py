@@ -3008,8 +3008,20 @@ async def value_board(within_days: Optional[int] = 7, min_ev: float = 0.0,
                       league_id: Optional[str] = None, limit: int = 40,
                       explain: bool = False,
                       response: Response = None,
-                      user: dict = Depends(get_current_user)):
+                      user: dict = Depends(require_member)):
     """Every price you have entered, best line first — and never an unexplained blank.
+
+    MEMBERS ONLY, AND THE ONE EXCEPTION TO "A TASTE, NOT A WALL". Every other board here
+    returns its first few rows to anyone and the whole thing to members, on the reasoning
+    that rows sell better than an assertion does. This board is different in kind: it is
+    not a list of teams in form, it is a ranked list of LIVE PRICES THE MODEL DISAGREES
+    WITH — the finished product, on games that have not kicked off. Three rows of that is
+    not a taste, it is the three best bets on the board, which is the whole thing.
+
+    `require_member` rather than `_preview`, so nothing reaches the browser at all: 401
+    for a visitor who is not signed in, 402 for one who is but has not paid. The two are
+    separate codes because they need different asks, and a UI wall on its own would be no
+    gate — the JSON would still be one request away.
 
     THIS IS ODDS-DRIVEN, NOT FIXTURE-DRIVEN, and that is the whole design. The previous
     version walked fixtures and ended every failure path in a bare `continue`: no fixture
@@ -3032,7 +3044,9 @@ async def value_board(within_days: Optional[int] = 7, min_ev: float = 0.0,
     if not priced:
         if explain:
             return {"counts": {}, "note": "no odds stored at all"}
-        return _preview([], user, response)
+        # No `_preview` here: this board is members-only, so a reader reaching this line
+        # has already paid and there is nothing to trim. Calling it would imply otherwise.
+        return []
 
     fixtures = {f["fixture_id"]: f for f in
                 await db.fixtures.find({"fixture_id": {"$in": list(priced)}},
@@ -3146,7 +3160,7 @@ async def value_board(within_days: Optional[int] = 7, min_ev: float = 0.0,
                 "now": now.isoformat(), "within_days": within_days, "min_ev": min_ev}
     if response is not None:
         response.headers["X-Value-Ok"] = str(counts.get("ok", 0))
-    return _preview(rows[:max(1, min(limit, 100))], user, response)
+    return rows[:max(1, min(limit, 100))]      # members only — nothing is held back here
 
 
 # A venue split needs this many games before it is trusted on its own. Below it the

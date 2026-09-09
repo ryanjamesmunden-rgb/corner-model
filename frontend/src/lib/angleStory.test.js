@@ -1,4 +1,4 @@
-import { angleWhy, wrapText } from "./storyImage";
+import { angleWhy, gamesLabel, wrapText } from "./storyImage";
 
 // The reasoning on this image is built from the row's own numbers rather than from the
 // "Why this angle?" prose, because that prose is written by a model which is handed the
@@ -95,5 +95,29 @@ describe("wrapText", () => {
     expect(wrapText(ctx, "", 100)).toEqual([]);
     expect(wrapText(ctx, null, 100)).toEqual([]);
     expect(wrapText(ctx, "   ", 100)).toEqual([]);
+  });
+});
+
+describe("the recent-games label cannot overclaim the venue", () => {
+  // `_real_avg_detail` silently falls back to every venue when the home/away pool is
+  // thinner than three games. On the card that fallback gets an amber warning; on an
+  // image there is no room for one, so the LABEL itself has to be true.
+  it("says the venue when the venue split actually held", () => {
+    expect(gamesLabel({ venue_asked: "home", venue_used: "home" }, 6)).toBe("LAST 6 AT HOME");
+    expect(gamesLabel({ venue_asked: "away", venue_used: "away" }, 5)).toBe("LAST 5 AWAY");
+  });
+
+  it("admits the fallback instead of calling a mixed run 'at home'", () => {
+    expect(gamesLabel({ venue_asked: "home", venue_used: "all" }, 6))
+      .toBe("LAST 6, ALL VENUES");
+  });
+
+  it("claims no venue at all when none was asked for", () => {
+    expect(gamesLabel({ venue_asked: "overall", venue_used: "all" }, 4)).toBe("LAST 4");
+    expect(gamesLabel({}, 3)).toBe("LAST 3");
+  });
+
+  it("reports the count it is given, not a hardcoded five", () => {
+    expect(gamesLabel({ venue_asked: "home", venue_used: "home" }, 2)).toBe("LAST 2 AT HOME");
   });
 });

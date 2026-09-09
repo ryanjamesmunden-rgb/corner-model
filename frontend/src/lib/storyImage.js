@@ -744,143 +744,218 @@ const drawGames = (ctx, values, { x, y, w, h, tone }) => {
 };
 
 /** One mismatch argued in full. Numbers and reasoning public; line, price and λ held back. */
+/**
+ * One mismatch, built to be TAPPED.
+ *
+ * The first version of this was honest and dull: three paragraphs of body copy on a dark
+ * field, with the withheld price in a small grey strip nobody's eye went to. On a feed
+ * that loses. So the composition now leads with the fixture, proves it with the two
+ * numbers and their recent form, and lands on a BETSLIP — a light card against the dark,
+ * which is the one shape a punter recognises instantly and wants to read the odds off.
+ *
+ * WHAT GOES PUBLIC CHANGED, DELIBERATELY. The earlier version blurred the line as well as
+ * the price, which left "62%" floating with nothing to be 62% OF — incoherent, and it
+ * disagreed with the fixture story, which prints its line ("chance of 10+ match corners")
+ * and blurs only the price. So the line and the probability are now public here too, and
+ * the price alone is held back. That is the rule the whole site follows.
+ */
 export const renderAngleStory = (canvas, {
   row = {}, fixture = {}, kickoff = "",
-  cta = "The line and the price on the site", brand = "CORNER MODEL", blurRadius = 14,
+  // 13, tuned by rendering it. This blur sits on a LIGHT card, so it behaves differently
+  // to the 14-16 the dark stories use: at 16 it stopped reading as a hidden number and
+  // became an empty grey box, which kills the curiosity the slip exists to create; at 11
+  // the digits were starting to be legible, which defeats the point entirely.
+  cta = "See the price on the site", brand = "CORNER MODEL", blurRadius = 13,
 } = {}) => {
   canvas.width = STORY_W;
   canvas.height = STORY_H;
   const ctx = canvas.getContext("2d");
+  const M = 72;                       // page margin
+  const W = STORY_W - M * 2;
 
   ctx.fillStyle = C.bg;
   ctx.fillRect(0, 0, STORY_W, STORY_H);
-  const glow = ctx.createRadialGradient(STORY_W / 2, 240, 60, STORY_W / 2, 240, 900);
-  glow.addColorStop(0, "rgba(20,219,245,0.16)");
-  glow.addColorStop(1, "rgba(20,219,245,0)");
-  ctx.fillStyle = glow;
-  ctx.fillRect(0, 0, STORY_W, 1100);
+  // Two washes rather than one: a cyan bloom behind the header and a warm one low down
+  // behind the slip, so the eye is pulled down the page instead of sitting at the top.
+  const top = ctx.createRadialGradient(220, 180, 40, 220, 180, 1000);
+  top.addColorStop(0, "rgba(20,219,245,0.20)");
+  top.addColorStop(1, "rgba(20,219,245,0)");
+  ctx.fillStyle = top;
+  ctx.fillRect(0, 0, STORY_W, 1200);
+  const low = ctx.createRadialGradient(880, 1520, 40, 880, 1520, 820);
+  low.addColorStop(0, "rgba(11,168,121,0.18)");
+  low.addColorStop(1, "rgba(11,168,121,0)");
+  ctx.fillStyle = low;
+  ctx.fillRect(0, 1000, STORY_W, STORY_H - 1000);
 
   ctx.textBaseline = "middle";
   const useFlags = flagsRender(ctx);
 
+  // --- header: brand, section, then the FIXTURE as the hero ---
   ctx.fillStyle = C.primary;
-  ctx.font = `700 30px ${FONT_HEAD}`;
+  ctx.font = `700 26px ${FONT_HEAD}`;
   ctx.letterSpacing = "6px";
-  ctx.fillText(brand, 72, 170);
+  ctx.fillText(brand, M, 132);
   ctx.letterSpacing = "0px";
 
+  ctx.fillStyle = C.muted;
+  ctx.font = `600 28px ${FONT_HEAD}`;
+  ctx.letterSpacing = "4px";
+  ctx.fillText("CORNER MISMATCHES", M, 186);
+  ctx.letterSpacing = "0px";
+
+  const home = fixture.is_home ? row.name : fixture.opponent;
+  const away = fixture.is_home ? fixture.opponent : row.name;
   ctx.fillStyle = C.text;
-  ctx.font = `700 56px ${FONT_HEAD}`;
-  ctx.fillText("Corner mismatches", 72, 246);
+  ctx.font = fitFont(ctx, home || "", { size: 66, max: W, family: FONT_HEAD });
+  ctx.fillText(home || "", M, 268);
+  ctx.fillStyle = C.muted;
+  ctx.font = `500 32px ${FONT_BODY}`;
+  ctx.fillText("v", M, 332);
+  ctx.fillStyle = C.text;
+  ctx.font = fitFont(ctx, away || "", { size: 66, max: W - 46, family: FONT_HEAD });
+  ctx.fillText(away || "", M + 46, 332);
 
   const where = [
-    (useFlags ? flagFor(row.league_id) : null) || countryCodeFor(row.league_id),
-    kickoff,
+    (useFlags ? flagFor(row.league_id) : null) || countryCodeFor(row.league_id), kickoff,
   ].filter(Boolean).join("  ·  ");
   if (where) {
     ctx.fillStyle = C.muted;
-    ctx.font = `500 30px ${FONT_BODY}`;
-    ctx.fillText(where, 72, 306);
+    ctx.font = `500 28px ${FONT_BODY}`;
+    ctx.fillText(where, M, 396);
   }
 
-  // THE TWO NUMBERS THAT ARE THE ANGLE, side by side so the gap is the picture — each
-  // over its own recent form, so the average is shown to be a run rather than a claim.
+  // --- the two numbers that are the angle, each over its own recent form ---
   const ev = row.evidence || {};
-  const panelY = 372;
-  const withBars = (ev.team?.recent?.length || ev.opponent?.recent?.length) ? 1 : 0;
-  const panelH = withBars ? 470 : 340;
-  const halfW = (STORY_W - 144 - 24) / 2;
+  const panelY = 456;
+  const hasBars = !!(ev.team?.recent?.length || ev.opponent?.recent?.length);
+  const panelH = hasBars ? 452 : 320;
+  const halfW = (W - 24) / 2;
   const half = (x, kicker, name, value, tone, detail) => {
     ctx.fillStyle = C.card;
-    roundRect(ctx, x, panelY, halfW, panelH, 24);
+    roundRect(ctx, x, panelY, halfW, panelH, 26);
     ctx.fill();
-    ctx.strokeStyle = C.border;
+    ctx.strokeStyle = `${tone}44`;
     ctx.lineWidth = 2;
     ctx.stroke();
+    // A colour stripe down the edge, so the two sides read as opposed at a glance.
     ctx.fillStyle = tone;
-    ctx.font = `700 26px ${FONT_HEAD}`;
+    roundRect(ctx, x, panelY, 8, panelH, 4);
+    ctx.fill();
+
+    ctx.fillStyle = tone;
+    ctx.font = `700 24px ${FONT_HEAD}`;
     ctx.letterSpacing = "3px";
-    ctx.fillText(kicker, x + 32, panelY + 54);
+    ctx.fillText(kicker, x + 34, panelY + 50);
     ctx.letterSpacing = "0px";
     ctx.fillStyle = C.text;
-    ctx.font = fitFont(ctx, name, { size: 40, max: halfW - 64, weight: 600, family: FONT_HEAD });
-    ctx.fillText(name, x + 32, panelY + 116);
+    ctx.font = fitFont(ctx, name || "", { size: 36, max: halfW - 66, weight: 600, family: FONT_HEAD });
+    ctx.fillText(name || "", x + 34, panelY + 104);
     ctx.fillStyle = tone;
-    ctx.font = `700 100px ${FONT_DATA}`;
-    ctx.fillText(value, x + 32, panelY + 210);
+    ctx.font = `700 104px ${FONT_DATA}`;
+    ctx.fillText(value, x + 34, panelY + 196);
     ctx.fillStyle = C.muted;
-    ctx.font = `500 26px ${FONT_BODY}`;
-    ctx.fillText("corners a game", x + 32, panelY + 276);
+    ctx.font = `500 25px ${FONT_BODY}`;
+    ctx.fillText("corners a game", x + 34, panelY + 262);
 
     const runs = detail?.recent || [];
     if (!runs.length) return;
     ctx.strokeStyle = C.border;
     ctx.beginPath();
-    ctx.moveTo(x + 32, panelY + 310);
-    ctx.lineTo(x + halfW - 32, panelY + 310);
+    ctx.moveTo(x + 34, panelY + 296);
+    ctx.lineTo(x + halfW - 34, panelY + 296);
     ctx.stroke();
     ctx.fillStyle = C.muted;
-    ctx.font = `600 20px ${FONT_DATA}`;
+    ctx.font = `600 19px ${FONT_DATA}`;
     ctx.letterSpacing = "2px";
-    ctx.fillText(gamesLabel(detail, runs.length), x + 32, panelY + 348);
+    ctx.fillText(gamesLabel(detail, runs.length), x + 34, panelY + 332);
     ctx.letterSpacing = "0px";
-    drawGames(ctx, runs, { x: x + 32, y: panelY + 372, w: halfW - 64, h: 62, tone });
+    drawGames(ctx, runs, { x: x + 34, y: panelY + 356, w: halfW - 68, h: 60, tone });
   };
-  half(72, "WINS", row.name || "", Number(row.team_for || 0).toFixed(1), C.solid, ev.team);
-  half(72 + halfW + 24, "CONCEDES", fixture.opponent || "",
+  half(M, "WINS", row.name, Number(row.team_for || 0).toFixed(1), C.solid, ev.team);
+  half(M + halfW + 24, "CONCEDES", fixture.opponent,
        Number(row.opp_conceded || 0).toFixed(1), "#F99B2F", ev.opponent);
 
-  // The reasoning, wrapped — canvas draws straight off the edge otherwise — and CENTRED
-  // in the band between the panels and the held-back strip. A short argument (one line
-  // per paragraph, which happens whenever the team names are short) left a third of the
-  // story visibly empty when this was top-aligned, which reads as a broken image.
-  const stripY = STORY_H - 560;
-  const bandTop = panelY + panelH + 70;
-  const bandBottom = stripY - 50;
-  ctx.font = `500 38px ${FONT_BODY}`;
-  const paras = angleWhy(row, fixture).map((t) => wrapText(ctx, t, STORY_W - 144));
-  const blockH = paras.reduce((h, ln) => h + ln.length * 54 + 26, 0) - 26;
-  let y = Math.max(bandTop, bandTop + (bandBottom - bandTop - blockH) * 0.42);
-  paras.forEach((lns) => {
+  // THE BOTTOM OF THE PAGE IS FIXED, and everything else fits around it. Instagram draws
+  // its own controls over roughly the last 250px, so the call to action sits where the
+  // other stories put it and the slip is placed UP from there — the first cut of this
+  // grew downward from the copy instead and pushed the button under Instagram's UI.
+  const slipH = 300;
+  const ctaY = STORY_H - 340;
+  const slipY = ctaY - 46 - slipH;
+
+  // --- the hook: ONE line, big, CENTRED in whatever band is left. Three paragraphs was a
+  // page, not a post — and a fixed offset left a visible hole above the slip. ---
+  const hook = angleWhy(row, fixture)[1];
+  if (hook) {
+    ctx.font = `600 40px ${FONT_HEAD}`;
+    const lns = wrapText(ctx, hook, W);
+    const bandTop = panelY + panelH;
+    const blockH = lns.length * 52;
+    let hy = bandTop + Math.max(56, (slipY - bandTop - blockH) / 2);
     lns.forEach((ln) => {
       ctx.fillStyle = C.text;
-      ctx.font = `500 38px ${FONT_BODY}`;
-      ctx.fillText(ln, 72, y);
-      y += 54;
+      ctx.font = `600 40px ${FONT_HEAD}`;
+      ctx.fillText(ln, M, hy);
+      hy += 52;
     });
-    y += 26;
-  });
+  }
 
-  // What is being held back, in the shape of the thing being held back.
-  ctx.fillStyle = C.card;
-  roundRect(ctx, 72, stripY, STORY_W - 144, 132, 20);
+  // --- THE BETSLIP. Light card on a dark field: the one shape a punter reads instantly. ---
+  ctx.fillStyle = C.text;                      // near-white, so it lifts off the page
+  roundRect(ctx, M, slipY, W, slipH, 28);
   ctx.fill();
-  ctx.strokeStyle = C.border;
-  ctx.lineWidth = 2;
-  ctx.stroke();
-  ctx.fillStyle = C.muted;
-  ctx.font = `500 28px ${FONT_BODY}`;
-  ctx.fillText("Model line & price", 116, stripY + 66);
+
+  ctx.fillStyle = "#6B7683";
+  ctx.font = `700 22px ${FONT_HEAD}`;
+  ctx.letterSpacing = "4px";
+  ctx.fillText("MODEL BETSLIP", M + 40, slipY + 52);
+  ctx.letterSpacing = "0px";
+
+  // Selection and line — PUBLIC, because a probability with no line is 62% of nothing.
+  ctx.fillStyle = "#0B0F14";
+  ctx.font = fitFont(ctx, row.name || "", { size: 40, max: W - 320, weight: 700, family: FONT_HEAD });
+  ctx.fillText(row.name || "", M + 40, slipY + 116);
+  ctx.fillStyle = "#0BA879";
+  ctx.font = `700 46px ${FONT_DATA}`;
+  ctx.fillText(`${row.line ?? ""}+ corners`, M + 40, slipY + 178);
+
+  if (row.prob != null) {
+    ctx.fillStyle = "#6B7683";
+    ctx.font = `500 26px ${FONT_BODY}`;
+    ctx.fillText(`Model gives it ${Math.round(row.prob)}%`, M + 40, slipY + 236);
+  }
+
+  // The price. The only thing held back, in the box a price belongs in.
+  const boxW = 210;
+  const boxX = M + W - boxW - 40;
+  ctx.fillStyle = "#E4E8EC";
+  roundRect(ctx, boxX, slipY + 84, boxW, 128, 18);
+  ctx.fill();
   blurred(ctx, () => {
-    ctx.textAlign = "right";
-    ctx.fillStyle = C.primary;
-    ctx.font = `700 52px ${FONT_DATA}`;
-    ctx.fillText(`${row.line ?? ""}+ @ ${Number(row.fair_odds || 0).toFixed(2)}`,
-                 STORY_W - 116, stripY + 66);
+    ctx.fillStyle = "#0B0F14";
+    ctx.font = `700 62px ${FONT_DATA}`;
+    ctx.textAlign = "center";
+    ctx.fillText(Number(row.fair_odds || 0).toFixed(2), boxX + boxW / 2, slipY + 148);
     ctx.textAlign = "left";
   }, blurRadius);
+  ctx.fillStyle = "#6B7683";
+  ctx.font = `600 20px ${FONT_BODY}`;
+  ctx.textAlign = "center";
+  ctx.fillText("MODEL PRICE", boxX + boxW / 2, slipY + 236);
+  ctx.textAlign = "left";
 
-  const ctaY = STORY_H - 340;
+  // --- the ask ---
   ctx.fillStyle = C.primary;
-  roundRect(ctx, 72, ctaY, STORY_W - 144, 108, 54);
+  roundRect(ctx, M, ctaY, W, 104, 52);
   ctx.fill();
   ctx.fillStyle = "#00181C";
-  ctx.font = fitFont(ctx, cta, { size: 38, max: STORY_W - 220, family: FONT_HEAD });
+  ctx.font = fitFont(ctx, cta, { size: 38, max: W - 140, family: FONT_HEAD });
   ctx.textAlign = "center";
-  ctx.fillText(cta, STORY_W / 2, ctaY + 56);
+  ctx.fillText(cta, STORY_W / 2, ctaY + 54);
   ctx.fillStyle = C.muted;
-  ctx.font = `500 26px ${FONT_BODY}`;
-  ctx.fillText("corner-model", STORY_W / 2, ctaY + 168);
+  ctx.font = `500 25px ${FONT_BODY}`;
+  ctx.fillText("corner-model", STORY_W / 2, ctaY + 158);
   ctx.textAlign = "left";
 
   return canvas;

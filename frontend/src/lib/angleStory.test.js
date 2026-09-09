@@ -51,11 +51,13 @@ describe("the argument is the two numbers", () => {
 });
 
 describe("it cannot leak the paid half", () => {
-  it("never mentions the line, the price, the probability or the projection", () => {
-    // Those four are the product. They are blurred on the image, and copy that named them
-    // would make the blur pointless.
+  it("never mentions the price or the projection", () => {
+    // The PRICE is the product and is blurred on the slip; copy that named it would make
+    // the blur pointless. The line and the probability are published deliberately — a
+    // percentage with no line is 62% of nothing — but they are drawn by the slip from the
+    // row, never smuggled in through this copy, so they must not appear here either.
     const text = angleWhy(row(), fx()).join(" ");
-    expect(text).not.toContain("1.62");     // fair odds
+    expect(text).not.toContain("1.62");     // fair odds — the one thing being withheld
     expect(text).not.toContain("12.2");     // lambda
     expect(text).not.toContain("62");       // probability
     expect(text).not.toMatch(/\b4\+/);      // the line

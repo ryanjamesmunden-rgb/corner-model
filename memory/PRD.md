@@ -586,6 +586,30 @@ Both new tools are in the Tools panel (`POST /api/tools/backfill-goals`), so no 
 - **Security**: the app is public and the backfill spends API credits, so these are gated behind a `TOOLS_TOKEN` env var and return **503 when it is unset** — disabled by default, opt-in only. Token compared with `secrets.compare_digest`. Every subprocess argument is built from validated values (league ids checked against `MANAGED_LEAGUE_IDS`, mode from an enum, limit clamped 1-500) — no raw user string reaches argv. Per-script cooldowns (backfill 10min, measure 2min) and a one-run-at-a-time guard.
 - The frontend keeps the token in `localStorage` only (`cm2_tools_token`), with a "Forget token" control.
 
+### The mismatch image, rebuilt to be tapped (2026-09-09)
+The honest version was dull: three paragraphs of body copy on a dark field, with the
+withheld price in a small grey strip nobody's eye went to. On a feed that loses.
+
+- **It lands on a BETSLIP** — a light card against the dark, which is the one shape a
+  punter recognises instantly and wants to read the odds off. Selection and line sharp,
+  the model's probability under it, and the price alone blurred in the box a price belongs
+  in.
+- **WHAT GOES PUBLIC CHANGED, deliberately.** The first version blurred the LINE as well as
+  the price, which left "62%" floating with nothing to be 62% OF — incoherent — and
+  disagreed with the fixture story, which prints its line ("chance of 10+ match corners")
+  and withholds only the price. Line and probability are now public here too. One rule
+  across the site: the probability is the claim, the price is the reason to click.
+- Composition: fixture as the hero, the two numbers and their recent form as proof, ONE
+  line of copy instead of three paragraphs, then the slip. A second warm gradient low on
+  the page pulls the eye down to it rather than letting it sit at the top.
+- **The bottom of the page is FIXED and everything fits around it.** Instagram draws its
+  own controls over roughly the last 250px; the first cut grew downward from the copy and
+  pushed the button under them. The call to action now sits where the other stories put
+  it and the slip is placed upward from there.
+- **Blur radius tuned by rendering it**: 13 on the light card. At 16 it stopped reading as
+  a hidden number and became an empty grey box; at 11 the digits were becoming legible.
+  The dark stories' 14-16 does not transfer.
+
 ### "Corner mismatches", as a postable image (2026-09-09)
 The mismatch cards on Quick Scan could explain themselves on screen but not off it. A Share
 button in the explanation panel now turns one angle into a 1080x1920 Story.

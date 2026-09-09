@@ -303,7 +303,7 @@ def team_split(matches: List[dict], split: str, window: int) -> dict:
 # so every average travels with the sample size it was actually computed from.
 
 SHOT_FEATURES = ("shots", "shots_on_target", "blocked_shots", "dangerous_attacks",
-                 "red_cards", "yellow_cards")
+                 "red_cards", "yellow_cards", "fouls")
 
 
 def _feature_avg(pool: List[dict], key: str) -> Optional[float]:
@@ -2557,7 +2557,8 @@ def team_profile(team: dict, venue: str, league_avg: float) -> dict:
 # red cards are not in the data at all (the sync collects shots, on-target, blocked and
 # dangerous attacks — no cards), so that entry carries no number and says why.
 
-def key_factors(team: dict, opp: dict, venue: str, team_name: str, opp_name: str) -> List[dict]:
+def key_factors(team: dict, opp: dict, venue: str, team_name: str, opp_name: str,
+                league_teams: Optional[List[dict]] = None) -> List[dict]:
     """Ranked list of what would help or hurt a corners-over on `team`."""
     out = []
     opp_venue = "away" if venue == "home" else "home"
@@ -2605,89 +2606,195 @@ def key_factors(team: dict, opp: dict, venue: str, team_name: str, opp_name: str
                               "so this is more often played on your team's terms.",
                     "games": opp_gp["games"]})
 
-    # RED CARDS. This used to be the one unmeasured row on the page — the scenario that
-    # decides these bets most sharply, carried with no number because the data had none.
-    # It does now, so it is reported like everything else: from the team's own games, with
-    # the sample attached, and silent rather than guessing where the backfill has not run.
-    out.extend(_red_card_factors(team, opp, venue, team_name, opp_name))
+    # CARDS. See the note above `_card_factors`: reds are too rare to rate from a team's
+    # own games, so the question is answered by the league's climate, both sides' fouls and
+    # yellows, and what these two produced last time they met.
+    out.extend(_card_factors(team, opp, venue, team_name, opp_name, league_teams))
     return out
 
 
-def _red_avg(pool: List[dict], key: str) -> Optional[float]:
-    """Corners won in the games matching `key`, or None when there are too few to mean
-    anything. Two games is an anecdote; the threshold keeps it from being printed as a rate."""
-    hits = [m for m in pool if (m.get(key) or 0) > 0]
-    return (sum(m["corners_for"] for m in hits) / len(hits)) if len(hits) >= MIN_RED_GAMES else None
+# ----------------------------- Cards, honestly -----------------------------
+# THE FIRST VERSION OF THIS WAS NOISE WEARING A PERCENTAGE. It reported a team's red-card
+# rate from its venue window — six to nine games — and the corners in those games. At that
+# sample the numbers cannot carry the claim: 1 red in 9 games is a rate somewhere between
+# 2% and 44%, 0 in 9 is anywhere up to 30%, and the corner average behind it was drawn from
+# one or two matches, where a single game swings the mean by three corners.
+#
+# So reds are no longer a rate. They are a COUNT with the window it came from, and the
+# question "is this a card game?" is answered by three things that are actually measurable:
+#
+#   1. THE LEAGUE'S CLIMATE. Cards vary far more between leagues than between teams, and
+#      a red is only a live factor at all in a league that produces them.
+#   2. FOULS AND YELLOWS. Twenty-odd fouls and several yellows a match, versus one red
+#      every several matches — these are the dense version of "likely to be carded".
+#   3. THE HEAD-TO-HEAD. Free: every stored match carries the opponent's name, so a
+#      card-heavy history between these two is a query, not an API call.
+
+CLIMATE_MIN_GAMES = 40     # a league rate needs a league's worth of matches behind it
+DISCIPLINE_MIN_GAMES = 6
+FOUL_EDGE = 1.12           # how far above the league average is worth remarking on
 
 
-MIN_RED_GAMES = 2      # sendings-off are rare; below this there is no rate worth printing
+def _card_rows(matches: List[dict]) -> List[dict]:
+    """Matches whose cards were actually collected. A fixture the backfill never reached
+    carries no key, and must not be counted as a clean one."""
+    return [m for m in matches or [] if m.get("yellow_cards_for") is not None
+            or m.get("red_cards_for") is not None]
 
 
-def _red_card_factors(team, opp, venue, team_name, opp_name) -> List[dict]:
-    """What actually happens to the corner count when someone goes down to ten.
+def _mean(rows: List[dict], key: str) -> Optional[float]:
+    vals = [m[key] for m in rows if m.get(key) is not None]
+    return (sum(vals) / len(vals)) if vals else None
 
-    TWO SEPARATE FACTS, and they point opposite ways: this team losing a man is the risk to
-    a corners-over on them, and the OPPONENT losing one is the gift. They are reported as
-    separate rows because a single "cards" row would average away the sign.
 
-    Coverage is counted from `red_cards_for` being PRESENT rather than non-zero: a match
-    with no cards is a real observation and belongs in the denominator, while a match the
-    backfill never reached carries no key at all and must not."""
+def card_climate(teams: List[dict]) -> Optional[dict]:
+    """How many cards this league produces, and how often a match contains a red.
+
+    Counted over TEAM-matches, which is what the store holds — every fixture appears once
+    per side. Cards-per-team doubles cleanly into cards-per-match, and "did this match
+    contain a red" is the same answer from either side's row, so the share is match-level
+    even though the rows are not."""
+    rows = _card_rows([m for t in teams or [] for m in _src(t)])
+    if len(rows) < CLIMATE_MIN_GAMES:
+        return None
+    per_team = ((_mean(rows, "yellow_cards_for") or 0.0)
+                + (_mean(rows, "red_cards_for") or 0.0))
+    reds = sum(1 for m in rows
+               if (m.get("red_cards_for") or 0) or (m.get("red_cards_against") or 0))
+    return {"games": len(rows), "cards_per_match": round(per_team * 2, 2),
+            "red_share": reds / len(rows),
+            "fouls_per_team": _mean(rows, "fouls_for")}
+
+
+def team_discipline(team: dict) -> Optional[dict]:
+    """A team's fouls and yellows per game, over ALL its matches.
+
+    Not venue-split, deliberately: fouling is a trait rather than a home-or-away habit, and
+    the split would halve a sample that is the whole point of using fouls instead of reds."""
+    rows = _card_rows(_src(team))
+    if len(rows) < DISCIPLINE_MIN_GAMES:
+        return None
+    return {"games": len(rows), "yellows": _mean(rows, "yellow_cards_for"),
+            "fouls": _mean(rows, "fouls_for"),
+            "reds": sum(m.get("red_cards_for") or 0 for m in rows)}
+
+
+def h2h_cards(team: dict, opp_name: str) -> Optional[dict]:
+    """What happened last time these two met, card-wise.
+
+    Matched on the opponent NAME stored with every match — both sides come from the same
+    provider, so the strings agree. Costs nothing: this is already in the database."""
+    if not opp_name:
+        return None
+    rows = [m for m in _card_rows(_src(team))
+            if str(m.get("opponent") or "").strip().lower() == opp_name.strip().lower()]
+    if not rows:
+        return None
+    rows.sort(key=lambda m: str(m.get("date") or ""))
+    last = rows[-1]
+    cards = ((last.get("yellow_cards_for") or 0) + (last.get("yellow_cards_against") or 0)
+             + (last.get("red_cards_for") or 0) + (last.get("red_cards_against") or 0))
+    return {"meetings": len(rows), "cards": cards, "date": last.get("date"),
+            "reds": (last.get("red_cards_for") or 0) + (last.get("red_cards_against") or 0),
+            "corners": (last.get("corners_for") or 0) + (last.get("corners_against") or 0)}
+
+
+def _card_factors(team, opp, venue, team_name, opp_name, league_teams=None) -> List[dict]:
+    """Is this a card game, and does it matter here? Four rows, none of them a rate the
+    sample cannot support."""
     out = []
-    pool = [m for m in _venue_matches(team, venue) if m.get("red_cards_for") is not None]
-    if len(pool) < PROFILE_MIN_GAMES:
-        # Say what is missing rather than pretending the scenario does not matter. This is
-        # the honest version of the row that used to be here unconditionally.
+    climate = card_climate(league_teams or [])
+    disc = team_discipline(team)
+    opp_disc = team_discipline(opp) if opp else None
+
+    if climate is None and disc is None:
+        # No card history at all yet. Say what is missing rather than dropping the topic:
+        # a sending-off is still the biggest in-play swing there is.
         out.append({"key": "red_card", "kind": "watch", "title": "A red card either way",
                     "detail": f"A sending-off for {opp_name} is the best thing that can happen "
                               f"to a corners-over — ten men defend deeper and concede more. One "
-                              f"for {team_name} is the worst. Not enough card history on this "
-                              "venue yet to put a number on it.",
-                    "games": len(pool) or None, "measured": False})
-    else:
-        base = sum(m["corners_for"] for m in pool) / len(pool)
-        own = [m for m in pool if (m.get("red_cards_for") or 0) > 0]
-        with_red = _red_avg(pool, "red_cards_for")
-        if with_red is not None:
-            drop = with_red - base
-            out.append({
-                "key": "red_card", "kind": "risk" if drop < 0 else "boost",
-                "title": f"{team_name} going down to ten",
-                "detail": (f"Sent off in {len(own)} of {len(pool)} games here. Their corners in "
-                           f"those: {with_red:.1f} a game against {base:.1f} otherwise — "
-                           + ("a real drop, and the main way this bet dies."
-                              if drop < -0.4 else
-                              "barely moved, so it hurts less than it sounds."
-                              if abs(drop) <= 0.4 else
-                              "it went UP, which usually means they were already chasing.")),
-                "games": len(pool), "measured": True})
-        else:
-            out.append({"key": "red_card", "kind": "boost",
-                        "title": f"{team_name} keep eleven on the pitch",
-                        "detail": f"No sendings-off in {len(pool)} games here — the risk that "
-                                  "most often kills a corners-over has not been showing up.",
-                        "games": len(pool), "measured": True})
+                              f"for {team_name} is the worst. No card history collected yet, so "
+                              "there is no number on this.",
+                    "games": None, "measured": False})
+        return out
 
-    # The opponent's discipline, from THEIR games — the half that is good news.
-    #
-    # Computed INDEPENDENTLY of the block above. These are two different teams' records and
-    # the backfill reaches them separately, so gating this on the first one's coverage would
-    # drop the better half of the story whenever only one side had been filled in.
-    opp_venue = "away" if venue == "home" else "home"
-    opp_pool = [m for m in _venue_matches(opp, opp_venue)
-                if m.get("red_cards_for") is not None] if opp else []
-    if len(opp_pool) >= PROFILE_MIN_GAMES:
-        offs = [m for m in opp_pool if (m.get("red_cards_for") or 0) > 0]
-        if offs:
-            conceded = sum(m["corners_against"] for m in offs) / len(offs)
-            usual = sum(m["corners_against"] for m in opp_pool) / len(opp_pool)
-            out.append({
-                "key": "opp_red", "kind": "boost", "title": f"{opp_name} going down to ten",
-                "detail": (f"They have had a man sent off in {len(offs)} of {len(opp_pool)} "
-                           f"games here, and conceded {conceded:.1f} corners a game in those "
-                           f"against {usual:.1f} normally. This is the outcome that makes the "
-                           "bet."),
-                "games": len(opp_pool), "measured": True})
+    # 1. THE LEAGUE. Whether cards are a live factor here at all.
+    if climate:
+        share = climate["red_share"] * 100
+        out.append({
+            "key": "card_climate", "kind": "watch", "title": "Cards in this league",
+            "detail": (f"{climate['cards_per_match']:.1f} cards a match, and a red in "
+                       f"{share:.0f}% of them. "
+                       + ("Sendings-off are common enough here to be worth watching."
+                          if share >= 12 else
+                          "Reds are rare enough here that this is unlikely to be the game "
+                          "that turns on one.")),
+            "games": climate["games"], "measured": True})
+
+    # 2. FOULS AND YELLOWS — the dense signal, for both sides.
+    for who, d, label in ((team_name, disc, "risk"), (opp_name, opp_disc, "boost")):
+        if not d or not climate:
+            continue
+        bits = []
+        if d["fouls"] is not None and climate["fouls_per_team"]:
+            bits.append(f"{d['fouls']:.1f} fouls a game against a league {climate['fouls_per_team']:.1f}")
+        if d["yellows"] is not None:
+            bits.append(f"{d['yellows']:.1f} yellows")
+        if not bits:
+            continue
+        hot = (d["fouls"] is not None and climate["fouls_per_team"]
+               and d["fouls"] >= climate["fouls_per_team"] * FOUL_EDGE)
+        # Whose discipline it is decides which way it points: this team getting carded is
+        # the risk to a corners-over on them, the opponent getting carded is the gift.
+        mine = label == "risk"
+        out.append({
+            "key": f"discipline_{'team' if mine else 'opp'}",
+            "kind": (label if hot else "watch"),
+            "title": f"{who} and the referee",
+            # The two sides get different sentences on purpose. When both fire — which is
+            # exactly the card game worth flagging — one shared line reads as boilerplate
+            # and buries the fact that they point in opposite directions.
+            "detail": (f"{' · '.join(bits)}. "
+                       + (("They give the referee plenty to think about, which is the risk "
+                           "here: their man off is what kills the bet."
+                           if mine else
+                           "They give the referee plenty to think about — and it is THEIR "
+                           "man off that makes this bet, not yours.")
+                          if hot else
+                          ("Nothing unusual, so a sending-off would be luck rather than a "
+                           "pattern."
+                           if mine else
+                           "Nothing unusual from them either, so do not price in ten men."))),
+            "games": d["games"], "measured": True})
+
+    # 3. THE HEAD-TO-HEAD, which is what makes a fixture a card game more than either team.
+    h = h2h_cards(team, opp_name)
+    if h:
+        when = str(h["date"] or "")[:10]
+        out.append({
+            "key": "h2h_cards", "kind": "watch", "title": "Last time these two met",
+            "detail": (f"{h['cards']} card{'' if h['cards'] == 1 else 's'}"
+                       + (f" and {h['reds']} sending{'' if h['reds'] == 1 else 's'}-off"
+                          if h["reds"] else "")
+                       + f", {h['corners']} corners"
+                       + (f" ({when})" if when else "") + ". "
+                       + ("A meeting like that is the sort that produces another."
+                          if h["cards"] >= 5 or h["reds"] else
+                          "A quiet one, for what one game is worth.")),
+            "games": h["meetings"], "measured": True})
+
+    # 4. REDS — a COUNT with its window. Never a percentage: see the note at the top.
+    if disc:
+        out.append({
+            "key": "red_card",
+            "kind": "risk" if disc["reds"] else "boost",
+            "title": f"{team_name} sendings-off",
+            "detail": (f"{disc['reds']} in their last {disc['games']} games. "
+                       if disc["reds"] else
+                       f"None in their last {disc['games']} games. ")
+                      + "Too few either way to turn into a rate — this is the count, not a "
+                        "claim about how likely the next one is.",
+            "games": disc["games"], "measured": True})
     return out
 
 
@@ -2754,8 +2861,8 @@ async def fixture_detail(fixture_id: str, user: dict = Depends(get_current_user)
 
     return {"fixture": fx, "model": model, "league_avg_corners": round(lg_avg, 2),
             "key_factors": {
-                "home": key_factors(home, away, "home", home["name"], away["name"]),
-                "away": key_factors(away, home, "away", away["name"], home["name"])},
+                "home": key_factors(home, away, "home", home["name"], away["name"], lg_teams),
+                "away": key_factors(away, home, "away", away["name"], home["name"], lg_teams)},
             "home_team": {"name": home["name"], "splits": splits(home), "features": features(home),
                           "state_splits": states(home), "goal_profile": goals(home),
                           "intent": intent(home), "recent": recent(home),

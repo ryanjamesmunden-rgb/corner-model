@@ -643,6 +643,40 @@ button in the explanation panel now turns one angle into a 1080x1920 Story.
   rather than "LAST 6 AT HOME" whenever the fallback fired — the label itself is the only
   place the truth can live on a picture.
 
+### Cards, honestly: the red-card rate was noise (2026-09-09)
+The version shipped hours earlier reported a team's red-card RATE from its venue window.
+It cannot. 1 red in 9 games is a rate somewhere between **2% and 44%**; 0 in 9 is anywhere
+up to **30%**; and the corners average behind it was drawn from one or two matches, where a
+single game swings the mean by three corners. The code's own comment said "two games is an
+anecdote" and then used two as the threshold.
+
+So reds are no longer a rate. They are a COUNT with the window they came from, and "is this
+a card game?" is answered by three things that ARE measurable:
+
+- **The league's climate.** Cards vary far more between leagues than between teams, and a
+  red is only a live factor at all in a league that produces them. `card_climate()` gives
+  cards per match and the share of matches containing a red. Counted over team-matches,
+  which is what the store holds — that doubles cleanly into a match rate, and "did this
+  match contain a red" is the same answer from either side's row.
+- **Fouls and yellows.** Twenty-odd fouls and several yellows a match against one red every
+  several matches — the dense version of "likely to be carded". **`fouls` added to
+  `STAT_TYPES`**, which costs nothing: same `/fixtures/statistics` block the sync already
+  fetches. Not venue-split, deliberately — fouling is a trait, and the split would halve
+  the sample that is the whole point of using fouls instead of reds.
+- **The head-to-head, which is FREE.** Every stored match already carries the opponent's
+  name, so "these two produced 7 cards and a sending-off last time" is a query, not an API
+  call. Nothing had ever used it.
+
+Both sides' discipline is reported, with DIFFERENT sentences: when both fire — exactly the
+card game worth flagging — one shared line reads as boilerplate and buries the fact that
+they point opposite ways. Their man off makes the bet; yours kills it.
+
+**Not available anywhere: derby / rivalry.** No provider field carries it. It would need a
+hand-built list or a heuristic, and a wrong one is worse than none.
+
+Fouls only become real after the next sync; the league climate and the head-to-head work
+the moment the card backfill has run.
+
 ### Red cards, measured (2026-09-09)
 The fixture page carried a red-card row with no number on it and said so, because the data
 had no cards. It does now.

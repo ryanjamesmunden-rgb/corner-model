@@ -35,11 +35,11 @@ def test_parses_every_feature_plus_corners():
     parsed = parse_team_stats(stats(**{
         "Total Shots": 15, "Shots on Goal": 6, "Blocked Shots": 3,
         "Dangerous Attacks": 48, "Corner Kicks": 7, "Ball Possession": "58%",
-        "Yellow Cards": 2, "Red Cards": 1,
+        "Yellow Cards": 2, "Red Cards": 1, "Fouls": 13,
     }))
     assert parsed == {"shots": 15, "shots_on_target": 6, "blocked_shots": 3,
                       "dangerous_attacks": 48, "red_cards": 1, "yellow_cards": 2,
-                      "corners": 7}
+                      "fouls": 13, "corners": 7}
 
 
 def test_a_clean_sheet_of_cards_is_zero_not_none():
@@ -86,7 +86,7 @@ def test_null_value_falls_through_to_the_next_alias():
 def test_empty_statistics_block():
     assert parse_team_stats([]) == {"shots": None, "shots_on_target": None, "blocked_shots": None,
                                     "dangerous_attacks": None, "red_cards": None,
-                                    "yellow_cards": None, "corners": None}
+                                    "yellow_cards": None, "fouls": None, "corners": None}
 
 
 # --- per-match sample ---

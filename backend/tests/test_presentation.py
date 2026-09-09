@@ -17,8 +17,8 @@ os.environ.setdefault("DB_NAME", "test_corner_model")
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from server import (  # noqa: E402
-    PROFILE_MIN_GAMES, corner_distribution, key_factors, nb_ge, nb_pmf, poisson_ge,
-    team_profile,
+    PROFILE_MIN_GAMES, card_climate, corner_distribution, h2h_cards, key_factors, nb_ge,
+    nb_pmf, poisson_ge, team_discipline, team_profile,
 )
 
 LG = 5.0        # league corners per team per game
@@ -131,51 +131,156 @@ def test_profile_never_divides_by_a_missing_league_average():
 
 
 # --- key_factors: measured, or explicitly not ---
-def test_red_card_factor_says_so_when_there_is_no_card_history():
-    """The scenario still matters with no data, so the row stays — but it must not look
-    like a stat. `measured` is the flag the UI uses to label it."""
-    rc = next(f for f in key_factors(team(), team(), "home", "Us", "Them") if f["key"] == "red_card")
-    assert rc["measured"] is False
-    assert "Them" in rc["detail"] and "Not enough card history" in rc["detail"]
+def carded(m, yellows=2, reds=0, fouls=12, against_y=2, against_r=0):
+    """Attach collected card data to a match. A match WITHOUT these keys is one the
+    backfill never reached, which is a different thing from a clean match."""
+    m.update({"yellow_cards_for": yellows, "red_cards_for": reds, "fouls_for": fouls,
+              "yellow_cards_against": against_y, "red_cards_against": against_r})
+    return m
 
 
-def test_red_card_factor_reports_the_drop_when_the_history_is_there():
-    # Six clean games at 5 corners, three with a red at 3 — a real, measurable drop.
-    ms = ([match(home=True, cf=5, i=i) for i in range(6)]
-          + [match(home=True, cf=3, i=i + 6) for i in range(3)])
-    for m in ms[:6]:
-        m["red_cards_for"], m["red_cards_against"] = 0, 0
-    for m in ms[6:]:
-        m["red_cards_for"], m["red_cards_against"] = 1, 0
-    t = {"team_id": "t", "name": "T", "league_id": "lg", "real_matches": ms}
-    rc = next(f for f in key_factors(t, team(), "home", "Us", "Them") if f["key"] == "red_card")
-    assert rc["measured"] is True and rc["kind"] == "risk" and rc["games"] == 9
-    assert "3 of 9" in rc["detail"] and "main way this bet dies" in rc["detail"]
+def league(n_teams=6, games=10, yellows=2, reds=0, fouls=12):
+    """A league with enough team-matches behind it to support a rate."""
+    return [{"team_id": f"t{i}", "name": f"T{i}", "league_id": "lg",
+             "real_matches": [carded(match(home=j % 2 == 0, i=j), yellows, reds, fouls)
+                              for j in range(games)]}
+            for i in range(n_teams)]
 
 
-def test_a_team_that_never_goes_down_to_ten_is_reported_as_a_positive():
-    ms = [match(home=True, cf=5, i=i) for i in range(8)]
-    for m in ms:
-        m["red_cards_for"], m["red_cards_against"] = 0, 0
-    t = {"team_id": "t", "name": "T", "league_id": "lg", "real_matches": ms}
-    rc = next(f for f in key_factors(t, team(), "home", "Us", "Them") if f["key"] == "red_card")
-    assert rc["kind"] == "boost" and rc["measured"] is True
-    assert "keep eleven" in rc["title"]
+def disciplined(name="T", n=10, yellows=2, reds=0, fouls=12, opponent="X", home=True,
+                against_y=2, against_r=0):
+    return {"team_id": name, "name": name, "league_id": "lg",
+            "real_matches": [carded({**match(home=home, i=j), "opponent": opponent},
+                                    yellows, reds, fouls, against_y, against_r)
+                             for j in range(n)]}
 
 
-def test_the_opponents_sendings_off_are_reported_as_the_good_news():
-    """The half the site leads with: THEIR red is the gift, and it is measured from their
-    games, in corners CONCEDED rather than won."""
-    ms = ([match(home=False, cf=4, ca=5, i=i) for i in range(6)]
-          + [match(home=False, cf=4, ca=9, i=i + 6) for i in range(2)])
-    for m in ms[:6]:
-        m["red_cards_for"], m["red_cards_against"] = 0, 0
-    for m in ms[6:]:
-        m["red_cards_for"], m["red_cards_against"] = 1, 0
-    opp = {"team_id": "o", "name": "O", "league_id": "lg", "real_matches": ms}
-    f = next(x for x in key_factors(team(), opp, "home", "Us", "Them") if x["key"] == "opp_red")
-    assert f["kind"] == "boost" and f["measured"] is True
-    assert "2 of 8" in f["detail"] and "9.0 corners" in f["detail"]
+# --- with no card data at all, the topic still gets said, without a number ---
+def test_says_so_when_no_card_history_has_been_collected():
+    fs = key_factors(team(), team(), "home", "Us", "Them", [])
+    rc = next(f for f in fs if f["key"] == "red_card")
+    assert rc["measured"] is False and "No card history collected yet" in rc["detail"]
+    assert "Them" in rc["detail"]
+
+
+# --- 1. the league's climate ---
+def test_reports_the_leagues_card_rate_and_how_often_a_red_appears():
+    lg = league(n_teams=6, games=10, yellows=2, reds=0)
+    f = next(x for x in key_factors(disciplined(), team(), "home", "Us", "Them", lg)
+             if x["key"] == "card_climate")
+    assert f["measured"] is True and f["games"] == 60
+    assert "4.0 cards a match" in f["detail"]      # 2 yellows per team, doubled
+    assert "rare enough here" in f["detail"]
+
+
+def test_a_card_heavy_league_is_called_out_as_one():
+    lg = league(n_teams=6, games=10, yellows=3, reds=1)
+    f = next(x for x in key_factors(disciplined(), team(), "home", "Us", "Them", lg)
+             if x["key"] == "card_climate")
+    assert "100% of them" in f["detail"] and "worth watching" in f["detail"]
+
+
+def test_a_thin_league_sample_gets_no_rate_at_all():
+    """Below CLIMATE_MIN_GAMES there is no league rate worth printing."""
+    assert card_climate(league(n_teams=2, games=5)) is None
+
+
+# --- 2. fouls and yellows, the dense signal ---
+def test_a_fouling_side_is_flagged_as_the_risk():
+    lg = league(fouls=11)
+    hot = disciplined(name="Us", fouls=15)
+    f = next(x for x in key_factors(hot, team(), "home", "Us", "Them", lg)
+             if x["key"] == "discipline_team")
+    assert f["kind"] == "risk"
+    assert "15.0 fouls a game against a league 11.0" in f["detail"]
+    assert "their man off is what kills the bet" in f["detail"]
+
+
+def test_the_opponent_fouling_is_the_good_news_not_the_bad():
+    """Their discipline points the other way: their card is the gift."""
+    lg = league(fouls=11)
+    f = next(x for x in key_factors(disciplined(), disciplined(name="Them", fouls=15),
+                                    "home", "Us", "Them", lg)
+             if x["key"] == "discipline_opp")
+    assert f["kind"] == "boost" and "Them and the referee" == f["title"]
+    # The two sides must not share a sentence: they point opposite ways.
+    assert "THEIR man off that makes this bet" in f["detail"]
+
+
+def test_an_ordinary_fouling_side_is_not_dressed_up_as_a_signal():
+    lg = league(fouls=11)
+    f = next(x for x in key_factors(disciplined(fouls=11), team(), "home", "Us", "Them", lg)
+             if x["key"] == "discipline_team")
+    assert f["kind"] == "watch" and "luck rather than a pattern" in f["detail"]
+
+
+def test_discipline_falls_back_to_yellows_when_fouls_are_not_collected_yet():
+    """Fouls only arrive with the next sync; yellows are already there."""
+    t = disciplined()
+    for m in t["real_matches"]:
+        m["fouls_for"] = None
+    lg = league()
+    for team_doc in lg:
+        for m in team_doc["real_matches"]:
+            m["fouls_for"] = None
+    f = next(x for x in key_factors(t, team(), "home", "Us", "Them", lg)
+             if x["key"] == "discipline_team")
+    assert "yellows" in f["detail"] and "fouls a game" not in f["detail"]
+
+
+# --- 3. the head-to-head, which is free ---
+def test_the_last_meeting_between_these_two_is_reported():
+    t = disciplined(opponent="Them", yellows=3, against_y=3, reds=1)
+    f = next(x for x in key_factors(t, team(), "home", "Us", "Them", league())
+             if x["key"] == "h2h_cards")
+    assert f["measured"] is True
+    assert "7 cards" in f["detail"] and "sending-off" in f["detail"]
+    assert "produces another" in f["detail"]
+
+
+def test_no_head_to_head_row_when_these_two_have_not_met():
+    t = disciplined(opponent="Someone Else")
+    assert not [x for x in key_factors(t, team(), "home", "Us", "Them", league())
+                if x["key"] == "h2h_cards"]
+
+
+def test_the_head_to_head_matches_the_name_case_insensitively():
+    t = disciplined(opponent="them fc")
+    assert h2h_cards(t, "Them FC") is not None
+
+
+def test_a_quiet_head_to_head_is_not_talked_up():
+    t = disciplined(opponent="Them", yellows=1, against_y=1)
+    f = next(x for x in key_factors(t, team(), "home", "Us", "Them", league())
+             if x["key"] == "h2h_cards")
+    assert "quiet one" in f["detail"]
+
+
+# --- 4. reds as a count, never a rate ---
+def test_reds_are_reported_as_a_count_with_their_window():
+    t = disciplined(n=18, reds=0)
+    t["real_matches"][0]["red_cards_for"] = 1
+    f = next(x for x in key_factors(t, team(), "home", "Us", "Them", league())
+             if x["key"] == "red_card")
+    assert "1 in their last 18 games" in f["detail"]
+    assert "not a claim about how likely" in f["detail"]
+
+
+def test_the_red_card_row_never_prints_a_percentage():
+    """The whole reason this was rewritten: 1 red in 9 games is a 2%-44% interval, so any
+    percentage here would be a number the sample cannot support."""
+    t = disciplined(n=9)
+    t["real_matches"][0]["red_cards_for"] = 1
+    f = next(x for x in key_factors(t, team(), "home", "Us", "Them", league())
+             if x["key"] == "red_card")
+    assert "%" not in f["detail"]
+
+
+def test_a_clean_record_says_none_rather_than_claiming_discipline():
+    t = disciplined(n=12, reds=0)
+    f = next(x for x in key_factors(t, team(), "home", "Us", "Them", league())
+             if x["key"] == "red_card")
+    assert "None in their last 12 games" in f["detail"] and f["kind"] == "boost"
 
 
 def test_matches_the_backfill_never_reached_are_not_counted_as_clean():

@@ -72,6 +72,11 @@ STAT_TYPES = {
     # its own numbers where it has run.
     "red_cards": ("red cards", "cards red"),
     "yellow_cards": ("yellow cards", "cards yellow"),
+    # Fouls, for the same reason and the same price. Reds are far too rare to estimate a
+    # team rate from — 1 in 9 games is a 2%-44% interval — but fouls happen twenty-odd
+    # times a match, so a team's foul rate against the league's is the DENSE version of
+    # "this side is likely to get carded".
+    "fouls": ("fouls", "total fouls", "fouls committed"),
 }
 
 

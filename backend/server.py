@@ -2388,6 +2388,62 @@ async def _odds_for(fixture_id: str) -> Dict[str, float]:
     return doc["odds"] if doc else {}
 
 
+async def purge_orphan_odds(database=None) -> int:
+    """Delete stored prices whose fixture no longer exists. Returns how many went.
+
+    THIS IS THE BUG THAT EMPTIED THE VALUE BOARD, and it is worth writing down because
+    nothing about it was visible from either end.
+
+    The demo seeder gave every mock fixture `str(uuid.uuid4())` and wrote a matching odds
+    document. When real data arrived, `sync_real` deleted the mock FIXTURES — and left
+    the odds behind, because odds are user data and deleting them on every sync would
+    destroy prices someone had typed in. Five thousand-odd price documents pointing at
+    fixtures that no longer existed, none of them reachable, none of them visible.
+
+    They were not merely useless, they were CROWDING OUT the real ones. The board read
+    `db.odds.find({}).to_list(5000)` — natural order, oldest first, which is exactly the
+    dead seed data. Every price entered on the live site sat past the cap and was never
+    read at all. The board was not filtering them out; it was never seeing them.
+
+    So they go, on boot and after every sync. Three guards:
+
+      - nothing happens unless the fixtures collection is populated, so a half-loaded
+        database is never read as "no fixtures exist, delete everything";
+      - the ids are diffed in memory, so the delete names exactly what it removes rather
+        than leaning on a huge $nin;
+      - AND A PRICE YOU TYPED IN RECENTLY IS NEVER DELETED. `sync_real` only keeps
+        UPCOMING fixtures, so every game drops off the list once it has been played —
+        which makes its price an orphan through no fault of anyone's. Deleting those the
+        moment the whistle goes would erase your record of what you backed. Only prices
+        with no timestamp at all (exactly the dead seed data, which was written before
+        stamping existed) or older than ORPHAN_KEEP_DAYS are removed.
+    """
+    dbx = database if database is not None else db
+    live = {f["fixture_id"] for f in
+            await dbx.fixtures.find({}, {"_id": 0, "fixture_id": 1}).to_list(50000)}
+    if not live:
+        return 0
+    cutoff = datetime.now(timezone.utc) - timedelta(days=ORPHAN_KEEP_DAYS)
+    orphans = []
+    for d in await dbx.odds.find({}, {"_id": 0, "fixture_id": 1, "updated_at": 1}).to_list(100000):
+        if d["fixture_id"] in live:
+            continue
+        try:
+            stamped = datetime.fromisoformat(d["updated_at"])
+            if stamped.tzinfo is None:
+                stamped = stamped.replace(tzinfo=timezone.utc)
+        except Exception:
+            stamped = None                       # unstamped, or unreadable — seed data
+        if stamped is None or stamped < cutoff:
+            orphans.append(d["fixture_id"])
+    orphans.sort()
+    removed = 0
+    for i in range(0, len(orphans), 1000):
+        res = await dbx.odds.delete_many({"fixture_id": {"$in": orphans[i:i + 1000]}})
+        removed += res.deleted_count
+    return removed
+
+
 @api_router.get("/leagues/{league_id}/fixtures")
 async def get_fixtures(league_id: str, user: dict = Depends(get_current_user)):
     fixtures = await db.fixtures.find({"league_id": league_id}, {"_id": 0}).to_list(100)
@@ -2719,6 +2775,15 @@ async def scanner(league_id: Optional[str] = None, market: Optional[str] = None,
 VALUE_STATUS_ORDER = ["ok", "below_floor", "no_market", "outside_window", "kicked_off",
                       "no_teams", "no_fixture"]
 
+# How many price documents the board reads, newest first, and how many dead ones it will
+# show before folding the rest into a count. purge_orphan_odds should keep the dead ones
+# at zero; this is what stops a flood of them burying the live rows if it ever doesn't.
+ODDS_SCAN = 2000
+ORPHAN_ROWS = 10
+# How long a price outlives the fixture it was entered against. Played games leave the
+# fixture list, so this is the window in which your record of what you backed survives.
+ORPHAN_KEEP_DAYS = 21
+
 VALUE_STATUS_NOTE = {
     "ok": "",
     "below_floor": "Priced, but its best line sits below the edge filter above.",
@@ -2728,9 +2793,26 @@ VALUE_STATUS_NOTE = {
     "kicked_off": "Already kicked off — kept as a record of what you priced, not a bet.",
     "no_teams": "The teams on this fixture are missing from the database, so it cannot "
                 "be modelled yet. It should return after the next sync.",
-    "no_fixture": "No fixture matches this price any more — it was entered against a "
-                  "game that has since been replaced. Open the game and re-enter it.",
+    # Replaced per row by _orphan_note — the two causes need opposite messages.
+    "no_fixture": "No fixture matches this price any more.",
 }
+
+
+def _orphan_note(priced_at) -> str:
+    """Why a price has no fixture behind it. There are two answers and they are not alike.
+
+    A price with a timestamp belongs to a game that has been PLAYED: only upcoming
+    fixtures are kept, so every game leaves the list once it kicks off. Telling someone to
+    re-enter that would be nonsense — it is a finished bet, and the row is their record.
+
+    A price with no timestamp at all predates stamping, which in practice means the demo
+    seed data. That one really is junk, and it clears itself.
+    """
+    if priced_at:
+        return ("That game has left the fixture list, which happens once it has been "
+                "played. Kept as a record of what you priced.")
+    return ("Left over from an older version of the site — there is no game behind this "
+            "price. It clears itself on the next sync.")
 
 
 @api_router.get("/value-board")
@@ -2753,7 +2835,11 @@ async def value_board(within_days: Optional[int] = 7, min_ev: float = 0.0,
     `note` instead of disappearing. The board can still be empty — but only when you have
     genuinely entered nothing, which is a state the empty message can then state plainly.
     """
-    odds_docs = await db.odds.find({}, {"_id": 0}).to_list(5000)
+    # NEWEST FIRST, and this is not a nicety. Read in natural order the collection hands
+    # back its oldest documents, which for a year were dead seed data — so the prices
+    # typed in today sat past the cap and were never read. Sorting by when the price was
+    # entered means the board can only ever be starved by real, recent prices.
+    odds_docs = await db.odds.find({}, {"_id": 0}).sort("updated_at", -1).to_list(ODDS_SCAN)
     priced = {d["fixture_id"]: d for d in odds_docs if d.get("odds")}
     if not priced:
         if explain:
@@ -2844,8 +2930,22 @@ async def value_board(within_days: Optional[int] = 7, min_ev: float = 0.0,
                              r.get("date") or ""))
     counts = {}
     for r in rows:
-        r["note"] = VALUE_STATUS_NOTE.get(r["status"], "")
+        r["note"] = (_orphan_note(r["priced_at"]) if r["status"] == "no_fixture"
+                     else VALUE_STATUS_NOTE.get(r["status"], ""))
         counts[r["status"]] = counts.get(r["status"], 0) + 1
+
+    # Orphans are already last in the sort, so this only ever trims the tail.
+    kept, shown, hidden = [], 0, 0
+    for r in rows:
+        if r["status"] == "no_fixture":
+            if shown >= ORPHAN_ROWS:
+                hidden += 1
+                continue
+            shown += 1
+        kept.append(r)
+    if hidden:
+        kept[-1]["more_orphans"] = hidden
+    rows = kept
 
     if explain:
         # A sample of each side of the join. When odds were stored against ids the sync
@@ -4760,6 +4860,14 @@ async def on_startup():
         await db.teams.delete_many({"league_id": {"$in": stale_ids}})
         await db.fixtures.delete_many({"league_id": {"$in": stale_ids}})
         logger.info("Removed stale leagues: %s", stale_ids)
+    # Prices left pointing at fixtures that no longer exist. Harmless-looking, and they
+    # silently starved the value board of every real price for a week — see the helper.
+    try:
+        gone = await purge_orphan_odds()
+        if gone:
+            logger.info("Removed %d orphaned odds documents", gone)
+    except Exception:
+        logger.exception("orphan odds purge failed")
     await _maybe_sync_on_boot()
     from apscheduler.schedulers.asyncio import AsyncIOScheduler
     from apscheduler.triggers.cron import CronTrigger

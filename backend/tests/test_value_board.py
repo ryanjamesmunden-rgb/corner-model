@@ -27,6 +27,16 @@ class FakeCursor:
     def __init__(self, docs):
         self._docs = docs
 
+    def sort(self, field, direction=1):
+        # Mongo sorts a missing field as null — the lowest value — so descending puts
+        # documents without it last. The board leans on exactly that: legacy prices
+        # carry no `updated_at` and must not outrank one entered this morning.
+        present = [d for d in self._docs if d.get(field) is not None]
+        missing = [d for d in self._docs if d.get(field) is None]
+        present.sort(key=lambda d: d[field], reverse=direction < 0)
+        self._docs = present + missing if direction < 0 else missing + present
+        return self
+
     async def to_list(self, n):
         return self._docs[:n]
 
@@ -36,11 +46,16 @@ class FakeCollection:
         self._docs, self._key = docs, key
 
     def find(self, q=None, proj=None):
-        docs = self._docs
+        return FakeCursor(list(self._match(q)))
+
+    async def delete_many(self, q):
+        doomed = list(self._match(q))
+        self._docs[:] = [d for d in self._docs if d not in doomed]
+        return type("Result", (), {"deleted_count": len(doomed)})()
+
+    def _match(self, q):
         ids = ((q or {}).get(self._key) or {}).get("$in") if q else None
-        if ids is not None:
-            docs = [d for d in docs if d[self._key] in ids]
-        return FakeCursor(list(docs))
+        return self._docs if ids is None else [d for d in self._docs if d[self._key] in ids]
 
 
 class FakeDB:
@@ -84,17 +99,34 @@ def install(monkeypatch, *, odds, fixtures, teams=None, markets=None):
 MEMBER = {"member": True}
 
 
+def run(coro):
+    """Sync runner, like the rest of the suite — the repo has no async pytest plugin.
+
+    Deliberately NOT asyncio.run(): that clears the process's event loop on the way out,
+    and the modules that reach for get_event_loop() then fail when they happen to share
+    an xdist worker with this file.
+    """
+    loop = asyncio.new_event_loop()
+    try:
+        return loop.run_until_complete(coro)
+    finally:
+        loop.close()
+
+
 def board(**kw):
-    """Run the endpoint. Sync, like the rest of the suite — the repo has no async
-    pytest plugin and this needs none."""
     kw.setdefault("within_days", 0)
     kw.setdefault("min_ev", -100.0)
     kw.setdefault("user", MEMBER)
-    return asyncio.run(server.value_board(**kw))
+    return run(server.value_board(**kw))
 
 
 def priced(fid):
     return {"fixture_id": fid, "odds": {"total_over_9.5": 1.8}, "updated_at": iso(-1)}
+
+
+def seeded(fid):
+    """A price from before timestamps existed — i.e. the demo seed data."""
+    return {"fixture_id": fid, "odds": {"total_over_9.5": 1.8}}
 
 
 # --- the invariant ------------------------------------------------------------------
@@ -172,3 +204,56 @@ def test_empty_only_when_nothing_is_stored(monkeypatch):
 def test_a_price_with_no_odds_on_it_is_not_a_price(monkeypatch):
     install(monkeypatch, odds=[{"fixture_id": "f0", "odds": {}}], fixtures=[fixture("f0")])
     assert board() == []
+
+
+# --- the prices that were never even read --------------------------------------------
+
+def test_purge_removes_prices_whose_fixture_is_gone(monkeypatch):
+    """The demo seeder's leak: mock fixtures deleted, their unstamped prices left behind."""
+    install(monkeypatch, odds=[priced("live"), seeded("dead-1"), seeded("dead-2")],
+            fixtures=[fixture("live")])
+    assert run(server.purge_orphan_odds()) == 2
+    assert [r["fixture_id"] for r in board()] == ["live"]
+    assert run(server.purge_orphan_odds()) == 0        # idempotent
+
+
+def test_purge_keeps_a_price_you_entered_recently(monkeypatch):
+    """A played game leaves the fixture list, which orphans its price through nobody's
+    fault. Deleting that on the spot would erase the record of what you backed."""
+    install(monkeypatch, odds=[priced("played-yesterday")], fixtures=[fixture("other")])
+    assert run(server.purge_orphan_odds()) == 0
+    row = board()[0]
+    assert row["status"] == "no_fixture"
+    assert "record of what you priced" in row["note"]        # not "re-enter it"
+
+
+def test_purge_lets_go_of_a_price_once_it_is_ancient(monkeypatch):
+    old = dict(priced("long-gone"), updated_at=iso(-24 * (server.ORPHAN_KEEP_DAYS + 1)))
+    install(monkeypatch, odds=[old], fixtures=[fixture("other")])
+    assert run(server.purge_orphan_odds()) == 1
+
+
+def test_purge_does_nothing_when_there_are_no_fixtures(monkeypatch):
+    """A half-loaded database must not read as "no fixtures exist, so delete the lot"."""
+    install(monkeypatch, odds=[seeded("a"), seeded("b")], fixtures=[])
+    assert run(server.purge_orphan_odds()) == 0
+    assert len(board()) == 2
+
+
+def test_the_board_reads_the_newest_prices_not_the_oldest(monkeypatch):
+    """What actually emptied the board: dead seed data filled the read cap, so every
+    price entered on the live site sat past it and was never looked at."""
+    monkeypatch.setattr(server, "ODDS_SCAN", 2)
+    old = [{"fixture_id": f"seed{i}", "odds": {"total_over_9.5": 1.8}} for i in range(5)]
+    mine = dict(priced("mine"), updated_at=iso(-1))
+    install(monkeypatch, odds=old + [mine], fixtures=[fixture("mine")])
+    assert [r["fixture_id"] for r in board()][0] == "mine"
+
+
+def test_a_flood_of_dead_prices_cannot_bury_the_live_rows(monkeypatch):
+    monkeypatch.setattr(server, "ORPHAN_ROWS", 2)
+    install(monkeypatch, odds=[priced("live")] + [seeded(f"dead{i}") for i in range(5)],
+            fixtures=[fixture("live")])
+    rows = board()
+    assert [r["status"] for r in rows] == ["ok", "no_fixture", "no_fixture"]
+    assert rows[-1]["more_orphans"] == 3

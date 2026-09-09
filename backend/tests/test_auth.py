@@ -338,3 +338,38 @@ def test_rotating_the_code_does_not_evict_existing_members(monkeypatch, fake_use
     fake_users["u-5"] = {"user_id": "u-5", "member": True}
     monkeypatch.setattr(server, "MEMBER_CODE", "A-COMPLETELY-NEW-CODE")
     assert _run(server.require_member(_Req(f"Bearer {auth.issue_session('u-5')}")))["member"] is True
+
+
+# --- the Value Board is the one board with no preview at all ---
+def test_the_value_board_is_declared_members_only():
+    """Not a UI decision. Every other board hands its first rows to anyone and relies on
+    `_preview` to trim; this one refuses at the door, because its first three rows ARE the
+    three best bets on it. If someone later swaps this dependency back to
+    `get_current_user`, the JSON is one request away from anyone and nothing else here
+    would notice — so the wiring itself is pinned."""
+    import inspect
+    sig = inspect.signature(server.value_board)
+    dep = sig.parameters["user"].default
+    assert getattr(dep, "dependency", None) is server.require_member
+
+
+def test_the_value_board_does_not_trim_instead_of_refusing():
+    """`_preview` on a members-only route would be dead code that reads like a preview
+    policy, and would quietly become one if the dependency were ever relaxed."""
+    import inspect
+    src = inspect.getsource(server.value_board)
+    assert "_preview(" not in src
+
+
+def test_every_route_that_ranks_live_prices_is_gated():
+    """The gate is only worth anything if there is no equivalent route beside it. If a
+    second endpoint starts returning stored odds ranked by EV, it has to be listed here
+    and gated too."""
+    import inspect
+    for name in ("value_board",):
+        fn = getattr(server, name)
+        dep = inspect.signature(fn).parameters["user"].default
+        assert getattr(dep, "dependency", None) is server.require_member, name
+    # best_bets is the nearest neighbour and is deliberately NOT gated: it returns one
+    # chase, one streak and one mismatch, and carries no odds or EV at all.
+    assert "odds" not in inspect.getsource(server.best_bets)

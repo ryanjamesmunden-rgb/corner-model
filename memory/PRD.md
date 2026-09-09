@@ -643,6 +643,31 @@ button in the explanation panel now turns one angle into a 1080x1920 Story.
   rather than "LAST 6 AT HOME" whenever the fallback fired — the label itself is the only
   place the truth can live on a picture.
 
+### The Value Board goes behind the wall (2026-09-09)
+Every other board here hands its first three rows to anyone and the whole thing to members
+— "a taste, not a wall", on the reasoning that rows sell better than an assertion. **The
+Value Board is the one exception**, and it always should have been.
+
+- It is not a list of teams in form. It is a ranked list of LIVE PRICES THE MODEL DISAGREES
+  WITH, on games that have not kicked off. Three rows of that is not a taste — it is the
+  three best bets on the board, which is the entire product.
+- **`require_member` on `/api/value-board`**, not `_preview`. Nothing reaches the browser:
+  401 for a visitor who is not signed in, 402 for one who is but has not paid. The two
+  codes stay separate because they need different asks.
+- The `_preview` calls inside the handler were removed rather than left to return
+  everything. On a members-only route they are dead code that READS like a preview policy,
+  and would quietly become one again if the dependency were ever relaxed.
+- The UI wall (`MembersOnly` around the value tab) is for the EXPERIENCE — no request, no
+  flash, and the right ask for whichever state you are in. **It is not the gate.** A
+  UI-only wall leaves the JSON one request away, which is the lesson the members-only work
+  in August already learned.
+- Checked for an equivalent route beside it: `best_bets` is the nearest neighbour and
+  carries no odds or EV at all, so it stays open. A test pins both facts — that
+  `value_board` depends on `require_member`, and that the handler contains no `_preview` —
+  because a future edit could undo either with nothing else noticing.
+- Verified by rendering all three states: signed out gets the sign-in ask, signed in
+  without membership gets the code form, a member gets the board.
+
 ### Cards, honestly: the red-card rate was noise (2026-09-09)
 The version shipped hours earlier reported a team's red-card RATE from its venue window.
 It cannot. 1 red in 9 games is a rate somewhere between **2% and 44%**; 0 in 9 is anywhere

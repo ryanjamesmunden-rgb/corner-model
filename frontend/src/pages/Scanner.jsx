@@ -11,6 +11,7 @@ import StreakFinder from "@/components/StreakFinder";
 import ChaseBoard from "@/components/ChaseBoard";
 import PerfectGames from "@/components/PerfectGames";
 import ValueBoard from "@/components/ValueBoard";
+import MembersOnly from "@/components/MembersOnly";
 import ErrorBoundary from "@/components/ErrorBoundary";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
@@ -136,7 +137,25 @@ export default function Scanner() {
       {view === "streaks" && <StreakFinder leagueId={leagueId} />}
       {view === "perfect" && <PerfectGames />}
       {view === "chase" && <ChaseBoard leagueId="all" withinDays={7} limit={25} />}
-      {view === "value" && <ValueBoard />}
+      {/* THE ONE BOARD THAT STAYS BEHIND A WALL. The taste-not-a-wall reasoning above
+          does not hold here: this board is not teams in form, it is a ranked list of live
+          prices the model disagrees with on games that have not kicked off. Three rows of
+          that is not a taste — it is the three best bets on the board.
+
+          The wall is for the EXPERIENCE (no request, no flash, and the right ask for
+          whichever state you are in). The gate is `require_member` on /value-board, which
+          is what actually protects it: a UI-only wall leaves the JSON one request away. */}
+      {view === "value" && (
+        <MembersOnly
+          title="The Value Board is for members"
+          blurb="Every price you have entered, ranked by how far the model disagrees with it —
+                 the finished product on games that have not kicked off yet. Unlike the other
+                 boards there is no preview of this one, because the first few rows ARE the
+                 best bets on it."
+        >
+          <ValueBoard />
+        </MembersOnly>
+      )}
       </ErrorBoundary>
 
       <ErrorBoundary label="The fixture list" resetKey={leagueId}>

@@ -2714,79 +2714,151 @@ async def scanner(league_id: Optional[str] = None, market: Optional[str] = None,
 #     model is most wrong. The biggest number on the board is the one most likely to be a
 #     modelling error rather than a gift, which is the opposite of how it looks.
 
+# Every row the board can carry, in the order they are shown. "ok" first, then every
+# way a price can fail to become a bet — each one visible, none of them silent.
+VALUE_STATUS_ORDER = ["ok", "below_floor", "no_market", "outside_window", "kicked_off",
+                      "no_teams", "no_fixture"]
+
+VALUE_STATUS_NOTE = {
+    "ok": "",
+    "below_floor": "Priced, but its best line sits below the edge filter above.",
+    "no_market": "Prices are stored against this game, but none of them line up with a "
+                 "market the model builds. Open the fixture and enter them again.",
+    "outside_window": "Kicks off later than the window above.",
+    "kicked_off": "Already kicked off — kept as a record of what you priced, not a bet.",
+    "no_teams": "The teams on this fixture are missing from the database, so it cannot "
+                "be modelled yet. It should return after the next sync.",
+    "no_fixture": "No fixture matches this price any more — it was entered against a "
+                  "game that has since been replaced. Open the game and re-enter it.",
+}
+
+
 @api_router.get("/value-board")
 async def value_board(within_days: Optional[int] = 7, min_ev: float = 0.0,
                       league_id: Optional[str] = None, limit: int = 40,
+                      explain: bool = False,
                       response: Response = None,
                       user: dict = Depends(get_current_user)):
-    """Best positive-EV line per upcoming fixture, from prices you have entered."""
+    """Every price you have entered, best line first — and never an unexplained blank.
+
+    THIS IS ODDS-DRIVEN, NOT FIXTURE-DRIVEN, and that is the whole design. The previous
+    version walked fixtures and ended every failure path in a bare `continue`: no fixture
+    matched the id, the game had kicked off, no stored key matched a market, nothing
+    cleared the floor. Five ways for a price to vanish, all of them producing the same
+    empty screen, and no way to tell them apart from the outside. Days went into guessing
+    which one was firing.
+
+    So the loop now runs over the PRICES rather than the fixtures, and every price you
+    have stored produces a row. A row that cannot become a bet says why in `status` and
+    `note` instead of disappearing. The board can still be empty — but only when you have
+    genuinely entered nothing, which is a state the empty message can then state plainly.
+    """
     odds_docs = await db.odds.find({}, {"_id": 0}).to_list(5000)
     priced = {d["fixture_id"]: d for d in odds_docs if d.get("odds")}
     if not priced:
+        if explain:
+            return {"counts": {}, "note": "no odds stored at all"}
         return _preview([], user, response)
 
-    q = {"fixture_id": {"$in": list(priced)}}
-    if league_id and league_id != "all":
-        q["league_id"] = league_id
-    fixtures = await db.fixtures.find(q, {"_id": 0}).to_list(5000)
-
-    now = datetime.now(timezone.utc)
-    horizon = now + timedelta(days=within_days) if within_days else None
-
+    fixtures = {f["fixture_id"]: f for f in
+                await db.fixtures.find({"fixture_id": {"$in": list(priced)}},
+                                       {"_id": 0}).to_list(5000)}
     # Batch the lookups the model needs. Three queries in total rather than three per
     # fixture — the whole reason fixture_model_from was split out.
-    team_ids = {tid for fx in fixtures for tid in (fx["home_team_id"], fx["away_team_id"])}
+    team_ids = {tid for fx in fixtures.values()
+                for tid in (fx["home_team_id"], fx["away_team_id"])}
     teams = {t["team_id"]: t for t in
              await db.teams.find({"team_id": {"$in": list(team_ids)}}, {"_id": 0}).to_list(10000)}
     leagues = {l["league_id"]: l for l in await db.leagues.find({}, {"_id": 0}).to_list(200)}
 
-    out = []
-    for fx in fixtures:
+    now = datetime.now(timezone.utc)
+    horizon = now + timedelta(days=within_days) if within_days else None
+
+    def shape(m):
+        return {"key": m["key"], "group": m["group"],
+                "label": f"{m['group_label']} {m['label']}",
+                "line": m["line"], "book_odds": m["book_odds"], "fair_odds": m["fair_odds"],
+                "prob": m["prob"], "ev": m["ev"], "tier": m["tier"]}
+
+    rows = []
+    for fid, doc in priced.items():
+        row = {"fixture_id": fid,
+               "priced_at": doc.get("updated_at"),      # None on rows entered before stamping
+               "market_count": len(doc.get("odds") or {}),
+               "league_id": "", "league_name": "", "tier": None,
+               "home_name": "", "away_name": "", "date": None, "round": None,
+               "best": None, "alternatives": [], "other_count": 0,
+               "confidence": None, "lambda_total": None}
+
+        fx = fixtures.get(fid)
+        if not fx:
+            rows.append({**row, "status": "no_fixture"})
+            continue
+        if league_id and league_id != "all" and fx.get("league_id") != league_id:
+            continue                                    # an explicit narrowing, not a drop
+
+        lg = leagues.get(fx["league_id"], {})
+        row.update({"league_id": fx["league_id"], "league_name": lg.get("name", ""),
+                    "tier": (LEAGUE_META.get(fx["league_id"]) or {}).get("tier"),
+                    "home_name": fx["home_name"], "away_name": fx["away_name"],
+                    "date": fx.get("date"), "round": fx.get("round")})
+
         try:
             kickoff = datetime.fromisoformat((fx.get("date") or "").replace("Z", "+00:00"))
+            if kickoff.tzinfo is None:
+                kickoff = kickoff.replace(tzinfo=timezone.utc)
         except Exception:
+            kickoff = None
+        if kickoff and kickoff < now:
+            rows.append({**row, "status": "kicked_off"})
             continue
-        if kickoff.tzinfo is None:
-            kickoff = kickoff.replace(tzinfo=timezone.utc)
-        # A price on a game that has kicked off is a record, not a bet.
-        if kickoff < now or (horizon and kickoff > horizon):
-            continue
+
         home, away = teams.get(fx["home_team_id"]), teams.get(fx["away_team_id"])
         if not home or not away:
+            rows.append({**row, "status": "no_teams"})
             continue
 
-        doc = priced[fx["fixture_id"]]
-        model = fixture_model_from(home, away, leagues.get(fx["league_id"], {}), doc["odds"])
-        live = [m for m in model["markets"] if m.get("ev") is not None and m["ev"] >= min_ev]
-        if not live:
+        model = fixture_model_from(home, away, lg, doc["odds"])
+        row["confidence"] = model["confidence"]
+        row["lambda_total"] = model["lambdas"]["total"]
+        marks = [m for m in model["markets"] if m.get("ev") is not None]
+        if not marks:
+            rows.append({**row, "status": "no_market"})
             continue
-        live.sort(key=lambda m: m["ev"], reverse=True)
-        best, rest = live[0], live[1:]
 
-        def shape(m):
-            return {"key": m["key"], "group": m["group"],
-                    "label": f"{m['group_label']} {m['label']}",
-                    "line": m["line"], "book_odds": m["book_odds"], "fair_odds": m["fair_odds"],
-                    "prob": m["prob"], "ev": m["ev"], "tier": m["tier"]}
+        marks.sort(key=lambda m: m["ev"], reverse=True)
+        row["best"] = shape(marks[0])
+        # Capped: the point is the shortlist, and a fixture whose whole ladder is priced
+        # over would otherwise bring its whole ladder with it.
+        row["alternatives"] = [shape(m) for m in marks[1:4]]
+        row["other_count"] = len(marks) - 1
 
-        out.append({
-            "fixture_id": fx["fixture_id"], "league_id": fx["league_id"],
-            "league_name": (leagues.get(fx["league_id"]) or {}).get("name", ""),
-            "tier": (LEAGUE_META.get(fx["league_id"]) or {}).get("tier"),
-            "home_name": fx["home_name"], "away_name": fx["away_name"],
-            "date": fx["date"], "round": fx.get("round"),
-            "best": shape(best),
-            # Capped: the point is the shortlist, and a fixture whose whole ladder is
-            # priced over would otherwise bring its whole ladder with it.
-            "alternatives": [shape(m) for m in rest[:3]],
-            "other_count": len(rest),
-            "priced_at": doc.get("updated_at"),      # None on rows entered before stamping
-            "confidence": model["confidence"],
-            "lambda_total": model["lambdas"]["total"],
-        })
+        if kickoff and horizon and kickoff > horizon:
+            rows.append({**row, "status": "outside_window"})
+            continue
+        rows.append({**row, "status": "ok" if marks[0]["ev"] >= min_ev else "below_floor"})
 
-    out.sort(key=lambda r: r["best"]["ev"], reverse=True)
-    return _preview(out[:max(1, min(limit, 100))], user, response)
+    order = {s: i for i, s in enumerate(VALUE_STATUS_ORDER)}
+    rows.sort(key=lambda r: (order.get(r["status"], 99),
+                             -(r["best"]["ev"] if r["best"] else 0),
+                             r.get("date") or ""))
+    counts = {}
+    for r in rows:
+        r["note"] = VALUE_STATUS_NOTE.get(r["status"], "")
+        counts[r["status"]] = counts.get(r["status"], 0) + 1
+
+    if explain:
+        # A sample of each side of the join. When odds were stored against ids the sync
+        # has since replaced, the two lists simply do not look like each other — which is
+        # visible at a glance in a way a count is not.
+        return {"counts": counts,
+                "odds_keyed_to": sorted(priced)[:5],
+                "fixtures_matched": sorted(fixtures)[:5],
+                "sample_market_keys": sorted(list(priced.values())[0]["odds"])[:8],
+                "now": now.isoformat(), "within_days": within_days, "min_ev": min_ev}
+    if response is not None:
+        response.headers["X-Value-Ok"] = str(counts.get("ok", 0))
+    return _preview(rows[:max(1, min(limit, 100))], user, response)
 
 
 # A venue split needs this many games before it is trusted on its own. Below it the

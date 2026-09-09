@@ -20,25 +20,34 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 // model would otherwise contribute six rows and push five other games off the screen,
 // and those six are not six bets — you are taking one. The runners-up fold in behind the
 // row instead.
+//
+// AND EVERY PRICE APPEARS, even the ones that cannot become a bet. The server now sends
+// a row for each price stored, carrying a `status` and a plain-English `note` when
+// something is wrong with it — the game kicked off, the fixture id no longer exists, the
+// stored keys match no market. Those land in "Also priced" underneath rather than being
+// dropped. The board was silently discarding them for a week, and an empty screen with
+// six possible causes is not a bug report anyone can act on.
 
+// BOTH FILTERS DEFAULT TO SHOWING EVERYTHING, and that is the whole lesson of this
+// screen. It shipped defaulting to "next 7 days" AND "only lines with a positive edge",
+// and a bookmaker's margin means most prices you type in sit BELOW fair — so the normal
+// result of pasting a card of real odds was an empty board. Nothing was broken, and
+// there was no way to tell that from the outside.
+//
+// A board whose job is "show me what I have priced" must not open by hiding most of it.
+// Narrowing is a decision the reader makes once they can see what they are narrowing.
 const WINDOWS = [
+  { v: "0", l: "All upcoming" },
   { v: "3", l: "Next 3 days" },
   { v: "7", l: "Next 7 days" },
   { v: "14", l: "Next 14 days" },
-  { v: "0", l: "All upcoming" },
 ];
-// "All priced games" exists so an empty board can be told apart from a broken one.
-// The default only shows lines the model rates ABOVE your price, and a bookmaker's
-// margin means most entered prices are below it — so a board that is working perfectly
-// and a board that never received your prices look identical. Dropping the floor below
-// zero shows every game you have priced, negative edges included, which answers "did my
-// odds land?" in one click.
 const FLOORS = [
-  { v: "0", l: "Any edge" },
+  { v: "-100", l: "Everything I've priced" },
+  { v: "0", l: "Positive edge only" },
   { v: "2", l: "2%+" },
   { v: "5", l: "5%+" },
   { v: "10", l: "10%+" },
-  { v: "-100", l: "All priced games" },
 ];
 
 function Line({ m, muted = false }) {
@@ -56,10 +65,90 @@ function Line({ m, muted = false }) {
   );
 }
 
+// One game. `muted` is the "Also priced" variant — same shape, dimmed, headed by the
+// reason it cannot be backed rather than by a price age.
+function Row({ r, muted = false, open, setOpen, navigate }) {
+  const fresh = priceFreshness(r.priced_at);
+  const alts = r.alternatives || [];
+  const isOpen = !!open[r.fixture_id];
+  const named = r.home_name || r.away_name;
+  return (
+    <div data-testid="value-row" data-status={r.status || "ok"}
+      className={`px-3 py-2.5 sm:px-4 sm:py-3 hover:bg-white/5 transition-colors ${muted ? "opacity-70" : ""}`}>
+      <div className="flex items-start gap-3 cursor-pointer"
+        onClick={() => navigate(`/fixture/${r.fixture_id}`)}>
+        <div className="min-w-0 flex-1">
+          <p className="font-sans font-medium text-sm truncate">
+            {named
+              ? <>{r.home_name} <span className="text-muted-foreground font-normal">v</span> {r.away_name}</>
+              // No fixture behind the price any more, so the id is all there is to show.
+              : <span className="text-muted-foreground font-mono-data text-xs">{r.fixture_id}</span>}
+          </p>
+          {named && (
+            <div className="flex items-center gap-1.5 mt-0.5 text-[10px] text-muted-foreground uppercase tracking-wider">
+              <span className="truncate">{withFlag(r.league_id, r.league_name)}</span>
+              <TierBadge tier={r.tier} country={r.league_name} />
+              {r.date && <><span className="opacity-40">·</span>
+                <span className="normal-case tracking-normal text-primary/80">{kickoffLabel(r.date)}</span></>}
+            </div>
+          )}
+          {r.best ? (
+            <p className="mt-1 font-mono-data text-xs"><Line m={r.best} muted={muted} /></p>
+          ) : (
+            <p className="mt-1 font-mono-data text-[11px] text-muted-foreground">
+              {r.market_count} {r.market_count === 1 ? "price" : "prices"} stored, none of them priced up
+            </p>
+          )}
+        </div>
+        <ArrowRight className="h-4 w-4 text-muted-foreground shrink-0 mt-1" />
+      </div>
+
+      {/* The reason, in the reader's words. This is the whole point of the muted group:
+          a row that says "already kicked off" is information, a row that never rendered
+          is a mystery. */}
+      {r.note && (
+        <p className="mt-1.5 text-[11px] leading-snug text-amber-400/80" data-testid="value-note">{r.note}</p>
+      )}
+
+      <div className="mt-1.5 flex items-center gap-3 flex-wrap">
+        <span className={`text-[10px] font-mono-data ${fresh.cls}`}
+          title={fresh.note || "Price entered recently"}
+          data-testid="value-price-age">
+          price {fresh.label}
+        </span>
+        {alts.length > 0 && (
+          <button
+            onClick={() => setOpen((o) => ({ ...o, [r.fixture_id]: !o[r.fixture_id] }))}
+            data-testid="value-alts-btn"
+            aria-expanded={isOpen}
+            className="inline-flex items-center gap-1 text-[10px] text-primary hover:text-primary/80 transition-colors"
+          >
+            <ChevronDown className={`h-3 w-3 transition-transform duration-150 ${isOpen ? "rotate-180" : ""}`} />
+            {r.other_count} other {r.other_count === 1 ? "line" : "lines"} on this game
+          </button>
+        )}
+      </div>
+
+      {fresh.note && <p className={`mt-1 text-[10px] leading-snug ${fresh.cls}`}>{fresh.note}</p>}
+
+      {isOpen && (
+        <div className="mt-1.5 pl-3 border-l border-border/60 space-y-1" data-testid="value-alternatives">
+          {alts.map((m) => <p key={m.key} className="font-mono-data text-[11px]"><Line m={m} muted /></p>)}
+          {r.other_count > alts.length && (
+            <p className="text-[10px] text-muted-foreground">
+              +{r.other_count - alts.length} more on the fixture page
+            </p>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function ValueBoard() {
   const navigate = useNavigate();
-  const [days, setDays] = useState("7");
-  const [floor, setFloor] = useState("0");
+  const [days, setDays] = useState("0");
+  const [floor, setFloor] = useState("-100");
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(true);
   // Set by the API when the server trimmed this board for a non-member.
@@ -79,6 +168,11 @@ export default function ValueBoard() {
       .finally(() => setLoading(false));
   }, [days, floor]);
 
+  // Rows with no status are pre-split servers still in flight during a deploy; treat
+  // them as backable rather than dropping them into the muted group.
+  const live = rows.filter((r) => !r.status || r.status === "ok");
+  const other = rows.filter((r) => r.status && r.status !== "ok");
+
   return (
     <section className="bg-card border border-border rounded-lg" data-testid="value-board">
       <div className="flex flex-col lg:flex-row lg:items-center gap-3 px-2 py-2 sm:px-4 sm:py-3 border-b border-border">
@@ -86,11 +180,14 @@ export default function ValueBoard() {
           <BadgePercent className="h-4 w-4 text-primary" />
           <h2 className="font-head font-semibold text-lg">Your Value Board</h2>
           <span className="text-xs text-muted-foreground hidden sm:inline">
-            the best edge you've found on each game
+            every game you've priced, best line first
           </span>
           {rows.length > 0 && (
             <span className="font-mono-data text-[10px] text-muted-foreground ml-1" data-testid="value-count">
-              {rows.length} {rows.length === 1 ? "game" : "games"}
+              {live.length > 0
+                ? <>{live.length} {live.length === 1 ? "game" : "games"}
+                    {other.length > 0 && <span className="opacity-60"> · {other.length} more priced</span>}</>
+                : <>{other.length} priced</>}
             </span>
           )}
         </div>
@@ -115,92 +212,46 @@ export default function ValueBoard() {
           Checking your prices against the model…
         </div>
       ) : rows.length === 0 ? (
-        // The empty state has to distinguish "you have not entered prices" from "your
-        // prices show no edge" — they need completely different next actions.
+        // Reached only when nothing at all is stored. Every other reason a game might
+        // not show up now arrives as a row that says so, so this message can be blunt.
         <div className="px-4 py-12 text-center text-muted-foreground text-sm" data-testid="value-empty">
-          <p>Nothing on the board yet.</p>
+          <p>You haven't priced anything yet.</p>
           <p className="mt-1 text-xs max-w-md mx-auto leading-relaxed">
-            This fills up from prices you type in on a fixture page — open a game, put the
-            shop's odds in the <span className="text-foreground">Your price</span> column, and
-            anything the model rates above that price lands here.
-          </p>
-          <p className="mt-2 text-xs max-w-md mx-auto leading-relaxed">
-            {Number(floor) < 0
-              ? "Nothing at all — so the prices either aren't saved against these fixtures, or every game you priced has already kicked off or is outside the window above."
-              : <>Already entered some? Switch the filter to{" "}
-                 <span className="text-foreground">All priced games</span> — that shows every
-                 game you've priced including the ones with no edge, which tells you straight
-                 away whether your odds are landing.</>}
+            Open a game, put the shop's odds in the{" "}
+            <span className="text-foreground">Your price</span> column, and it appears here —
+            with an edge if the model rates it above that price, and with a reason if it
+            can't be priced at all.
           </p>
         </div>
       ) : (
-        <div className="divide-y divide-border/50">
-          {rows.map((r) => {
-            const fresh = priceFreshness(r.priced_at);
-            const alts = r.alternatives || [];
-            const isOpen = !!open[r.fixture_id];
-            return (
-              <div key={r.fixture_id} data-testid="value-row"
-                className="px-3 py-2.5 sm:px-4 sm:py-3 hover:bg-white/5 transition-colors">
-                <div className="flex items-start gap-3 cursor-pointer"
-                  onClick={() => navigate(`/fixture/${r.fixture_id}`)}>
-                  <div className="min-w-0 flex-1">
-                    <p className="font-sans font-medium text-sm truncate">
-                      {r.home_name} <span className="text-muted-foreground font-normal">v</span> {r.away_name}
-                    </p>
-                    <div className="flex items-center gap-1.5 mt-0.5 text-[10px] text-muted-foreground uppercase tracking-wider">
-                      <span className="truncate">{withFlag(r.league_id, r.league_name)}</span>
-                      <TierBadge tier={r.tier} country={r.league_name} />
-                      <span className="opacity-40">·</span>
-                      <span className="normal-case tracking-normal text-primary/80">{kickoffLabel(r.date)}</span>
-                    </div>
-                    <p className="mt-1 font-mono-data text-xs">
-                      <Line m={r.best} />
-                    </p>
-                  </div>
-                  <ArrowRight className="h-4 w-4 text-muted-foreground shrink-0 mt-1" />
-                </div>
+        <>
+          {live.length > 0 && (
+            <div className="divide-y divide-border/50">
+              {live.map((r) => <Row key={r.fixture_id} r={r} open={open} setOpen={setOpen} navigate={navigate} />)}
+            </div>
+          )}
 
-                <div className="mt-1.5 flex items-center gap-3 flex-wrap">
-                  <span className={`text-[10px] font-mono-data ${fresh.cls}`}
-                    title={fresh.note || "Price entered recently"}
-                    data-testid="value-price-age">
-                    price {fresh.label}
-                  </span>
-                  {alts.length > 0 && (
-                    <button
-                      onClick={() => setOpen((o) => ({ ...o, [r.fixture_id]: !o[r.fixture_id] }))}
-                      data-testid="value-alts-btn"
-                      aria-expanded={isOpen}
-                      className="inline-flex items-center gap-1 text-[10px] text-primary hover:text-primary/80 transition-colors"
-                    >
-                      <ChevronDown className={`h-3 w-3 transition-transform duration-150 ${isOpen ? "rotate-180" : ""}`} />
-                      {r.other_count} other {r.other_count === 1 ? "line" : "lines"} on this game
-                    </button>
-                  )}
-                </div>
+          {live.length === 0 && (
+            <div className="px-4 py-8 text-center text-muted-foreground text-sm" data-testid="value-none-live">
+              <p>Nothing you've priced clears the filters right now.</p>
+              <p className="mt-1 text-xs max-w-md mx-auto leading-relaxed">
+                Every price you've entered is listed below with the reason. Widening the two
+                filters above is usually the fix.
+              </p>
+            </div>
+          )}
 
-                {fresh.note && (
-                  <p className={`mt-1 text-[10px] leading-snug ${fresh.cls}`}>{fresh.note}</p>
-                )}
-
-                {isOpen && (
-                  <div className="mt-1.5 pl-3 border-l border-border/60 space-y-1"
-                    data-testid="value-alternatives">
-                    {alts.map((m) => (
-                      <p key={m.key} className="font-mono-data text-[11px]"><Line m={m} muted /></p>
-                    ))}
-                    {r.other_count > alts.length && (
-                      <p className="text-[10px] text-muted-foreground">
-                        +{r.other_count - alts.length} more on the fixture page
-                      </p>
-                    )}
-                  </div>
-                )}
+          {other.length > 0 && (
+            <div data-testid="value-other">
+              <div className="px-3 py-1.5 sm:px-4 border-t border-border bg-white/[0.02] text-[10px] uppercase tracking-wider text-muted-foreground">
+                Also priced — {other.length} {other.length === 1 ? "game" : "games"} that can't be backed right now
               </div>
-            );
-          })}
-        </div>
+              <div className="divide-y divide-border/50">
+                {other.map((r) => <Row key={r.fixture_id} r={r} muted open={open} setOpen={setOpen} navigate={navigate} />)}
+              </div>
+            </div>
+          )}
+        </>
       )}
 
       {preview && <PreviewWall total={preview.total} shown={rows.length} noun="games" />}

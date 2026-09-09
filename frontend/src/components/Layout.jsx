@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
-import { CornerDownRight, LayoutDashboard, Radar, Flame, Zap, Star, Sparkles } from "lucide-react";
+import { CornerDownRight, LayoutDashboard, Radar, Flame, Zap, Star, Sparkles, Receipt } from "lucide-react";
 import { LeagueContext } from "@/context/LeagueContext";
 import ExportMenu from "@/components/ExportMenu";
 import { api } from "@/lib/api";
@@ -49,6 +49,7 @@ export default function Layout({ children }) {
     { to: "/dashboard", label: "Leagues", icon: LayoutDashboard },
     { to: "/streaks", label: "Streaks", icon: Flame },
     { to: "/saved", label: "Saved", icon: Star },
+    { to: "/bets", label: "Bets", icon: Receipt },
   ];
 
   return (

@@ -643,6 +643,36 @@ button in the explanation panel now turns one angle into a 1080x1920 Story.
   rather than "LAST 6 AT HOME" whenever the fallback fired — the label itself is the only
   place the truth can live on a picture.
 
+### Wagers, and a board the room can see (2026-09-09)
+A per-account bet tracker existed in the API — create, list, patch, delete, stats, bankroll
+— and **no screen had ever called it**. It also had a bug that only mattered once someone
+did.
+
+- **Every wager route took `get_current_user`**, which falls back to the shared PUBLIC user
+  for anyone signed out. So every signed-out visitor would have written into, and read
+  from, one communal slip list. All seven now require a real account. A wager is the one
+  thing on this site that must belong to a person.
+- **Bets settle themselves.** A group board full of permanently "pending" rows is a dead
+  board, and asking people to come back and mark their own bets is asking them to do the
+  one thing nobody does. `bet_outcome` grades a slip off the synced corners, and calls
+  `settle_streak_leg` rather than reimplementing it — the exact-whole-line-under push is
+  the rule that costs real money if it disagrees with the streak boards about the same
+  game. Every uncertainty (unreadable market, unsynced fixture, missing side) returns
+  PENDING; guessing would invent a result on somebody's money.
+- **`GET /bets/week` is the group board**, members-only. It **never selects `stake`** — the
+  field is excluded at the query rather than hidden in the UI, so it cannot leak out of a
+  component someone writes later. What is useful to everyone else is what was backed and at
+  what price; how much varies with bankroll and tells the reader nothing they can act on.
+- **Opt-in by omission.** Only rows with `shared` true appear, and bets placed before the
+  flag existed do not carry it — so nothing logged before there was a group board is
+  retrospectively published to one. The choice is made per bet at the moment of placing,
+  with the toggle in front of you, not buried in settings.
+- The total is **level stakes**, one point a bet — the only honest way to add up slips
+  whose stakes are deliberately not collected.
+- UI: a `+ Bet` control on any market row that already has a price (the server refuses a
+  bet with no book odds, so offering it elsewhere would be a button that always errors),
+  and a `/bets` page with Mine and This-week tabs.
+
 ### The Value Board goes behind the wall (2026-09-09)
 Every other board here hands its first three rows to anyone and the whole thing to members
 — "a taste, not a wall", on the reasoning that rows sell better than an assertion. **The

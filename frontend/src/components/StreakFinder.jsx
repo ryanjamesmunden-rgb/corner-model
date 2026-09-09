@@ -135,9 +135,8 @@ export default function StreakFinder({ leagueId }) {
 
   // A postable summary of what's on screen — the same builder tools/social_draft.mjs
   // uses for the scheduled post, so the two can't drift. See lib/shareText.
-  const presetMeta = PRESETS.find((x) => x.v === preset);
   const SHARE_ROWS = 6;
-  const buildShare = streakShare({ rows: shown, subject, isUnder, side, presetLabel: presetMeta?.l || "" });
+  const buildShare = streakShare({ rows: shown, subject, side });
 
   return (
     <section className="bg-card border border-border rounded-lg" data-testid="streak-finder">

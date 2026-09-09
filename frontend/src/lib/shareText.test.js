@@ -15,12 +15,13 @@ const soon = () => {
   return d.toISOString();
 };
 
-const streakRow = (name, league_id, line) => ({
-  name, league_id, line, hits: 5, window: 5,
+const streakRow = (name, league_id, line, run = 9) => ({
+  name, league_id, line, line_label: `${line}+`, hits: 5, window: 5,
+  streak: { length: run, status: "active" },
   next_fixture: { is_home: true, opponent: "Rosenborg", date: soon() },
 });
-const rows = ["A", "B", "C", "D", "E", "F", "G"].map((n, i) => streakRow(n, "nor-el", 5 + (i % 3)));
-const build = streakShare({ rows, subject: "team", isUnder: false, side: "overall", presetLabel: "5 of 5" });
+const rows = ["A", "B", "C", "D", "E", "F", "G"].map((n, i) => streakRow(n, "nor-el", 5 + (i % 3), 9 - i));
+const build = streakShare({ rows, subject: "team", side: "overall" });
 
 describe("a streak line", () => {
   test("opens with the country flag instead of a bullet", () => {
@@ -28,25 +29,66 @@ describe("a streak line", () => {
     expect(build(1)).not.toContain("• A");
   });
 
-  test("carries the opponent, the record and the kick-off", () => {
-    const line = build(1).split("\n")[1];
-    expect(line).toContain("vs Rosenborg");
-    expect(line).toContain("(5/5)");
-    expect(line).toContain("Tomorrow");
+  test("carries the team, the line and the run — and nothing else", () => {
+    expect(build(1).split("\n")[1]).toBe(`${NORWAY} A 5+ — 9 in a row`);
   });
 
-  test("NEVER publishes the line — that is the paid half", () => {
-    // The one thing a public post must not carry. Asserted across every row and every
-    // limit, because a leak here is permanent and public the moment it is posted.
-    for (const n of [1, 4, 7]) {
-      const out = build(n);
-      expect(out).not.toMatch(/\d\+/);        // "5+", "6+"
-      expect(out).not.toMatch(/\bU\d/);       // "U9" on an under
-    }
+  test("publishes the team's OWN run, not the filter's window", () => {
+    // The bug this replaces: every row ended "(5/5)" because that is what the filter
+    // asked for, so a nine-game run and one that scraped the minimum read identically
+    // and the best rows on the board were the ones the post undersold.
+    const out = build(3);
+    expect(out).toContain("9 in a row");
+    expect(out).toContain("8 in a row");
+    expect(out).toContain("7 in a row");
+    expect(out).not.toContain("5/5");
   });
 
-  test("names the zone once, at the foot", () => {
-    expect(build(6).match(/All times/g)).toHaveLength(1);
+  test("drops the opponent and the kick-off — neither is a reason to click", () => {
+    const out = build(7);
+    expect(out).not.toContain("Rosenborg");
+    expect(out).not.toContain("Tomorrow");
+    expect(out).not.toContain("All times");
+  });
+
+  test("an under is labelled as one rather than read as an over", () => {
+    const under = streakShare({
+      rows: [{ name: "A", league_id: "nor-el", line_label: "under 9", streak: { length: 6 } }],
+      subject: "team", side: "overall",
+    })(1);
+    expect(under).toContain(`${NORWAY} A under 9 — 6 in a row`);
+  });
+
+  test("a missing line is left out rather than guessed at", () => {
+    // Labelling an under as "9+" would be a public, permanent lie about the bet, so a
+    // row with no label from the API says less instead of saying something wrong.
+    const out = streakShare({
+      rows: [{ name: "A", league_id: "nor-el", line: 9, streak: { length: 6 } }],
+      subject: "team", side: "overall",
+    })(1);
+    expect(out).toContain(`${NORWAY} A — 6 in a row`);
+    expect(out).not.toMatch(/9\+/);
+  });
+
+  test("a run of one is not called a run", () => {
+    const out = streakShare({
+      rows: [{ name: "A", league_id: "nor-el", line_label: "5+", streak: { length: 1 } }],
+      subject: "team", side: "overall",
+    })(1);
+    expect(out).toContain(`${NORWAY} A 5+`);
+    expect(out).not.toContain("in a row");
+  });
+
+  test("the heading names the subject and the side, and nothing more", () => {
+    expect(build(1).split("\n")[0]).toBe("Team corner streaks running right now:");
+    expect(streakShare({ rows, subject: "match", side: "away" })(1).split("\n")[0])
+      .toBe("Match corner streaks running right now in away games:");
+  });
+
+  test("is shorter than what it replaced, which is the point", () => {
+    // The old row was "🇳🇴 A vs Rosenborg (5/5) · Tomorrow 12:00" plus a times footer.
+    // Room for more streaks is the whole reason for the change, so it is worth pinning.
+    expect(build(6).length).toBeLessThan(200);
   });
 });
 
@@ -61,13 +103,13 @@ describe("the row limit", () => {
 
   test("asking for more rows than exist is not an error", () => {
     expect(build(50)).not.toContain("more on the site");
-    expect(build(50).split("\n").filter((l) => l.includes("5/5"))).toHaveLength(7);
+    expect(build(50).split("\n").filter((l) => l.includes("in a row"))).toHaveLength(7);
   });
 });
 
 describe("an empty board shares nothing at all", () => {
   test.each([
-    ["streaks", streakShare({ rows: [], subject: "team", isUnder: false, side: "overall" })],
+    ["streaks", streakShare({ rows: [], subject: "team", side: "overall" })],
     ["fixtures", fixtureShare({ fixtures: [], days: "3" })],
     ["best teams", bestTeamsShare({ rows: [], side: "overall", windowLabel: "Season" })],
   ])("%s", (_label, b) => {

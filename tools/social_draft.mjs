@@ -140,11 +140,14 @@ if (data.data_age_hours != null && data.data_age_hours > MAX_DATA_AGE_HOURS) {
 
 const build = BOARD === "fixtures"
   ? fixtureShare({ fixtures: data.fixtures || [], days: String(DAYS) })
-  : streakShare({
-      rows: data.streaks || [],
-      subject: "team", isUnder: false, side: "overall",
-      presetLabel: "5 of 5",
-    });
+  : streakShare({ rows: data.streaks || [], subject: "team", side: "overall" });
+
+// How many rows actually survived the trim, for the note under the draft. Counted by what
+// opens a row — a flag or the bullet that stands in for one — rather than by punctuation
+// inside it: this used to look for "·" or "(9", which both vanished from a streak row when
+// the kick-off and the (5/5) came out, and the note would have quietly reported zero rows.
+const countRows = (text) =>
+  text.split("\n").filter((l) => /^(\p{Regional_Indicator}{2}|\u{1F3F4}[\u{E0000}-\u{E007F}]+|•)\s/u.test(l)).length;
 
 const rowCount = (BOARD === "fixtures" ? data.fixtures : data.streaks || []).length;
 if (rowCount < MIN_ROWS) skip(`only ${rowCount} rows cleared the bar — nothing worth posting`);
@@ -161,7 +164,7 @@ ${post}
 \`\`\`
 
 ${weight} / 280 characters as X counts them (flags cost 2 each; the link is a flat ${URL_WEIGHT}).
-Trimmed to ${post.split("\n").filter((l) => /·|\(\d/.test(l)).length} rows from ${rowCount} that cleared the bar${data.data_age_hours != null ? `, on data ${data.data_age_hours}h old` : ""}.
+Trimmed to ${countRows(post)} rows from ${rowCount} that cleared the bar${data.data_age_hours != null ? `, on data ${data.data_age_hours}h old` : ""}.
 
 <details><summary>Longer version, for Telegram (no character limit)</summary>
 

@@ -102,6 +102,9 @@ export const api = {
   // than typed figures — see the note at the top of Join.jsx.
   picks: () => axios.get(`${API}/picks`).then((r) => r.data),
   settlePicks: () => axios.post(`${API}/picks/settle`).then((r) => r.data),
+  // OPEN. No token, no account — see public_results. The record is the argument for
+  // paying, and an argument nobody can read persuades nobody.
+  results: (weeks) => axios.get(`${API}/results`, { params: { weeks } }).then((r) => r.data),
   ledger: () => axios.get(`${API}/ledger`).then((r) => r.data),
   snapshotLedger: () => axios.post(`${API}/ledger/snapshot`).then((r) => r.data),
   backtest: (leagueId = "all", model = "v1") => axios.get(`${API}/backtest`, { params: { league_id: leagueId, model } }).then((r) => r.data),

@@ -1,7 +1,8 @@
 import { useMemo, useState } from "react";
-import { Dices } from "lucide-react";
+import { Dices, Video } from "lucide-react";
 import StoryButton from "@/components/StoryButton";
 import { fixtureStoryMarkets, renderFixtureStory } from "@/lib/storyImage";
+import { canRecord, extFor, recordStoryVideo } from "@/lib/storyVideo";
 import { kickoffLabel } from "@/lib/kickoff";
 
 // THE SHAPE BEHIND THE NUMBER.
@@ -73,6 +74,11 @@ export default function ProbabilityChart({ distribution, lambdas, markets, homeN
 
   if (!dist.length || active == null) return null;
 
+  // One description of the picture, used by both the still and the video, so the two
+  // cannot show different games.
+  const storyArgs = { homeName, awayName, leagueId, kickoff: kickoffLabel(kickoff),
+                      dist, group, markets: storyMarkets };
+
   const pWin = dist.reduce((s, r) => s + (r.k >= active ? r.p : 0), 0);
   const peak = Math.max(...dist.map((r) => r.p)) || 1;
   const fair = pWin > 0 ? (1 / pWin) : null;
@@ -89,12 +95,28 @@ export default function ProbabilityChart({ distribution, lambdas, markets, homeN
         {storyMarkets.length > 0 && (
           <StoryButton
             days={[{ key: `fixture-${active}` }]}
+            testId="story-image"
             label="Share"
             title="Instagram Story — the probability, with the model price blurred out"
-            render={(canvas) => renderFixtureStory(canvas, {
-              homeName, awayName, leagueId, kickoff: kickoffLabel(kickoff),
-              dist, group, markets: storyMarkets,
-            })}
+            render={(canvas) => renderFixtureStory(canvas, { ...storyArgs })}
+          />
+        )}
+        {/* The same story, animated and recorded. Hidden entirely where the browser has no
+            encoder — a button that fails when tapped is worse than one that is not there. */}
+        {storyMarkets.length > 0 && canRecord() && (
+          <StoryButton
+            days={[{ key: `fixture-${active}` }]}
+            testId="story-video"
+            icon={Video}
+            label="Video"
+            title="A 5-second Story video — the bars draw in and the number counts up"
+            makeFile={async (day) => {
+              const canvas = document.createElement("canvas");
+              const { blob, mime, ext } = await recordStoryVideo(canvas, (progress) =>
+                renderFixtureStory(canvas, { ...storyArgs, progress }));
+              return new File([blob], `corner-model-${day.key}.${ext || extFor(mime)}`,
+                              { type: mime });
+            }}
           />
         )}
         <div className="ml-auto flex rounded-md bg-secondary p-0.5">

@@ -22,13 +22,19 @@ import { renderStory } from "@/lib/storyImage";
  * — it would post yesterday's games under tonight's headline.
  */
 export default function StoryButton({ days = [], cta, className = "",
-                                      render, label: labelOverride, title: titleOverride }) {
+                                      render, makeFile, icon: Icon = ImageIcon,
+                                      testId = "story-button",
+                                      label: labelOverride, title: titleOverride }) {
   const [busy, setBusy] = useState(false);
 
-  // `render` lets a caller draw something other than a board list — the fixture story is a
-  // different picture entirely. Everything below it (the share sheet, the desktop
-  // fallback, the AbortError handling) is the fiddly part and is worth having only once.
+  // TWO LEVELS OF OVERRIDE, because callers need different amounts of control.
+  // `render` swaps the DRAWING and keeps the PNG (the fixture story is a different
+  // picture); `makeFile` swaps the whole file, which is what recording a video needs
+  // since a video is not a canvas snapshot at all. Everything below them — the share
+  // sheet, the desktop fallback, the AbortError handling — is the fiddly part, and is
+  // worth having exactly once.
   const draw = async (day) => {
+    if (makeFile) return makeFile(day);
     const canvas = document.createElement("canvas");
     if (render) render(canvas, day);
     else renderStory(canvas, { title: day.title, subtitle: day.subtitle, rows: day.rows,
@@ -66,7 +72,7 @@ export default function StoryButton({ days = [], cta, className = "",
     } catch (err) {
       // A dismissed share sheet throws AbortError. That is the user changing their mind,
       // not a failure, and reporting it as one would be a lie.
-      if (err?.name !== "AbortError") toast.error("Couldn't make the story images");
+      if (err?.name !== "AbortError") toast.error(err?.message || "Couldn't make the story");
     } finally {
       setBusy(false);
     }
@@ -77,14 +83,14 @@ export default function StoryButton({ days = [], cta, className = "",
     <button
       onClick={make}
       disabled={busy || !days.length}
-      data-testid="story-button"
+      data-testid={testId}
       title={titleOverride
         || `Instagram ${days.length > 1 ? "Stories" : "Story"} — the games, with the model blurred out`}
       className={"flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-md border border-border "
         + "bg-secondary text-muted-foreground hover:text-foreground hover:bg-white/10 "
         + "transition-colors duration-150 disabled:opacity-50 " + className}
     >
-      {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <ImageIcon className="h-3.5 w-3.5" />}
+      {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Icon className="h-3.5 w-3.5" />}
       <span className="hidden sm:inline">{label}</span>
     </button>
   );

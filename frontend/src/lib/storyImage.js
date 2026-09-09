@@ -98,6 +98,24 @@ const roundRect = (ctx, x, y, w, h, r) => {
   ctx.closePath();
 };
 
+// ANIMATION TIMING. A story is drawn as one function of `progress` (0..1) rather than as
+// a sequence of steps, so the still image is simply the frame at 1 and there is no second
+// implementation to drift. Every element below reads its own window out of that number.
+const clamp01 = (t) => (t < 0 ? 0 : t > 1 ? 1 : t);
+/** easeOutCubic — fast then settling, which is what makes a bar look like it lands. */
+const ease = (t) => 1 - Math.pow(1 - clamp01(t), 3);
+/** How far through its own window [from, to] the animation is. */
+const seg = (t, from, to) => ease((t - from) / (to - from));
+
+/** Draw with a temporary alpha, restoring whatever was set before. */
+const faded = (ctx, alpha, draw) => {
+  if (alpha <= 0) return;
+  const prev = ctx.globalAlpha;
+  ctx.globalAlpha = alpha;
+  draw();
+  ctx.globalAlpha = prev;
+};
+
 /** Text drawn behind a blur, for the parts being held back. */
 const blurred = (ctx, draw, radius) => {
   ctx.save();
@@ -420,14 +438,24 @@ export const fixtureStoryMarkets = (markets = [], lambdas = {}, { homeName, away
     })
     .filter(Boolean);
 
-/** The curve, drawn as bars. Counts that win the bet are lit; the rest recede. */
-const drawCurve = (ctx, dist, line, { x, y, w, h }) => {
+/**
+ * The curve, drawn as bars. Counts that win the bet are lit; the rest recede.
+ *
+ * `progress` grows them from the baseline, staggered left to right so the shape draws
+ * itself rather than appearing whole — which is the bit that makes a reader watch.
+ */
+const drawCurve = (ctx, dist, line, { x, y, w, h, progress = 1 }) => {
   if (!dist?.length) return;
   const peak = Math.max(...dist.map((d) => d.p)) || 1;
   const gap = 6;
   const bw = (w - gap * (dist.length - 1)) / dist.length;
+  // The last bar starts at 0.55 of the curve's own window, so the stagger is always
+  // finished by the end however many bars there are.
+  const stagger = 0.55 / Math.max(1, dist.length - 1);
   dist.forEach((d, i) => {
-    const bh = Math.max(4, (d.p / peak) * h);
+    const grow = progress >= 1 ? 1 : seg(progress, i * stagger, i * stagger + 0.45);
+    if (grow <= 0) return;
+    const bh = Math.max(4, (d.p / peak) * h) * grow;
     const bx = x + i * (bw + gap);
     ctx.fillStyle = d.k >= line ? C.primary : C.dim;
     // Radius clamped by HEIGHT as well as width: the tails of a corner distribution are
@@ -438,6 +466,7 @@ const drawCurve = (ctx, dist, line, { x, y, w, h }) => {
   });
   // Only the ends and the line itself are labelled. A number under all twenty bars is
   // unreadable at story size and adds nothing a reader is going to act on.
+  ctx.globalAlpha = progress >= 1 ? 1 : seg(progress, 0.55, 0.9);
   ctx.fillStyle = C.muted;
   ctx.font = `500 24px ${FONT_DATA}`;
   ctx.textAlign = "center";
@@ -448,6 +477,7 @@ const drawCurve = (ctx, dist, line, { x, y, w, h }) => {
     ctx.fillText(String(k), x + i * (bw + gap) + bw / 2, y + h + 30);
   });
   ctx.textAlign = "left";
+  ctx.globalAlpha = 1;
 };
 
 /**
@@ -462,7 +492,12 @@ export const renderFixtureStory = (canvas, {
   homeName = "", awayName = "", leagueId = "", kickoff = "",
   dist = [], group = "total", markets = [],
   cta = "Model price on the site", brand = "CORNER MODEL", blurRadius = 14,
+  // 1 is the finished frame, which is exactly what the still image wants — so the PNG and
+  // the video are the same drawing code and cannot drift apart.
+  progress = 1,
 } = {}) => {
+  const P = clamp01(progress);
+  const done = P >= 1;
   canvas.width = STORY_W;
   canvas.height = STORY_H;
   const ctx = canvas.getContext("2d");
@@ -476,51 +511,62 @@ export const renderFixtureStory = (canvas, {
   ctx.fillRect(0, 0, STORY_W, 1100);
 
   ctx.textBaseline = "middle";
-  ctx.fillStyle = C.primary;
-  ctx.font = `700 30px ${FONT_HEAD}`;
-  ctx.letterSpacing = "6px";
-  ctx.fillText(brand, 72, 180);
-  ctx.letterSpacing = "0px";
+  const useFlags = flagsRender(ctx);   // probed before any alpha is in play
+  faded(ctx, done ? 1 : seg(P, 0, 0.07), () => {
+    ctx.fillStyle = C.primary;
+    ctx.font = `700 30px ${FONT_HEAD}`;
+    ctx.letterSpacing = "6px";
+    ctx.fillText(brand, 72, 180);
+    ctx.letterSpacing = "0px";
 
-  // The fixture, on two lines. Team names are long and unpredictable, and one line of
-  // "Borussia Monchengladbach v Eintracht Frankfurt" shrinks to unreadable.
-  ctx.fillStyle = C.text;
-  ctx.font = fitFont(ctx, homeName, { size: 68, max: STORY_W - 144, family: FONT_HEAD });
-  ctx.fillText(homeName, 72, 272);
-  ctx.fillStyle = C.muted;
-  ctx.font = `500 34px ${FONT_BODY}`;
-  ctx.fillText("v", 72, 336);
-  ctx.fillStyle = C.text;
-  ctx.font = fitFont(ctx, awayName, { size: 68, max: STORY_W - 200, family: FONT_HEAD });
-  ctx.fillText(awayName, 118, 336);
-
-  const useFlags = flagsRender(ctx);
-  const flag = useFlags ? flagFor(leagueId) : null;
-  const where = [flag || countryCodeFor(leagueId), kickoff].filter(Boolean).join("  ·  ");
-  if (where) {
+    // The fixture, on two lines. Team names are long and unpredictable, and one line of
+    // "Borussia Monchengladbach v Eintracht Frankfurt" shrinks to unreadable.
+    ctx.fillStyle = C.text;
+    ctx.font = fitFont(ctx, homeName, { size: 68, max: STORY_W - 144, family: FONT_HEAD });
+    ctx.fillText(homeName, 72, 272);
     ctx.fillStyle = C.muted;
-    ctx.font = `500 30px ${FONT_BODY}`;
-    ctx.fillText(where, 72, 404);
-  }
+    ctx.font = `500 34px ${FONT_BODY}`;
+    ctx.fillText("v", 72, 336);
+    ctx.fillStyle = C.text;
+    ctx.font = fitFont(ctx, awayName, { size: 68, max: STORY_W - 200, family: FONT_HEAD });
+    ctx.fillText(awayName, 118, 336);
+
+    const flag = useFlags ? flagFor(leagueId) : null;
+    const where = [flag || countryCodeFor(leagueId), kickoff].filter(Boolean).join("  ·  ");
+    if (where) {
+      ctx.fillStyle = C.muted;
+      ctx.font = `500 30px ${FONT_BODY}`;
+      ctx.fillText(where, 72, 404);
+    }
+  });
 
   const head = markets.find((m) => m.group === group) || markets[0];
 
-  // THE NUMBER. This is what the post is for, so it is the biggest thing on the image.
+  // THE NUMBER. This is what the post is for, so it is the biggest thing on the image, and
+  // it COUNTS UP: a number climbing to 59 is watched, a number that is already 59 is read
+  // in a glance and scrolled past.
   if (head) {
-    ctx.fillStyle = C.primary;
-    ctx.font = `700 150px ${FONT_DATA}`;
-    ctx.fillText(`${Math.round(head.prob)}%`, 72, 560);
-    ctx.fillStyle = C.text;
-    ctx.font = `600 40px ${FONT_HEAD}`;
-    ctx.fillText(`chance of ${head.line}+ ${head.group === "total" ? "match corners" : "corners"}`, 72, 654);
-    if (head.group !== "total") {
-      ctx.fillStyle = C.muted;
-      ctx.font = `500 32px ${FONT_BODY}`;
-      ctx.fillText(head.label, 72, 706);
-    }
+    const count = done ? 1 : seg(P, 0.06, 0.55);
+    faded(ctx, done ? 1 : seg(P, 0.04, 0.13), () => {
+      ctx.fillStyle = C.primary;
+      ctx.font = `700 150px ${FONT_DATA}`;
+      ctx.fillText(`${Math.round(head.prob * count)}%`, 72, 560);
+      ctx.fillStyle = C.text;
+      ctx.font = `600 40px ${FONT_HEAD}`;
+      ctx.fillText(`chance of ${head.line}+ ${head.group === "total" ? "match corners" : "corners"}`, 72, 654);
+      if (head.group !== "total") {
+        ctx.fillStyle = C.muted;
+        ctx.font = `500 32px ${FONT_BODY}`;
+        ctx.fillText(head.label, 72, 706);
+      }
+    });
   }
 
-  drawCurve(ctx, dist, head?.line ?? 0, { x: 72, y: 780, w: STORY_W - 144, h: 300 });
+  // The curve runs alongside the count rather than after it, so the bars and the number
+  // arrive together — the shape IS the explanation of the number.
+  drawCurve(ctx, dist, head?.line ?? 0,
+            { x: 72, y: 780, w: STORY_W - 144, h: 300,
+              progress: done ? 1 : clamp01((P - 0.07) / 0.52) });
 
   // The three markets. Probability sharp, price blurred.
   //
@@ -533,8 +579,16 @@ export const renderFixtureStory = (canvas, {
   const rowH = Math.min(132, Math.floor((rowsBottom - rowsTop - gap * (markets.length - 1))
                                         / Math.max(1, markets.length)));
   let y = rowsTop;
-  markets.forEach((m) => {
+  markets.forEach((m, i) => {
     const h = rowH;
+    // Each row arrives on its own beat and slides up as it fades, which reads as a list
+    // being dealt out rather than three boxes appearing at once.
+    const at = done ? 1 : seg(P, 0.52 + i * 0.09, 0.52 + i * 0.09 + 0.22);
+    if (at <= 0) { y += h + gap; return; }
+    const lift = (1 - at) * 28;
+    ctx.save();
+    ctx.globalAlpha = at;
+    ctx.translate(0, lift);
     ctx.fillStyle = C.card;
     roundRect(ctx, 72, y, STORY_W - 144, h, 20);
     ctx.fill();
@@ -567,21 +621,26 @@ export const renderFixtureStory = (canvas, {
       ctx.fillText("model price", STORY_W - 116, mid + 28);
     }, blurRadius);
     ctx.textAlign = "left";
+    ctx.restore();
     y += h + gap;
   });
 
-  const ctaY = STORY_H - 340;
-  ctx.fillStyle = C.primary;
-  roundRect(ctx, 72, ctaY, STORY_W - 144, 108, 54);
-  ctx.fill();
-  ctx.fillStyle = "#00181C";
-  ctx.font = `700 38px ${FONT_HEAD}`;
-  ctx.textAlign = "center";
-  ctx.fillText(cta, STORY_W / 2, ctaY + 56);
-  ctx.fillStyle = C.muted;
-  ctx.font = `500 26px ${FONT_BODY}`;
-  ctx.fillText("corner-model", STORY_W / 2, ctaY + 168);
-  ctx.textAlign = "left";
+  // The ask lands LAST. It is the thing to remember after the number has been read, and
+  // arriving first would make the whole story look like an advert.
+  faded(ctx, done ? 1 : seg(P, 0.84, 1), () => {
+    const ctaY = STORY_H - 340;
+    ctx.fillStyle = C.primary;
+    roundRect(ctx, 72, ctaY, STORY_W - 144, 108, 54);
+    ctx.fill();
+    ctx.fillStyle = "#00181C";
+    ctx.font = `700 38px ${FONT_HEAD}`;
+    ctx.textAlign = "center";
+    ctx.fillText(cta, STORY_W / 2, ctaY + 56);
+    ctx.fillStyle = C.muted;
+    ctx.font = `500 26px ${FONT_BODY}`;
+    ctx.fillText("corner-model", STORY_W / 2, ctaY + 168);
+    ctx.textAlign = "left";
+  });
 
   return canvas;
 };

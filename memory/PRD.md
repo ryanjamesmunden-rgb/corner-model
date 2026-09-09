@@ -586,6 +586,43 @@ Both new tools are in the Tools panel (`POST /api/tools/backfill-goals`), so no 
 - **Security**: the app is public and the backfill spends API credits, so these are gated behind a `TOOLS_TOKEN` env var and return **503 when it is unset** — disabled by default, opt-in only. Token compared with `secrets.compare_digest`. Every subprocess argument is built from validated values (league ids checked against `MANAGED_LEAGUE_IDS`, mode from an enum, limit clamped 1-500) — no raw user string reaches argv. Per-script cooldowns (backfill 10min, measure 2min) and a one-run-at-a-time guard.
 - The frontend keeps the token in `localStorage` only (`cm2_tools_token`), with a "Forget token" control.
 
+### The story, as a video (2026-09-09)
+Same picture, animated and recorded in the browser: bars draw in left to right, the
+percentage counts up, the market rows deal out, the call to action lands last. ~5.5s,
+1080x1920, which loops cleanly as a Story.
+
+- **One drawing function, not two.** `renderFixtureStory` gained a `progress` (0..1)
+  argument and every element reads its own window out of it. The still image is the frame
+  at 1, so the PNG and the video cannot drift apart. `progress >= 1` short-circuits every
+  animated branch, so the image path is unchanged.
+- **MP4 first, WebM last.** Instagram and X want H.264; WebM is what any Chromium will
+  happily produce and what neither platform reliably accepts, so it is the LAST resort,
+  not the default — a video that will not upload is worse than the still, because you only
+  find out at the point of posting. `pickVideoType` walks the preference list and a test
+  pins the order, which is the part that would otherwise silently rot.
+- **FRAMES ARE PUSHED, NOT SAMPLED — this was a real bug.** `captureStream(fps)` asks the
+  browser to sample the canvas on its own clock, which only works for a canvas the
+  compositor paints. This canvas is never in the document, so automatic capture silently
+  under-delivered: **5.9s of drawing produced 2.3s of video** on the first recording.
+  `captureStream(0)` plus an explicit `track.requestFrame()` per draw fixed it (5.49s, and
+  the file went 111KB -> 872KB). Falls back to sampling where requestFrame is missing.
+- Paced on `setTimeout` rather than `requestAnimationFrame`: the animation is a function of
+  elapsed time and wants a steady heartbeat, and rAF is throttled hard when the tab is not
+  frontmost.
+- **Opening retimed after watching it.** The first version left the first ~0.5s as
+  header-only, which is exactly where a Story viewer taps away. Now the number is on screen
+  by 0.25s and the whole thing is readable by 1.6s.
+- `StoryButton` gained `makeFile` (replace the whole file, which a video needs since it is
+  not a canvas snapshot) alongside the existing `render`, plus `icon` and `testId`. The
+  video button is hidden entirely where `MediaRecorder` cannot encode — a button that fails
+  when tapped is worse than one that is not there.
+- **NOT verified: H.264 specifically.** This environment's headless Chromium reports
+  `video/mp4` supported but `avc1.42E01E` not, and there is no ffmpeg here to transcode. So
+  the recording was proven end to end (recorded, decoded back at 1080x1920, frames sampled
+  across the animation) but on a generic MP4 encoder. A real Chrome should pick the avc1
+  entry; that needs a human to confirm on the machine they post from.
+- `frontend/src/lib/storyVideo.test.js`: 11 tests on codec preference and file extension.
+
 ### Share the chance, not the price (2026-09-08)
 A fixture as an Instagram Story: the probability goes out in public, the model's price is
 blurred. "59% chance of 10+ corners" is a claim a reader can weigh, argue with and

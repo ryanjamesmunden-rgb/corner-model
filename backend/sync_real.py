@@ -66,6 +66,12 @@ STAT_TYPES = {
     "shots_on_target": ("shots on goal", "shots on target"),
     "blocked_shots": ("blocked shots", "shots blocked"),
     "dangerous_attacks": ("dangerous attacks", "attacks dangerous"),
+    # Cards ride along in the SAME statistics block, so these cost nothing extra on any
+    # fixture the sync was already fetching. They are counts only — the MINUTE of a
+    # sending-off comes from /fixtures/events via backfill_goal_events.py, which prefers
+    # its own numbers where it has run.
+    "red_cards": ("red cards", "cards red"),
+    "yellow_cards": ("yellow cards", "cards yellow"),
 }
 
 

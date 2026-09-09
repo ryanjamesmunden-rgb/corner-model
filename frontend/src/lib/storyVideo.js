@@ -32,6 +32,22 @@ export const pickVideoType = (isSupported) => VIDEO_TYPES.find((t) => {
 /** Container extension for a mime type. Instagram cares; the file picker cares more. */
 export const extFor = (mime = "") => (String(mime).includes("mp4") ? "mp4" : "webm");
 
+/**
+ * The container type on its own, without the codec parameters MediaRecorder wants.
+ *
+ * THIS IS WHAT A FILE GETS. MediaRecorder is asked for
+ * "video/mp4;codecs=avc1.42E01E,mp4a.40.2" — it needs that detail to pick an encoder —
+ * and the recorded Blob inherits the whole string. Handing THAT to the OS as a file type
+ * is what broke sharing: Chrome checks a shared file against a list of plain types like
+ * "video/mp4" and cross-checks it against the name's extension, and a type carrying
+ * codec parameters matches neither, so the share sheet refused it with "Permission
+ * denied". The still image never hit this because "image/png" has nothing to strip.
+ *
+ * The codecs belong to the recorder. The container is what a file, a player and a share
+ * sheet all actually care about.
+ */
+export const baseMime = (mime = "") => String(mime).split(";")[0].trim().toLowerCase();
+
 /** Does this browser have the pieces at all? Used to hide the button rather than fail it. */
 export const canRecord = () =>
   typeof window !== "undefined"
@@ -88,9 +104,13 @@ export const recordStoryVideo = (canvas, drawFrame, {
   rec.onerror = (e) => reject(e?.error || new Error("recorder failed"));
   rec.onstop = () => {
     stream.getTracks().forEach((t) => t.stop());
-    const blob = new Blob(chunks, { type: mime });
+    // The BLOB carries the container type, not the recorder's codec string — this blob
+    // becomes a File handed to the OS, and the parameters are what the share sheet
+    // rejects. `mime` is still returned so a caller can see what was actually encoded.
+    const type = baseMime(mime);
+    const blob = new Blob(chunks, { type });
     if (!blob.size) reject(new Error("recording produced nothing"));
-    else resolve({ blob, mime, ext: extFor(mime) });
+    else resolve({ blob, mime, type, ext: extFor(mime) });
   };
 
   const total = durationMs + holdMs;

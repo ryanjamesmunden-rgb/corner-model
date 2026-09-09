@@ -112,10 +112,13 @@ export default function ProbabilityChart({ distribution, lambdas, markets, homeN
             title="A 5-second Story video — the bars draw in and the number counts up"
             makeFile={async (day) => {
               const canvas = document.createElement("canvas");
-              const { blob, mime, ext } = await recordStoryVideo(canvas, (progress) =>
+              const { blob, mime, type, ext } = await recordStoryVideo(canvas, (progress) =>
                 renderFixtureStory(canvas, { ...storyArgs, progress }));
-              return new File([blob], `corner-model-${day.key}.${ext || extFor(mime)}`,
-                              { type: mime });
+              // `type`, not `mime`: the plain container. A file typed
+              // "video/mp4;codecs=avc1.42E01E,…" is refused by the Android share sheet.
+              const container = extFor(mime);
+              return new File([blob], `corner-model-${day.key}.${ext || container}`,
+                              { type: type || `video/${container}` });
             }}
           />
         )}

@@ -47,14 +47,7 @@ export default function StoryButton({ days = [], cta, className = "",
 
   // Handing the finished files to the OS. Split out from making them because this half
   // is the half that needs a live tap behind it.
-  const deliver = async (files) => {
-    // The share sheet, where it exists and will take the whole set. Checked with the
-    // ACTUAL files rather than a probe: canShare's answer depends on count and size,
-    // so a single-file test would green-light a set the sheet then refuses.
-    if (navigator.canShare?.({ files })) {
-      await navigator.share({ files, title: "Corner Model" });
-      return;
-    }
+  const save = (files) => {
     for (const file of files) {
       const url = URL.createObjectURL(file);
       const a = document.createElement("a");
@@ -65,6 +58,29 @@ export default function StoryButton({ days = [], cta, className = "",
       // when the URL it was handed stops resolving.
       requestAnimationFrame(() => URL.revokeObjectURL(url));
     }
+  };
+
+  const deliver = async (files) => {
+    // The share sheet, where it exists and will take the whole set. Checked with the
+    // ACTUAL files rather than a probe: canShare's answer depends on count and size,
+    // so a single-file test would green-light a set the sheet then refuses.
+    if (navigator.canShare?.({ files })) {
+      try {
+        await navigator.share({ files, title: "Corner Model" });
+        return;
+      } catch (err) {
+        // Cancelling is a decision, and an expired gesture is recoverable upstream by
+        // asking for another tap. Both belong to the caller.
+        if (err?.name === "AbortError" || isGestureError(err)) throw err;
+        // ANYTHING ELSE MEANS THE SHEET REFUSED THE FILE, and the user is left holding
+        // nothing after waiting five seconds for a recording. Saving it is not the path
+        // we wanted but it is a video in their hands, which beats a red toast.
+        save(files);
+        toast.success("Share sheet refused that — saved to your files instead");
+        return;
+      }
+    }
+    save(files);
     toast.success(`${files.length} ${files.length === 1 ? "story" : "stories"} saved — 1080×1920`);
   };
 

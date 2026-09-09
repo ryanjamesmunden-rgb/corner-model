@@ -80,6 +80,11 @@ export const api = {
   cornerTable: (id) => axios.get(`${API}/leagues/${id}/corner-table`).then((r) => r.data),
   trends: (params) => axios.get(`${API}/trends`, { params }).then(withPreview),
   bestBets: () => axios.get(`${API}/best-bets`).then((r) => r.data),
+  // Wagers. Every one of these needs a signed-in account — see the note on create_bet.
+  bets: () => axios.get(`${API}/bets`).then((r) => r.data),
+  placeBet: (body) => axios.post(`${API}/bets`, body).then((r) => r.data),
+  deleteBet: (id) => axios.delete(`${API}/bets/${id}`).then((r) => r.data),
+  betsWeek: (days) => axios.get(`${API}/bets/week`, { params: { days } }).then((r) => r.data),
   chaseBoard: (params) => axios.get(`${API}/chase-board`, { params }).then(withPreview),
   fixtureBoard: (params) => axios.get(`${API}/fixture-board`, { params }).then((r) => r.data),
   topCornerTeams: (params) => axios.get(`${API}/top-corner-teams`, { params }).then((r) => r.data),

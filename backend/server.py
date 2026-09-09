@@ -4823,12 +4823,82 @@ def kelly_fraction(prob: float, book_odds: float) -> float:
     return max(0.0, round(f, 4))
 
 
+# ----------------------------- Settling a slip -----------------------------
+# A group board full of permanently "pending" rows is a dead board, and asking people to
+# come back and mark their own bets is asking them to do the one thing nobody does. So a
+# bet settles itself off the same synced match data everything else here is built on.
+#
+# THE RULES ARE THE STREAK RULES. `settle_streak_leg` already decides an over/under leg
+# against a line, including the one that matters: an exact whole-number line on an UNDER
+# is a push, not a loss. Reimplementing that here would eventually disagree with the
+# streak boards about the same game, so it is called rather than copied.
+
+def parse_market_key(key: str):
+    """`home_over_5.5` -> ("home", "over", 5.5). None for anything unrecognised."""
+    parts = str(key or "").split("_")
+    if len(parts) < 3 or parts[0] not in ("home", "away", "total") or parts[1] not in ("over", "under"):
+        return None
+    try:
+        return parts[0], parts[1], float(parts[-1])
+    except ValueError:
+        return None
+
+
+def bet_outcome(bet: dict, home_corners: Optional[int], away_corners: Optional[int]):
+    """How a slip landed, or None while it cannot be known yet.
+
+    None means PENDING and is returned for every uncertainty — an unparseable market, a
+    fixture with no corners synced, a side that is missing. Guessing here would invent a
+    result on somebody's money."""
+    parsed = parse_market_key(bet.get("market_key"))
+    if parsed is None or home_corners is None or away_corners is None:
+        return None
+    group, direction, line = parsed
+    value = (home_corners if group == "home"
+             else away_corners if group == "away"
+             else home_corners + away_corners)
+    settled = settle_streak_leg(value, line, direction)
+    return {WIN: "won", LOSS: "lost", VOID: "void"}[settled]
+
+
+async def settle_pending_bets(user_id: Optional[str] = None) -> dict:
+    """Grade every pending bet whose fixture now has a result. Cheap and idempotent."""
+    q = {"status": "pending"}
+    if user_id:
+        q["user_id"] = user_id
+    pending = await db.bets.find(q, {"_id": 0}).to_list(2000)
+    if not pending:
+        return {"checked": 0, "settled": 0}
+    fids = list({b["fixture_id"] for b in pending})
+    fixtures = {f["fixture_id"]: f for f in
+                await db.fixtures.find({"fixture_id": {"$in": fids}}, {"_id": 0}).to_list(4000)}
+    # Results live on fixture_stats, keyed by the provider's fixture id rather than ours.
+    api_ids = {fx.get("api_fixture_id") for fx in fixtures.values() if fx.get("api_fixture_id")}
+    stats = {c["_id"]: c for c in
+             await db.fixture_stats.find({"_id": {"$in": list(api_ids)}}, {}).to_list(4000)} if api_ids else {}
+    settled = 0
+    for b in pending:
+        fx = fixtures.get(b["fixture_id"]) or {}
+        st = stats.get(fx.get("api_fixture_id")) or {}
+        out = bet_outcome(b, st.get("home_corners"), st.get("away_corners"))
+        if out is None:
+            continue
+        await db.bets.update_one(
+            {"bet_id": b["bet_id"]},
+            {"$set": {"status": out, "settled_at": datetime.now(timezone.utc).isoformat(),
+                      "settled_by": "auto",
+                      "result_corners": {"home": st.get("home_corners"),
+                                         "away": st.get("away_corners")}}})
+        settled += 1
+    return {"checked": len(pending), "settled": settled}
+
+
 def bet_profit(bet: dict) -> float:
     if bet["status"] == "won":
         return round(bet["stake"] * (bet["book_odds"] - 1.0), 2)
     if bet["status"] == "lost":
         return round(-bet["stake"], 2)
-    return 0.0
+    return 0.0          # pending and VOID both return the stake, so neither is a result
 
 
 class BankrollBody(BaseModel):
@@ -4836,12 +4906,12 @@ class BankrollBody(BaseModel):
 
 
 @api_router.get("/bankroll")
-async def get_bankroll(user: dict = Depends(get_current_user)):
+async def get_bankroll(user: dict = Depends(require_user)):
     return {"bankroll": user.get("bankroll", 1000.0)}
 
 
 @api_router.put("/bankroll")
-async def set_bankroll(body: BankrollBody, user: dict = Depends(get_current_user)):
+async def set_bankroll(body: BankrollBody, user: dict = Depends(require_user)):
     await db.users.update_one({"user_id": user["user_id"]}, {"$set": {"bankroll": round(body.bankroll, 2)}})
     return {"bankroll": round(body.bankroll, 2)}
 
@@ -4850,10 +4920,20 @@ class BetBody(BaseModel):
     fixture_id: str
     market_key: str
     stake: float
+    # Whether this slip goes on the group board. Captured PER BET rather than only as an
+    # account setting, so the choice is made at the moment the bet is placed and a single
+    # private wager does not need the setting changed and changed back.
+    shared: bool = True
 
 
+# EVERY BET ROUTE REQUIRES A REAL ACCOUNT.
+#
+# They used to take `get_current_user`, which falls back to the shared PUBLIC user for
+# anyone signed out — so every signed-out visitor would have written into, and read from,
+# one communal slip list. Nothing had broken yet only because no screen ever called these.
+# A wager is the one thing on this site that must belong to a person.
 @api_router.post("/bets")
-async def create_bet(body: BetBody, user: dict = Depends(get_current_user)):
+async def create_bet(body: BetBody, user: dict = Depends(require_user)):
     fx = await db.fixtures.find_one({"fixture_id": body.fixture_id}, {"_id": 0})
     if not fx:
         raise HTTPException(status_code=404, detail="Fixture not found")
@@ -4871,6 +4951,11 @@ async def create_bet(body: BetBody, user: dict = Depends(get_current_user)):
         "book_odds": market["book_odds"], "fair_odds": market["fair_odds"], "prob": market["prob"],
         "ev": market["ev"], "tier": market["tier"], "kelly_fraction": kelly_fraction(prob, market["book_odds"]),
         "stake": round(body.stake, 2), "status": "pending",
+        "shared": bool(body.shared),
+        # Denormalised so the group board does not need a user lookup per row, and so a
+        # later name change cannot silently rewrite who was shown to have placed what.
+        "user_name": user.get("name") or "A member",
+        "kickoff": fx.get("date"),
         "placed_at": datetime.now(timezone.utc).isoformat(), "settled_at": None,
     }
     await db.bets.insert_one(dict(bet))
@@ -4878,10 +4963,58 @@ async def create_bet(body: BetBody, user: dict = Depends(get_current_user)):
 
 
 @api_router.get("/bets")
-async def list_bets(user: dict = Depends(get_current_user)):
+async def list_bets(user: dict = Depends(require_user)):
+    # Grade first, so opening your slips shows results rather than a wall of "pending"
+    # that only updates if you happen to hit some other endpoint. Scoped to this user and
+    # idempotent, so it costs one query when there is nothing to settle.
+    await settle_pending_bets(user["user_id"])
     bets = await db.bets.find({"user_id": user["user_id"]}, {"_id": 0}).to_list(500)
     bets.sort(key=lambda b: b["placed_at"], reverse=True)
     return [{**b, "profit": bet_profit(b)} for b in bets]
+
+
+BOARD_DAYS = 7
+
+
+@api_router.get("/bets/week")
+async def bets_this_week(days: int = BOARD_DAYS, user: dict = Depends(require_member)):
+    """What the group backed, and how it went.
+
+    MEMBERS ONLY. It is other people's betting, and the audience for it is the room that
+    pays to be in it.
+
+    NO CASH AMOUNTS, ever. What is useful to everyone else is WHAT was backed and AT WHAT
+    PRICE — that is where the value was, and who got the best of it. How much someone
+    staked is personal, varies entirely with their bankroll, and tells the reader nothing
+    they can act on. So `stake` is not selected here, rather than selected and hidden in
+    the UI: a field that never leaves the server cannot leak out of a component later.
+
+    OPT-IN BY OMISSION. Only rows with `shared` true appear, and bets placed before the
+    flag existed do not have it — so nothing anyone logged before there was a group board
+    is retrospectively published to one."""
+    await settle_pending_bets()
+    since = (datetime.now(timezone.utc) - timedelta(days=max(1, min(days, 31)))).isoformat()
+    rows = await db.bets.find(
+        {"shared": True, "placed_at": {"$gte": since}},
+        {"_id": 0, "stake": 0, "user_id": 0, "kelly_fraction": 0},
+    ).to_list(1000)
+    rows.sort(key=lambda b: b["placed_at"], reverse=True)
+
+    settled = [b for b in rows if b["status"] in ("won", "lost")]
+    won = [b for b in settled if b["status"] == "won"]
+    # Return per POINT staked, which is the only honest way to total bets whose stakes are
+    # deliberately not collected here: every slip counts once, at the price it was taken.
+    units = round(sum((b["book_odds"] - 1.0) for b in won) - len(settled) + len(won), 3)
+    return {
+        "days": days, "bets": rows,
+        "summary": {
+            "count": len(rows), "members": len({b["user_name"] for b in rows}),
+            "settled": len(settled), "won": len(won),
+            "pending": len([b for b in rows if b["status"] == "pending"]),
+            "units": units,
+            "avg_odds": round(sum(b["book_odds"] for b in rows) / len(rows), 2) if rows else None,
+        },
+    }
 
 
 class BetStatusBody(BaseModel):
@@ -4889,7 +5022,7 @@ class BetStatusBody(BaseModel):
 
 
 @api_router.patch("/bets/{bet_id}")
-async def update_bet(bet_id: str, body: BetStatusBody, user: dict = Depends(get_current_user)):
+async def update_bet(bet_id: str, body: BetStatusBody, user: dict = Depends(require_user)):
     if body.status not in ["pending", "won", "lost", "void"]:
         raise HTTPException(status_code=400, detail="Invalid status")
     bet = await db.bets.find_one({"bet_id": bet_id, "user_id": user["user_id"]}, {"_id": 0})
@@ -4904,7 +5037,7 @@ async def update_bet(bet_id: str, body: BetStatusBody, user: dict = Depends(get_
 
 
 @api_router.delete("/bets/{bet_id}")
-async def delete_bet(bet_id: str, user: dict = Depends(get_current_user)):
+async def delete_bet(bet_id: str, user: dict = Depends(require_user)):
     res = await db.bets.delete_one({"bet_id": bet_id, "user_id": user["user_id"]})
     if res.deleted_count == 0:
         raise HTTPException(status_code=404, detail="Bet not found")
@@ -4912,7 +5045,7 @@ async def delete_bet(bet_id: str, user: dict = Depends(get_current_user)):
 
 
 @api_router.get("/bets/stats")
-async def bet_stats(user: dict = Depends(get_current_user)):
+async def bet_stats(user: dict = Depends(require_user)):
     bets = await db.bets.find({"user_id": user["user_id"]}, {"_id": 0}).to_list(500)
     leagues = {l["league_id"]: l["name"] for l in await db.leagues.find({}, {"_id": 0}).to_list(100)}
     settled = [b for b in bets if b["status"] in ("won", "lost")]

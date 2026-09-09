@@ -17,6 +17,7 @@ const Join = lazy(() => import("@/pages/Join"));
 const Account = lazy(() => import("@/pages/Account"));
 const FaqPage = lazy(() => import("@/pages/FaqPage"));
 const Saved = lazy(() => import("@/pages/Saved"));
+const Bets = lazy(() => import("@/pages/Bets"));
 
 const RouteFallback = () => (
   <div className="py-20 text-center text-muted-foreground animate-pulse font-mono-data text-sm">
@@ -46,6 +47,7 @@ function AppRouter() {
       <Route path="/quick-scan" element={page(QuickScan)} />
       <Route path="/streaks" element={page(Streaks)} />
       <Route path="/saved" element={page(Saved)} />
+      <Route path="/bets" element={page(Bets)} />
       <Route path="/fixture/:id" element={page(FixtureDetail)} />
       <Route path="/account" element={page(Account)} />
       {/* Deliberately OUTSIDE page(): the subscription page is for people who are not

@@ -5,6 +5,7 @@ import {
   ArrowLeft, TrendingUp, TrendingDown, ClipboardPaste, Flame, Shield, MapPin, Swords, Eye,
 } from "lucide-react";
 import StarButton from "@/components/StarButton";
+import { useAuth } from "@/context/AuthContext";
 import ProbabilityChart from "@/components/ProbabilityChart";
 import { api, tierMeta, confMeta } from "@/lib/api";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
@@ -255,6 +256,14 @@ export default function FixtureDetail() {
                       </td>
                       <td className={`px-3 py-2 text-right font-semibold ${t ? t.text : "text-muted-foreground"}`}>
                         {m.ev != null ? `${m.ev > 0 ? "+" : ""}${m.ev.toFixed(1)}%` : "—"}
+                      </td>
+                      {/* LOG A BET, only where there is a price to log one AT. The server
+                          refuses a bet on a market with no book odds, so offering the
+                          button without them would be a button that always errors. */}
+                      <td className="px-2 py-2 text-right">
+                        {m.book_odds != null && (
+                          <LogBet fixtureId={fixture.fixture_id} market={m} />
+                        )}
                       </td>
                     </tr>
                   );
@@ -1023,5 +1032,68 @@ function KeyFactors({ factors, homeName, awayName }) {
         })}
       </ul>
     </section>
+  );
+}
+
+// ----------------------------- Logging a wager -----------------------------
+// One tap on a market you have already priced. The stake is the only thing asked for,
+// because everything else — the line, the price you got, the model's price, the EV at the
+// moment you took it — is already on the row and is captured server-side, so a slip
+// records what was true WHEN IT WAS PLACED rather than what the model thinks later.
+//
+// SHARING IS A CHOICE MADE HERE, not buried in settings. The box is ticked by default
+// because a group board that starts empty never fills, but it is in front of you at the
+// moment you decide, and one private bet does not need a setting changed and changed back.
+function LogBet({ fixtureId, market }) {
+  const { user } = useAuth();
+  const [open, setOpen] = useState(false);
+  const [stake, setStake] = useState("10");
+  const [shared, setShared] = useState(true);
+  const [busy, setBusy] = useState(false);
+
+  if (!user) return null;          // nothing to log a bet against
+
+  const place = async () => {
+    const n = parseFloat(stake);
+    if (!(n > 0)) { toast.error("Enter a stake"); return; }
+    setBusy(true);
+    try {
+      await api.placeBet({ fixture_id: fixtureId, market_key: market.key, stake: n, shared });
+      toast.success(`Logged ${market.label} @ ${market.book_odds.toFixed(2)}`);
+      setOpen(false);
+    } catch (e) {
+      toast.error(e?.response?.data?.detail || "Could not log that bet");
+    } finally { setBusy(false); }
+  };
+
+  if (!open) {
+    return (
+      <button onClick={() => setOpen(true)} data-testid={`log-bet-${market.key}`}
+        title="Log this as a bet"
+        className="text-[10px] px-1.5 py-0.5 rounded border border-border text-muted-foreground
+                   hover:text-primary hover:border-primary/40 transition-colors whitespace-nowrap">
+        + Bet
+      </button>
+    );
+  }
+  return (
+    <div className="inline-flex items-center gap-1" data-testid={`log-bet-open-${market.key}`}>
+      <input
+        value={stake} onChange={(e) => setStake(e.target.value)} autoFocus
+        onKeyDown={(e) => { if (e.key === "Enter") place(); if (e.key === "Escape") setOpen(false); }}
+        aria-label="Stake"
+        className="w-14 bg-black border border-border rounded px-1.5 py-1 text-right text-xs
+                   focus:outline-none focus:ring-2 focus:ring-primary" />
+      <button onClick={() => setShared((v) => !v)} title={shared ? "Shared with the group" : "Private"}
+        data-testid={`log-bet-share-${market.key}`}
+        className={`text-[10px] px-1.5 py-1 rounded border transition-colors ${
+          shared ? "border-primary/50 text-primary bg-primary/10" : "border-border text-muted-foreground"}`}>
+        {shared ? "Shared" : "Private"}
+      </button>
+      <button onClick={place} disabled={busy} data-testid={`log-bet-save-${market.key}`}
+        className="text-[10px] px-2 py-1 rounded bg-primary text-primary-foreground font-medium disabled:opacity-50">
+        {busy ? "…" : "Log"}
+      </button>
+    </div>
   );
 }

@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
-import { CornerDownRight, LayoutDashboard, Radar, Flame, Zap, Star, Sparkles, Receipt } from "lucide-react";
+import { CornerDownRight, LayoutDashboard, Radar, Flame, Zap, Star, Sparkles, Receipt, Trophy } from "lucide-react";
 import { LeagueContext } from "@/context/LeagueContext";
 import ExportMenu from "@/components/ExportMenu";
 import { api } from "@/lib/api";
@@ -50,6 +50,9 @@ export default function Layout({ children }) {
     { to: "/streaks", label: "Streaks", icon: Flame },
     { to: "/saved", label: "Saved", icon: Star },
     { to: "/bets", label: "Bets", icon: Receipt },
+    // Last, but present for signed-out visitors too — it is the one page that argues
+    // for the others, and it cannot do that from behind a login.
+    { to: "/results", label: "Results", icon: Trophy },
   ];
 
   return (

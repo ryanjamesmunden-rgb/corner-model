@@ -4471,27 +4471,15 @@ async def snapshot_streaks(body: StreakSnapshotBody, token: Optional[str] = None
     return {"status": "created", **doc}
 
 
-@api_router.get("/streaks/snapshot/{tag}/results")
-async def snapshot_results(tag: str, token: Optional[str] = None,
-                           user: dict = Depends(get_current_user)):
-    """How the streaks in a snapshot actually landed.
+def _grade_entries(entries: List[dict], teams: Dict[str, dict]) -> List[dict]:
+    """Settle snapshot entries against synced match data.
 
-    Graded off the SYNCED match data, not a fresh scan of the board — the whole point
-    of the snapshot is that the list cannot change between the claim and the grading.
-    An entry whose game has not been played, or not yet synced, comes back `pending`
-    rather than being dropped, so a partial weekend reads as partial instead of as a
-    shorter list of wins.
+    ONE IMPLEMENTATION, used by the private per-tag endpoint and the public record. Two
+    copies of settlement would eventually disagree, and the disagreement would be between
+    what the tools report and what the public page claims — the worst possible pair.
     """
-    _check_tools_token(token)
-    snap = await db.streak_snapshots.find_one({"_id": tag}, {"_id": 0})
-    if not snap:
-        raise HTTPException(status_code=404, detail=f"no streak snapshot tagged {tag}")
-
-    team_ids = [e["team_id"] for e in snap["entries"]]
-    teams = {t["team_id"]: t for t in
-             await db.teams.find({"team_id": {"$in": team_ids}}, {"_id": 0}).to_list(500)}
     out = []
-    for e in snap["entries"]:
+    for e in entries:
         team = teams.get(e["team_id"]) or {}
         played = None
         for m in (team.get("real_matches") or []):
@@ -4510,16 +4498,116 @@ async def snapshot_results(tag: str, token: Optional[str] = None,
         value = streak_value(played, e["subject"])
         out.append({**e, "result": settle_streak_leg(value, e["line"], e["direction"]),
                     "value": value, "played_at": played.get("date")})
+    return out
 
-    graded = [r for r in out if r["result"] in (WIN, LOSS)]
+
+def _tally(rows: List[dict]) -> dict:
+    """Counts, and a hit rate that refuses to exist without settled games.
+
+    `hit_rate` is None rather than 0 on an empty set. Zero would render as "0%" — a
+    claim about a record that has not been made yet — and the page has to be able to
+    tell "nothing settled" apart from "everything missed".
+    """
+    landed = sum(1 for r in rows if r["result"] == WIN)
+    missed = sum(1 for r in rows if r["result"] == LOSS)
+    settled = landed + missed
+    return {
+        "landed": landed, "missed": missed, "settled": settled,
+        "voided": sum(1 for r in rows if r["result"] == VOID),
+        "pending": sum(1 for r in rows if r["result"] == "pending"),
+        "hit_rate": round(landed / settled * 100, 1) if settled else None,
+    }
+
+
+async def _teams_for(entries: List[dict]) -> Dict[str, dict]:
+    ids = list({e["team_id"] for e in entries})
+    if not ids:
+        return {}
+    return {t["team_id"]: t for t in
+            await db.teams.find({"team_id": {"$in": ids}}, {"_id": 0}).to_list(2000)}
+
+
+@api_router.get("/streaks/snapshot/{tag}/results")
+async def snapshot_results(tag: str, token: Optional[str] = None,
+                           user: dict = Depends(get_current_user)):
+    """How the streaks in a snapshot actually landed.
+
+    Graded off the SYNCED match data, not a fresh scan of the board — the whole point
+    of the snapshot is that the list cannot change between the claim and the grading.
+    An entry whose game has not been played, or not yet synced, comes back `pending`
+    rather than being dropped, so a partial weekend reads as partial instead of as a
+    shorter list of wins.
+    """
+    _check_tools_token(token)
+    snap = await db.streak_snapshots.find_one({"_id": tag}, {"_id": 0})
+    if not snap:
+        raise HTTPException(status_code=404, detail=f"no streak snapshot tagged {tag}")
+
+    out = _grade_entries(snap["entries"], await _teams_for(snap["entries"]))
+    tally = _tally(out)
     return {
         "tag": tag, "created_at": snap.get("created_at"), "days": snap.get("days"),
-        "results": out,
-        "landed": sum(1 for r in out if r["result"] == WIN),
-        "missed": sum(1 for r in out if r["result"] == LOSS),
-        "voided": sum(1 for r in out if r["result"] == VOID),
-        "pending": sum(1 for r in out if r["result"] == "pending"),
-        "settled": len(graded),
+        "results": out, **tally,
+    }
+
+
+# How many weeks of record the public page carries. Long enough to be a record rather
+# than a highlight, short enough that one query stays one query.
+RESULTS_WEEKS = 12
+
+
+@api_router.get("/results")
+async def public_results(weeks: int = RESULTS_WEEKS):
+    """THE PUBLIC RECORD: every streak that went out, and how it landed.
+
+    OPEN ON PURPOSE, and the only thing on this site that is. Everything else is either
+    the product or a tease for it; this is the evidence that the product is worth
+    anything, and evidence behind a login persuades nobody. A visitor who has never
+    heard of the site can read it, check any row against the actual result, and decide.
+    Which is also why it must never be tidied.
+
+    IT CANNOT FLATTER ITSELF, and that is the entire design. Every row is read from a
+    snapshot frozen BEFORE kick-off (see snapshot_streaks), so the list being graded is
+    the list that was claimed. Grading the board as it looks afterwards would count only
+    the survivors — a team that misses drops off the board — and would report a near
+    perfect week every week.
+
+    NOTHING IS DROPPED. Misses, pushes and games not yet settled are all counted and
+    published. A record that shows only the settled winners is an advert with a
+    percentage on it.
+
+    NO PROFIT FIGURE. Snapshots record the line, not a price, so what this can honestly
+    report is how often a run continued — not what it paid. Inventing odds after the
+    fact to produce a P/L is the exact thing the picks ledger already refuses to do.
+    """
+    weeks = max(1, min(weeks, 52))
+    snaps = await db.streak_snapshots.find({}, {"_id": 0}).sort("tag", -1).to_list(weeks)
+    all_entries = [e for s in snaps for e in (s.get("entries") or [])]
+    teams = await _teams_for(all_entries)     # one lookup for every week, not one per week
+
+    weeks_out, everything = [], []
+    for s in snaps:
+        rows = _grade_entries(s.get("entries") or [], teams)
+        everything.extend(rows)
+        weeks_out.append({
+            "tag": s.get("tag"), "created_at": s.get("created_at"), "days": s.get("days"),
+            **_tally(rows),
+            "rows": [{
+                "name": r["name"], "league_id": r["league_id"],
+                "line": r["line"], "direction": r["direction"],
+                # Built here rather than in the browser so the page cannot label an under
+                # as an over — the same rule the share text follows.
+                "line_label": streak_line_label(r["line"], r["direction"]),
+                "subject": r["subject"], "opponent": r.get("opponent"),
+                "is_home": r.get("is_home"), "kickoff": r.get("kickoff"),
+                "result": r["result"], "value": r.get("value"),
+            } for r in rows],
+        })
+
+    return {
+        "summary": {**_tally(everything), "weeks": len(weeks_out),
+                    "since": weeks_out[-1]["tag"] if weeks_out else None},
+        "weeks": weeks_out,
     }
 
 

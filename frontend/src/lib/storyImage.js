@@ -644,3 +644,192 @@ export const renderFixtureStory = (canvas, {
 
   return canvas;
 };
+
+// ----------------------------- One angle, and why it is one -----------------------------
+//
+// The daily mismatch story is a LIST — six fixtures, scanned. This is one angle argued in
+// full: the two numbers that make it, said in words, with the sample behind them.
+//
+// THE REASONING IS BUILT FROM THE NUMBERS, NOT FROM THE EXPLAINER. The "Why this angle?"
+// prose on the card is written by a model that is handed the line, the probability AND the
+// fair odds, and told to reference the concrete numbers — so it routinely contains the
+// price. Putting that on a public image would give away precisely what every other story
+// here blurs. This says the same thing from the same data, deterministically, and cannot
+// leak a price because it is never given one.
+
+/** Break `text` into lines that fit `max` px at the CURRENT font. Canvas will not wrap. */
+export const wrapText = (ctx, text, max) => {
+  const words = String(text || "").split(/\s+/).filter(Boolean);
+  if (!words.length) return [];
+  const lines = [];
+  let line = words[0];
+  for (const w of words.slice(1)) {
+    const next = `${line} ${w}`;
+    if (ctx.measureText(next).width <= max) {
+      line = next;
+    } else {
+      lines.push(line);
+      line = w;
+    }
+  }
+  lines.push(line);
+  return lines;
+};
+
+/**
+ * Why this angle is an angle, in plain words, from the row's own numbers.
+ *
+ * Deliberately says NOTHING about the line, the projection or the price — those are the
+ * paid half and are blurred on the image. What is left is the claim a reader can weigh:
+ * a side that wins corners playing a side that gives them away.
+ */
+export const angleWhy = (r = {}, nf = {}) => {
+  // Checked for absence BEFORE coercing: Number(null) is 0, not NaN, so a null average
+  // would otherwise sail through isFinite and be published as "0.0 corners a game" —
+  // a fabricated number on a public image, which is the worst failure this file has.
+  if (r.team_for == null || r.opp_conceded == null) return [];
+  const won = Number(r.team_for);
+  const conceded = Number(r.opp_conceded);
+  if (!Number.isFinite(won) || !Number.isFinite(conceded)) return [];
+  const where = nf.is_home ? "at home" : "away";
+  const out = [
+    `${r.name} win ${won.toFixed(1)} corners a game ${where}. `
+    + `${nf.opponent || "Their opponent"} concede ${conceded.toFixed(1)}.`,
+  ];
+  // The second line is about how lopsided it is, which is the part worth arguing about.
+  const gap = Math.min(won, conceded);
+  out.push(gap >= 7
+    ? "Both ends of that are extreme. The corners have to come from somewhere."
+    : gap >= 6
+      ? "A side that wins corners against a side that gives them away — that is the whole angle."
+      : "Both numbers sit above par, which is what puts this game on the board at all.");
+  const games = Number(r.real_samples) || 0;
+  if (games) out.push(`Measured over ${games} games, not a hunch.`);
+  return out;
+};
+
+/** One mismatch argued in full. Numbers and reasoning public; line, price and λ held back. */
+export const renderAngleStory = (canvas, {
+  row = {}, fixture = {}, kickoff = "",
+  cta = "The line and the price on the site", brand = "CORNER MODEL", blurRadius = 14,
+} = {}) => {
+  canvas.width = STORY_W;
+  canvas.height = STORY_H;
+  const ctx = canvas.getContext("2d");
+
+  ctx.fillStyle = C.bg;
+  ctx.fillRect(0, 0, STORY_W, STORY_H);
+  const glow = ctx.createRadialGradient(STORY_W / 2, 240, 60, STORY_W / 2, 240, 900);
+  glow.addColorStop(0, "rgba(20,219,245,0.16)");
+  glow.addColorStop(1, "rgba(20,219,245,0)");
+  ctx.fillStyle = glow;
+  ctx.fillRect(0, 0, STORY_W, 1100);
+
+  ctx.textBaseline = "middle";
+  const useFlags = flagsRender(ctx);
+
+  ctx.fillStyle = C.primary;
+  ctx.font = `700 30px ${FONT_HEAD}`;
+  ctx.letterSpacing = "6px";
+  ctx.fillText(brand, 72, 170);
+  ctx.letterSpacing = "0px";
+
+  ctx.fillStyle = C.text;
+  ctx.font = `700 56px ${FONT_HEAD}`;
+  ctx.fillText("Why this angle", 72, 246);
+
+  const where = [
+    (useFlags ? flagFor(row.league_id) : null) || countryCodeFor(row.league_id),
+    kickoff,
+  ].filter(Boolean).join("  ·  ");
+  if (where) {
+    ctx.fillStyle = C.muted;
+    ctx.font = `500 30px ${FONT_BODY}`;
+    ctx.fillText(where, 72, 306);
+  }
+
+  // THE TWO NUMBERS THAT ARE THE ANGLE, side by side so the gap is the picture.
+  const panelY = 380;
+  const panelH = 340;
+  const halfW = (STORY_W - 144 - 24) / 2;
+  const half = (x, kicker, name, value, tone) => {
+    ctx.fillStyle = C.card;
+    roundRect(ctx, x, panelY, halfW, panelH, 24);
+    ctx.fill();
+    ctx.strokeStyle = C.border;
+    ctx.lineWidth = 2;
+    ctx.stroke();
+    ctx.fillStyle = tone;
+    ctx.font = `700 26px ${FONT_HEAD}`;
+    ctx.letterSpacing = "3px";
+    ctx.fillText(kicker, x + 32, panelY + 54);
+    ctx.letterSpacing = "0px";
+    ctx.fillStyle = C.text;
+    ctx.font = fitFont(ctx, name, { size: 40, max: halfW - 64, weight: 600, family: FONT_HEAD });
+    ctx.fillText(name, x + 32, panelY + 118);
+    ctx.fillStyle = tone;
+    ctx.font = `700 104px ${FONT_DATA}`;
+    ctx.fillText(value, x + 32, panelY + 218);
+    ctx.fillStyle = C.muted;
+    ctx.font = `500 26px ${FONT_BODY}`;
+    ctx.fillText("corners a game", x + 32, panelY + 288);
+  };
+  half(72, "WINS", row.name || "", Number(row.team_for || 0).toFixed(1), C.solid);
+  half(72 + halfW + 24, "CONCEDES", fixture.opponent || "",
+       Number(row.opp_conceded || 0).toFixed(1), "#F99B2F");
+
+  // The reasoning, wrapped — canvas draws straight off the edge otherwise — and CENTRED
+  // in the band between the panels and the held-back strip. A short argument (one line
+  // per paragraph, which happens whenever the team names are short) left a third of the
+  // story visibly empty when this was top-aligned, which reads as a broken image.
+  const stripY = STORY_H - 560;
+  const bandTop = panelY + panelH + 70;
+  const bandBottom = stripY - 50;
+  ctx.font = `500 38px ${FONT_BODY}`;
+  const paras = angleWhy(row, fixture).map((t) => wrapText(ctx, t, STORY_W - 144));
+  const blockH = paras.reduce((h, ln) => h + ln.length * 54 + 26, 0) - 26;
+  let y = Math.max(bandTop, bandTop + (bandBottom - bandTop - blockH) * 0.42);
+  paras.forEach((lns) => {
+    lns.forEach((ln) => {
+      ctx.fillStyle = C.text;
+      ctx.font = `500 38px ${FONT_BODY}`;
+      ctx.fillText(ln, 72, y);
+      y += 54;
+    });
+    y += 26;
+  });
+
+  // What is being held back, in the shape of the thing being held back.
+  ctx.fillStyle = C.card;
+  roundRect(ctx, 72, stripY, STORY_W - 144, 132, 20);
+  ctx.fill();
+  ctx.strokeStyle = C.border;
+  ctx.lineWidth = 2;
+  ctx.stroke();
+  ctx.fillStyle = C.muted;
+  ctx.font = `500 28px ${FONT_BODY}`;
+  ctx.fillText("Model line & price", 116, stripY + 66);
+  blurred(ctx, () => {
+    ctx.textAlign = "right";
+    ctx.fillStyle = C.primary;
+    ctx.font = `700 52px ${FONT_DATA}`;
+    ctx.fillText(`${row.line ?? ""}+ @ ${Number(row.fair_odds || 0).toFixed(2)}`,
+                 STORY_W - 116, stripY + 66);
+    ctx.textAlign = "left";
+  }, blurRadius);
+
+  const ctaY = STORY_H - 340;
+  ctx.fillStyle = C.primary;
+  roundRect(ctx, 72, ctaY, STORY_W - 144, 108, 54);
+  ctx.fill();
+  ctx.fillStyle = "#00181C";
+  ctx.font = fitFont(ctx, cta, { size: 38, max: STORY_W - 220, family: FONT_HEAD });
+  ctx.textAlign = "center";
+  ctx.fillText(cta, STORY_W / 2, ctaY + 56);
+  ctx.fillStyle = C.muted;
+  ctx.font = `500 26px ${FONT_BODY}`;
+  ctx.fillText("corner-model", STORY_W / 2, ctaY + 168);
+  ctx.textAlign = "left";
+
+  return canvas;
+};

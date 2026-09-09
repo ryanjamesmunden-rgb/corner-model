@@ -5,7 +5,8 @@ import { api } from "@/lib/api";
 import PreviewWall from "@/components/PreviewWall";
 import { withFlag } from "@/lib/countryFlag";
 import StoryButton from "@/components/StoryButton";
-import { mismatchStoryDays } from "@/lib/storyImage";
+import { mismatchStoryDays, renderAngleStory } from "@/lib/storyImage";
+import { kickoffLabel } from "@/lib/kickoff";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
 const WINDOWS = [
@@ -190,6 +191,20 @@ function PairCard({ r, onClick }) {
               <ChevronDown className={`h-3 w-3 transition-transform duration-150 ${expanded ? "rotate-180" : ""}`} />
               {expanded ? "Hide the numbers" : "Show the numbers"}
             </button>
+            {/* SHARE THE ARGUMENT, NOT THE PRICE. The image is built from the row's own
+                numbers rather than from the prose above it: the explainer is handed the
+                line, the probability and the fair odds and told to reference them, so its
+                text routinely contains the price this story is supposed to withhold. */}
+            <StoryButton
+              days={[{ key: `angle-${nf.fixture_id}-${r.line}` }]}
+              testId="quickscan-angle-story"
+              label="Share"
+              title="A Story image arguing this angle — line and price blurred"
+              className="!px-1.5 !py-0.5 !text-[10px] !border-0 !bg-transparent !text-primary hover:!bg-primary/10"
+              render={(canvas) => renderAngleStory(canvas, {
+                row: r, fixture: nf, kickoff: kickoffLabel(nf.date),
+              })}
+            />
             <button
               data-testid="quickscan-hide-btn"
               onClick={() => { setExplanation(null); setExpanded(false); }}

@@ -131,11 +131,60 @@ def test_profile_never_divides_by_a_missing_league_average():
 
 
 # --- key_factors: measured, or explicitly not ---
-def test_red_card_factor_is_present_and_marked_unmeasured():
-    """It decides these bets but the data has no cards, so it must not look like a stat."""
+def test_red_card_factor_says_so_when_there_is_no_card_history():
+    """The scenario still matters with no data, so the row stays — but it must not look
+    like a stat. `measured` is the flag the UI uses to label it."""
     rc = next(f for f in key_factors(team(), team(), "home", "Us", "Them") if f["key"] == "red_card")
-    assert rc["measured"] is False and rc["games"] is None
-    assert "Them" in rc["detail"] and "not in this site's data" in rc["detail"]
+    assert rc["measured"] is False
+    assert "Them" in rc["detail"] and "Not enough card history" in rc["detail"]
+
+
+def test_red_card_factor_reports_the_drop_when_the_history_is_there():
+    # Six clean games at 5 corners, three with a red at 3 — a real, measurable drop.
+    ms = ([match(home=True, cf=5, i=i) for i in range(6)]
+          + [match(home=True, cf=3, i=i + 6) for i in range(3)])
+    for m in ms[:6]:
+        m["red_cards_for"], m["red_cards_against"] = 0, 0
+    for m in ms[6:]:
+        m["red_cards_for"], m["red_cards_against"] = 1, 0
+    t = {"team_id": "t", "name": "T", "league_id": "lg", "real_matches": ms}
+    rc = next(f for f in key_factors(t, team(), "home", "Us", "Them") if f["key"] == "red_card")
+    assert rc["measured"] is True and rc["kind"] == "risk" and rc["games"] == 9
+    assert "3 of 9" in rc["detail"] and "main way this bet dies" in rc["detail"]
+
+
+def test_a_team_that_never_goes_down_to_ten_is_reported_as_a_positive():
+    ms = [match(home=True, cf=5, i=i) for i in range(8)]
+    for m in ms:
+        m["red_cards_for"], m["red_cards_against"] = 0, 0
+    t = {"team_id": "t", "name": "T", "league_id": "lg", "real_matches": ms}
+    rc = next(f for f in key_factors(t, team(), "home", "Us", "Them") if f["key"] == "red_card")
+    assert rc["kind"] == "boost" and rc["measured"] is True
+    assert "keep eleven" in rc["title"]
+
+
+def test_the_opponents_sendings_off_are_reported_as_the_good_news():
+    """The half the site leads with: THEIR red is the gift, and it is measured from their
+    games, in corners CONCEDED rather than won."""
+    ms = ([match(home=False, cf=4, ca=5, i=i) for i in range(6)]
+          + [match(home=False, cf=4, ca=9, i=i + 6) for i in range(2)])
+    for m in ms[:6]:
+        m["red_cards_for"], m["red_cards_against"] = 0, 0
+    for m in ms[6:]:
+        m["red_cards_for"], m["red_cards_against"] = 1, 0
+    opp = {"team_id": "o", "name": "O", "league_id": "lg", "real_matches": ms}
+    f = next(x for x in key_factors(team(), opp, "home", "Us", "Them") if x["key"] == "opp_red")
+    assert f["kind"] == "boost" and f["measured"] is True
+    assert "2 of 8" in f["detail"] and "9.0 corners" in f["detail"]
+
+
+def test_matches_the_backfill_never_reached_are_not_counted_as_clean():
+    """A missing key means "we don't know", not "no cards". Treating it as zero would put
+    every un-backfilled game in the denominator and dilute the rate toward nothing."""
+    ms = [match(home=True, cf=5, i=i) for i in range(9)]      # no card keys at all
+    t = {"team_id": "t", "name": "T", "league_id": "lg", "real_matches": ms}
+    rc = next(f for f in key_factors(t, team(), "home", "Us", "Them") if f["key"] == "red_card")
+    assert rc["measured"] is False
 
 
 def test_early_goal_risk_is_reported_with_its_sample():

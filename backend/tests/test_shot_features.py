@@ -30,13 +30,28 @@ def test_stat_int(raw, expected):
 
 
 # --- statistics block parsing ---
-def test_parses_the_four_features_plus_corners():
+def test_parses_every_feature_plus_corners():
+    """Cards come out of this SAME block, which is why they cost no extra API call."""
     parsed = parse_team_stats(stats(**{
         "Total Shots": 15, "Shots on Goal": 6, "Blocked Shots": 3,
         "Dangerous Attacks": 48, "Corner Kicks": 7, "Ball Possession": "58%",
+        "Yellow Cards": 2, "Red Cards": 1,
     }))
     assert parsed == {"shots": 15, "shots_on_target": 6, "blocked_shots": 3,
-                      "dangerous_attacks": 48, "corners": 7}
+                      "dangerous_attacks": 48, "red_cards": 1, "yellow_cards": 2,
+                      "corners": 7}
+
+
+def test_a_clean_sheet_of_cards_is_zero_not_none():
+    """The provider reports 0 rather than omitting the row, and 0 is a real observation —
+    it must not be stored as "we don't know", which is what None means everywhere here."""
+    parsed = parse_team_stats(stats(**{"Red Cards": 0, "Yellow Cards": 0}))
+    assert parsed["red_cards"] == 0 and parsed["yellow_cards"] == 0
+
+
+def test_cards_absent_from_the_block_stay_none():
+    parsed = parse_team_stats(stats(**{"Total Shots": 9}))
+    assert parsed["red_cards"] is None and parsed["yellow_cards"] is None
 
 
 def test_missing_stat_is_none_not_zero():
@@ -70,7 +85,8 @@ def test_null_value_falls_through_to_the_next_alias():
 
 def test_empty_statistics_block():
     assert parse_team_stats([]) == {"shots": None, "shots_on_target": None, "blocked_shots": None,
-                                    "dangerous_attacks": None, "corners": None}
+                                    "dangerous_attacks": None, "red_cards": None,
+                                    "yellow_cards": None, "corners": None}
 
 
 # --- per-match sample ---

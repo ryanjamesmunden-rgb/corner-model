@@ -302,7 +302,8 @@ def team_split(matches: List[dict], split: str, window: int) -> dict:
 # before anything depends on them. A fixture the provider didn't cover carries None,
 # so every average travels with the sample size it was actually computed from.
 
-SHOT_FEATURES = ("shots", "shots_on_target", "blocked_shots", "dangerous_attacks")
+SHOT_FEATURES = ("shots", "shots_on_target", "blocked_shots", "dangerous_attacks",
+                 "red_cards", "yellow_cards")
 
 
 def _feature_avg(pool: List[dict], key: str) -> Optional[float]:
@@ -2049,13 +2050,18 @@ async def tool_backfill_shots(token: Optional[str] = None, league_id: Optional[s
 async def tool_backfill_goals(token: Optional[str] = None, league_id: Optional[str] = None,
                               limit: int = 120, project_only: bool = False,
                               user: dict = Depends(get_current_user)):
-    """Fill goal detail — scorers, minutes, and minutes spent trailing — onto cached
-    fixtures, then project it onto team history.
+    """Fill goal AND card detail — scorers, minutes spent trailing, and who went down to
+    ten — onto cached fixtures, then project it onto team history.
 
     SPENDS API CREDITS on the fetch half: one `/fixtures/events` call per fixture not yet
     done, capped by `limit` per league and resumable, so the spend is yours to pace.
     `project_only` re-runs the cache -> teams half for free, which is what you want after
-    a sync has added matches the cache already covers."""
+    a sync has added matches the cache already covers.
+
+    CARDS COST A ONE-OFF CATCH-UP. They come out of the same response as the goals, so a
+    fixture fetched from here on gets both for one call — but fixtures already done for
+    goals were stored before cards existed and are re-fetched once to pick them up. After
+    that pass the marginal cost is zero again."""
     _check_tools_token(token)
     argv, parts = [], []
     if league_id and league_id != "all":
@@ -2599,14 +2605,89 @@ def key_factors(team: dict, opp: dict, venue: str, team_name: str, opp_name: str
                               "so this is more often played on your team's terms.",
                     "games": opp_gp["games"]})
 
-    # NOT MEASURED — and said so. Included because it genuinely decides these bets, but it
-    # carries no number because the provider data behind this site has no cards in it.
-    out.append({"key": "red_card", "kind": "watch", "title": "A red card either way",
-                "detail": f"A sending-off for {opp_name} is the best thing that can happen to "
-                          f"a corners-over — ten men defend deeper and concede more. One for "
-                          f"{team_name} is the worst. Cards are not in this site's data, so "
-                          "this is a scenario to watch, not a number.",
-                "games": None, "measured": False})
+    # RED CARDS. This used to be the one unmeasured row on the page — the scenario that
+    # decides these bets most sharply, carried with no number because the data had none.
+    # It does now, so it is reported like everything else: from the team's own games, with
+    # the sample attached, and silent rather than guessing where the backfill has not run.
+    out.extend(_red_card_factors(team, opp, venue, team_name, opp_name))
+    return out
+
+
+def _red_avg(pool: List[dict], key: str) -> Optional[float]:
+    """Corners won in the games matching `key`, or None when there are too few to mean
+    anything. Two games is an anecdote; the threshold keeps it from being printed as a rate."""
+    hits = [m for m in pool if (m.get(key) or 0) > 0]
+    return (sum(m["corners_for"] for m in hits) / len(hits)) if len(hits) >= MIN_RED_GAMES else None
+
+
+MIN_RED_GAMES = 2      # sendings-off are rare; below this there is no rate worth printing
+
+
+def _red_card_factors(team, opp, venue, team_name, opp_name) -> List[dict]:
+    """What actually happens to the corner count when someone goes down to ten.
+
+    TWO SEPARATE FACTS, and they point opposite ways: this team losing a man is the risk to
+    a corners-over on them, and the OPPONENT losing one is the gift. They are reported as
+    separate rows because a single "cards" row would average away the sign.
+
+    Coverage is counted from `red_cards_for` being PRESENT rather than non-zero: a match
+    with no cards is a real observation and belongs in the denominator, while a match the
+    backfill never reached carries no key at all and must not."""
+    out = []
+    pool = [m for m in _venue_matches(team, venue) if m.get("red_cards_for") is not None]
+    if len(pool) < PROFILE_MIN_GAMES:
+        # Say what is missing rather than pretending the scenario does not matter. This is
+        # the honest version of the row that used to be here unconditionally.
+        out.append({"key": "red_card", "kind": "watch", "title": "A red card either way",
+                    "detail": f"A sending-off for {opp_name} is the best thing that can happen "
+                              f"to a corners-over — ten men defend deeper and concede more. One "
+                              f"for {team_name} is the worst. Not enough card history on this "
+                              "venue yet to put a number on it.",
+                    "games": len(pool) or None, "measured": False})
+    else:
+        base = sum(m["corners_for"] for m in pool) / len(pool)
+        own = [m for m in pool if (m.get("red_cards_for") or 0) > 0]
+        with_red = _red_avg(pool, "red_cards_for")
+        if with_red is not None:
+            drop = with_red - base
+            out.append({
+                "key": "red_card", "kind": "risk" if drop < 0 else "boost",
+                "title": f"{team_name} going down to ten",
+                "detail": (f"Sent off in {len(own)} of {len(pool)} games here. Their corners in "
+                           f"those: {with_red:.1f} a game against {base:.1f} otherwise — "
+                           + ("a real drop, and the main way this bet dies."
+                              if drop < -0.4 else
+                              "barely moved, so it hurts less than it sounds."
+                              if abs(drop) <= 0.4 else
+                              "it went UP, which usually means they were already chasing.")),
+                "games": len(pool), "measured": True})
+        else:
+            out.append({"key": "red_card", "kind": "boost",
+                        "title": f"{team_name} keep eleven on the pitch",
+                        "detail": f"No sendings-off in {len(pool)} games here — the risk that "
+                                  "most often kills a corners-over has not been showing up.",
+                        "games": len(pool), "measured": True})
+
+    # The opponent's discipline, from THEIR games — the half that is good news.
+    #
+    # Computed INDEPENDENTLY of the block above. These are two different teams' records and
+    # the backfill reaches them separately, so gating this on the first one's coverage would
+    # drop the better half of the story whenever only one side had been filled in.
+    opp_venue = "away" if venue == "home" else "home"
+    opp_pool = [m for m in _venue_matches(opp, opp_venue)
+                if m.get("red_cards_for") is not None] if opp else []
+    if len(opp_pool) >= PROFILE_MIN_GAMES:
+        offs = [m for m in opp_pool if (m.get("red_cards_for") or 0) > 0]
+        if offs:
+            conceded = sum(m["corners_against"] for m in offs) / len(offs)
+            usual = sum(m["corners_against"] for m in opp_pool) / len(opp_pool)
+            out.append({
+                "key": "opp_red", "kind": "boost", "title": f"{opp_name} going down to ten",
+                "detail": (f"They have had a man sent off in {len(offs)} of {len(opp_pool)} "
+                           f"games here, and conceded {conceded:.1f} corners a game in those "
+                           f"against {usual:.1f} normally. This is the outcome that makes the "
+                           "bet."),
+                "games": len(opp_pool), "measured": True})
     return out
 
 

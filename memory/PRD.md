@@ -586,6 +586,42 @@ Both new tools are in the Tools panel (`POST /api/tools/backfill-goals`), so no 
 - **Security**: the app is public and the backfill spends API credits, so these are gated behind a `TOOLS_TOKEN` env var and return **503 when it is unset** — disabled by default, opt-in only. Token compared with `secrets.compare_digest`. Every subprocess argument is built from validated values (league ids checked against `MANAGED_LEAGUE_IDS`, mode from an enum, limit clamped 1-500) — no raw user string reaches argv. Per-script cooldowns (backfill 10min, measure 2min) and a one-run-at-a-time guard.
 - The frontend keeps the token in `localStorage` only (`cm2_tools_token`), with a "Forget token" control.
 
+### Red cards, measured (2026-09-09)
+The fixture page carried a red-card row with no number on it and said so, because the data
+had no cards. It does now.
+
+- **Cards were already in two responses the app fetches.** `/fixtures/statistics` (every
+  sync) carries the counts, and `/fixtures/events` (the goal backfill) carries them WITH
+  MINUTES. So the marginal cost from here is zero; only catching up history costs a call.
+- `card_events.py` parses reds and yellows with minute and side. **A SECOND YELLOW IS A
+  RED**, and the provider reports it two ways — sometimes `detail: "Second Yellow card"`,
+  sometimes a plain yellow on a player who already had one. The second form is caught by
+  tracking each player's yellows. Missing it would undercount sendings-off in exactly the
+  matches most likely to have one, which drags the measured effect toward zero — the
+  failure mode where the feature looks like it works and quietly says nothing.
+- An UNNAMED second yellow is left as a yellow: two anonymous cards cannot be shown to be
+  the same player, and inventing a dismissal is worse than missing one.
+- `backfill_goal_events.py` stores cards alongside goals behind a SEPARATE `cards_at`
+  marker, so fixtures already done for goals are re-fetched exactly once rather than being
+  skipped forever or re-fetched every run.
+- **A fixture the backfill never reached must not project zeros.** Zero cards is a real
+  observation; a missing key is "we don't know". Conflating them would put every
+  un-backfilled game in the denominator and dilute every rate. Coverage is counted from the
+  key being PRESENT, not non-zero.
+- `key_factors` now emits TWO rows, because they point opposite ways and a single "cards"
+  row would average away the sign: `red_card` (this team down to ten — the risk) and
+  `opp_red` (the opponent down to ten — the gift, reported in corners CONCEDED from their
+  games). Where a team has never gone down to ten, that is reported as the positive it is.
+- **Bug caught by a test**: the opponent's row was originally gated behind THIS team's card
+  coverage. They are different teams' records and the backfill reaches them separately, so
+  that dropped the better half of the story whenever only one side had been filled in. Now
+  computed independently.
+- Still honest where there is no data: the unmeasured row remains, worded as "not enough
+  card history yet", and `measured: false` still drives the UI label.
+- `backend/tests/test_card_events.py` (15) and new cases in `test_presentation.py`.
+- **TO USE IT: run Tools -> backfill goals.** It fills cards too now, and the first pass
+  re-fetches fixtures already done for goals. After that the cost is zero again.
+
 ### The story, as a video (2026-09-09)
 Same picture, animated and recorded in the browser: bars draw in left to right, the
 percentage counts up, the market rows deal out, the call to action lands last. ~5.5s,

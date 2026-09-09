@@ -708,6 +708,41 @@ export const angleWhy = (r = {}, nf = {}) => {
   return out;
 };
 
+/**
+ * How to describe a run of recent games WITHOUT overclaiming the venue.
+ *
+ * `_real_avg_detail` falls back to every venue when the home/away pool is thinner than
+ * three games. On the card that fallback is spelled out in an amber warning; on an image
+ * there is no room for a warning, so the label itself has to be true — "last 6 at home"
+ * over a mixed run would be a lie printed on something public.
+ */
+export const gamesLabel = (d = {}, n = 0) => {
+  const asked = d.venue_asked === "home" ? "at home" : d.venue_asked === "away" ? "away" : "";
+  const mixed = d.venue_used === "all" && asked;
+  return `LAST ${n}${mixed ? ", ALL VENUES" : asked ? ` ${asked.toUpperCase()}` : ""}`;
+};
+
+/** A run of games as bars, oldest to newest — the shape of the form behind the average. */
+const drawGames = (ctx, values, { x, y, w, h, tone }) => {
+  const vals = (values || []).slice().reverse();     // stored newest-first; read left to right
+  if (!vals.length) return;
+  const peak = Math.max(...vals, 1);
+  const gap = 10;
+  const bw = (w - gap * (vals.length - 1)) / vals.length;
+  vals.forEach((v, i) => {
+    const bh = Math.max(6, (v / peak) * h);
+    const bx = x + i * (bw + gap);
+    ctx.fillStyle = tone;
+    roundRect(ctx, bx, y + h - bh, bw, bh, Math.min(8, bw / 2, bh / 2));
+    ctx.fill();
+    ctx.fillStyle = C.muted;
+    ctx.font = `500 22px ${FONT_DATA}`;
+    ctx.textAlign = "center";
+    ctx.fillText(String(v), bx + bw / 2, y + h + 26);
+    ctx.textAlign = "left";
+  });
+};
+
 /** One mismatch argued in full. Numbers and reasoning public; line, price and λ held back. */
 export const renderAngleStory = (canvas, {
   row = {}, fixture = {}, kickoff = "",
@@ -736,7 +771,7 @@ export const renderAngleStory = (canvas, {
 
   ctx.fillStyle = C.text;
   ctx.font = `700 56px ${FONT_HEAD}`;
-  ctx.fillText("Why this angle", 72, 246);
+  ctx.fillText("Corner mismatches", 72, 246);
 
   const where = [
     (useFlags ? flagFor(row.league_id) : null) || countryCodeFor(row.league_id),
@@ -748,11 +783,14 @@ export const renderAngleStory = (canvas, {
     ctx.fillText(where, 72, 306);
   }
 
-  // THE TWO NUMBERS THAT ARE THE ANGLE, side by side so the gap is the picture.
-  const panelY = 380;
-  const panelH = 340;
+  // THE TWO NUMBERS THAT ARE THE ANGLE, side by side so the gap is the picture — each
+  // over its own recent form, so the average is shown to be a run rather than a claim.
+  const ev = row.evidence || {};
+  const panelY = 372;
+  const withBars = (ev.team?.recent?.length || ev.opponent?.recent?.length) ? 1 : 0;
+  const panelH = withBars ? 470 : 340;
   const halfW = (STORY_W - 144 - 24) / 2;
-  const half = (x, kicker, name, value, tone) => {
+  const half = (x, kicker, name, value, tone, detail) => {
     ctx.fillStyle = C.card;
     roundRect(ctx, x, panelY, halfW, panelH, 24);
     ctx.fill();
@@ -766,17 +804,31 @@ export const renderAngleStory = (canvas, {
     ctx.letterSpacing = "0px";
     ctx.fillStyle = C.text;
     ctx.font = fitFont(ctx, name, { size: 40, max: halfW - 64, weight: 600, family: FONT_HEAD });
-    ctx.fillText(name, x + 32, panelY + 118);
+    ctx.fillText(name, x + 32, panelY + 116);
     ctx.fillStyle = tone;
-    ctx.font = `700 104px ${FONT_DATA}`;
-    ctx.fillText(value, x + 32, panelY + 218);
+    ctx.font = `700 100px ${FONT_DATA}`;
+    ctx.fillText(value, x + 32, panelY + 210);
     ctx.fillStyle = C.muted;
     ctx.font = `500 26px ${FONT_BODY}`;
-    ctx.fillText("corners a game", x + 32, panelY + 288);
+    ctx.fillText("corners a game", x + 32, panelY + 276);
+
+    const runs = detail?.recent || [];
+    if (!runs.length) return;
+    ctx.strokeStyle = C.border;
+    ctx.beginPath();
+    ctx.moveTo(x + 32, panelY + 310);
+    ctx.lineTo(x + halfW - 32, panelY + 310);
+    ctx.stroke();
+    ctx.fillStyle = C.muted;
+    ctx.font = `600 20px ${FONT_DATA}`;
+    ctx.letterSpacing = "2px";
+    ctx.fillText(gamesLabel(detail, runs.length), x + 32, panelY + 348);
+    ctx.letterSpacing = "0px";
+    drawGames(ctx, runs, { x: x + 32, y: panelY + 372, w: halfW - 64, h: 62, tone });
   };
-  half(72, "WINS", row.name || "", Number(row.team_for || 0).toFixed(1), C.solid);
+  half(72, "WINS", row.name || "", Number(row.team_for || 0).toFixed(1), C.solid, ev.team);
   half(72 + halfW + 24, "CONCEDES", fixture.opponent || "",
-       Number(row.opp_conceded || 0).toFixed(1), "#F99B2F");
+       Number(row.opp_conceded || 0).toFixed(1), "#F99B2F", ev.opponent);
 
   // The reasoning, wrapped — canvas draws straight off the edge otherwise — and CENTRED
   // in the band between the panels and the held-back strip. A short argument (one line

@@ -586,7 +586,7 @@ Both new tools are in the Tools panel (`POST /api/tools/backfill-goals`), so no 
 - **Security**: the app is public and the backfill spends API credits, so these are gated behind a `TOOLS_TOKEN` env var and return **503 when it is unset** — disabled by default, opt-in only. Token compared with `secrets.compare_digest`. Every subprocess argument is built from validated values (league ids checked against `MANAGED_LEAGUE_IDS`, mode from an enum, limit clamped 1-500) — no raw user string reaches argv. Per-script cooldowns (backfill 10min, measure 2min) and a one-run-at-a-time guard.
 - The frontend keeps the token in `localStorage` only (`cm2_tools_token`), with a "Forget token" control.
 
-### "Why this angle", as a postable image (2026-09-09)
+### "Corner mismatches", as a postable image (2026-09-09)
 The mismatch cards on Quick Scan could explain themselves on screen but not off it. A Share
 button in the explanation panel now turns one angle into a 1080x1920 Story.
 
@@ -610,6 +610,14 @@ button in the explanation panel now turns one angle into a 1080x1920 Story.
   failure this file has. Absence is now checked before coercion.
 - `frontend/src/lib/angleStory.test.js`: 15 tests, including one that pins that the copy
   never contains the line, price, probability or projection.
+- **Retitled** from "Why this angle" to "Corner mismatches", and each panel now carries the
+  side's RECENT GAMES as bars under its average — the average shown to be a run rather
+  than asserted. Bars are anchored to zero and read oldest to newest.
+- **The venue label had to be earned.** `_real_avg_detail` silently falls back to every
+  venue when the home/away pool is under three games; the card spells that out in an amber
+  warning, but an image has no room for one. So `gamesLabel()` says "LAST 6, ALL VENUES"
+  rather than "LAST 6 AT HOME" whenever the fallback fired — the label itself is the only
+  place the truth can live on a picture.
 
 ### Red cards, measured (2026-09-09)
 The fixture page carried a red-card row with no number on it and said so, because the data

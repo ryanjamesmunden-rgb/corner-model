@@ -586,6 +586,31 @@ Both new tools are in the Tools panel (`POST /api/tools/backfill-goals`), so no 
 - **Security**: the app is public and the backfill spends API credits, so these are gated behind a `TOOLS_TOKEN` env var and return **503 when it is unset** — disabled by default, opt-in only. Token compared with `secrets.compare_digest`. Every subprocess argument is built from validated values (league ids checked against `MANAGED_LEAGUE_IDS`, mode from an enum, limit clamped 1-500) — no raw user string reaches argv. Per-script cooldowns (backfill 10min, measure 2min) and a one-run-at-a-time guard.
 - The frontend keeps the token in `localStorage` only (`cm2_tools_token`), with a "Forget token" control.
 
+### "Why this angle", as a postable image (2026-09-09)
+The mismatch cards on Quick Scan could explain themselves on screen but not off it. A Share
+button in the explanation panel now turns one angle into a 1080x1920 Story.
+
+- **The reasoning is built from the NUMBERS, not from the explainer prose.** The "Why this
+  angle?" text is written by a model that is handed the line, the probability AND the fair
+  odds and told to "reference the concrete numbers" — so it routinely contains the price.
+  Putting it on a public image would give away precisely what every other story here
+  blurs. `angleWhy()` says the same thing from the same data, deterministically, and cannot
+  leak a price because it is never given one. A test asserts that.
+- Layout: the two averages that ARE the angle, side by side so the gap is the picture; the
+  argument in words; the line, price and λ held behind a blur; the ask.
+- `wrapText()` — canvas does not wrap, it draws straight off the edge and the words are
+  simply gone from the file. Long words overflow rather than being dropped, since there is
+  no hyphenation and losing text silently is worse.
+- The text block is CENTRED in the band between the panels and the blurred strip. Two short
+  team names produce a three-line argument, which left a third of the story empty when this
+  was top-aligned — the same lesson `renderStory` learned about short lists.
+- **Bug caught by a test**: `Number(null)` is `0`, not `NaN`, so the original `isFinite`
+  guard let a missing average through and would have published "0.0 corners a game" as
+  though it were measured — a fabricated number on a public image, which is the worst
+  failure this file has. Absence is now checked before coercion.
+- `frontend/src/lib/angleStory.test.js`: 15 tests, including one that pins that the copy
+  never contains the line, price, probability or projection.
+
 ### Red cards, measured (2026-09-09)
 The fixture page carried a red-card row with no number on it and said so, because the data
 had no cards. It does now.

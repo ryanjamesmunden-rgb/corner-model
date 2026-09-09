@@ -19,35 +19,43 @@ import { kickoffLabel, timesFooter } from "./kickoff.js";
 const more = (total, limit) => (total > limit ? `\n+${total - limit} more on the site` : "");
 
 /**
- * Corner Streak Finder. `presetLabel` is the window as the filter names it ("5 of 5"),
- * so the heading says which run the list below it is actually claiming.
+ * Corner Streak Finder: flag, team, line, run. Four things, nothing else.
  *
- * THE LINE IS NOT PUBLISHED. A row says which team, how the run reads and when they
- * play — not the number. The line is the actionable half and it is what the paid
- * channel is for, so it stays out of a public post entirely rather than being blurred
- * or abbreviated. The record and the kick-off are what keep the claim credible without
- * it: a reader can see a 5/5 run kicking off tonight and cannot bet it from the post.
+ * THE RUN IS THE TEAM'S OWN, NOT THE FILTER'S. Every row used to end "(5/5)" because
+ * that is what the filter asked for — five of the last five — so a team on a nine-game
+ * run and a team that scraped the minimum published the same number, and the best rows
+ * on the board were the ones the post undersold. `streak.length` is the run actually
+ * alive right now, counted over the whole history and counting WINS only (voids are
+ * skipped by streak_runs rather than padding the number), so "9 in a row" means nine.
+ *
+ * THE OPPONENT AND THE KICK-OFF ARE GONE. Neither is a reason to click: the fixture is
+ * the same information the reader gets everywhere else, and between them they cost about
+ * a third of a post. What is left is the part that earns a visit — a team, the line it
+ * keeps clearing, and how long it has been doing it.
+ *
+ * THE LINE IS PUBLISHED NOW. This used to be withheld deliberately, on the reasoning that
+ * the line is the actionable half. The share images already print it, so withholding it
+ * here only made the two disagree — and a streak with no line is a claim a reader cannot
+ * size up, which is a worse advert than one they can. The price is still the paid half
+ * and still never appears.
  */
-export const streakShare = ({ rows = [], subject, isUnder, side, presetLabel = "" }) => (limit) => {
+export const streakShare = ({ rows = [], subject, side }) => (limit) => {
   if (!rows.length) return "";
-  const what = subject === "match" ? "match total corners" : "team corners";
-  const head = `${isUnder ? "Under" : "Over"} ${what} — hit in ${presetLabel} `
-    + `${side === "overall" ? "" : side + " "}games:`;
-  const shown = rows.slice(0, limit);
-  const lines = shown.map((r) => {
-    const fx = r.next_fixture;
-    const vs = fx ? ` ${fx.is_home ? "vs" : "@"} ${fx.opponent}` : "";
-    // The kick-off closes the line rather than interrupting it: the team is what the
-    // reader is weighing, the time is what they act on once they've decided.
-    const when = kickoffLabel(fx?.date);
+  const what = subject === "match" ? "Match" : "Team";
+  const where = side === "overall" ? "" : ` in ${side} games`;
+  const head = `${what} corner streaks running right now${where}:`;
+  const lines = rows.slice(0, limit).map((r) => {
+    // "under 9" or "5+", straight from the API so the post cannot label a direction
+    // differently from the screen. Absent, the row drops the line rather than guessing
+    // one — mislabelling an under as an over is worse than saying less.
+    const line = r.line_label ? ` ${r.line_label}` : "";
+    // A run of one is not a run, and "1 in a row" reads as a mistake even when true.
+    const run = Number(r.streak?.length);
+    const tail = run >= 2 ? ` — ${run} in a row` : "";
     // The flag replaces the bullet rather than joining it — see flagBullet.
-    return `${flagBullet(r.league_id)} ${r.name}${vs}`
-      + ` (${r.hits}/${r.window})${when ? ` · ${when}` : ""}`;
+    return `${flagBullet(r.league_id)} ${r.name}${line}${tail}`;
   });
-  // The zone is named ONCE, not on every line — six repeats of "BST" is a third of a
-  // tweet. See timesFooter for when it is dropped entirely.
-  const times = timesFooter(shown.map((r) => r.next_fixture?.date));
-  return `${head}\n${lines.join("\n")}${more(rows.length, limit)}${times}`;
+  return `${head}\n${lines.join("\n")}${more(rows.length, limit)}`;
 };
 
 /** Best Upcoming Games. `days` is the window as the tab names it ("3", "7"). */

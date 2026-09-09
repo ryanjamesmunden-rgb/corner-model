@@ -4919,6 +4919,10 @@ async def set_bankroll(body: BankrollBody, user: dict = Depends(require_user)):
 class BetBody(BaseModel):
     fixture_id: str
     market_key: str
+    # POINTS, NOT POUNDS. The group board already totals in units and deliberately never
+    # collects cash, so logging in cash was the one place the denomination disagreed with
+    # itself. A unit is whatever a unit means to you, which is the only stake size that
+    # reads the same across a room betting very differently.
     stake: float
     # Whether this slip goes on the group board. Captured PER BET rather than only as an
     # account setting, so the choice is made at the moment the bet is placed and a single
@@ -4950,7 +4954,12 @@ async def create_bet(body: BetBody, user: dict = Depends(require_user)):
         "market_key": market["key"], "market_label": f"{market['group_label']} {market['label']}",
         "book_odds": market["book_odds"], "fair_odds": market["fair_odds"], "prob": market["prob"],
         "ev": market["ev"], "tier": market["tier"], "kelly_fraction": kelly_fraction(prob, market["book_odds"]),
-        "stake": round(body.stake, 2), "status": "pending",
+        "stake": round(body.stake, 2),
+        # Recorded rather than assumed. Nothing had ever written a bet before this, so in
+        # practice every row is units — but a stake with no denomination on it is the kind
+        # of thing that silently becomes wrong later.
+        "stake_in": "units",
+        "status": "pending",
         "shared": bool(body.shared),
         # Denormalised so the group board does not need a user lookup per row, and so a
         # later name change cannot silently rewrite who was shown to have placed what.

@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, Fragment } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { toast } from "sonner";
 import {
@@ -28,6 +28,12 @@ const band = (pct) =>
 
 const WINDOW_LABELS = { "3": "L3", "5": "L5", "10": "L10", "0": "Season" };
 
+// The staking panel spans the whole table, and the table is wider than a phone — so left
+// alone the "Back it" button sat off the right edge of the screen exactly like the trigger
+// used to. Capping the width at the screen makes it wrap instead of overflow, and sticky
+// then keeps it against the left edge however far the table underneath is scrolled.
+const PANEL_CELL = "sticky left-0 max-w-[calc(100vw-2.5rem)] px-3 pb-2.5";
+
 export default function FixtureDetail() {
   const { id } = useParams();
   const navigate = useNavigate();
@@ -38,6 +44,10 @@ export default function FixtureDetail() {
   // people are pricing. An unrecognised line lands here rather than nowhere.
   const [pasteTarget, setPasteTarget] = useState("total");
   const [flash, setFlash] = useState({});
+  // Which market has its staking panel open, by key — ONE AT A TIME, and held here rather
+  // than inside each row, because the panel is a sibling row and a row cannot render its
+  // own sibling. Market keys are unique across both team tables, so one value covers them.
+  const [backing, setBacking] = useState(null);
 
   const load = useCallback(() => {
     api.fixture(id).then((d) => {
@@ -206,6 +216,7 @@ export default function FixtureDetail() {
                   <th className="text-right font-medium px-3 py-2">Fair</th>
                   <th className="text-right font-medium px-3 py-2">Book</th>
                   <th className="text-right font-medium px-3 py-2">EV</th>
+                  <th className="sticky right-0 bg-card px-2 py-2" />
                 </tr>
               </thead>
               <tbody className="font-mono-data text-sm">
@@ -221,9 +232,11 @@ export default function FixtureDetail() {
                   const pct = played.length ? Math.round((hit / played.length) * 100) : null;
                   const c = band(pct ?? 0);
                   const dim = pct != null && pct < 30;
+                  const backingThis = backing === m.key;
                   return (
-                    <tr key={m.key} data-testid={`market-row-${m.key}`}
-                      className={`border-b border-border/50 transition-colors ${flash[m.key] ? "flash-green" : ""} ${dim ? "opacity-60" : ""}`}>
+                    <Fragment key={m.key}>
+                    <tr data-testid={`market-row-${m.key}`}
+                      className={`transition-colors ${backingThis ? "" : "border-b border-border/50"} ${flash[m.key] ? "flash-green" : ""} ${dim ? "opacity-60" : ""}`}>
                       <td className="px-3 py-2 whitespace-nowrap">
                         <span className={`text-xs px-1.5 py-0.5 rounded border ${c.chip} ${c.text}`}
                           title={pct == null ? "no games on this venue yet" : `${c.label} — landed ${hit}/${played.length} on this venue`}>
@@ -257,15 +270,25 @@ export default function FixtureDetail() {
                       <td className={`px-3 py-2 text-right font-semibold ${t ? t.text : "text-muted-foreground"}`}>
                         {m.ev != null ? `${m.ev > 0 ? "+" : ""}${m.ev.toFixed(1)}%` : "—"}
                       </td>
-                      {/* LOG A BET, only where there is a price to log one AT. The server
+                      {/* BACK IT, only where there is a price to back it AT. The server
                           refuses a bet on a market with no book odds, so offering the
                           button without them would be a button that always errors. */}
-                      <td className="px-2 py-2 text-right">
-                        {m.book_odds != null && (
-                          <LogBet fixtureId={fixture.fixture_id} market={m} />
-                        )}
+                      <td className="sticky right-0 bg-card px-2 py-2 text-right">
+                        <BackButton market={m} open={backingThis}
+                          onToggle={() => setBacking(backingThis ? null : m.key)} />
                       </td>
                     </tr>
+                    {backingThis && (
+                      <tr className="border-b border-border/50 bg-secondary/40">
+                        <td colSpan={7} className="p-0">
+                          <div className={PANEL_CELL}>
+                            <BackPanel fixtureId={fixture.fixture_id} market={m}
+                              onDone={() => setBacking(null)} />
+                          </div>
+                        </td>
+                      </tr>
+                    )}
+                    </Fragment>
                   );
                 })}
               </tbody>
@@ -289,6 +312,9 @@ export default function FixtureDetail() {
         setOdds={setOdds}
         submitOdds={submitOdds}
         flash={flash}
+        fixtureId={fixture.fixture_id}
+        backing={backing}
+        onBacking={setBacking}
       />
 
       {/* Team breakdowns */}
@@ -401,7 +427,8 @@ function PastePrices({ value, onChange, target, onTarget, onSubmit, homeName, aw
 // Showing both means the quick check and the arithmetic agree in front of you.
 
 function TotalCorners({ markets, home, away, homeName, awayName,
-                        odds, setOdds, submitOdds, flash }) {
+                        odds, setOdds, submitOdds, flash,
+                        fixtureId, backing, onBacking }) {
   // Straight off the model's own total ladder, so the prices and the hit rates cannot
   // drift onto different lines. Over 9.5 is displayed as "10+", which is how it is said.
   const rows = (markets || [])
@@ -479,6 +506,7 @@ function TotalCorners({ markets, home, away, homeName, awayName,
               title="Your price minus the fair price. Positive means you are being paid over the odds">Gap</th>
             <th className="text-right font-medium px-3 py-2"
               title="The gap as a share of your stake, over the long run">EV</th>
+            <th className="sticky right-0 bg-card px-2 py-2" />
           </tr>
         </thead>
         <tbody className="font-mono-data text-sm">
@@ -491,9 +519,11 @@ function TotalCorners({ markets, home, away, homeName, awayName,
             // The gap is only meaningful once BOTH prices exist. A "gap" computed
             // against a blank input would read as the model calling every line value.
             const gap = (m.book_odds && m.fair_odds) ? m.book_odds - m.fair_odds : null;
+            const backingThis = backing === m.key;
             return (
-              <tr key={m.key} data-testid={`total-landed-${m.plus}`}
-                className={`border-b border-border/50 transition-colors ${flash?.[m.key] ? "flash-green" : ""}`}>
+              <Fragment key={m.key}>
+              <tr data-testid={`total-landed-${m.plus}`}
+                className={`transition-colors ${backingThis ? "" : "border-b border-border/50"} ${flash?.[m.key] ? "flash-green" : ""}`}>
                 <td className="px-3 py-2 whitespace-nowrap">
                   <span className={`text-xs px-1.5 py-0.5 rounded border ${c.chip} ${c.text}`}>{m.plus}+</span>
                 </td>
@@ -539,7 +569,24 @@ function TotalCorners({ markets, home, away, homeName, awayName,
                 <td className={`px-3 py-2 text-right font-semibold ${t ? t.text : "text-muted-foreground"}`}>
                   {m.ev != null ? `${m.ev > 0 ? "+" : ""}${m.ev.toFixed(1)}%` : "—"}
                 </td>
+                {/* The totals table could be priced but never backed — the button existed
+                    only on the team tables, so the market at the top of the page was the
+                    one market you could not put on the board. */}
+                <td className="sticky right-0 bg-card px-2 py-2 text-right">
+                  <BackButton market={m} open={backingThis}
+                    onToggle={() => onBacking(backingThis ? null : m.key)} />
+                </td>
               </tr>
+              {backingThis && (
+                <tr className="border-b border-border/50 bg-secondary/40">
+                  <td colSpan={8} className="p-0">
+                    <div className={PANEL_CELL}>
+                      <BackPanel fixtureId={fixtureId} market={m} onDone={() => onBacking(null)} />
+                    </div>
+                  </td>
+                </tr>
+              )}
+              </Fragment>
             );
           })}
         </tbody>
@@ -1035,64 +1082,104 @@ function KeyFactors({ factors, homeName, awayName }) {
   );
 }
 
-// ----------------------------- Logging a wager -----------------------------
-// One tap on a market you have already priced. The stake is the only thing asked for,
-// because everything else — the line, the price you got, the model's price, the EV at the
-// moment you took it — is already on the row and is captured server-side, so a slip
-// records what was true WHEN IT WAS PLACED rather than what the model thinks later.
+// ----------------------------- Backing an angle -----------------------------
+// One tap on a market you have already priced. Everything except the stake is already on
+// the row and is captured server-side — the line, the price you got, the model's price,
+// the EV at that moment — so a slip records what was true WHEN IT WAS PLACED rather than
+// what the model thinks about it a week later.
 //
-// SHARING IS A CHOICE MADE HERE, not buried in settings. The box is ticked by default
-// because a group board that starts empty never fills, but it is in front of you at the
-// moment you decide, and one private bet does not need a setting changed and changed back.
-function LogBet({ fixtureId, market }) {
+// UNITS, NOT POUNDS. The group board totals in units and never collects cash, so asking
+// for cash here was the one place the denomination disagreed with itself. Units also make
+// the board readable: a room betting £5 and £500 produces one number that means the same
+// to both of them.
+//
+// PRESETS RATHER THAN A KEYBOARD. This is used on a phone, mid-scroll, deciding between
+// half a point and two. Four taps cover almost every real answer; the field is still there
+// for the rest.
+const UNIT_PRESETS = [0.5, 1, 2, 3];
+
+// A TRIGGER THAT STAYS ON SCREEN. These tables are seven columns wide and scroll sideways
+// on a phone, and the action column is the last one — so the button that is the whole
+// point of the page sat past the right edge, invisible until you thought to swipe a table
+// you had no reason to think was scrollable. The cell is sticky, so the call to action
+// rides along over whatever is underneath it.
+export function BackButton({ market, open, onToggle }) {
   const { user } = useAuth();
-  const [open, setOpen] = useState(false);
-  const [stake, setStake] = useState("10");
+  if (!user || market.book_odds == null) return null;   // nothing to bet, or nobody to bet it
+  return (
+    <button onClick={onToggle} data-testid={`log-bet-${market.key}`}
+      title={open ? "Close" : "Back this and put it on the group board"}
+      className={`text-[10px] px-2 py-1 rounded border transition-colors whitespace-nowrap ${
+        open ? "border-border text-muted-foreground"
+             : "border-primary/40 text-primary hover:bg-primary/10"}`}>
+      {open ? "Close" : "I'm backing this"}
+    </button>
+  );
+}
+
+// THE FORM GETS ITS OWN ROW rather than being crammed into the action cell. Squeezed into
+// the cell it wrapped onto three lines and the row grew by 70px the instant you tapped —
+// the table jumped under your finger. Across the full width it is one line that reads
+// left to right, it starts at the left edge so a phone sees it without scrolling, and the
+// row it belongs to does not move at all.
+export function BackPanel({ fixtureId, market, onDone }) {
+  const [units, setUnits] = useState(1);
+  // PUBLIC BY DEFAULT, and said so in words rather than hidden in a settings screen: the
+  // point of the board is that the room can see what the room is on. Keeping one back is
+  // still one tap, because "I want this private" is a real thing to want and burying it
+  // would make people simply not log the bet at all.
   const [shared, setShared] = useState(true);
   const [busy, setBusy] = useState(false);
 
-  if (!user) return null;          // nothing to log a bet against
-
   const place = async () => {
-    const n = parseFloat(stake);
-    if (!(n > 0)) { toast.error("Enter a stake"); return; }
+    const n = Number(units);
+    if (!(n > 0)) { toast.error("Pick a stake"); return; }
     setBusy(true);
     try {
       await api.placeBet({ fixture_id: fixtureId, market_key: market.key, stake: n, shared });
-      toast.success(`Logged ${market.label} @ ${market.book_odds.toFixed(2)}`);
-      setOpen(false);
+      toast.success(shared
+        ? `Backing ${market.label} @ ${market.book_odds.toFixed(2)} — it's on the board`
+        : `Logged ${market.label} @ ${market.book_odds.toFixed(2)} — kept private`);
+      onDone();
     } catch (e) {
       toast.error(e?.response?.data?.detail || "Could not log that bet");
     } finally { setBusy(false); }
   };
 
-  if (!open) {
-    return (
-      <button onClick={() => setOpen(true)} data-testid={`log-bet-${market.key}`}
-        title="Log this as a bet"
-        className="text-[10px] px-1.5 py-0.5 rounded border border-border text-muted-foreground
-                   hover:text-primary hover:border-primary/40 transition-colors whitespace-nowrap">
-        + Bet
-      </button>
-    );
-  }
   return (
-    <div className="inline-flex items-center gap-1" data-testid={`log-bet-open-${market.key}`}>
+    <div className="flex items-center gap-2 flex-wrap" data-testid={`log-bet-open-${market.key}`}>
+      <span className="text-[11px] text-muted-foreground font-sans">
+        <span className="text-foreground">{market.label}</span> @ {market.book_odds.toFixed(2)} —
+        staking
+      </span>
+      <div className="inline-flex rounded-md border border-border overflow-hidden">
+        {UNIT_PRESETS.map((u) => (
+          <button key={u} onClick={() => setUnits(u)}
+            data-testid={`log-bet-unit-${market.key}-${u}`}
+            className={`text-[11px] px-2.5 py-1 transition-colors ${
+              Number(units) === u ? "bg-primary text-primary-foreground font-semibold"
+                                  : "text-muted-foreground hover:text-foreground"}`}>
+            {u}u
+          </button>
+        ))}
+      </div>
       <input
-        value={stake} onChange={(e) => setStake(e.target.value)} autoFocus
-        onKeyDown={(e) => { if (e.key === "Enter") place(); if (e.key === "Escape") setOpen(false); }}
-        aria-label="Stake"
-        className="w-14 bg-black border border-border rounded px-1.5 py-1 text-right text-xs
+        value={units} onChange={(e) => setUnits(e.target.value)}
+        inputMode="decimal"
+        onKeyDown={(e) => { if (e.key === "Enter") place(); if (e.key === "Escape") onDone(); }}
+        aria-label="Units"
+        data-testid={`log-bet-units-${market.key}`}
+        className="w-12 bg-black border border-border rounded px-1.5 py-1 text-right text-xs
                    focus:outline-none focus:ring-2 focus:ring-primary" />
-      <button onClick={() => setShared((v) => !v)} title={shared ? "Shared with the group" : "Private"}
-        data-testid={`log-bet-share-${market.key}`}
-        className={`text-[10px] px-1.5 py-1 rounded border transition-colors ${
-          shared ? "border-primary/50 text-primary bg-primary/10" : "border-border text-muted-foreground"}`}>
-        {shared ? "Shared" : "Private"}
-      </button>
       <button onClick={place} disabled={busy} data-testid={`log-bet-save-${market.key}`}
-        className="text-[10px] px-2 py-1 rounded bg-primary text-primary-foreground font-medium disabled:opacity-50">
-        {busy ? "…" : "Log"}
+        className="text-[11px] px-3 py-1 rounded bg-primary text-primary-foreground font-semibold disabled:opacity-50">
+        {busy ? "…" : shared ? "Back it" : "Log it"}
+      </button>
+      <button onClick={() => setShared((v) => !v)}
+        data-testid={`log-bet-share-${market.key}`}
+        className={`text-[11px] font-sans underline underline-offset-2 decoration-dotted transition-colors ${
+          shared ? "text-muted-foreground hover:text-foreground" : "text-tone-streak-fg"}`}>
+        {shared ? "everyone sees this" : "just for me"}
       </button>
     </div>
   );

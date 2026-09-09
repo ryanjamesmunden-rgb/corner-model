@@ -37,7 +37,9 @@ function StatusChip({ status }) {
   );
 }
 
-const signed = (n) => `${n > 0 ? "+" : ""}${n.toFixed(2)}`;
+// UNITS EVERYWHERE. Slips are staked in points, so every total here is points too — the
+// one number that reads the same for someone betting £5 and someone betting £500.
+const signed = (n) => `${n > 0 ? "+" : ""}${n.toFixed(2)}u`;
 
 export default function Bets() {
   const { user, ready } = useAuth();
@@ -102,8 +104,10 @@ function MyBets() {
   if (!rows.length) {
     return (
       <Empty>
-        Nothing logged yet. Open a fixture, type the price your bookmaker is showing into a
-        market, and a <span className="text-foreground">Log bet</span> button appears beside it.
+        Nothing logged yet. Open a fixture, paste or type the prices your bookmaker is
+        showing, and an <span className="text-foreground">I'm backing this</span> button
+        appears on every market you have priced. Stakes are in units, so the board reads the
+        same however differently people bet.
       </Empty>
     );
   }
@@ -136,8 +140,10 @@ function MyBets() {
               <p className="font-mono-data text-xs text-muted-foreground mt-0.5">
                 {b.market_label} @ {b.book_odds?.toFixed(2)}
                 <span className="mx-1.5 opacity-40">·</span>
-                {b.stake?.toFixed(2)} staked
-                {b.shared === false && <span className="ml-1.5 opacity-70">· private</span>}
+                {b.stake?.toFixed(2)}u
+                {b.shared === false
+                  ? <span className="ml-1.5 text-tone-streak-fg/80">· private</span>
+                  : <span className="ml-1.5 opacity-70">· on the board</span>}
               </p>
               <div className="flex items-center gap-2 mt-1.5">
                 <StatusChip status={b.status} />
@@ -189,7 +195,7 @@ function GroupBets() {
           <span className={`ml-auto font-mono-data text-sm font-semibold ${
             summary.units >= 0 ? "text-tone-strong-fg" : "text-tone-under-fg"}`}
             title="Level stakes: every settled slip counted once, at the price it was taken">
-            {signed(summary.units)}u
+            {signed(summary.units)}
           </span>
         )}
       </div>

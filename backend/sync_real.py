@@ -407,6 +407,18 @@ async def main():
     old = await db.sync_runs.find({}, {"_id": 1}).sort("started_at", -1).skip(30).to_list(1000)
     if old:
         await db.sync_runs.delete_many({"_id": {"$in": [o["_id"] for o in old]}})
+    # Prices whose fixture this sync has just replaced. Fixtures are deleted and
+    # re-inserted per league, so an id that changes shape (as they did once) strands
+    # every price stored against the old one. Left alone they accumulate for ever and
+    # crowd the real prices out of the value board's read — so they go every run.
+    try:
+        from server import purge_orphan_odds
+        gone = await purge_orphan_odds(db)
+        if gone:
+            print(f"removed {gone} orphaned odds documents")
+    except Exception as e:
+        print(f"orphan odds purge skipped: {e}")
+
     # settle any Corner Model 2.0 picks whose games have finished
     try:
         from settle_picks import settle as settle_picks

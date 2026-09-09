@@ -249,6 +249,15 @@ export default function ValueBoard() {
               <div className="divide-y divide-border/50">
                 {other.map((r) => <Row key={r.fixture_id} r={r} muted open={open} setOpen={setOpen} navigate={navigate} />)}
               </div>
+              {/* The tail of a flood. Leftovers with no timestamp clear themselves on the
+                  next sync; a recent price outlives its fixture on purpose, so you keep
+                  the record of a game you backed after it has been played. */}
+              {other.some((r) => r.more_orphans) && (
+                <p className="px-3 sm:px-4 py-2 text-[11px] text-muted-foreground border-t border-border/50">
+                  + {other.find((r) => r.more_orphans).more_orphans} more prices with no fixture
+                  behind them.
+                </p>
+              )}
             </div>
           )}
         </>

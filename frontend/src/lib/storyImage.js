@@ -1032,6 +1032,63 @@ export const resultMargin = (value, line, direction = "over") => {
   return by === 1 ? "1 clear" : `${by} clear`;
 };
 
+
+/**
+ * A plain number line, for results that have no stored distribution behind them.
+ *
+ * Without this the image had a hole: the curve is the only thing between the headline and
+ * the call to action, and an angle logged by hand carries no distribution, so a third of
+ * the picture came out empty. This says the same thing the curve's pin says — here is the
+ * line, here is where the game finished — using only the two numbers every result has.
+ */
+const drawNumberLine = (ctx, { line, value, direction, tone, x, y, w, progress = 1 }) => {
+  const top = Math.max(line, value) + Math.max(2, Math.round(Math.max(line, value) * 0.35));
+  const at = (n) => x + (clamp01(n / top)) * w;
+  const h = 22;
+
+  ctx.fillStyle = C.secondary;
+  roundRect(ctx, x, y, w, h, h / 2);
+  ctx.fill();
+
+  // The winning side of the line, so "over" and "under" do not look identical.
+  const from = direction === "under" ? x : at(line);
+  const to = direction === "under" ? at(line) : x + w;
+  ctx.fillStyle = `${C.primary}33`;
+  roundRect(ctx, from, y, Math.max(2, to - from), h, h / 2);
+  ctx.fill();
+
+  // Where it finished, growing to its mark.
+  const reach = at(value * clamp01(progress));
+  ctx.fillStyle = tone;
+  roundRect(ctx, x, y, Math.max(h, reach - x), h, h / 2);
+  ctx.fill();
+
+  // The line itself, as a hard tick — it is a threshold, not a quantity.
+  ctx.strokeStyle = C.text;
+  ctx.lineWidth = 4;
+  ctx.beginPath();
+  ctx.moveTo(at(line), y - 14);
+  ctx.lineTo(at(line), y + h + 14);
+  ctx.stroke();
+
+  ctx.textAlign = "center";
+  ctx.fillStyle = C.muted;
+  ctx.font = `500 26px ${FONT_BODY}`;
+  ctx.fillText(direction === "under" ? `under ${line}` : `${line}+`, at(line), y + h + 46);
+
+  ctx.font = `700 30px ${FONT_DATA}`;
+  const cw = ctx.measureText(String(value)).width + 32;
+  const cx = Math.min(Math.max(reach, x + cw / 2), x + w - cw / 2);
+  ctx.globalAlpha = clamp01(progress);
+  ctx.fillStyle = tone;
+  roundRect(ctx, cx - cw / 2, y - 66, cw, 44, 22);
+  ctx.fill();
+  ctx.fillStyle = C.bg;
+  ctx.fillText(String(value), cx, y - 43);
+  ctx.globalAlpha = 1;
+  ctx.textAlign = "left";
+};
+
 export const renderResultStory = (canvas, {
   homeName = "", awayName = "", leagueId = "", kickoff = "",
   team = "", line = 0, direction = "over", subject = "team",
@@ -1142,6 +1199,14 @@ export const renderResultStory = (canvas, {
       progress: done ? 1 : clamp01((P - 0.16) / 0.5),
       mark: value, markTone: v.tone,
       markAt: done ? 1 : seg(P, 0.66, 0.82),
+    });
+  } else {
+    // No curve stored — an angle logged by hand rather than snapshotted. The number line
+    // carries the same argument from the two numbers every result has.
+    faded(ctx, done ? 1 : seg(P, 0.62, 0.78), () => {
+      drawNumberLine(ctx, { line, value, direction, tone: v.tone,
+                            x: 72, y: 1220, w: STORY_W - 144,
+                            progress: done ? 1 : seg(P, 0.64, 0.9) });
     });
   }
 

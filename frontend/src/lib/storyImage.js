@@ -1343,3 +1343,160 @@ export const renderResultStory = (canvas, {
 
   return canvas;
 };
+
+// ----------------------------- The same result, landscape -----------------------------
+//
+// WHY A SECOND LAYOUT RATHER THAN A CROP. A Story is 9:16 and X's timeline is 16:9. Posting
+// the portrait file to X pillarboxes it: the video plays as a narrow strip down the middle
+// with two black columns either side, and the number that is the entire point ends up about
+// a third of the height it was designed for. Cropping is worse — the count and the curve are
+// at opposite ends of a tall image, so any 16:9 window loses one of them.
+//
+// So the elements are re-composed rather than re-scaled: the argument goes down the left,
+// the evidence sits on the right, and both are full size.
+export const WIDE_W = 1920;
+export const WIDE_H = 1080;
+
+export const renderResultWide = (canvas, {
+  homeName = "", awayName = "", leagueId = "", kickoff = "",
+  team = "", line = 0, direction = "over", subject = "team",
+  value = 0, result = "win", prob = null, dist = [],
+  homeGoals = null, awayGoals = null, homeCorners = null, awayCorners = null,
+  cornerMinutes = [],
+  cta = "The full record on the site", brand = "CORNER MODEL",
+  progress = 1,
+} = {}) => {
+  const P = clamp01(progress);
+  const done = P >= 1;
+  canvas.width = WIDE_W;
+  canvas.height = WIDE_H;
+  const ctx = canvas.getContext("2d");
+  const v = resultVerdict(result) || resultVerdict("win");
+
+  ctx.fillStyle = C.bg;
+  ctx.fillRect(0, 0, WIDE_W, WIDE_H);
+  const glow = ctx.createRadialGradient(340, 400, 60, 340, 400, 900);
+  glow.addColorStop(0, `${v.tone}26`);
+  glow.addColorStop(1, `${v.tone}00`);
+  ctx.fillStyle = glow;
+  ctx.fillRect(0, 0, WIDE_W, WIDE_H);
+
+  ctx.textBaseline = "middle";
+  const useFlags = flagsRender(ctx);
+  const L = 90;                  // left column
+  const R = 900;                 // right column starts here
+
+  faded(ctx, done ? 1 : seg(P, 0, 0.07), () => {
+    ctx.fillStyle = C.primary;
+    ctx.font = `700 26px ${FONT_HEAD}`;
+    ctx.letterSpacing = "6px";
+    ctx.fillText(brand, L, 110);
+    ctx.letterSpacing = "0px";
+
+    ctx.fillStyle = C.text;
+    ctx.font = fitFont(ctx, homeName, { size: 56, max: R - L - 80, family: FONT_HEAD });
+    ctx.fillText(homeName, L, 186);
+    ctx.fillStyle = C.muted;
+    ctx.font = `500 28px ${FONT_BODY}`;
+    ctx.fillText("v", L, 242);
+    ctx.fillStyle = C.text;
+    ctx.font = fitFont(ctx, awayName, { size: 56, max: R - L - 120, family: FONT_HEAD });
+    ctx.fillText(awayName, L + 40, 242);
+
+    const flag = useFlags ? flagFor(leagueId) : null;
+    const where = [flag || countryCodeFor(leagueId), kickoff].filter(Boolean).join("  ·  ");
+    if (where) {
+      ctx.fillStyle = C.muted;
+      ctx.font = `500 26px ${FONT_BODY}`;
+      ctx.fillText(where, L, 300);
+    }
+  });
+
+  faded(ctx, done ? 1 : seg(P, 0.05, 0.14), () => {
+    ctx.font = `700 30px ${FONT_HEAD}`;
+    ctx.letterSpacing = "3px";
+    const w = ctx.measureText(v.word).width + 52;
+    ctx.fillStyle = `${v.tone}22`;
+    roundRect(ctx, L, 348, w, 60, 30);
+    ctx.fill();
+    ctx.strokeStyle = `${v.tone}88`;
+    ctx.lineWidth = 2;
+    ctx.stroke();
+    ctx.fillStyle = v.tone;
+    ctx.fillText(v.word, L + 26, 380);
+    ctx.letterSpacing = "0px";
+  });
+
+  const climb = done ? 1 : seg(P, 0.10, 0.62);
+  faded(ctx, done ? 1 : seg(P, 0.08, 0.16), () => {
+    ctx.fillStyle = v.tone;
+    ctx.font = `700 200px ${FONT_DATA}`;
+    ctx.fillText(String(Math.round(value * climb)), L, 550);
+    ctx.fillStyle = C.text;
+    ctx.font = `600 38px ${FONT_HEAD}`;
+    ctx.fillText(subject === "match" ? "corners in the match" : `corners for ${team}`, L, 672);
+  });
+
+  faded(ctx, done ? 1 : seg(P, 0.62, 0.74), () => {
+    const called = direction === "under" ? `under ${line}` : `${line}+`;
+    ctx.fillStyle = C.muted;
+    ctx.font = `500 30px ${FONT_BODY}`;
+    ctx.fillText(prob != null ? `We called ${called} at ${Math.round(prob)}%` : `We called ${called}`,
+                 L, 730);
+    const margin = resultMargin(value, line, direction);
+    if (margin) {
+      ctx.fillStyle = v.tone;
+      ctx.font = `700 36px ${FONT_HEAD}`;
+      ctx.fillText(margin, L, 782);
+    }
+    let sy = 848;
+    const pair = (label, a, b) => {
+      ctx.fillStyle = C.muted;
+      ctx.font = `500 24px ${FONT_BODY}`;
+      ctx.fillText(label, L, sy);
+      ctx.fillStyle = C.text;
+      ctx.font = `700 36px ${FONT_DATA}`;
+      ctx.fillText(`${a} - ${b}`, L + 180, sy);
+      sy += 54;
+    };
+    if (homeGoals != null && awayGoals != null) pair("Final score", homeGoals, awayGoals);
+    if (homeCorners != null && awayCorners != null) pair("Corners", homeCorners, awayCorners);
+  });
+
+  // The evidence column. Same order of preference as the portrait story.
+  const rw = WIDE_W - R - 90;
+  if (cornerMinutes?.length) {
+    faded(ctx, done ? 1 : seg(P, 0.30, 0.42), () => {
+      drawCornerTimeline(ctx, { minutes: cornerMinutes, line, tone: v.tone,
+                                x: R, y: 540, w: rw,
+                                progress: done ? 1 : seg(P, 0.32, 0.86) });
+    });
+  } else if (dist?.length) {
+    drawCurve(ctx, dist, line, {
+      x: R, y: 300, w: rw, h: 460,
+      progress: done ? 1 : clamp01((P - 0.16) / 0.5),
+      mark: value, markTone: v.tone,
+      markAt: done ? 1 : seg(P, 0.66, 0.82),
+    });
+  } else {
+    faded(ctx, done ? 1 : seg(P, 0.62, 0.78), () => {
+      drawNumberLine(ctx, { line, value, direction, tone: v.tone, x: R, y: 540, w: rw,
+                            progress: done ? 1 : seg(P, 0.64, 0.9) });
+    });
+  }
+
+  faded(ctx, done ? 1 : seg(P, 0.86, 1), () => {
+    const w = 560;
+    const x = WIDE_W - 90 - w;
+    ctx.fillStyle = C.primary;
+    roundRect(ctx, x, WIDE_H - 160, w, 92, 46);
+    ctx.fill();
+    ctx.fillStyle = "#00181C";
+    ctx.font = `700 32px ${FONT_HEAD}`;
+    ctx.textAlign = "center";
+    ctx.fillText(cta, x + w / 2, WIDE_H - 114);
+    ctx.textAlign = "left";
+  });
+
+  return canvas;
+};

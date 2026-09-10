@@ -1168,6 +1168,67 @@ const drawCornerTimeline = (ctx, { minutes = [], line, tone, x, y, w, progress =
   });
 };
 
+
+/**
+ * The bet slip, as a compact strip.
+ *
+ * WHY IT IS WORTH PUTTING ON: everything else on the image is the site's own account of
+ * itself. The slip is the bookmaker's, and it is the one element a reader has no reason to
+ * doubt — it carries the price that was actually available and what it actually returned.
+ *
+ * THE MODEL'S PRICE IS STILL NOT HERE. What this shows is the BOOK's odds, the number
+ * anyone could have got by walking into the same market. The model's fair price is the
+ * paid half and stays blurred wherever it appears.
+ */
+const drawSlip = (ctx, { selection, market, odds, stake, returns, currency = "£", tone,
+                         x, y, w, progress = 1 }) => {
+  const h = 132;
+  faded(ctx, clamp01(progress), () => {
+    ctx.fillStyle = C.card;
+    roundRect(ctx, x, y, w, h, 20);
+    ctx.fill();
+    ctx.strokeStyle = `${tone}55`;
+    ctx.lineWidth = 2;
+    ctx.stroke();
+    ctx.fillStyle = tone;
+    roundRect(ctx, x, y, 8, h, 4);
+    ctx.fill();
+
+    ctx.fillStyle = C.muted;
+    ctx.font = `500 22px ${FONT_BODY}`;
+    ctx.letterSpacing = "2px";
+    ctx.fillText("BET SLIP", x + 36, y + 32);
+    ctx.letterSpacing = "0px";
+
+    ctx.fillStyle = C.text;
+    ctx.font = fitFont(ctx, selection, { size: 34, max: w - 260, weight: 600, family: FONT_HEAD });
+    ctx.fillText(selection, x + 36, y + 74);
+    if (market) {
+      ctx.fillStyle = C.muted;
+      ctx.font = `500 24px ${FONT_BODY}`;
+      ctx.fillText(market, x + 36, y + 108);
+    }
+
+    // The money, right-aligned so the returned figure is the last thing read.
+    ctx.textAlign = "right";
+    if (odds != null) {
+      ctx.fillStyle = C.text;
+      ctx.font = `700 34px ${FONT_DATA}`;
+      ctx.fillText(`@ ${Number(odds).toFixed(2)}`, x + w - 36, y + 42);
+    }
+    if (stake != null && returns != null) {
+      ctx.fillStyle = tone;
+      ctx.font = `700 40px ${FONT_DATA}`;
+      ctx.fillText(`${currency}${Number(returns).toFixed(2)}`, x + w - 36, y + 92);
+      ctx.fillStyle = C.muted;
+      ctx.font = `500 22px ${FONT_BODY}`;
+      ctx.fillText(`from ${currency}${Number(stake).toFixed(2)}`, x + w - 36, y + 122);
+    }
+    ctx.textAlign = "left";
+  });
+  return h;
+};
+
 export const renderResultStory = (canvas, {
   homeName = "", awayName = "", leagueId = "", kickoff = "",
   team = "", line = 0, direction = "over", subject = "team",
@@ -1178,6 +1239,7 @@ export const renderResultStory = (canvas, {
   homeGoals = null, awayGoals = null,
   homeCorners = null, awayCorners = null,
   cornerMinutes = [],
+  slip = null,
   cta = "The full record on the site", brand = "CORNER MODEL",
   progress = 1,
 } = {}) => {
@@ -1295,10 +1357,14 @@ export const renderResultStory = (canvas, {
   }
   const below = (hasScore || hasCorners) ? 1180 : 1100;
 
-  // ONE OF THREE, in order of how much it actually says. The timeline beats the curve for
-  // a result post — when the bet was won, and that the run carried on past it, is a better
-  // story than the shape it was drawn from. The curve is the fallback, and a bare number
-  // line the fallback's fallback.
+  // ONE PANEL, chosen by how much it actually says. The timeline wins outright — when the
+  // bet was won and that the run carried on past it is the richest thing available. The
+  // SLIP comes next: it is the bookmaker's account rather than the site's own, which makes
+  // it the one element on the image a reader has no reason to doubt. Then the published
+  // curve, then a bare number line.
+  //
+  // Only one, because with a scoreline above them there is not room for two — drawn
+  // together, the slip card landed straight over the bars.
   if (cornerMinutes?.length) {
     faded(ctx, done ? 1 : seg(P, 0.30, 0.42), () => {
       drawCornerTimeline(ctx, {
@@ -1307,11 +1373,15 @@ export const renderResultStory = (canvas, {
         progress: done ? 1 : seg(P, 0.32, 0.86),
       });
     });
+  } else if (slip) {
+    drawSlip(ctx, { ...slip, tone: v.tone, x: 72, y: below + 130, w: STORY_W - 144,
+                    progress: done ? 1 : seg(P, 0.62, 0.80) });
   } else if (dist?.length) {
     drawCurve(ctx, dist, line, {
       // Sits lower and taller than the preview story's curve: there is no market list
       // under it here, and at the preview's position it left a third of the image empty.
-      x: 72, y: below + 100, w: STORY_W - 144, h: Math.max(200, 1460 - (below + 100)),
+      x: 72, y: below + 100, w: STORY_W - 144,
+      h: Math.max(180, 1460 - (below + 100)),
       progress: done ? 1 : clamp01((P - 0.16) / 0.5),
       mark: value, markTone: v.tone,
       markAt: done ? 1 : seg(P, 0.66, 0.82),
@@ -1363,6 +1433,7 @@ export const renderResultWide = (canvas, {
   value = 0, result = "win", prob = null, dist = [],
   homeGoals = null, awayGoals = null, homeCorners = null, awayCorners = null,
   cornerMinutes = [],
+  slip = null,
   cta = "The full record on the site", brand = "CORNER MODEL",
   progress = 1,
 } = {}) => {
@@ -1473,7 +1544,7 @@ export const renderResultWide = (canvas, {
     });
   } else if (dist?.length) {
     drawCurve(ctx, dist, line, {
-      x: R, y: 300, w: rw, h: 460,
+      x: R, y: 300, w: rw, h: slip ? 380 : 460,
       progress: done ? 1 : clamp01((P - 0.16) / 0.5),
       mark: value, markTone: v.tone,
       markAt: done ? 1 : seg(P, 0.66, 0.82),
@@ -1483,6 +1554,11 @@ export const renderResultWide = (canvas, {
       drawNumberLine(ctx, { line, value, direction, tone: v.tone, x: R, y: 540, w: rw,
                             progress: done ? 1 : seg(P, 0.64, 0.9) });
     });
+  }
+
+  if (slip) {
+    drawSlip(ctx, { ...slip, tone: v.tone, x: R, y: 780, w: rw,
+                    progress: done ? 1 : seg(P, 0.78, 0.92) });
   }
 
   faded(ctx, done ? 1 : seg(P, 0.86, 1), () => {

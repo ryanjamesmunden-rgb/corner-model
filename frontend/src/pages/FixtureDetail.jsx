@@ -6,6 +6,7 @@ import {
 } from "lucide-react";
 import StarButton from "@/components/StarButton";
 import ShareButtons from "@/components/ShareButtons";
+import PostPick from "@/components/PostPick";
 import { fixtureStreakShare } from "@/lib/shareText";
 import { useAuth } from "@/context/AuthContext";
 import ProbabilityChart from "@/components/ProbabilityChart";
@@ -334,6 +335,17 @@ export default function FixtureDetail() {
         fixtureId={fixture.fixture_id}
         backing={backing}
         onBacking={setBacking}
+      />
+
+      {/* AFTER THE LADDERS, because it posts what they say. The pick is chosen off a
+          priced line, so the composer belongs below the prices rather than above them —
+          and the price it quotes is the one already typed in, never a second copy. */}
+      <PostPick
+        fixture={fixture}
+        markets={model.markets}
+        card={data.card || {}}
+        lambdas={model.lambdas}
+        leagueName={data.league_name}
       />
 
       {/* Team breakdowns */}

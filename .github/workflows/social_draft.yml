@@ -1,50 +1,60 @@
-# Drafts the X post three times a week and opens it as an issue for review.
+# Builds the day's X post and sends it to your phone with a one-tap Post button.
 #
-# IT NEVER POSTS. The job builds the text and files it as a GitHub issue with a
-# one-click intent link that opens X's composer already filled in — nothing reaches an
-# audience until a person clicks Post. That is a deliberate choice, not a limitation:
-# auto-posting would need X API write credentials, and a bad data day (a stalled sync, a
-# mis-parsed fixture) would go out unreviewed and permanent. If you later want it fully
-# automatic, the piece to add is a post step; everything else here already applies.
+# IT STILL NEVER POSTS BY ITSELF, and that is now a cost decision as well as a safety one.
+# X ended its free tier in February 2026: every post through the API is billed, and a post
+# containing a link — which is the whole point of these — costs about thirteen times one
+# without. This route costs nothing, needs no developer app, and keeps a person between a
+# bad data day and an audience. What it asks in return is one tap.
+#
+# THE ROTATION IS A TESTED MODULE, not a case statement in this file. See
+# frontend/src/lib/postPlan.js: logic in a `run:` block can only be checked by pushing it
+# and waiting until Thursday, which is exactly how a poster ends up silently skipping a
+# day. The week it produces:
+#
+#   Mon  results — how the weekend's frozen streaks actually landed
+#   Tue  streaks
+#   Wed  fixtures (3 days)
+#   Thu  streaks
+#   Fri  fixtures (3 days) + freeze the weekend's streaks
+#   Sat  fixtures (today)
+#   Sun  fixtures (today)
+#
+# MONDAY IS THE ONLY DAY WITH A FALLBACK. Its board can be empty for a reason that is
+# nobody's fault — a weekend that was never snapshotted, or results not yet synced — so it
+# drops back to streaks. Any other day being empty means there is genuinely nothing worth
+# posting, and the right answer is silence, not a different board to fill the slot.
+#
+# DELIVERY. Telegram if TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID are set; otherwise a
+# GitHub issue, exactly as before. That order is deliberate — it means the job keeps
+# working before the bot exists, and nothing has to be switched over on the day it does.
 #
 # TIMEZONE. GitHub cron is UTC only, and "lunchtime" is a LOCAL idea that moves twice a
 # year: 12:00 London is 12:00 UTC in winter and 11:00 UTC in summer. A single UTC cron
-# would therefore drift an hour every March and October. So this fires at BOTH hours and
-# the first step drops the run that isn't local noon — exactly one survives, year round.
+# would drift an hour every March and October. So this fires at BOTH hours and the first
+# step drops the run that isn't local noon — exactly one survives, year round.
 #
-# WHICH BOARD. Streaks on Monday and Wednesday, the fixture board on Friday, when the
-# weekend card is what is worth looking at. Both come from the same builders the site's
-# own share buttons use (frontend/src/lib/shareText.js), so a scheduled draft and a post
-# clicked out by hand cannot look different.
+# FRIDAY FREEZES THE WEEKEND'S STREAKS. A streak row only exists while the run is alive —
+# a team that misses drops off the board — so grading "how the streaks did" against
+# Monday's board would count only the survivors and report a near-perfect week every week.
+# The snapshot writes down what was claimed BEFORE kick-off, which is the only point at
+# which it can be written down honestly. It runs AFTER the draft is delivered so a
+# snapshot failure cannot cost you the post, and it fails loudly, because a missing Friday
+# snapshot is a weekend that can never be graded.
 #
-# FRIDAY ALSO FREEZES THE WEEKEND'S STREAKS. A streak row only exists while the run is
-# alive — a team that misses drops off the board — so grading "how the streaks did"
-# against Monday's board would count only the survivors and report a near-perfect week
-# every week. The snapshot writes down what was claimed BEFORE kick-off, which is the
-# only point at which it can be written down honestly. It runs AFTER the draft is filed
-# so a snapshot failure cannot cost you the post, and it fails loudly, because a missing
-# Friday snapshot is a weekend that can never be graded.
-#
-# MONDAY GRADES THE WEEKEND. It files a second issue: how the streaks frozen on Friday
-# actually landed. It is a separate draft from the streaks one so either can be posted
-# without the other, and it is allowed to find nothing — a missing snapshot, or a weekend
-# not yet synced, is logged and skipped rather than failed, because Monday cannot fix
-# either and a red tick every Monday would train you to ignore them.
-#
-# COST: one call to a cached backend endpoint. No API-Football credits are spent.
+# COST: one call to a cached backend endpoint. No API-Football credits, no X API credits.
 name: Draft the X post
 
 on:
   schedule:
-    # Mon/Wed/Fri at 11:00 and 12:00 UTC — one of the two is 12:00 in London.
-    - cron: "0 11,12 * * 1,3,5"
+    # Every day at 11:00 and 12:00 UTC — one of the two is 12:00 in London.
+    - cron: "0 11,12 * * *"
   workflow_dispatch:
     inputs:
       board:
-        description: "Which board to draft (blank = the one this weekday would use)"
+        description: "Which board (blank = whatever this weekday calls for)"
         required: false
         type: choice
-        options: ["", "streaks", "fixtures"]
+        options: ["", "streaks", "fixtures", "results"]
       force:
         description: "Run even if it isn't local noon"
         required: false
@@ -57,7 +67,7 @@ concurrency:
 
 permissions:
   contents: read
-  issues: write        # the draft is filed as an issue; nothing else is written
+  issues: write        # the fallback delivery is an issue; nothing else is written
 
 jobs:
   draft:
@@ -68,9 +78,9 @@ jobs:
 
       - name: Only continue at London lunchtime
         id: when
-        # Both crons fire; this keeps the one where Europe/London says it is 12:00, so
-        # the post lands at the same local time through both BST and GMT. A manual run
-        # skips the check by default — you asked for it, you get it.
+        # Both crons fire; this keeps the one where Europe/London says it is 12:00, so the
+        # post lands at the same local time through both BST and GMT. A manual run skips
+        # the check by default — you asked for it, you get it.
         run: |
           hour=$(TZ=Europe/London date +%H)
           weekday=$(TZ=Europe/London date +%u)   # 1=Mon .. 7=Sun
@@ -80,17 +90,12 @@ jobs:
             echo "go=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          # Friday gets the weekend card; Monday and Wednesday get the streaks.
-          board="${{ inputs.board }}"
-          if [ -z "$board" ]; then
-            if [ "$weekday" = "5" ]; then board=fixtures; else board=streaks; fi
-          fi
-          echo "board=$board" >> "$GITHUB_OUTPUT"
           echo "weekday=$weekday" >> "$GITHUB_OUTPUT"
           echo "tag=$(TZ=Europe/London date +%F)" >> "$GITHUB_OUTPUT"
           # Monday grades the Friday just gone — three days back, in London, so the tag
           # matches the one that run wrote rather than a UTC day that may differ.
           echo "friday=$(TZ=Europe/London date -d '3 days ago' +%F)" >> "$GITHUB_OUTPUT"
+          echo "pretty=$(TZ=Europe/London date '+%a %d %b')" >> "$GITHUB_OUTPUT"
           echo "go=true" >> "$GITHUB_OUTPUT"
 
       - uses: actions/setup-node@v4
@@ -100,8 +105,8 @@ jobs:
 
       - name: Wake the backend
         if: steps.when.outputs.go == 'true'
-        # Render sleeps the free instance; the first request after a quiet spell can be
-        # the one that times out. Same reason sync.yml does this.
+        # Render sleeps the free instance; the first request after a quiet spell can be the
+        # one that times out. Same reason sync.yml does this.
         run: |
           for i in 1 2 3 4 5 6; do
             code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 60 "$BACKEND/api/" || true)
@@ -112,18 +117,32 @@ jobs:
         env:
           BACKEND: ${{ vars.BACKEND_URL || 'https://corner-model.onrender.com' }}
 
-      - name: Build the draft
+      - name: Build the day's draft
         if: steps.when.outputs.go == 'true'
         id: build
-        # Writes to a file rather than stdout so the post text — which contains newlines,
-        # emoji and backticks — never has to survive a shell round trip.
+        # --board auto asks postPlan.js what this weekday is for, and takes its day window
+        # too. A board named by hand on a manual run overrides both.
+        #
+        # Monday's fallback is applied HERE rather than in the plan module, because only
+        # the caller can know whether the first attempt actually produced anything.
         run: |
-          node tools/social_draft.mjs \
-            --board "${{ steps.when.outputs.board }}" \
-            --days 3 \
-            --out draft.md
+          board="${{ inputs.board }}"
+          weekday="${{ steps.when.outputs.weekday }}"
+          set -- --board "${board:-auto}" --weekday "$weekday" --out draft.md --json-out draft.json
+          if [ "${board:-auto}" = "auto" ] && [ "$weekday" = "1" ]; then
+            set -- "$@" --tag "${{ steps.when.outputs.friday }}"
+          elif [ "$board" = "results" ]; then
+            set -- "$@" --tag "${{ steps.when.outputs.friday }}"
+          fi
+          node tools/social_draft.mjs "$@"
+
+          if [ ! -s draft.md ] && [ "$weekday" = "1" ] && [ -z "$board" ]; then
+            echo "::notice::no weekend results to report — falling back to the streak board"
+            node tools/social_draft.mjs --board streaks --days 3 --out draft.md --json-out draft.json
+          fi
+
           if [ ! -s draft.md ]; then
-            echo "::notice::nothing to draft today (stale data or a quiet board)"
+            echo "::notice::nothing to post today (stale data or a quiet board)"
             echo "empty=true" >> "$GITHUB_OUTPUT"
           fi
         env:
@@ -131,15 +150,68 @@ jobs:
           SITE_URL: ${{ vars.SITE_URL || 'https://corner-model.vercel.app' }}
           TOOLS_TOKEN: ${{ secrets.TOOLS_TOKEN }}
 
+      - name: Send it to Telegram
+        if: steps.when.outputs.go == 'true' && steps.build.outputs.empty != 'true' && env.TG_TOKEN != ''
+        id: telegram
+        # THE POST TEXT GOES IN THE MESSAGE BODY, not only behind the button. A button is
+        # one tap when it works, and when it doesn't — a URL Telegram won't accept, an
+        # app that opens the composer empty — the text still has to be there to copy, or
+        # the post is lost for the day.
+        #
+        # Sent as plain text with no parse_mode: the post contains characters Markdown and
+        # HTML both treat as syntax, and a message that fails to parse is a message that
+        # never arrives.
+        run: |
+          python3 - <<'PY' > payload.json
+          import json, os
+          d = json.load(open("draft.json"))
+          body = (f"{os.environ['PRETTY']} — {d['board']}\n"
+                  f"{d['note']} · {d['weight']}/280\n\n"
+                  f"{d['post']}")
+          print(json.dumps({
+              "chat_id": os.environ["TG_CHAT"],
+              "text": body,
+              "disable_web_page_preview": True,
+              "reply_markup": {"inline_keyboard": [[
+                  {"text": "Post on X", "url": d["intent"]}]]},
+          }))
+          PY
+          code=$(curl -s -o tg.json -w '%{http_code}' --max-time 30 \
+            -X POST "https://api.telegram.org/bot$TG_TOKEN/sendMessage" \
+            -H 'content-type: application/json' --data-binary @payload.json || true)
+          echo "HTTP $code"
+          if [ "$code" = "200" ]; then
+            echo "::notice::sent to Telegram"
+            echo "sent=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # A button URL Telegram refuses is the one predictable failure here — the intent
+          # link carries the whole post in a query string and can get long. Retry without
+          # it rather than lose the message: the text is in the body either way.
+          echo "::warning::Telegram rejected the message with the button (HTTP $code) — retrying as plain text"
+          python3 -c "import json;d=json.load(open('payload.json'));d.pop('reply_markup');print(json.dumps(d))" > plain.json
+          code=$(curl -s -o tg2.json -w '%{http_code}' --max-time 30 \
+            -X POST "https://api.telegram.org/bot$TG_TOKEN/sendMessage" \
+            -H 'content-type: application/json' --data-binary @plain.json || true)
+          if [ "$code" = "200" ]; then
+            echo "::notice::sent to Telegram without the button"
+            echo "sent=true" >> "$GITHUB_OUTPUT"
+          else
+            # Not fatal: the issue step below picks it up, so the draft is never lost.
+            echo "::warning::Telegram send failed (HTTP $code) — falling back to a GitHub issue"
+            echo "sent=false" >> "$GITHUB_OUTPUT"
+          fi
+        env:
+          TG_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TG_CHAT: ${{ secrets.TELEGRAM_CHAT_ID }}
+          PRETTY: ${{ steps.when.outputs.pretty }}
+
       - name: Make sure the label exists
-        # Gated on the run, not on either draft: two steps file issues with this label
-        # now, and a Monday where the streaks board is quiet but the results are not
-        # would otherwise reach `gh issue create --label` with no label in existence.
-        if: steps.when.outputs.go == 'true'
+        # Only needed when an issue is actually going to be filed.
+        if: steps.when.outputs.go == 'true' && steps.build.outputs.empty != 'true' && steps.telegram.outputs.sent != 'true'
         # Created here rather than by hand, so it is not a piece of setup that can be
-        # missing — the same reasoning sync.yml gives for avoiding a required secret.
-        # `gh label create` exits non-zero when the label already exists, which is the
-        # normal case from the second run onward, so that is not an error.
+        # missing. `gh label create` exits non-zero when the label already exists, which is
+        # the normal case from the second run onward, so that is not an error.
         run: |
           if gh label create "social-draft" \
                --description "An X post drafted by the scheduled job, waiting for review" \
@@ -151,15 +223,13 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: File it as an issue
-        if: steps.when.outputs.go == 'true' && steps.build.outputs.empty != 'true'
-        # ONE create, no `|| gh issue create` fallback. The fallback was there in case
-        # the label was missing, but it would also have fired on a rate limit or a
-        # transient 5xx — and a retry of "create an issue" that has already half
-        # succeeded posts the draft twice. The step above removes the reason for it.
+      - name: File it as an issue instead
+        # Only when Telegram is not configured, or did not take it. Never both — two copies
+        # of the same draft is two things to check and one of them to forget.
+        if: steps.when.outputs.go == 'true' && steps.build.outputs.empty != 'true' && steps.telegram.outputs.sent != 'true'
         run: |
           gh issue create \
-            --title "X draft — ${{ steps.when.outputs.board }} — $(TZ=Europe/London date '+%a %d %b')" \
+            --title "X draft — ${{ steps.when.outputs.pretty }}" \
             --body-file draft.md \
             --label "social-draft"
         env:
@@ -167,7 +237,7 @@ jobs:
 
       - name: Freeze the weekend's streaks
         # Friday only, and last: see the note at the top of this file for why this exists
-        # and why it runs after the issue is filed rather than before.
+        # and why it runs after the draft is delivered rather than before.
         if: steps.when.outputs.go == 'true' && steps.when.outputs.weekday == '5'
         run: |
           code=$(curl -s -o snap.json -w '%{http_code}' --max-time 120 -X POST \
@@ -193,31 +263,3 @@ jobs:
         env:
           BACKEND: ${{ vars.BACKEND_URL || 'https://corner-model.onrender.com' }}
           TOOLS_TOKEN: ${{ secrets.TOOLS_TOKEN }}
-
-      - name: Draft how the weekend landed
-        # Monday only. Reads the snapshot Friday froze; see the note at the top.
-        if: steps.when.outputs.go == 'true' && steps.when.outputs.weekday == '1'
-        id: results
-        run: |
-          node tools/social_draft.mjs \
-            --board results \
-            --tag "${{ steps.when.outputs.friday }}" \
-            --out results.md
-          if [ ! -s results.md ]; then
-            echo "::notice::no results to post for ${{ steps.when.outputs.friday }}"
-            echo "empty=true" >> "$GITHUB_OUTPUT"
-          fi
-        env:
-          BACKEND_URL: ${{ vars.BACKEND_URL || 'https://corner-model.onrender.com' }}
-          SITE_URL: ${{ vars.SITE_URL || 'https://corner-model.vercel.app' }}
-          TOOLS_TOKEN: ${{ secrets.TOOLS_TOKEN }}
-
-      - name: File the results draft
-        if: steps.when.outputs.go == 'true' && steps.when.outputs.weekday == '1' && steps.results.outputs.empty != 'true'
-        run: |
-          gh issue create \
-            --title "Results draft — weekend of ${{ steps.when.outputs.friday }}" \
-            --body-file results.md \
-            --label "social-draft"
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

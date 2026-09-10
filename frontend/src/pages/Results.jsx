@@ -167,11 +167,13 @@ export default function Results() {
           blurb="Called publicly while the game was still to play, so these count in the record above." />
       )}
       {posted.recalled?.rows?.length > 0 && (
-        <AngleList title="Added after the game" tally={posted.recalled}
+        <AngleList title="Posted on social, logged here later" tally={posted.recalled}
           testId="posted-recalled" muted
-          blurb="Posted on social at the time, but entered here after the result was known — so they
-                 are shown and deliberately NOT counted above. A percentage you can add winners to
-                 afterwards would not be worth reading." />
+          blurb="Called publicly before kick-off, but written down here after the result was known —
+                 so the timing is on the original post rather than on this site, and these stay out
+                 of the number above. Not a judgement on the call: the site simply cannot prove to
+                 you when it was made, and a percentage that can absorb after-the-fact winners
+                 would not be worth reading." />
       )}
 
       {weeks.length === 0 && posted.claimed?.rows?.length === 0
@@ -205,11 +207,13 @@ export default function Results() {
         <p>
           {/* The split has to be explained where a reader meets it, or the "not counted"
               chip looks like a hedge instead of the point. */}
-          Angles posted by hand to social are logged separately. If one was written down here
-          while the game was still to play it counts like any other; if it was entered after
-          the result was known it is shown, marked, and{" "}
-          <span className="text-foreground">left out of the number above</span> — a percentage
-          you can add winners to afterwards would not be worth reading.
+          Angles posted by hand to Instagram or X are logged separately, and what separates them
+          is <span className="text-foreground">when the site could see the claim</span>, not
+          whether the call was good. Written down here while the game was still to play, it counts
+          like anything else. Written down afterwards, the proof of timing lives on the original
+          post rather than here, so it is shown in full and{" "}
+          <span className="text-foreground">left out of the number above</span> — a percentage that
+          can absorb after-the-fact winners would not be worth reading.
         </p>
         <p>
           {/* Stated, not glossed. Someone will ask what it paid, and the honest answer is

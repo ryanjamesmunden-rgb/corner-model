@@ -105,6 +105,9 @@ export const api = {
   // OPEN. No token, no account — see public_results. The record is the argument for
   // paying, and an argument nobody can read persuades nobody.
   results: (weeks) => axios.get(`${API}/results`, { params: { weeks } }).then((r) => r.data),
+  // Token-gated write. The backend stamps before_kickoff from its own clock — the caller
+  // cannot send it, which is what keeps the public rate honest.
+  logPostedAngle: (token, body) => axios.post(`${API}/angles/posted`, body, { params: { token } }).then((r) => r.data),
   ledger: () => axios.get(`${API}/ledger`).then((r) => r.data),
   snapshotLedger: () => axios.post(`${API}/ledger/snapshot`).then((r) => r.data),
   backtest: (leagueId = "all", model = "v1") => axios.get(`${API}/backtest`, { params: { league_id: leagueId, model } }).then((r) => r.data),

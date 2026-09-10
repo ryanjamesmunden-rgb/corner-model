@@ -127,3 +127,46 @@ def test_one_settlement_implementation_serves_both_endpoints():
     the tools report privately and what the site claims publicly."""
     assert "_grade_entries(" in inspect.getsource(server.snapshot_results)
     assert "_grade_entries(" in inspect.getsource(server.public_results)
+
+
+# --- angles posted by hand ---
+def test_the_before_kickoff_flag_is_computed_never_accepted():
+    """The whole integrity mechanism. If a caller could send this, the record would be a
+    record of whatever the caller felt like claiming."""
+    fields = set(server.PostedAngleBody.model_fields)
+    assert "before_kickoff" not in fields
+    src = inspect.getsource(server.log_posted_angle)
+    assert '"before_kickoff": now < ko' in src
+
+
+def test_only_angles_claimed_before_kickoff_reach_the_headline_rate():
+    """A hand-added winner must not move the percentage. Everything else about this page
+    is worthless if it can."""
+    src = inspect.getsource(server.public_results)
+    assert "counted = everything + claimed" in src
+    assert "_tally(counted)" in src
+    # ...and the ones added afterwards are still PUBLISHED, just not counted.
+    assert '"recalled"' in src
+
+
+def test_angles_added_after_the_game_are_shown_rather_than_hidden():
+    """Dropping them would be its own dishonesty — and would quietly delete the thing the
+    owner actually asked to show."""
+    src = inspect.getsource(server.public_results)
+    assert "recalled = [r for r in posted_graded if not r.get(\"before_kickoff\")]" in src
+
+
+def test_a_team_in_two_leagues_is_refused_not_guessed():
+    """Grading reads that team's own match history, so picking the wrong club would
+    settle a real game against the wrong side's corners — silently and plausibly."""
+    src = inspect.getsource(server.log_posted_angle)
+    assert "status_code=409" in src
+
+
+def test_logging_the_same_angle_twice_cannot_pad_the_list():
+    src = inspect.getsource(server.log_posted_angle)
+    assert '"status": "exists"' in src
+
+
+def test_posted_angles_are_graded_by_the_same_settlement_as_everything_else():
+    assert "_grade_entries(posted" in inspect.getsource(server.public_results)

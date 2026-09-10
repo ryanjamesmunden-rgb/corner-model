@@ -30,16 +30,25 @@ const LIB = resolve(HERE, "..", "frontend", "src", "lib");
 // they load as-is. `shareText.js` pulls in countryFlag and kickoff itself.
 const { streakShare, fixtureShare, streakResultShare } = await import(resolve(LIB, "shareText.js"));
 const { fitToPost, weightedLength, URL_WEIGHT, X_SHARE_ROWS } = await import(resolve(LIB, "xLimit.js"));
+const { boardForDay } = await import(resolve(LIB, "postPlan.js"));
 
 const arg = (name, fallback = null) => {
   const i = process.argv.indexOf(`--${name}`);
   return i !== -1 && process.argv[i + 1] ? process.argv[i + 1] : fallback;
 };
 
-const BOARD = arg("board", "streaks");
+// `--board auto --weekday 4` asks the plan what today is for. The rotation lives in
+// lib/postPlan.js, where it is tested — a case statement in the workflow's bash could only
+// be checked by pushing it and waiting until Thursday.
+const WEEKDAY = arg("weekday", null);
+const planned = WEEKDAY ? boardForDay(WEEKDAY) : null;
+const BOARD = arg("board", "streaks") === "auto" ? (planned?.board ?? "streaks") : arg("board", "streaks");
 const TAG = arg("tag", null);
-const DAYS = Number(arg("days", "3"));
+const DAYS = Number(arg("days", null) ?? planned?.days ?? 3);
 const OUT = arg("out", null);
+// The post on its own, as JSON, for a caller that is going to deliver it somewhere other
+// than a GitHub issue — the daily job sends it to Telegram with a one-tap post button.
+const JSON_OUT = arg("json-out", null);
 const SITE = process.env.SITE_URL || "https://corner-model.vercel.app";
 const BACKEND = process.env.BACKEND_URL || "https://corner-model.onrender.com";
 const TOKEN = process.env.TOOLS_TOKEN;
@@ -77,12 +86,17 @@ const skip = (msg) => { console.log(`SKIP: ${msg}`); writeIfAsked(""); process.e
 
 function writeIfAsked(body) {
   if (OUT) writeFileSync(OUT, body);
+  // An empty body means "nothing to post today", and the JSON has to say so too — a
+  // stale draft.json left over from yesterday's run would otherwise be delivered again
+  // as if it were today's.
+  if (JSON_OUT && !body) writeFileSync(JSON_OUT, JSON.stringify({ empty: true }));
 }
 
 /** The finished draft: to the file the workflow reads, or to stdout when run by hand. */
-function emit(body) {
+function emit(body, payload = null) {
   writeIfAsked(body);
-  if (!OUT) console.log(body);
+  if (JSON_OUT && payload) writeFileSync(JSON_OUT, JSON.stringify(payload));
+  if (!OUT && !JSON_OUT) console.log(body);
 }
 
 if (!TOKEN) fail("TOOLS_TOKEN is not set — add it as a repo secret");
@@ -122,7 +136,8 @@ ${full}
 \`\`\`
 
 </details>
-`);
+`, { empty: false, board: "results", post, intent, weight, full,
+     note: `${r.landed} landed, ${r.missed} missed, graded off the ${TAG} snapshot` });
   process.exit(0);
 }
 
@@ -175,4 +190,8 @@ ${full}
 </details>
 `;
 
-emit(body);
+emit(body, {
+  empty: false, board: BOARD, post, intent, weight, full,
+  note: `${countRows(post)} of ${rowCount} rows`
+    + (data.data_age_hours != null ? `, data ${data.data_age_hours}h old` : ""),
+});

@@ -444,7 +444,8 @@ export const fixtureStoryMarkets = (markets = [], lambdas = {}, { homeName, away
  * `progress` grows them from the baseline, staggered left to right so the shape draws
  * itself rather than appearing whole — which is the bit that makes a reader watch.
  */
-const drawCurve = (ctx, dist, line, { x, y, w, h, progress = 1 }) => {
+const drawCurve = (ctx, dist, line, { x, y, w, h, progress = 1,
+                                      mark = null, markTone = null, markAt = 1 }) => {
   if (!dist?.length) return;
   const peak = Math.max(...dist.map((d) => d.p)) || 1;
   const gap = 6;
@@ -476,8 +477,42 @@ const drawCurve = (ctx, dist, line, { x, y, w, h, progress = 1 }) => {
     ctx.fillStyle = k === line ? C.primary : C.muted;
     ctx.fillText(String(k), x + i * (bw + gap) + bw / 2, y + h + 30);
   });
-  ctx.textAlign = "left";
   ctx.globalAlpha = 1;
+
+  // WHERE IT ACTUALLY LANDED, pinned on the shape that was published. The bar is
+  // repainted in the verdict's colour and flagged above, so the argument — this is the
+  // curve we showed you, and this is where the game finished on it — needs no caption.
+  if (mark != null && markAt > 0) {
+    const i = dist.findIndex((d) => d.k === mark);
+    if (i >= 0) {
+      const tone = markTone || C.primary;
+      const cx = x + i * (bw + gap) + bw / 2;
+      const bh = Math.max(4, (dist[i].p / peak) * h);
+      ctx.globalAlpha = markAt;
+      ctx.fillStyle = tone;
+      roundRect(ctx, x + i * (bw + gap), y + h - bh, bw, bh, Math.min(8, bw / 2, bh / 2));
+      ctx.fill();
+      // A stem up to a chip, so the pin reads even where the bar is a few pixels tall —
+      // which it will be, because a result that clears the line comfortably sits out in
+      // the thin end of the distribution.
+      ctx.strokeStyle = tone;
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.moveTo(cx, y + h - bh - 8);
+      ctx.lineTo(cx, y - 26);
+      ctx.stroke();
+      ctx.font = `700 30px ${FONT_DATA}`;
+      const cw = ctx.measureText(String(mark)).width + 32;
+      ctx.fillStyle = tone;
+      roundRect(ctx, cx - cw / 2, y - 66, cw, 44, 22);
+      ctx.fill();
+      ctx.fillStyle = C.bg;
+      ctx.textAlign = "center";
+      ctx.fillText(String(mark), cx, y - 43);
+      ctx.globalAlpha = 1;
+    }
+  }
+  ctx.textAlign = "left";
 };
 
 /**
@@ -957,6 +992,173 @@ export const renderAngleStory = (canvas, {
   ctx.font = `500 25px ${FONT_BODY}`;
   ctx.fillText("corner-model", STORY_W / 2, ctaY + 158);
   ctx.textAlign = "left";
+
+  return canvas;
+};
+
+// ----------------------------- How it landed -----------------------------
+//
+// The preview story asks people to believe a percentage. This one shows what happened,
+// and it is the more persuasive of the two by a distance: "we said 63% chance of 5+" is a
+// claim, "it finished on 11" is a fact anyone can check.
+//
+// THE COUNT IS THE ANIMATION. A number climbing 0 → 11 is watched to the end; the same
+// number sitting still is read and scrolled past. Everything else on the image exists to
+// say what that number was measured against.
+//
+// NO PRICE HERE EITHER. Same rule as every other public image: the line and the outcome
+// go out, the model's price stays on the site.
+
+/** Won, lost or pushed — in the words and colours the site already uses for each. */
+export const resultVerdict = (result) => {
+  if (result === "win") return { word: "LANDED", tone: "#39D0A3", sub: "as called" };
+  if (result === "loss") return { word: "MISSED", tone: "#F2557E", sub: "it happens" };
+  if (result === "void") return { word: "PUSH", tone: "#98A4B3", sub: "exact line — stake back" };
+  return null;      // pending has no story to tell yet
+};
+
+/**
+ * What the result did relative to the line, in one phrase.
+ *
+ * Says the MARGIN rather than repeating the two numbers already on the image. "Six clear"
+ * is the part a reader would have to work out themselves, and it is the part that makes a
+ * 63% call look like the right call rather than a lucky one.
+ */
+export const resultMargin = (value, line, direction = "over") => {
+  if (value == null || line == null) return "";
+  const by = direction === "under" ? line - value : value - line;
+  if (by === 0) return "bang on the line";
+  if (by < 0) return `${Math.abs(by)} short`;
+  return by === 1 ? "1 clear" : `${by} clear`;
+};
+
+export const renderResultStory = (canvas, {
+  homeName = "", awayName = "", leagueId = "", kickoff = "",
+  team = "", line = 0, direction = "over", subject = "team",
+  value = 0, result = "win", prob = null,
+  dist = [],
+  cta = "The full record on the site", brand = "CORNER MODEL",
+  progress = 1,
+} = {}) => {
+  const P = clamp01(progress);
+  const done = P >= 1;
+  canvas.width = STORY_W;
+  canvas.height = STORY_H;
+  const ctx = canvas.getContext("2d");
+  const v = resultVerdict(result) || resultVerdict("win");
+
+  ctx.fillStyle = C.bg;
+  ctx.fillRect(0, 0, STORY_W, STORY_H);
+  // The glow takes the verdict's colour rather than the brand's, so a miss does not
+  // arrive dressed in the same triumphant cyan as a win.
+  const glow = ctx.createRadialGradient(STORY_W / 2, 240, 60, STORY_W / 2, 240, 900);
+  glow.addColorStop(0, `${v.tone}2A`);
+  glow.addColorStop(1, `${v.tone}00`);
+  ctx.fillStyle = glow;
+  ctx.fillRect(0, 0, STORY_W, 1100);
+
+  ctx.textBaseline = "middle";
+  const useFlags = flagsRender(ctx);
+  faded(ctx, done ? 1 : seg(P, 0, 0.07), () => {
+    ctx.fillStyle = C.primary;
+    ctx.font = `700 30px ${FONT_HEAD}`;
+    ctx.letterSpacing = "6px";
+    ctx.fillText(brand, 72, 180);
+    ctx.letterSpacing = "0px";
+
+    ctx.fillStyle = C.text;
+    ctx.font = fitFont(ctx, homeName, { size: 62, max: STORY_W - 144, family: FONT_HEAD });
+    ctx.fillText(homeName, 72, 268);
+    ctx.fillStyle = C.muted;
+    ctx.font = `500 32px ${FONT_BODY}`;
+    ctx.fillText("v", 72, 328);
+    ctx.fillStyle = C.text;
+    ctx.font = fitFont(ctx, awayName, { size: 62, max: STORY_W - 200, family: FONT_HEAD });
+    ctx.fillText(awayName, 112, 328);
+
+    const flag = useFlags ? flagFor(leagueId) : null;
+    const where = [flag || countryCodeFor(leagueId), kickoff].filter(Boolean).join("  ·  ");
+    if (where) {
+      ctx.fillStyle = C.muted;
+      ctx.font = `500 28px ${FONT_BODY}`;
+      ctx.fillText(where, 72, 392);
+    }
+  });
+
+  // THE VERDICT, stamped before the number so the reader knows which way to feel about
+  // the count while it is still climbing.
+  faded(ctx, done ? 1 : seg(P, 0.05, 0.14), () => {
+    ctx.font = `700 34px ${FONT_HEAD}`;
+    ctx.letterSpacing = "3px";
+    const w = ctx.measureText(v.word).width + 56;
+    ctx.fillStyle = `${v.tone}22`;
+    roundRect(ctx, 72, 452, w, 66, 33);
+    ctx.fill();
+    ctx.strokeStyle = `${v.tone}88`;
+    ctx.lineWidth = 2;
+    ctx.stroke();
+    ctx.fillStyle = v.tone;
+    ctx.fillText(v.word, 100, 487);
+    ctx.letterSpacing = "0px";
+  });
+
+  // THE COUNT. Counts up from zero to what the game actually produced.
+  const climb = done ? 1 : seg(P, 0.10, 0.62);
+  faded(ctx, done ? 1 : seg(P, 0.08, 0.16), () => {
+    ctx.fillStyle = v.tone;
+    ctx.font = `700 230px ${FONT_DATA}`;
+    ctx.fillText(String(Math.round(value * climb)), 72, 690);
+
+    ctx.fillStyle = C.text;
+    ctx.font = `600 42px ${FONT_HEAD}`;
+    ctx.fillText(subject === "match" ? "corners in the match" : `corners for ${team}`, 72, 828);
+  });
+
+  // WHAT IT WAS MEASURED AGAINST — the call, and how far clear it finished.
+  faded(ctx, done ? 1 : seg(P, 0.62, 0.74), () => {
+    const called = direction === "under" ? `under ${line}` : `${line}+`;
+    ctx.fillStyle = C.muted;
+    ctx.font = `500 34px ${FONT_BODY}`;
+    const said = prob != null
+      ? `We called ${called} at ${Math.round(prob)}%`
+      : `We called ${called}`;
+    ctx.fillText(said, 72, 900);
+    const margin = resultMargin(value, line, direction);
+    if (margin) {
+      ctx.fillStyle = v.tone;
+      ctx.font = `700 40px ${FONT_HEAD}`;
+      ctx.fillText(margin, 72, 958);
+    }
+  });
+
+  // The curve, where the claim came with one — with the actual result pinned on it. This
+  // is the whole argument in one picture: the shape we published, and where the game
+  // landed on it.
+  if (dist?.length) {
+    drawCurve(ctx, dist, line, {
+      // Sits lower and taller than the preview story's curve: there is no market list
+      // under it here, and at the preview's position it left a third of the image empty.
+      x: 72, y: 1140, w: STORY_W - 144, h: 320,
+      progress: done ? 1 : clamp01((P - 0.16) / 0.5),
+      mark: value, markTone: v.tone,
+      markAt: done ? 1 : seg(P, 0.66, 0.82),
+    });
+  }
+
+  faded(ctx, done ? 1 : seg(P, 0.86, 1), () => {
+    const ctaY = STORY_H - 340;
+    ctx.fillStyle = C.primary;
+    roundRect(ctx, 72, ctaY, STORY_W - 144, 108, 54);
+    ctx.fill();
+    ctx.fillStyle = "#00181C";
+    ctx.font = `700 38px ${FONT_HEAD}`;
+    ctx.textAlign = "center";
+    ctx.fillText(cta, STORY_W / 2, ctaY + 56);
+    ctx.fillStyle = C.muted;
+    ctx.font = `500 26px ${FONT_BODY}`;
+    ctx.fillText("corner-model", STORY_W / 2, ctaY + 168);
+    ctx.textAlign = "left";
+  });
 
   return canvas;
 };

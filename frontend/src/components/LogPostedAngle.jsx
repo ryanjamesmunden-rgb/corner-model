@@ -18,7 +18,7 @@ import { api } from "@/lib/api";
 export default function LogPostedAngle({ token }) {
   const [f, setF] = useState({
     team: "", opponent: "", line: "", direction: "over", subject: "team",
-    kickoff: "", league_id: "", is_home: "true", posted_to: "instagram",
+    kickoff: "", league_id: "", is_home: "true", posted_to: "instagram", prob: "",
   });
   const [busy, setBusy] = useState(false);
   const set = (k) => (e) => setF((v) => ({ ...v, [k]: e.target.value }));
@@ -35,12 +35,15 @@ export default function LogPostedAngle({ token }) {
         line: Number(f.line), direction: f.direction, subject: f.subject,
         kickoff: f.kickoff, league_id: f.league_id.trim() || undefined,
         is_home: f.is_home === "true", posted_to: f.posted_to,
+        // Optional, and worth filling in: it is what lets the result image say "we called
+        // 5+ at 63%" with the number people actually saw, rather than one recomputed later.
+        prob: f.prob === "" ? undefined : Number(f.prob),
       });
       if (r.status === "exists") toast.success(`${r.name} is already on the record`);
       else if (r.before_kickoff) toast.success(`${r.name} logged — counts towards the record`);
       // Said plainly at the moment it happens, so it is never a surprise on the page.
       else toast.success(`${r.name} added — shown, but not counted (game already played)`);
-      setF((v) => ({ ...v, team: "", opponent: "", line: "", kickoff: "" }));
+      setF((v) => ({ ...v, team: "", opponent: "", line: "", kickoff: "", prob: "" }));
     } catch (e) {
       toast.error(e?.response?.data?.detail || "Could not log that angle");
     } finally { setBusy(false); }
@@ -77,6 +80,9 @@ export default function LogPostedAngle({ token }) {
         </select>
         <input value={f.kickoff} onChange={set("kickoff")} type="datetime-local"
           data-testid="angle-kickoff" className={`${input} w-52`} />
+        <input value={f.prob} onChange={set("prob")} type="number" min={1} max={99} placeholder="% shown"
+          title="The probability your post displayed. Kept so the result image can quote the number people actually saw."
+          data-testid="angle-prob" className={`${input} w-24`} />
         <input value={f.league_id} onChange={set("league_id")} placeholder="league id (if ambiguous)"
           data-testid="angle-league" className={`${input} w-44`} />
         <button onClick={submit} disabled={busy} data-testid="angle-submit"

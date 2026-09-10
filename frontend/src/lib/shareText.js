@@ -167,7 +167,12 @@ export const streakResultShare = ({ results = [], landed = 0, settled = 0, voide
  * Rows arrive already sorted longest-run-first from the backend, so trimming for length
  * drops the weakest rather than whatever happened to be last.
  */
-export const fixtureStreakShare = ({ fixture = {}, streaks = [] }) => (limit) => {
+// Long enough to be worth a mark. The share floor is already 5, so this is the tier above
+// it — a run that stands out from the ones it is listed beside. Marking everything would
+// mark nothing.
+export const FIRE_RUN = 8;
+
+export const fixtureStreakShare = ({ fixture = {}, streaks = [], form = [] }) => (limit) => {
   if (!streaks.length) return "";
   const when = kickoffLabel(fixture.date);
   const head = `${flagBullet(fixture.league_id, "")} ${fixture.home_name} v ${fixture.away_name}`
@@ -176,8 +181,16 @@ export const fixtureStreakShare = ({ fixture = {}, streaks = [] }) => (limit) =>
     // "Derby games 10+" for a match total, "Derby 6+" for that team's own corners — the
     // two are different claims and a reader has to be able to tell which is which.
     const what = s.subject === "match" ? `${s.team} games ${s.line_label}` : `${s.team} ${s.line_label}`;
-    return `${what} corners — ${s.run} in a row`;
+    const mark = s.run >= FIRE_RUN ? "🔥 " : "";
+    return `${mark}${what} corners — ${s.run} in a row`;
   });
+  // GAME STATE, under the lines. A side unbeaten at home plays on the front foot and wins
+  // corners; a side that cannot win away ends up chasing, which also produces them. The
+  // two read as opposites and point the same way, which is worth a reader seeing.
+  const state = form
+    .filter((f) => f.label)
+    .map((f) => `${f.team} ${f.label} ${f.venue === "away" ? "away" : "at home"}`);
+  const tail = state.length ? `\n\n${state.join("\n")}` : "";
   return `${head}\n\nStreaks running into it:\n${lines.join("\n")}`
-    + more(streaks.length, limit);
+    + more(streaks.length, limit) + tail;
 };

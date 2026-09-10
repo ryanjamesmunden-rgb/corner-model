@@ -28,10 +28,20 @@
 # GitHub issue, exactly as before. That order is deliberate — it means the job keeps
 # working before the bot exists, and nothing has to be switched over on the day it does.
 #
-# TIMEZONE. GitHub cron is UTC only, and "lunchtime" is a LOCAL idea that moves twice a
-# year: 12:00 London is 12:00 UTC in winter and 11:00 UTC in summer. A single UTC cron
-# would drift an hour every March and October. So this fires at BOTH hours and the first
-# step drops the run that isn't local noon — exactly one survives, year round.
+# TIMEZONE, AND WHY THERE IS NO LONGER AN HOUR CHECK. GitHub cron is UTC only, and
+# "lunchtime" is a LOCAL idea that moves twice a year. This used to fire at two UTC hours
+# and drop whichever one wasn't 12:00 in London, so that the post landed at the same local
+# time year round.
+#
+# That gate was eating the job. GitHub delays scheduled runs — routinely by half an hour,
+# sometimes by hours — so the surviving cron frequently didn't land on 12 either, both
+# runs were dropped, and the workflow went green having done nothing. Three of this
+# workflow's first five runs skipped that way, at 12:06, 15:57 and 18:01 London, which is
+# also how a real failure sat unnoticed underneath them.
+#
+# So: one cron, taken whenever it lands. The post drifts an hour between BST and GMT,
+# which no reader will notice, and which is a far smaller price than a daily poster that
+# silently skips days.
 #
 # FRIDAY FREEZES THE WEEKEND'S STREAKS. A streak row only exists while the run is alive —
 # a team that misses drops off the board — so grading "how the streaks did" against
@@ -46,8 +56,8 @@ name: Draft the X post
 
 on:
   schedule:
-    # Every day at 11:00 and 12:00 UTC — one of the two is 12:00 in London.
-    - cron: "0 11,12 * * *"
+    # ONE cron, and no gate on the hour it lands. See "TIMEZONE" at the top.
+    - cron: "0 11 * * *"
   workflow_dispatch:
     inputs:
       board:
@@ -55,11 +65,6 @@ on:
         required: false
         type: choice
         options: ["", "streaks", "fixtures", "results"]
-      force:
-        description: "Run even if it isn't local noon"
-        required: false
-        type: boolean
-        default: true
 
 concurrency:
   group: corner-social-draft
@@ -76,35 +81,33 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Only continue at London lunchtime
+      - name: What day is it
         id: when
-        # Both crons fire; this keeps the one where Europe/London says it is 12:00, so the
-        # post lands at the same local time through both BST and GMT. A manual run skips
-        # the check by default — you asked for it, you get it.
+        # NO HOUR GATE. There used to be one, and it was quietly eating the job: two crons
+        # fired and whichever did not land on London 12:00 was dropped. GitHub delays
+        # scheduled runs — routinely by half an hour, sometimes by hours — so in practice
+        # BOTH were often dropped and the run went green having done nothing. Three of the
+        # first five runs of this workflow skipped that way, at 12:06, 15:57 and 18:01
+        # London, and the failure that mattered was invisible underneath them.
+        #
+        # One cron, taken whenever it lands. The post drifts an hour between BST and GMT,
+        # which nobody reading it will ever notice, and which is a far smaller price than
+        # a poster that silently skips days.
         run: |
-          hour=$(TZ=Europe/London date +%H)
           weekday=$(TZ=Europe/London date +%u)   # 1=Mon .. 7=Sun
           echo "London time: $(TZ=Europe/London date '+%A %H:%M %Z')"
-          if [ "${{ inputs.force }}" != "true" ] && [ "$hour" != "12" ]; then
-            echo "::notice::not local noon (London hour $hour) — this is the duplicate cron, skipping"
-            echo "go=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
           echo "weekday=$weekday" >> "$GITHUB_OUTPUT"
           echo "tag=$(TZ=Europe/London date +%F)" >> "$GITHUB_OUTPUT"
           # Monday grades the Friday just gone — three days back, in London, so the tag
           # matches the one that run wrote rather than a UTC day that may differ.
           echo "friday=$(TZ=Europe/London date -d '3 days ago' +%F)" >> "$GITHUB_OUTPUT"
           echo "pretty=$(TZ=Europe/London date '+%a %d %b')" >> "$GITHUB_OUTPUT"
-          echo "go=true" >> "$GITHUB_OUTPUT"
 
       - uses: actions/setup-node@v4
-        if: steps.when.outputs.go == 'true'
         with:
           node-version: "20"
 
       - name: Wake the backend
-        if: steps.when.outputs.go == 'true'
         # Render sleeps the free instance; the first request after a quiet spell can be the
         # one that times out. Same reason sync.yml does this.
         run: |
@@ -118,7 +121,6 @@ jobs:
           BACKEND: ${{ vars.BACKEND_URL || 'https://corner-model.onrender.com' }}
 
       - name: Build the day's draft
-        if: steps.when.outputs.go == 'true'
         id: build
         # --board auto asks postPlan.js what this weekday is for, and takes its day window
         # too. A board named by hand on a manual run overrides both.
@@ -151,7 +153,7 @@ jobs:
           TOOLS_TOKEN: ${{ secrets.TOOLS_TOKEN }}
 
       - name: Send it to Telegram
-        if: steps.when.outputs.go == 'true' && steps.build.outputs.empty != 'true' && env.TG_TOKEN != ''
+        if: steps.build.outputs.empty != 'true' && env.TG_TOKEN != ''
         id: telegram
         # THE POST TEXT GOES IN THE MESSAGE BODY, not only behind the button. A button is
         # one tap when it works, and when it doesn't — a URL Telegram won't accept, an
@@ -208,7 +210,7 @@ jobs:
 
       - name: Make sure the label exists
         # Only needed when an issue is actually going to be filed.
-        if: steps.when.outputs.go == 'true' && steps.build.outputs.empty != 'true' && steps.telegram.outputs.sent != 'true'
+        if: steps.build.outputs.empty != 'true' && steps.telegram.outputs.sent != 'true'
         # Created here rather than by hand, so it is not a piece of setup that can be
         # missing. `gh label create` exits non-zero when the label already exists, which is
         # the normal case from the second run onward, so that is not an error.
@@ -226,7 +228,7 @@ jobs:
       - name: File it as an issue instead
         # Only when Telegram is not configured, or did not take it. Never both — two copies
         # of the same draft is two things to check and one of them to forget.
-        if: steps.when.outputs.go == 'true' && steps.build.outputs.empty != 'true' && steps.telegram.outputs.sent != 'true'
+        if: steps.build.outputs.empty != 'true' && steps.telegram.outputs.sent != 'true'
         run: |
           gh issue create \
             --title "X draft — ${{ steps.when.outputs.pretty }}" \
@@ -238,7 +240,7 @@ jobs:
       - name: Freeze the weekend's streaks
         # Friday only, and last: see the note at the top of this file for why this exists
         # and why it runs after the draft is delivered rather than before.
-        if: steps.when.outputs.go == 'true' && steps.when.outputs.weekday == '5'
+        if: steps.when.outputs.weekday == '5'
         run: |
           code=$(curl -s -o snap.json -w '%{http_code}' --max-time 120 -X POST \
             "$BACKEND/api/streaks/snapshot?token=$TOOLS_TOKEN" \

@@ -6,7 +6,7 @@
  * describe the list it is actually attached to.
  */
 import { streakShare, fixtureShare, bestTeamsShare, streakResultShare,
-         fixtureStreakShare, telegramPick, wonLadder, openGameCase,
+         fixtureStreakShare, telegramPick, wonLadder, openGameCase, postHeader,
          postDate, postTime, pickLabel } from "./shareText";
 
 const NORWAY = "\u{1F1F3}\u{1F1F4}";
@@ -457,4 +457,43 @@ test("the date line carries an ordinal, including the teens", () => {
 
 test("the kick-off reads as a clock time, not a 24-hour stamp", () => {
   expect(postTime("2026-09-10T12:30:00Z")).toMatch(/^\d{1,2}:\d{2}(am|pm)$/);
+});
+
+// ONE OPENING, BOTH DESTINATIONS. The channel post and the X post are about the same game
+// and go out within an hour of each other. Two copies of this header is exactly how one of
+// them ends up saying "Sat 15:00" while the other says "Thursday 10th September".
+describe("the header every fixture post opens with", () => {
+  const fixture = { league_id: "bra-sb", home_name: "Operario-PR", away_name: "CRB",
+                    date: "2026-09-10T12:00:00Z" };
+
+  test("is the date, the league with its kick-off, then the fixture", () => {
+    const [day, where, who] = postHeader({ fixture, leagueName: "Série B" });
+    expect(day).toBe("📅 Thursday 10th September");
+    expect(where).toMatch(/^🇧🇷 Série B @ \d{1,2}:\d{2}(am|pm)$/);
+    expect(who).toBe("🏟️ Operario-PR v CRB");
+  });
+
+  test("X and the channel open on exactly the same three lines", () => {
+    const streaks = [{ subject: "team", team: "Operario-PR", line: 5.5, line_label: "6+",
+                       direction: "over", run: 7, venue: "home" }];
+    const x = fixtureStreakShare({ fixture, streaks, leagueName: "Série B" })(4);
+    const vip = telegramPick({
+      fixture: { ...fixture, league_name: "Série B" },
+      market: { group: "home", line: 5.5, fair_odds: 1.64 }, card: {}, lambdas: {} });
+    const top = (s) => s.split("\n").slice(0, 3).join("\n");
+    expect(top(x)).toBe(top(vip));
+    expect(top(x)).toContain("📅 Thursday 10th September");
+  });
+
+  test("a missing league still opens on the date rather than a stray flag", () => {
+    const [day, where] = postHeader({ fixture, leagueName: "" });
+    expect(day).toBe("📅 Thursday 10th September");
+    expect(where).toMatch(/^🇧🇷 @ /);
+  });
+
+  test("no date at all drops the line instead of printing an empty one", () => {
+    const lines = postHeader({ fixture: { ...fixture, date: null }, leagueName: "Série B" });
+    expect(lines.some((l) => l.startsWith("📅"))).toBe(false);
+    expect(lines[0]).toContain("Série B");
+  });
 });

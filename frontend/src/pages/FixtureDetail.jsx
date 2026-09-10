@@ -181,9 +181,9 @@ export default function FixtureDetail() {
             {data.streaks.length} streak{data.streaks.length === 1 ? "" : "s"} running into this game
           </span>
           <ShareButtons
-            buildX={fixtureStreakShare({ fixture, streaks: data.streaks })}
+            buildX={fixtureStreakShare({ fixture, streaks: data.streaks, form: data.form || [] })}
             xRows={4}
-            text={fixtureStreakShare({ fixture, streaks: data.streaks })(4)}
+            text={fixtureStreakShare({ fixture, streaks: data.streaks, form: data.form || [] })(4)}
           />
         </div>
       )}

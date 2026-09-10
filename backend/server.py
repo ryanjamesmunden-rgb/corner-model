@@ -2864,6 +2864,9 @@ async def fixture_detail(fixture_id: str, user: dict = Depends(get_current_user)
             # rather than a second endpoint: the page has to load this anyway to show it,
             # and a separate call would just be a second thing to keep in step.
             "streaks": fixture_streaks(home, away, home["name"], away["name"]),
+            # Game state next to the corner line: who is on the front foot and who is
+            # likely to be chasing. Both produce corners, for opposite reasons.
+            "form": fixture_form(home, away, home["name"], away["name"]),
             "key_factors": {
                 "home": key_factors(home, away, "home", home["name"], away["name"], lg_teams),
                 "away": key_factors(away, home, "away", away["name"], home["name"], lg_teams)},
@@ -3403,6 +3406,80 @@ def live_streak(team: dict, venue: str, subject: str, direction: str,
                 "venue": venue, "games": len(history),
             })
     return best[1] if best else None
+
+
+FORM_WINDOW = 5
+# A run only reads as a run once it is a few games long. Two unbeaten is a fortnight.
+FORM_MIN_RUN = 3
+
+
+def _match_result(m: dict) -> Optional[str]:
+    """W/D/L for one game, or None where the score was never synced."""
+    gf, ga = m.get("goals_for"), m.get("goals_against")
+    if gf is None or ga is None:
+        return None
+    return "W" if gf > ga else ("D" if gf == ga else "L")
+
+
+def team_form(team: dict, venue: str, window: int = FORM_WINDOW) -> Optional[dict]:
+    """Recent W/D/L on the venue being played, and the run worth naming.
+
+    GAME STATE IS THE POINT, not the football. A side unbeaten at home tends to play on
+    the front foot and win corners; a side that cannot buy a win away tends to end up
+    chasing, which also produces them. Both are worth knowing next to a corner line, and
+    neither is visible in a corners average.
+
+    VENUE-FILTERED WITHOUT A FALLBACK, unlike _venue_matches, which quietly returns the
+    whole history when a venue pool is empty. That fallback is harmless for an average
+    and a lie here: "unbeaten in 5 at home" has to be about home games or it is simply a
+    false sentence.
+
+    None where the scores were never synced — an unmeasured record must not read as a
+    blank one.
+    """
+    rms = (team or {}).get("real_matches") or []
+    if venue == "home":
+        pool = [m for m in rms if m.get("home")]
+    elif venue == "away":
+        pool = [m for m in rms if not m.get("home")]
+    else:
+        pool = list(rms)
+    pool = pool[-window:]
+    marks = [_match_result(m) for m in pool]
+    marks = [x for x in marks if x]
+    if not marks:
+        return None
+
+    def run_of(ok):
+        n = 0
+        for x in reversed(marks):
+            if not ok(x):
+                break
+            n += 1
+        return n
+
+    unbeaten = run_of(lambda x: x != "L")
+    winless = run_of(lambda x: x != "W")
+    w, d, l = marks.count("W"), marks.count("D"), marks.count("L")
+    if unbeaten >= FORM_MIN_RUN:
+        label = f"unbeaten in {unbeaten}"
+    elif winless >= FORM_MIN_RUN:
+        label = f"without a win in {winless}"
+    else:
+        label = f"{w}W {d}D {l}L"
+    return {"games": len(marks), "wins": w, "draws": d, "losses": l,
+            "unbeaten": unbeaten, "winless": winless, "venue": venue,
+            "label": label, "marks": marks[::-1]}
+
+
+def fixture_form(home: dict, away: dict, home_name: str, away_name: str) -> List[dict]:
+    """Both sides' recent form, at the venue each is actually playing."""
+    out = []
+    for team, name, venue in ((home, home_name, "home"), (away, away_name, "away")):
+        f = team_form(team, venue)
+        if f:
+            out.append({**f, "team": name})
+    return out
 
 
 # A SHARE IS NOT THE BOARD. The streak board shows anything alive from two games up,

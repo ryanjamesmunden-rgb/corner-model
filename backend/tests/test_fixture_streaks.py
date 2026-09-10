@@ -148,3 +148,42 @@ def test_leak_is_read_at_the_venue_the_opponent_is_playing():
     t = team("T", [m(False, 2, 8, "2026-08-01"), m(True, 2, 0, "2026-08-08"),
                    m(False, 2, 7, "2026-08-15")])
     assert opp_leak(t, "away")["hits"]["6"] == 2      # the home clean sheet is not theirs to carry
+
+
+# --- form, as game state ---
+def g(home, gf, ga, date):
+    return {"home": home, "goals_for": gf, "goals_against": ga,
+            "corners_for": 6, "corners_against": 4, "opponent": "X", "date": date}
+
+
+def test_form_is_read_at_the_venue_being_played_with_no_fallback():
+    """_venue_matches quietly returns the WHOLE history when a venue pool is empty. That
+    is harmless for an average and a lie here — "unbeaten in 5 at home" has to be about
+    home games or it is a false sentence."""
+    from server import team_form
+    t = team("T", [g(True, 2, 1, "1"), g(True, 1, 1, "2"), g(False, 0, 3, "3"),
+                   g(True, 3, 0, "4"), g(True, 2, 2, "5")])
+    home = team_form(t, "home")
+    assert home["marks"] == ["D", "W", "D", "W"]      # the away defeat is not in it
+    assert home["label"] == "unbeaten in 4"
+    away = team_form(t, "away")
+    assert away["marks"] == ["L"] and away["losses"] == 1
+
+
+def test_a_side_that_cannot_win_is_named_as_such():
+    """Chasing produces corners too, so a bad run is as much a signal as a good one."""
+    from server import team_form
+    t = team("T", [g(True, 0, 1, "1"), g(True, 1, 1, "2"), g(True, 0, 2, "3")])
+    assert team_form(t, "home")["label"] == "without a win in 3"
+
+
+def test_a_short_run_reports_the_record_rather_than_claiming_a_run():
+    from server import team_form
+    t = team("T", [g(True, 3, 0, "1"), g(True, 0, 2, "2"), g(True, 2, 0, "3")])
+    assert team_form(t, "home")["label"] == "2W 0D 1L"
+
+
+def test_unsynced_scores_read_as_unknown_rather_than_as_a_blank_record():
+    """A team whose goals were never synced must not be published as having no form."""
+    from server import team_form
+    assert team_form(team("T", [{"home": True, "corners_for": 5}]), "home") is None

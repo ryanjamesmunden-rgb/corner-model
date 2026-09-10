@@ -255,3 +255,38 @@ describe("sharing one fixture and what is running into it", () => {
     expect(fixtureStreakShare({ fixture, streaks: [] })(3)).toBe("");
   });
 });
+
+describe("the fire mark and game state", () => {
+  const fixture = { home_name: "Derby", away_name: "West Brom", league_id: "eng-ch", date: soon() };
+  const form = [
+    { team: "Derby", venue: "home", label: "unbeaten in 7" },
+    { team: "West Brom", venue: "away", label: "without a win in 5" },
+  ];
+  const row = (run) => ({ team: "Derby", subject: "team", line: 6, line_label: "6+",
+                          direction: "over", run });
+
+  test("a long run is marked, a merely good one is not", () => {
+    // Marking everything would mark nothing — the floor is already 5, so this is the
+    // tier that stands out from the rows beside it.
+    expect(fixtureStreakShare({ fixture, streaks: [row(9)] })(3)).toContain("🔥");
+    expect(fixtureStreakShare({ fixture, streaks: [row(6)] })(3)).not.toContain("🔥");
+  });
+
+  test("game state is spelled out at the venue each side is playing", () => {
+    const out = fixtureStreakShare({ fixture, streaks: [row(9)], form })(3);
+    expect(out).toContain("Derby unbeaten in 7 at home");
+    expect(out).toContain("West Brom without a win in 5 away");
+  });
+
+  test("no form means no dangling section", () => {
+    const out = fixtureStreakShare({ fixture, streaks: [row(9)], form: [] })(3);
+    expect(out.trimEnd()).toBe(out.trimEnd());
+    expect(out).not.toContain("at home");
+  });
+
+  test("the state lines sit AFTER the +N more, so trimming cannot orphan them", () => {
+    const many = [row(9), row(8), row(7)];
+    const out = fixtureStreakShare({ fixture, streaks: many, form })(1);
+    expect(out.indexOf("more on the site")).toBeLessThan(out.indexOf("unbeaten in 7"));
+  });
+});

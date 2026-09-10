@@ -1,7 +1,11 @@
 import { useState, useEffect } from "react";
-import { CheckCircle2, XCircle, MinusCircle, Clock, ShieldCheck } from "lucide-react";
+import { CheckCircle2, XCircle, MinusCircle, Clock, ShieldCheck, Video } from "lucide-react";
 import { api } from "@/lib/api";
 import { withFlag } from "@/lib/countryFlag";
+import StoryButton from "@/components/StoryButton";
+import { renderResultStory } from "@/lib/storyImage";
+import { canRecord, extFor, recordStoryVideo } from "@/lib/storyVideo";
+import { kickoffLabel } from "@/lib/kickoff";
 
 // THE RECORD. The only page here anyone can read without an account.
 //
@@ -37,6 +41,43 @@ function Mark({ result }) {
     <span data-testid={`mark-${result}`}
       className={`inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded border font-mono-data shrink-0 ${m.cls}`}>
       <m.Icon className="h-2.5 w-2.5" /> {m.word}
+    </span>
+  );
+}
+
+// SHARE THE OUTCOME. The preview story asks people to believe a percentage; this one
+// shows what happened, and it is the more persuasive of the two — "we said 63% chance of
+// 5+" is a claim, "it finished on 11" is a fact anyone can check.
+//
+// Only on rows that have actually settled. A "to play" row has no result to animate, and
+// a button that produces an image of nothing is worse than no button.
+function ResultShare({ row }) {
+  if (!row || row.result === "pending" || row.value == null) return null;
+  const args = {
+    homeName: row.is_home === false ? row.opponent : row.name,
+    awayName: row.is_home === false ? row.name : row.opponent,
+    leagueId: row.league_id, kickoff: kickoffLabel(row.kickoff),
+    team: row.name, line: row.line, direction: row.direction, subject: row.subject,
+    value: row.value, result: row.result, prob: row.prob ?? null, dist: row.dist || [],
+  };
+  const key = `result-${row.name}-${row.line}-${row.value}`.replace(/\s+/g, "-");
+  return (
+    <span className="flex items-center gap-1.5 shrink-0">
+      <StoryButton days={[{ key }]} testId={`result-story-${key}`} label="Share"
+        title="Instagram Story — the line called, and what the game produced"
+        render={(canvas) => renderResultStory(canvas, args)} />
+      {canRecord() && (
+        <StoryButton days={[{ key }]} testId={`result-video-${key}`} icon={Video} label="Video"
+          title="A Story video — the corner count climbs to what it finished on"
+          makeFile={async (day) => {
+            const canvas = document.createElement("canvas");
+            const { blob, mime, type, ext } = await recordStoryVideo(canvas, (progress) =>
+              renderResultStory(canvas, { ...args, progress }));
+            const container = extFor(mime);
+            return new File([blob], `corner-model-${day.key}.${ext || container}`,
+                            { type: type || `video/${container}` });
+          }} />
+      )}
     </span>
   );
 }
@@ -151,6 +192,7 @@ export default function Results() {
                   </p>
                 </div>
                 <Mark result={r.result} />
+                <ResultShare row={r} />
               </div>
             ))}
           </div>
@@ -266,6 +308,7 @@ const AngleList = ({ title, tally, blurb, testId, muted = false }) => (
             </p>
           </div>
           <Mark result={r.result} />
+          <ResultShare row={r} />
         </div>
       ))}
     </div>

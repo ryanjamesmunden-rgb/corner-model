@@ -4573,6 +4573,11 @@ class PostedAngleBody(BaseModel):
     is_home: Optional[bool] = None
     posted_to: str = "instagram"
     note: Optional[str] = None
+    # WHAT THE POST ACTUALLY CLAIMED, kept so the result image can say "we called 5+ at
+    # 63%" with the number that really went out. Recomputing it later would quietly show
+    # a different percentage from the one people saw, which is the one thing a results
+    # post must not do.
+    prob: Optional[float] = None
 
 
 @api_router.post("/angles/posted")
@@ -4625,6 +4630,7 @@ async def log_posted_angle(body: PostedAngleBody, token: Optional[str] = None,
         "line": body.line, "direction": body.direction, "subject": body.subject,
         "opponent": body.opponent.strip(), "is_home": body.is_home,
         "kickoff": ko.isoformat(), "posted_to": body.posted_to, "note": body.note,
+        "prob": body.prob,
         "posted_at": now.isoformat(),
         # THE FLAG THAT CANNOT BE SET BY HAND.
         "before_kickoff": now < ko,
@@ -4703,6 +4709,7 @@ async def public_results(weeks: int = RESULTS_WEEKS):
             "is_home": r.get("is_home"), "kickoff": r.get("kickoff"),
             "result": r["result"], "value": r.get("value"),
             "posted_to": r.get("posted_to"), "posted_at": r.get("posted_at"),
+            "prob": r.get("prob"),
             "before_kickoff": bool(r.get("before_kickoff")),
         }
 

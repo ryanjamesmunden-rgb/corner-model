@@ -1,4 +1,4 @@
-import { fixtureStoryMarkets } from "./storyImage";
+import { fixtureStoryMarkets, resultVerdict, resultMargin } from "./storyImage";
 
 // What goes out in public and what does not is a product decision, so it is pinned here
 // rather than left to whoever next edits the canvas code. The rule for a fixture story:
@@ -94,5 +94,41 @@ describe("it refuses to make half a story", () => {
   it("does not fall over on missing team names", () => {
     const rows = fixtureStoryMarkets(MARKETS, LAMBDAS, {});
     expect(rows.map((r) => r.label)).toEqual(["Match total", "home", "away"]);
+  });
+});
+
+describe("the result story's wording", () => {
+  test("names the verdict in words, not only in colour", () => {
+    // The site's four tones are close enough under colour blindness that none of them is
+    // allowed to carry a meaning alone — a green image with no word would break that.
+    expect(resultVerdict("win").word).toBe("LANDED");
+    expect(resultVerdict("loss").word).toBe("MISSED");
+    expect(resultVerdict("void").word).toBe("PUSH");
+  });
+
+  test("a game still to play has no result story", () => {
+    expect(resultVerdict("pending")).toBeNull();
+    expect(resultVerdict(undefined)).toBeNull();
+  });
+
+  test("the margin says the part a reader would otherwise work out", () => {
+    // Derby: called 5+, finished on 11.
+    expect(resultMargin(11, 5)).toBe("6 clear");
+    expect(resultMargin(6, 5)).toBe("1 clear");
+    expect(resultMargin(5, 5)).toBe("bang on the line");
+    expect(resultMargin(3, 5)).toBe("2 short");
+  });
+
+  test("an under reads the margin the other way round", () => {
+    // Under 9 finishing on 6 is three clear, not three short — getting this backwards
+    // would caption a win as a loss on a public image.
+    expect(resultMargin(6, 9, "under")).toBe("3 clear");
+    expect(resultMargin(11, 9, "under")).toBe("2 short");
+    expect(resultMargin(9, 9, "under")).toBe("bang on the line");
+  });
+
+  test("a missing count says nothing rather than something wrong", () => {
+    expect(resultMargin(null, 5)).toBe("");
+    expect(resultMargin(11, null)).toBe("");
   });
 });

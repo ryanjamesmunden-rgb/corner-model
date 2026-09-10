@@ -80,6 +80,13 @@ export default function LogPostedAngle({ token }) {
         </select>
         <input value={f.kickoff} onChange={set("kickoff")} type="datetime-local"
           data-testid="angle-kickoff" className={`${input} w-52`} />
+        <select value={f.posted_to} onChange={set("posted_to")}
+          title="Where it went. VIP picks grade exactly like anything else — this just records which channel made the call."
+          data-testid="angle-posted-to" className={`${input} w-28`}>
+          <option value="instagram">Instagram</option>
+          <option value="telegram">VIP Telegram</option>
+          <option value="x">X</option>
+        </select>
         <input value={f.prob} onChange={set("prob")} type="number" min={1} max={99} placeholder="% shown"
           title="The probability your post displayed. Kept so the result image can quote the number people actually saw."
           data-testid="angle-prob" className={`${input} w-24`} />

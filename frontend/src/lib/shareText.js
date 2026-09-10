@@ -151,3 +151,33 @@ export const streakResultShare = ({ results = [], landed = 0, settled = 0, voide
   const more = graded.length > limit ? `\n+${graded.length - limit} more on the site` : "";
   return `${head}\n${lines.join("\n")}${voids}${left}${more}`;
 };
+
+/**
+ * One fixture, and what is already running into it.
+ *
+ * DIFFERENT QUESTION FROM THE STREAK BOARD. That board answers "which teams are on a
+ * run"; this answers "what is running into THIS game", which is the question you have
+ * once you are looking at a single fixture. A game is worth posting when something is
+ * already alive going into it, and this is the post that says so.
+ *
+ * SUGGESTED LINES, NOT A PRICE. Each row is a line and how long it has been landing —
+ * enough for a reader to judge whether it is worth their time, and nothing they could
+ * bet from without the model's number, which stays on the site.
+ *
+ * Rows arrive already sorted longest-run-first from the backend, so trimming for length
+ * drops the weakest rather than whatever happened to be last.
+ */
+export const fixtureStreakShare = ({ fixture = {}, streaks = [] }) => (limit) => {
+  if (!streaks.length) return "";
+  const when = kickoffLabel(fixture.date);
+  const head = `${flagBullet(fixture.league_id, "")} ${fixture.home_name} v ${fixture.away_name}`
+    .trim() + (when ? ` · ${when}` : "");
+  const lines = streaks.slice(0, limit).map((s) => {
+    // "Derby games 10+" for a match total, "Derby 6+" for that team's own corners — the
+    // two are different claims and a reader has to be able to tell which is which.
+    const what = s.subject === "match" ? `${s.team} games ${s.line_label}` : `${s.team} ${s.line_label}`;
+    return `${what} corners — ${s.run} in a row`;
+  });
+  return `${head}\n\nStreaks running into it:\n${lines.join("\n")}`
+    + more(streaks.length, limit);
+};

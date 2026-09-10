@@ -1229,6 +1229,57 @@ const drawSlip = (ctx, { selection, market, odds, stake, returns, currency = "£
   return h;
 };
 
+
+/**
+ * The REAL slip, laid over the graphic.
+ *
+ * A drawn slip panel is still the site talking about itself. This is the bookmaker's own
+ * screenshot — their layout, their WON stamp, their numbers — which is the one thing on
+ * the image a reader cannot suspect us of having composed. It is proof in a way a
+ * redrawn version can never be.
+ *
+ * IT ARRIVES LATE AND ON TOP. The count has already climbed and the verdict is already
+ * read by the time this lands, so the animation underneath still does its work — the slip
+ * confirms the story rather than replacing it. Dropped in slightly rotated with a shadow
+ * under it, because a screenshot lying ON the design reads as evidence, while one aligned
+ * flush to the grid reads as another panel we drew.
+ *
+ * `img` is anything canvas can draw: an HTMLImageElement, an ImageBitmap, another canvas.
+ */
+const drawSlipImage = (ctx, { img, x, y, w, progress = 1, tilt = -1.6 }) => {
+  if (!img) return;
+  const iw = img.naturalWidth || img.width;
+  const ih = img.naturalHeight || img.height;
+  if (!iw || !ih) return;
+  const t = clamp01(progress);
+  if (t <= 0) return;
+  const h = w * (ih / iw);
+  // Settles rather than pops: overshoots nothing, just closes the last few percent.
+  const scale = 0.94 + 0.06 * ease(t);
+  ctx.save();
+  ctx.globalAlpha = t;
+  ctx.translate(x + w / 2, y + h / 2);
+  ctx.rotate((tilt * Math.PI) / 180);
+  ctx.scale(scale, scale);
+  ctx.shadowColor = "rgba(0,0,0,0.55)";
+  ctx.shadowBlur = 48;
+  ctx.shadowOffsetY = 16;
+  // A plate behind it, so a slip with transparent or light edges still sits on something.
+  ctx.fillStyle = C.bg;
+  roundRect(ctx, -w / 2, -h / 2, w, h, 24);
+  ctx.fill();
+  ctx.shadowColor = "transparent";
+  ctx.shadowBlur = 0;
+  ctx.shadowOffsetY = 0;
+  ctx.save();
+  roundRect(ctx, -w / 2, -h / 2, w, h, 24);
+  ctx.clip();
+  ctx.drawImage(img, -w / 2, -h / 2, w, h);
+  ctx.restore();
+  ctx.restore();
+  return h;
+};
+
 export const renderResultStory = (canvas, {
   homeName = "", awayName = "", leagueId = "", kickoff = "",
   team = "", line = 0, direction = "over", subject = "team",
@@ -1240,6 +1291,7 @@ export const renderResultStory = (canvas, {
   homeCorners = null, awayCorners = null,
   cornerMinutes = [],
   slip = null,
+  slipImage = null,
   cta = "The full record on the site", brand = "CORNER MODEL",
   progress = 1,
 } = {}) => {
@@ -1337,8 +1389,10 @@ export const renderResultStory = (canvas, {
   // THE SCORELINE. Both scores, because a corner count without the game around it is a
   // statistic rather than a story: eleven corners while winning 2-0 and eleven while
   // chasing a goal are different games, and the reader can tell which.
-  const hasScore = homeGoals != null && awayGoals != null;
-  const hasCorners = homeCorners != null && awayCorners != null;
+  // A slip screenshot is tall and lands over this band, so the drawn scoreline would be
+  // covered by it — cheaper to not draw it than to draw it underneath.
+  const hasScore = homeGoals != null && awayGoals != null && !slipImage;
+  const hasCorners = homeCorners != null && awayCorners != null && !slipImage;
   if (hasScore || hasCorners) {
     faded(ctx, done ? 1 : seg(P, 0.70, 0.82), () => {
       let sy = 1030;
@@ -1365,7 +1419,12 @@ export const renderResultStory = (canvas, {
   //
   // Only one, because with a scoreline above them there is not room for two — drawn
   // together, the slip card landed straight over the bars.
-  if (cornerMinutes?.length) {
+  if (slipImage) {
+    // Sized and placed to clear the margin line above it and the call to action below —
+    // at full width it clipped "6 clear" on one edge and the pill on the other.
+    drawSlipImage(ctx, { img: slipImage, x: 190, y: 986, w: 700,
+                         progress: done ? 1 : seg(P, 0.58, 0.80) });
+  } else if (cornerMinutes?.length) {
     faded(ctx, done ? 1 : seg(P, 0.30, 0.42), () => {
       drawCornerTimeline(ctx, {
         minutes: cornerMinutes, line, tone: v.tone,
@@ -1434,6 +1493,7 @@ export const renderResultWide = (canvas, {
   homeGoals = null, awayGoals = null, homeCorners = null, awayCorners = null,
   cornerMinutes = [],
   slip = null,
+  slipImage = null,
   cta = "The full record on the site", brand = "CORNER MODEL",
   progress = 1,
 } = {}) => {
@@ -1536,7 +1596,10 @@ export const renderResultWide = (canvas, {
 
   // The evidence column. Same order of preference as the portrait story.
   const rw = WIDE_W - R - 90;
-  if (cornerMinutes?.length) {
+  if (slipImage) {
+    drawSlipImage(ctx, { img: slipImage, x: R + rw / 2 - 260, y: 150, w: 520,
+                         progress: done ? 1 : seg(P, 0.58, 0.80) });
+  } else if (cornerMinutes?.length) {
     faded(ctx, done ? 1 : seg(P, 0.30, 0.42), () => {
       drawCornerTimeline(ctx, { minutes: cornerMinutes, line, tone: v.tone,
                                 x: R, y: 540, w: rw,

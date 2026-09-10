@@ -182,9 +182,11 @@ export default function FixtureDetail() {
             {data.streaks.length} streak{data.streaks.length === 1 ? "" : "s"} running into this game
           </span>
           <ShareButtons
-            buildX={fixtureStreakShare({ fixture, streaks: data.streaks, form: data.form || [] })}
+            buildX={fixtureStreakShare({ fixture, streaks: data.streaks, form: data.form || [],
+                                 leagueName: data.league_name })}
             xRows={4}
-            text={fixtureStreakShare({ fixture, streaks: data.streaks, form: data.form || [] })(4)}
+            text={fixtureStreakShare({ fixture, streaks: data.streaks, form: data.form || [],
+                                 leagueName: data.league_name })(4)}
           />
         </div>
       )}

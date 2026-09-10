@@ -172,11 +172,14 @@ export const streakResultShare = ({ results = [], landed = 0, settled = 0, voide
 // mark nothing.
 export const FIRE_RUN = 8;
 
-export const fixtureStreakShare = ({ fixture = {}, streaks = [], form = [] }) => (limit) => {
+export const fixtureStreakShare = ({ fixture = {}, streaks = [], form = [],
+                                     leagueName = "" }) => (limit) => {
   if (!streaks.length) return "";
-  const when = kickoffLabel(fixture.date);
-  const head = `${flagBullet(fixture.league_id, "")} ${fixture.home_name} v ${fixture.away_name}`
-    .trim() + (when ? ` · ${when}` : "");
+  // THE SAME OPENING AS THE CHANNEL POST. Both are about one game and go out within an
+  // hour of each other, so they name the day, the league and the fixture identically —
+  // see postHeader. It costs a couple of rows' worth of characters on X, which fitToPost
+  // absorbs by showing fewer streaks rather than by cutting one short.
+  const head = postHeader({ fixture, leagueName }).join("\n");
   const lines = streaks.slice(0, limit).map((s) => {
     // "Derby games 10+" for a match total, "Derby 6+" for that team's own corners — the
     // two are different claims and a reader has to be able to tell which is which.
@@ -227,6 +230,35 @@ export const postTime = (iso) => {
   if (!d || Number.isNaN(d.getTime())) return "";
   return d.toLocaleTimeString("en-GB", { hour: "numeric", minute: "2-digit", hour12: true })
     .replace(/\s/g, "").toLowerCase();
+};
+
+/**
+ * The lines EVERY fixture post opens with, wherever it is going.
+ *
+ *   📅 Thursday 10th September
+ *   🇧🇷 Série B @ 12:30pm
+ *   🏟️ Operario-PR v CRB
+ *
+ * Shared rather than written twice. The channel post and the X post are about the same
+ * game and go out within an hour of each other, and two copies of this is exactly how one
+ * of them ends up saying "Sat 15:00" while the other says "Thursday 10th September" — the
+ * kind of difference a reader notices and cannot explain.
+ *
+ * Every line drops itself when it has nothing to say, so a fixture with no date or no
+ * league still produces a header rather than a row of stray emoji.
+ */
+export const postHeader = ({ fixture = {}, leagueName = "" }) => {
+  const day = postDate(fixture.date);
+  const when = postTime(fixture.date);
+  const league = leagueName || fixture.league_name || "";
+  const where = `${flagBullet(fixture.league_id, "")} ${league}`.trim()
+    + (when ? ` @ ${when}` : "");
+  return [
+    day && `📅 ${day}`,
+    where || null,
+    fixture.home_name && fixture.away_name
+      && `🏟️ ${fixture.home_name} v ${fixture.away_name}`,
+  ].filter(Boolean);
 };
 
 /** "6+" from a 5.5 line — how the line is said, not how it is stored. */
@@ -312,16 +344,11 @@ export const telegramPick = ({
   price, book = "", stake, link = "", result = null,
 }) => {
   const side = market.group === "total" ? null : (card[market.group] || null);
-  const when = postTime(fixture.date);
-  const day = postDate(fixture.date);
 
   const head = [
-    day && `📅 ${day}`,
-    `${flagBullet(fixture.league_id, "")} ${fixture.league_name || ""}`.trim()
-      + (when ? ` @ ${when}` : ""),
-    `🏟️ ${fixture.home_name} v ${fixture.away_name}`,
+    ...postHeader({ fixture }),
     `🚩 ${pickLabel(market, fixture.home_name, fixture.away_name)}`,
-  ].filter(Boolean);
+  ];
 
   // The price line only exists if there IS a price. A pick posted without one is still a
   // pick; a line reading "[] via 💸 u" is just a broken post.

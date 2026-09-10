@@ -159,6 +159,17 @@ export default function PerfectGames() {
                   </td>
                   <td className="px-2 py-1.5 sm:px-4 sm:py-2.5 text-right text-foreground">
                     {r.mismatch.opp_conceded.toFixed(2)}
+                    {/* THE COUNT UNDER THE AVERAGE. "Concedes 5.4" hides the shape — a side
+                        shipping 9, 9, 1, 1 averages the same as one shipping 5 every week,
+                        and only the second is a fixture worth backing. This is how many of
+                        the opponent's last ten actually reached the line being claimed. */}
+                    {r.opp_leak?.games > 0 && (
+                      <span className="block text-[10px] font-sans text-tone-strong-fg"
+                        title={`${r.opp_leak.opponent} has conceded ${r.opp_leak.line}+ corners in `
+                          + `${r.opp_leak.at_line} of their last ${r.opp_leak.games} at this venue`}>
+                        {r.opp_leak.at_line}/{r.opp_leak.games} at {r.opp_leak.line}+
+                      </span>
+                    )}
                   </td>
                   <td className="px-2 py-1.5 sm:px-4 sm:py-2.5 text-right text-foreground">
                     {Number(r.mismatch.lambda).toFixed(2)}

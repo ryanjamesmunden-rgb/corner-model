@@ -4556,6 +4556,87 @@ async def snapshot_results(tag: str, token: Optional[str] = None,
 RESULTS_WEEKS = 12
 
 
+class PostedAngleBody(BaseModel):
+    """An angle posted by hand — to Instagram, X, wherever — so it can be graded too.
+
+    The scheduled snapshot only ever freezes the STREAK BOARD. An angle picked off a
+    fixture page and posted manually was evidence of nothing afterwards, because nothing
+    had written down that it was ever claimed.
+    """
+    team: str                       # as the site spells it
+    line: int
+    direction: str = "over"         # over | under
+    subject: str = "team"           # team | match
+    opponent: str
+    kickoff: str                    # ISO date or datetime of the game being called
+    league_id: Optional[str] = None  # narrows the team lookup where two share a name
+    is_home: Optional[bool] = None
+    posted_to: str = "instagram"
+    note: Optional[str] = None
+
+
+@api_router.post("/angles/posted")
+async def log_posted_angle(body: PostedAngleBody, token: Optional[str] = None,
+                           user: dict = Depends(get_current_user)):
+    """Log an angle that was posted by hand, and stamp WHETHER IT WAS STILL A PREDICTION.
+
+    `before_kickoff` is computed here from the clock — it is never sent by the caller and
+    never editable. That single flag is the whole integrity mechanism: an angle logged
+    while the game is still to play is a claim, and an angle logged afterwards is a
+    memory. Both are worth showing. Only the first can be counted, because a record you
+    can add winners to after the fact is not a record.
+
+    Not silently rejected after the game, because refusing would just mean the honest
+    ones never get recorded either — a post that really was made before kick-off, entered
+    on Monday, is still true and still worth showing. It is admitted, marked, and kept
+    out of the headline rate.
+
+    Idempotent on the natural key, so entering the same angle twice does not double-count
+    it and cannot be used to pad the list.
+    """
+    _check_tools_token(token)
+    if body.direction not in ("over", "under"):
+        raise HTTPException(status_code=400, detail="direction must be over or under")
+
+    q = {"name": {"$regex": f"^{re.escape(body.team.strip())}$", "$options": "i"}}
+    if body.league_id:
+        q["league_id"] = body.league_id
+    matches = await db.teams.find(q, {"_id": 0, "team_id": 1, "name": 1, "league_id": 1}).to_list(10)
+    if not matches:
+        raise HTTPException(status_code=404, detail=f"no team called {body.team!r}")
+    if len(matches) > 1:
+        # Refused rather than guessed: grading reads that team's match history, so the
+        # wrong pick would settle a real game against the wrong side's corners.
+        names = ", ".join(sorted({m["league_id"] for m in matches}))
+        raise HTTPException(status_code=409,
+                            detail=f"{body.team!r} exists in several leagues ({names}) — pass league_id")
+    team = matches[0]
+
+    now = datetime.now(timezone.utc)
+    try:
+        ko = datetime.fromisoformat(body.kickoff.replace("Z", "+00:00"))
+        if ko.tzinfo is None:
+            ko = ko.replace(tzinfo=timezone.utc)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="kickoff must be an ISO date or datetime")
+
+    doc = {
+        "team_id": team["team_id"], "name": team["name"], "league_id": team["league_id"],
+        "line": body.line, "direction": body.direction, "subject": body.subject,
+        "opponent": body.opponent.strip(), "is_home": body.is_home,
+        "kickoff": ko.isoformat(), "posted_to": body.posted_to, "note": body.note,
+        "posted_at": now.isoformat(),
+        # THE FLAG THAT CANNOT BE SET BY HAND.
+        "before_kickoff": now < ko,
+    }
+    key = f"{team['team_id']}|{ko.date().isoformat()}|{body.line}|{body.direction}"
+    existing = await db.posted_angles.find_one({"_id": key}, {"_id": 0})
+    if existing:
+        return {"status": "exists", **existing}
+    await db.posted_angles.insert_one({"_id": key, **doc})
+    return {"status": "created", **doc}
+
+
 @api_router.get("/results")
 async def public_results(weeks: int = RESULTS_WEEKS):
     """THE PUBLIC RECORD: every streak that went out, and how it landed.
@@ -4604,10 +4685,36 @@ async def public_results(weeks: int = RESULTS_WEEKS):
             } for r in rows],
         })
 
+    # ANGLES POSTED BY HAND, split by whether they were logged while still a prediction.
+    # The split is the point. Both lists are published — hiding the ones added afterwards
+    # would be its own dishonesty — but only the ones that were on record BEFORE kick-off
+    # can count towards the rate, because a rate you can add winners to is not a rate.
+    posted = await db.posted_angles.find({}, {"_id": 0}).sort("kickoff", -1).to_list(400)
+    posted_graded = _grade_entries(posted, await _teams_for(posted)) if posted else []
+    claimed = [r for r in posted_graded if r.get("before_kickoff")]
+    recalled = [r for r in posted_graded if not r.get("before_kickoff")]
+
+    def public_row(r):
+        return {
+            "name": r["name"], "league_id": r["league_id"],
+            "line": r["line"], "direction": r["direction"],
+            "line_label": streak_line_label(r["line"], r["direction"]),
+            "subject": r["subject"], "opponent": r.get("opponent"),
+            "is_home": r.get("is_home"), "kickoff": r.get("kickoff"),
+            "result": r["result"], "value": r.get("value"),
+            "posted_to": r.get("posted_to"), "posted_at": r.get("posted_at"),
+            "before_kickoff": bool(r.get("before_kickoff")),
+        }
+
+    counted = everything + claimed
     return {
-        "summary": {**_tally(everything), "weeks": len(weeks_out),
+        "summary": {**_tally(counted), "weeks": len(weeks_out),
                     "since": weeks_out[-1]["tag"] if weeks_out else None},
         "weeks": weeks_out,
+        "posted": {
+            "claimed": {**_tally(claimed), "rows": [public_row(r) for r in claimed]},
+            "recalled": {**_tally(recalled), "rows": [public_row(r) for r in recalled]},
+        },
     }
 
 

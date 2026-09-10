@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { Terminal, Play, Loader2, CheckCircle2, AlertTriangle, KeyRound } from "lucide-react";
 import { api } from "@/lib/api";
+import LogPostedAngle from "@/components/LogPostedAngle";
 
 // Runs the analysis scripts from the browser so the whole loop works on a phone.
 // Gated by TOOLS_TOKEN on the backend; the token is kept in localStorage only.
@@ -102,6 +103,8 @@ export default function ToolsPanel() {
             ))}
           </div>
         </div>
+
+        <LogPostedAngle token={token} />
 
         <div>
           <p className="text-xs text-muted-foreground mb-2">

@@ -67,7 +67,7 @@ export default function Results() {
     );
   }
 
-  const { summary = {}, weeks = [] } = data;
+  const { summary = {}, weeks = [], posted = {} } = data;
 
   return (
     <div className="space-y-4 max-w-4xl" data-testid="results-page">
@@ -157,7 +157,25 @@ export default function Results() {
         </section>
       ))}
 
-      {weeks.length === 0 && (
+      {/* ANGLES POSTED BY HAND — the ones off a fixture page, put on Instagram or X.
+          Two lists, and the split is the honest part rather than a technicality: one was
+          on record while the game was still to play, the other was written down after
+          the result was known. Both are shown. Only the first is in the number above. */}
+      {posted.claimed?.rows?.length > 0 && (
+        <AngleList title="Posted before kick-off" tally={posted.claimed}
+          testId="posted-claimed"
+          blurb="Called publicly while the game was still to play, so these count in the record above." />
+      )}
+      {posted.recalled?.rows?.length > 0 && (
+        <AngleList title="Added after the game" tally={posted.recalled}
+          testId="posted-recalled" muted
+          blurb="Posted on social at the time, but entered here after the result was known — so they
+                 are shown and deliberately NOT counted above. A percentage you can add winners to
+                 afterwards would not be worth reading." />
+      )}
+
+      {weeks.length === 0 && posted.claimed?.rows?.length === 0
+        && posted.recalled?.rows?.length === 0 && (
         <Panel>
           No streaks have been posted yet. Once they are, every one of them shows up here
           with its result.
@@ -185,6 +203,15 @@ export default function Results() {
           <span className="text-foreground">push</span> — stake back, counted as neither.
         </p>
         <p>
+          {/* The split has to be explained where a reader meets it, or the "not counted"
+              chip looks like a hedge instead of the point. */}
+          Angles posted by hand to social are logged separately. If one was written down here
+          while the game was still to play it counts like any other; if it was entered after
+          the result was known it is shown, marked, and{" "}
+          <span className="text-foreground">left out of the number above</span> — a percentage
+          you can add winners to afterwards would not be worth reading.
+        </p>
+        <p>
           {/* Stated, not glossed. Someone will ask what it paid, and the honest answer is
               that these were never priced — so inventing a return would be fiction. */}
           This is a strike rate, not a profit. The snapshots record the line that was posted,
@@ -195,6 +222,51 @@ export default function Results() {
     </div>
   );
 }
+
+// A list of hand-posted angles. Same row shape as a snapshot week so the two read as
+// one record, with the heading carrying the difference rather than the rows.
+const AngleList = ({ title, tally, blurb, testId, muted = false }) => (
+  <section className={`bg-card border rounded-lg overflow-hidden ${
+    muted ? "border-dashed border-border" : "border-border"}`} data-testid={testId}>
+    <div className="px-4 py-3 border-b border-border">
+      <div className="flex items-center gap-3 flex-wrap">
+        <span className="font-head font-semibold text-sm">{title}</span>
+        <span className="font-mono-data text-[11px] text-muted-foreground">
+          {tally.settled > 0 ? <>{tally.landed}/{tally.settled} landed</> : <>none settled yet</>}
+          {tally.voided > 0 && <> · {tally.voided} push</>}
+          {tally.pending > 0 && <> · {tally.pending} to play</>}
+        </span>
+        {muted && (
+          <span className="text-[10px] px-1.5 py-0.5 rounded border border-border text-muted-foreground font-mono-data">
+            not counted
+          </span>
+        )}
+      </div>
+      <p className="text-[11px] text-muted-foreground mt-1.5 leading-relaxed max-w-2xl">{blurb}</p>
+    </div>
+    <div className="divide-y divide-border">
+      {tally.rows.map((r, i) => (
+        <div key={i} className="px-4 py-2.5 flex items-center gap-3" data-testid="posted-row">
+          <div className="min-w-0 flex-1">
+            <p className="text-sm truncate">
+              <span className="font-medium">{withFlag(r.league_id, r.name)}</span>
+              <span className="font-mono-data text-muted-foreground"> {r.line_label}</span>
+            </p>
+            <p className="text-[11px] text-muted-foreground truncate mt-0.5">
+              {r.is_home === false ? "@" : "vs"} {r.opponent}
+              {r.value != null && (
+                <><span className="mx-1.5 opacity-40">·</span>
+                  <span className="font-mono-data text-foreground">{r.value}</span> corners</>
+              )}
+              {r.posted_to && <><span className="mx-1.5 opacity-40">·</span>{r.posted_to}</>}
+            </p>
+          </div>
+          <Mark result={r.result} />
+        </div>
+      ))}
+    </div>
+  </section>
+);
 
 const Stat = ({ n, label, cls }) => (
   <span className="text-right">

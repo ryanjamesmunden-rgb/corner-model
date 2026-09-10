@@ -2860,6 +2860,10 @@ async def fixture_detail(fixture_id: str, user: dict = Depends(get_current_user)
                 for m in reversed(rms)]
 
     return {"fixture": fx, "model": model, "league_avg_corners": round(lg_avg, 2),
+            # WHAT IS ALREADY RUNNING INTO THIS GAME. Rides along on the fixture payload
+            # rather than a second endpoint: the page has to load this anyway to show it,
+            # and a separate call would just be a second thing to keep in step.
+            "streaks": fixture_streaks(home, away, home["name"], away["name"]),
             "key_factors": {
                 "home": key_factors(home, away, "home", home["name"], away["name"], lg_teams),
                 "away": key_factors(away, home, "away", away["name"], home["name"], lg_teams)},
@@ -3283,6 +3287,11 @@ def _preview(rows, user: dict, response, limit: int = PREVIEW_ROWS):
     return rows[:max(0, limit)]
 # Default ceiling for under streaks: above these a line is true so often it says nothing.
 UNDER_LINE_CAP = {"team": 8, "match": 12}
+# The mirror of the cap: below these, an OVER is not a claim worth making. Every side
+# clears "1+ corners" most weeks, so the ladder's bottom rungs manufacture long runs that
+# say nothing — a suggested line of "1+ corners, 3 in a row" is technically true and reads
+# as a joke. The streak board already refuses them via min_line; this is the same floor.
+OVER_LINE_FLOOR = {"team": 3, "match": 7}
 
 
 def settle_streak_leg(value: int, line: int, direction: str) -> str:
@@ -3348,6 +3357,77 @@ def streak_qualifies(hits: int, voids: int, run_length: int, min_hits: int, floo
 
 def streak_line_label(line: int, direction: str) -> str:
     return f"under {line}" if direction == "under" else f"{line}+"
+
+
+def live_streak(team: dict, venue: str, subject: str, direction: str,
+                min_len: int = MIN_STREAK_LEN) -> Optional[dict]:
+    """The best run this team carries INTO its next game, on the venue it is playing.
+
+    Reuses streak_legs/streak_runs rather than counting here — the streak board, the
+    snapshot grading and this all have to agree about what a run is, and they only can if
+    there is one implementation of it.
+
+    VENUE-FILTERED, because that is what the run actually is: "9 in a row" over a team's
+    home games is a claim about its home games, and mixing the aways in would quietly
+    describe a different streak from the one the board shows.
+
+    Walks the whole ladder and keeps the BEST story: longest run first, and where two
+    lines run equally long, the more demanding one — the higher line on an over, the
+    tighter on an under. A 5-game run at 6+ is worth more than a 5-game run at 3+.
+    """
+    history = _src(team)
+    if venue in ("home", "away"):
+        want = venue == "home"
+        history = [m for m in history if bool(m.get("home")) is want]
+    if len(history) < min_len:
+        return None
+    # Only lines that are worth suggesting: high enough to mean something on an over,
+    # tight enough on an under.
+    floor = OVER_LINE_FLOOR.get(subject, 3)
+    cap = UNDER_LINE_CAP.get(subject, 8)
+    best = None
+    for line in STREAK_LADDERS.get(subject, STREAK_LADDERS["team"]):
+        if direction == "over" and line < floor:
+            continue
+        if direction == "under" and line > cap:
+            continue
+        cur = streak_runs(streak_legs(history, line, direction, subject))["current"]
+        if cur["status"] != "active" or cur["length"] < min_len:
+            continue
+        rank = (cur["length"], line if direction == "over" else -line)
+        if best is None or rank > best[0]:
+            best = (rank, {
+                "subject": subject, "direction": direction, "line": line,
+                "line_label": streak_line_label(line, direction),
+                "run": cur["length"], "since": cur["start_date"],
+                "venue": venue, "games": len(history),
+            })
+    return best[1] if best else None
+
+
+def fixture_streaks(home: dict, away: dict, home_name: str, away_name: str) -> List[dict]:
+    """Every live run both sides bring into this fixture, best first.
+
+    WHAT THIS IS FOR: a fixture is worth posting when something is ALREADY running into
+    it. The streak board answers "which teams are on a run"; this answers the other half —
+    "what is running into this game" — which is the question you have when you are looking
+    at one fixture rather than a list.
+
+    Both directions on both sides, plus the match total from each side's own games. Unders
+    included because a side that keeps being kept quiet is the same kind of story as one
+    that keeps winning corners, and leaving them out would only ever show half the game.
+    """
+    rows = []
+    for team, name, venue in ((home, home_name, "home"), (away, away_name, "away")):
+        for subject in ("team", "match"):
+            for direction in ("over", "under"):
+                r = live_streak(team, venue, subject, direction)
+                if r:
+                    rows.append({**r, "team": name})
+    # Longest run first; the reader only wants the top few and they should be the best few.
+    rows.sort(key=lambda r: (r["run"], r["line"] if r["direction"] == "over" else -r["line"]),
+              reverse=True)
+    return rows
 
 
 def pick_streak_line(values: List[int], direction: str, subject: str, min_hits: int) -> int:

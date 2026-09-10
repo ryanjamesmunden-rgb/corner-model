@@ -5,7 +5,8 @@
  * of a line and the one thing a row limit must never break: the "+N more" count has to
  * describe the list it is actually attached to.
  */
-import { streakShare, fixtureShare, bestTeamsShare, streakResultShare } from "./shareText";
+import { streakShare, fixtureShare, bestTeamsShare, streakResultShare,
+         fixtureStreakShare } from "./shareText";
 
 const NORWAY = "\u{1F1F3}\u{1F1F4}";
 const soon = () => {
@@ -213,5 +214,44 @@ describe("the results post", () => {
       landed: 0, settled: 0,
     });
     expect(pendingOnly(4)).toBe("");
+  });
+});
+
+describe("sharing one fixture and what is running into it", () => {
+  const fixture = { home_name: "Derby", away_name: "West Brom", league_id: "eng-ch", date: soon() };
+  const streaks = [
+    { team: "Derby", subject: "team", line: 6, line_label: "6+", direction: "over", run: 9 },
+    { team: "Derby", subject: "match", line: 10, line_label: "10+", direction: "over", run: 6 },
+    { team: "West Brom", subject: "team", line: 4, line_label: "under 4", direction: "under", run: 4 },
+  ];
+  const build = fixtureStreakShare({ fixture, streaks });
+
+  test("names the fixture and lists the lines with their runs", () => {
+    const out = build(3);
+    expect(out).toContain("Derby v West Brom");
+    expect(out).toContain("Derby 6+ corners — 9 in a row");
+    expect(out).toContain("West Brom under 4 corners — 4 in a row");
+  });
+
+  test("a match total says whose GAMES, not whose corners", () => {
+    // "Derby 10+" and "Derby games 10+" are different claims, and a reader betting the
+    // first when we meant the second has been misled by one missing word.
+    expect(build(3)).toContain("Derby games 10+ corners");
+  });
+
+  test("carries no price", () => {
+    // Same rule as every other public post: the line goes out, the model's number does not.
+    expect(build(3)).not.toMatch(/\d\.\d\d/);
+  });
+
+  test("trimming drops the weakest run, because rows arrive best-first", () => {
+    const out = build(1);
+    expect(out).toContain("9 in a row");
+    expect(out).not.toContain("4 in a row");
+    expect(out).toContain("+2 more on the site");
+  });
+
+  test("a fixture with nothing running into it shares nothing", () => {
+    expect(fixtureStreakShare({ fixture, streaks: [] })(3)).toBe("");
   });
 });

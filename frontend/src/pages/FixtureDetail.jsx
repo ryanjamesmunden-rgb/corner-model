@@ -5,6 +5,8 @@ import {
   ArrowLeft, TrendingUp, TrendingDown, ClipboardPaste, Flame, Shield, MapPin, Swords, Eye,
 } from "lucide-react";
 import StarButton from "@/components/StarButton";
+import ShareButtons from "@/components/ShareButtons";
+import { fixtureStreakShare } from "@/lib/shareText";
 import { useAuth } from "@/context/AuthContext";
 import ProbabilityChart from "@/components/ProbabilityChart";
 import { api, tierMeta, confMeta } from "@/lib/api";
@@ -168,6 +170,23 @@ export default function FixtureDetail() {
         <TeamRead name={fixture.home_name} profile={home_team.profile} where="home" />
         <TeamRead name={fixture.away_name} profile={away_team.profile} where="away" />
       </div>
+
+      {/* POST THE GAME, NOT THE BOARD. A fixture is worth sharing when something is
+          already running into it, so the text is the live streaks both sides bring —
+          a few suggested lines and how long each has been landing. The model's price
+          stays on the site, same as every other public post. */}
+      {(data.streaks || []).length > 0 && (
+        <div className="flex items-center gap-2 flex-wrap" data-testid="fixture-streak-share">
+          <span className="text-xs text-muted-foreground">
+            {data.streaks.length} streak{data.streaks.length === 1 ? "" : "s"} running into this game
+          </span>
+          <ShareButtons
+            buildX={fixtureStreakShare({ fixture, streaks: data.streaks })}
+            xRows={4}
+            text={fixtureStreakShare({ fixture, streaks: data.streaks })(4)}
+          />
+        </div>
+      )}
 
       <KeyFactors factors={keyFactors} homeName={fixture.home_name} awayName={fixture.away_name} />
 

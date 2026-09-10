@@ -1089,11 +1089,95 @@ const drawNumberLine = (ctx, { line, value, direction, tone, x, y, w, progress =
   ctx.textAlign = "left";
 };
 
+
+/**
+ * When the corners came, across the ninety minutes.
+ *
+ * THE PROVIDER DOES NOT GIVE THIS. Corners arrive from /fixtures/statistics as one count
+ * per team — "corner kicks: 11" — and /fixtures/events, which is where goal and card
+ * minutes come from, carries goals, cards, subs and VAR only. So these minutes can only
+ * be supplied by hand, and where they are absent the strip is simply not drawn rather
+ * than invented.
+ *
+ * WHY IT IS WORTH DRAWING ANYWAY. "It finished on 11" says the bet won. This says WHEN it
+ * won and what happened afterwards — the run continuing past the line is the part that
+ * makes a 5+ call look like a read on the game rather than a coin that landed right.
+ */
+const drawCornerTimeline = (ctx, { minutes = [], line, tone, x, y, w, progress = 1 }) => {
+  const mins = [...minutes].sort((a, b) => a - b);
+  if (!mins.length) return;
+  const full = Math.max(90, Math.ceil(Math.max(...mins) / 5) * 5);
+  const at = (m) => x + clamp01(m / full) * w;
+
+  ctx.strokeStyle = C.border;
+  ctx.lineWidth = 4;
+  ctx.beginPath();
+  ctx.moveTo(x, y);
+  ctx.lineTo(x + w, y);
+  ctx.stroke();
+
+  // Half-time, because "four before the break" is how anyone actually describes a game.
+  ctx.strokeStyle = `${C.muted}66`;
+  ctx.lineWidth = 2;
+  ctx.setLineDash([6, 8]);
+  ctx.beginPath();
+  ctx.moveTo(at(45), y - 34);
+  ctx.lineTo(at(45), y + 34);
+  ctx.stroke();
+  ctx.setLineDash([]);
+
+  ctx.font = `500 24px ${FONT_DATA}`;
+  ctx.fillStyle = C.muted;
+  ctx.textAlign = "center";
+  ctx.fillText("HT", at(45), y + 58);
+  ctx.textAlign = "left";
+  ctx.fillText("0'", x, y + 58);
+  ctx.textAlign = "right";
+  ctx.fillText(`${full}'`, x + w, y + 58);
+  ctx.textAlign = "left";
+
+  mins.forEach((m, i) => {
+    // Each corner appears on its own beat, left to right, so the strip plays as the game
+    // rather than arriving as a finished row of dots.
+    const on = clamp01((progress - (i / mins.length) * 0.75) * 4);
+    if (on <= 0) return;
+    const won = i + 1 === line;          // the one that settled it
+    const after = i + 1 > line;          // everything the run kept adding
+    const r = won ? 17 : 11;
+    ctx.globalAlpha = on;
+    ctx.fillStyle = won ? tone : after ? `${tone}AA` : C.primary;
+    ctx.beginPath();
+    ctx.arc(at(m), y, r * on, 0, Math.PI * 2);
+    ctx.fill();
+    if (won) {
+      ctx.strokeStyle = tone;
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.moveTo(at(m), y - 26);
+      ctx.lineTo(at(m), y - 58);
+      ctx.stroke();
+      ctx.font = `700 26px ${FONT_DATA}`;
+      ctx.fillStyle = tone;
+      ctx.textAlign = "center";
+      ctx.fillText(`${m}'`, at(m), y - 78);
+      ctx.font = `600 22px ${FONT_BODY}`;
+      ctx.fillText("bet won", at(m), y - 112);
+      ctx.textAlign = "left";
+    }
+    ctx.globalAlpha = 1;
+  });
+};
+
 export const renderResultStory = (canvas, {
   homeName = "", awayName = "", leagueId = "", kickoff = "",
   team = "", line = 0, direction = "over", subject = "team",
   value = 0, result = "win", prob = null,
   dist = [],
+  // FULL CONTEXT, all optional. Scores are in the synced data; corner minutes are not
+  // available from the provider at all and can only be passed in by hand.
+  homeGoals = null, awayGoals = null,
+  homeCorners = null, awayCorners = null,
+  cornerMinutes = [],
   cta = "The full record on the site", brand = "CORNER MODEL",
   progress = 1,
 } = {}) => {
@@ -1188,14 +1272,46 @@ export const renderResultStory = (canvas, {
     }
   });
 
-  // The curve, where the claim came with one — with the actual result pinned on it. This
-  // is the whole argument in one picture: the shape we published, and where the game
-  // landed on it.
-  if (dist?.length) {
+  // THE SCORELINE. Both scores, because a corner count without the game around it is a
+  // statistic rather than a story: eleven corners while winning 2-0 and eleven while
+  // chasing a goal are different games, and the reader can tell which.
+  const hasScore = homeGoals != null && awayGoals != null;
+  const hasCorners = homeCorners != null && awayCorners != null;
+  if (hasScore || hasCorners) {
+    faded(ctx, done ? 1 : seg(P, 0.70, 0.82), () => {
+      let sy = 1030;
+      const pair = (label, a, b) => {
+        ctx.fillStyle = C.muted;
+        ctx.font = `500 26px ${FONT_BODY}`;
+        ctx.fillText(label, 72, sy);
+        ctx.fillStyle = C.text;
+        ctx.font = `700 44px ${FONT_DATA}`;
+        ctx.fillText(`${a} - ${b}`, 260, sy);
+        sy += 62;
+      };
+      if (hasScore) pair("Final score", homeGoals, awayGoals);
+      if (hasCorners) pair("Corners", homeCorners, awayCorners);
+    });
+  }
+  const below = (hasScore || hasCorners) ? 1180 : 1100;
+
+  // ONE OF THREE, in order of how much it actually says. The timeline beats the curve for
+  // a result post — when the bet was won, and that the run carried on past it, is a better
+  // story than the shape it was drawn from. The curve is the fallback, and a bare number
+  // line the fallback's fallback.
+  if (cornerMinutes?.length) {
+    faded(ctx, done ? 1 : seg(P, 0.30, 0.42), () => {
+      drawCornerTimeline(ctx, {
+        minutes: cornerMinutes, line, tone: v.tone,
+        x: 72, y: below + 190, w: STORY_W - 144,
+        progress: done ? 1 : seg(P, 0.32, 0.86),
+      });
+    });
+  } else if (dist?.length) {
     drawCurve(ctx, dist, line, {
       // Sits lower and taller than the preview story's curve: there is no market list
       // under it here, and at the preview's position it left a third of the image empty.
-      x: 72, y: 1140, w: STORY_W - 144, h: 320,
+      x: 72, y: below + 100, w: STORY_W - 144, h: Math.max(200, 1460 - (below + 100)),
       progress: done ? 1 : clamp01((P - 0.16) / 0.5),
       mark: value, markTone: v.tone,
       markAt: done ? 1 : seg(P, 0.66, 0.82),
@@ -1205,7 +1321,7 @@ export const renderResultStory = (canvas, {
     // carries the same argument from the two numbers every result has.
     faded(ctx, done ? 1 : seg(P, 0.62, 0.78), () => {
       drawNumberLine(ctx, { line, value, direction, tone: v.tone,
-                            x: 72, y: 1220, w: STORY_W - 144,
+                            x: 72, y: below + 160, w: STORY_W - 144,
                             progress: done ? 1 : seg(P, 0.64, 0.9) });
     });
   }

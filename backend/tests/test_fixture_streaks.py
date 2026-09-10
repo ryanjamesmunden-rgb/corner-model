@@ -79,7 +79,10 @@ def test_an_under_is_labelled_as_an_under():
 
 
 def test_a_fixture_lists_both_sides_best_first():
-    rows = fixture_streaks(HOME_RUN, HOME_RUN, "Derby", "West Brom")
+    # A run long enough to be shareable — HOME_RUN's four games sit under SHARE_MIN_RUN,
+    # which is the floor doing its job rather than a broken fixture.
+    long_run = team("Long", [m(True, 8, 3, f"2026-08-{d:02d}") for d in (1, 4, 8, 11, 15, 18)])
+    rows = fixture_streaks(long_run, long_run, "Derby", "West Brom")
     assert rows, "a fixture with live runs on both sides should return rows"
     assert [r["run"] for r in rows] == sorted([r["run"] for r in rows], reverse=True)
     # Trimming a share to fit drops the tail, so the tail has to be the weakest.
@@ -109,3 +112,39 @@ def test_an_under_too_loose_to_mean_anything_is_never_suggested():
     quiet = team("Y", [m(True, 1, 2, "2026-08-01"), m(True, 2, 1, "2026-08-08")])
     r = live_streak(quiet, "home", "team", "under")
     assert r is None or r["line"] <= UNDER_LINE_CAP["team"]
+
+
+# --- what a SHARE is allowed to carry ---
+def test_a_short_run_stays_on_the_site_and_out_of_the_post():
+    """The board can show a 3-game run because on screen you can weigh it yourself. A post
+    is read once and scrolled, so only runs worth someone's attention go out."""
+    from server import SHARE_MIN_RUN
+    assert SHARE_MIN_RUN >= 5
+    short = team("Z", [m(True, 9, 3, f"2026-08-{d:02d}") for d in (1, 8, 15)])   # 3 in a row
+    assert fixture_streaks(short, short, "Z", "Z") == []
+
+
+def test_a_long_run_still_goes_out():
+    long_run = team("Z", [m(True, 9, 3, f"2026-08-{d:02d}") for d in (1, 4, 8, 11, 15, 18)])
+    rows = fixture_streaks(long_run, long_run, "Z", "Z")
+    assert rows and all(r["run"] >= 5 for r in rows)
+
+
+# --- the opponent's own record ---
+def test_leak_counts_games_rather_than_averaging_them():
+    """An average hides the shape: 9, 9, 1, 1 averages the same as 5, 5, 5, 5 and only the
+    second is a matchup worth backing. The count is what tells them apart."""
+    from server import opp_leak
+    spiky = team("Spiky", [m(False, 3, 9, "2026-08-01"), m(False, 3, 9, "2026-08-08"),
+                           m(False, 3, 1, "2026-08-15"), m(False, 3, 1, "2026-08-22")])
+    steady = team("Steady", [m(False, 3, 5, f"2026-08-{d:02d}") for d in (1, 8, 15, 22)])
+    a, b = opp_leak(spiky, "away"), opp_leak(steady, "away")
+    assert a["avg"] == b["avg"]                 # identical averages...
+    assert a["hits"]["5"] == 2 and b["hits"]["5"] == 4   # ...and a different story
+
+
+def test_leak_is_read_at_the_venue_the_opponent_is_playing():
+    from server import opp_leak
+    t = team("T", [m(False, 2, 8, "2026-08-01"), m(True, 2, 0, "2026-08-08"),
+                   m(False, 2, 7, "2026-08-15")])
+    assert opp_leak(t, "away")["hits"]["6"] == 2      # the home clean sheet is not theirs to carry

@@ -3405,7 +3405,15 @@ def live_streak(team: dict, venue: str, subject: str, direction: str,
     return best[1] if best else None
 
 
-def fixture_streaks(home: dict, away: dict, home_name: str, away_name: str) -> List[dict]:
+# A SHARE IS NOT THE BOARD. The streak board shows anything alive from two games up,
+# because on screen you can weigh a short run yourself. A post cannot be weighed — it is
+# read once and scrolled — so only runs long enough to be worth someone's attention go
+# out. Everything shorter stays on the site.
+SHARE_MIN_RUN = 5
+
+
+def fixture_streaks(home: dict, away: dict, home_name: str, away_name: str,
+                    min_run: int = SHARE_MIN_RUN) -> List[dict]:
     """Every live run both sides bring into this fixture, best first.
 
     WHAT THIS IS FOR: a fixture is worth posting when something is ALREADY running into
@@ -3421,7 +3429,7 @@ def fixture_streaks(home: dict, away: dict, home_name: str, away_name: str) -> L
     for team, name, venue in ((home, home_name, "home"), (away, away_name, "away")):
         for subject in ("team", "match"):
             for direction in ("over", "under"):
-                r = live_streak(team, venue, subject, direction)
+                r = live_streak(team, venue, subject, direction, min_len=min_run)
                 if r:
                     rows.append({**r, "team": name})
     # Longest run first; the reader only wants the top few and they should be the best few.
@@ -3863,9 +3871,25 @@ async def top_mismatches(within_days: Optional[int] = None, limit: int = 20,
 @api_router.get("/perfect-games")
 async def perfect_games(within_days: int = 7, limit: int = 20, min_hits: int = 4,
                         window: int = 5, side: str = "overall",
+                        min_opp_leak: int = 5,
                         response: Response = None,
                         user: dict = Depends(get_current_user)):
-    """Fixtures where a corner streak and a corner mismatch land on the same team."""
+    """Fixtures where a corner streak, a corner mismatch AND a leaky opponent all agree.
+
+    THE THIRD LEG IS THE OPPONENT'S OWN RECORD, and it was the one missing. A run plus a
+    mismatch is still two views of the SAME team: how many corners it wins. Neither says
+    how often the side it is about to play actually gives them up. `min_opp_leak` is how
+    many of the opponent's last ten it must have conceded the streak's line in — the
+    default of five means it has to have happened at least half the time.
+
+    A COUNT RATHER THAN THE AVERAGE, because `opp_conceded` already carried the average
+    and an average hides the shape: a side conceding 9, 9, 1, 1 averages the same as one
+    conceding 5 every week, and only the second is a fixture worth backing.
+
+    An opponent we cannot measure — no id, no synced games — is DROPPED rather than
+    waved through. This board's whole claim is that several things agree, so a leg that
+    could not be checked is not a leg.
+    """
     within = max(1, min(within_days, 60))
     runs = await streaks(league_id="all", side=side, window=window, min_hits=min_hits,
                          threshold=None, min_line=3, within_days=within, direction="over",
@@ -3879,6 +3903,11 @@ async def perfect_games(within_days: int = 7, limit: int = 20, min_hits: int = 4
 
     by_team_fixture = {(m["team_id"], fx_of(m)): m for m in mismatches if fx_of(m)}
 
+    # Every opponent in one lookup rather than one per row.
+    opp_ids = list({(r.get("next_fixture") or {}).get("opponent_team_id") for r in runs} - {None})
+    opps = {t["team_id"]: t for t in
+            await db.teams.find({"team_id": {"$in": opp_ids}}, {"_id": 0}).to_list(2000)} if opp_ids else {}
+
     out = []
     for r in runs:
         fixture_id = fx_of(r)
@@ -3887,6 +3916,23 @@ async def perfect_games(within_days: int = 7, limit: int = 20, min_hits: int = 4
         m = by_team_fixture.get((r["team_id"], fixture_id))
         if not m:
             continue                       # a run, but the matchup does not agree
+
+        # The third leg: does the side they are playing actually give these up?
+        nf = r.get("next_fixture") or {}
+        opp = opps.get(nf.get("opponent_team_id"))
+        if not opp:
+            continue                       # unmeasurable, so unverified — not a perfect game
+        # They concede at the venue OPPOSITE to ours: our team at home meets them away.
+        leak = opp_leak(opp, "away" if nf.get("is_home") else "home")
+        hits = leak_hits_at(leak, r["line"])
+        if hits is None:
+            # The streak line sits off the reported ladder — measure it directly rather
+            # than dropping a fixture for a reason that is ours and not the opponent's.
+            pool = _venue_matches(opp, "away" if nf.get("is_home") else "home")[-LEAK_WINDOW:]
+            hits = sum(1 for x in pool if x.get("corners_against", 0) >= r["line"])
+            leak = {**leak, "hits": {**leak["hits"], str(r["line"]): hits}}
+        if leak["games"] < min_opp_leak or hits < min_opp_leak:
+            continue
         proj = r.get("projection") or {}
         out.append({
             "team_id": r["team_id"], "name": r["name"],
@@ -3902,6 +3948,9 @@ async def perfect_games(within_days: int = 7, limit: int = 20, min_hits: int = 4
             "mismatch": {"team_for": m["team_for"], "opp_conceded": m["opp_conceded"],
                          "lambda": m["lambda"], "line": m["line"], "prob": m["prob"],
                          "fair_odds": m["fair_odds"]},
+            # How often the opponent HAS shipped them, at the ladder and at our own line.
+            "opp_leak": {**leak, "at_line": hits, "line": r["line"],
+                         "opponent": nf.get("opponent")},
             "projection": proj,
         })
 
@@ -3920,6 +3969,39 @@ def _venue_matches(team, venue):
     else:
         pool = list(rms)
     return pool or rms
+
+
+# The ladder the opponent's leakiness is reported on. These are the lines a corners-over
+# is actually bought at, so "conceded 5+ in 8 of 10" answers the question being asked.
+LEAK_LINES = (4, 5, 6)
+LEAK_WINDOW = 10
+
+
+def opp_leak(team: dict, venue: str, lines=LEAK_LINES, window: int = LEAK_WINDOW) -> dict:
+    """How often this side has conceded 4+/5+/6+ in its recent games on this venue.
+
+    A COUNT, NOT AN AVERAGE, and that is the whole point. "Concedes 5.4 a game" is one
+    number hiding two very different sides: one that ships 5 every week, and one that
+    ships 9, 9, 1, 1. Only the first is a matchup worth backing, and only a count can
+    tell them apart.
+
+    Venue-filtered, because a side is being met at one venue and not the other.
+    """
+    pool = _venue_matches(team, venue)[-window:]
+    n = len(pool)
+    hits = {str(l): sum(1 for m in pool if m.get("corners_against", 0) >= l) for l in lines}
+    return {"games": n, "hits": hits,
+            "avg": round(sum(m.get("corners_against", 0) for m in pool) / n, 2) if n else None}
+
+
+def leak_hits_at(leak: dict, line: int) -> Optional[int]:
+    """How many of those games the opponent conceded AT LEAST `line` corners in.
+
+    None where the ladder does not carry that line, so a caller can tell "we did not
+    measure this" apart from "it never happened" — the two would otherwise both read as
+    a reason to reject the fixture.
+    """
+    return (leak.get("hits") or {}).get(str(line))
 
 
 async def _chase_board(within_days: int = 7, limit: int = 25, league_id: Optional[str] = None):

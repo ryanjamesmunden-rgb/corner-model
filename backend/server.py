@@ -2867,6 +2867,13 @@ async def fixture_detail(fixture_id: str, user: dict = Depends(get_current_user)
             # Game state next to the corner line: who is on the front foot and who is
             # likely to be chasing. Both produce corners, for opposite reasons.
             "form": fixture_form(home, away, home["name"], away["name"]),
+            # The evidence a posted pick quotes — both sides' corner ladders and the
+            # defence each is meeting. Named on the fixture because the post is written
+            # from the fixture page, with a line that has just been priced there.
+            "card": fixture_card(home, away, home["name"], away["name"]),
+            # The league as it is SAID, not its id. `bra-sb` is what the flag is derived
+            # from; "Série B" is what goes in the post.
+            "league_name": league.get("name", ""),
             "key_factors": {
                 "home": key_factors(home, away, "home", home["name"], away["name"], lg_teams),
                 "away": key_factors(away, home, "away", away["name"], home["name"], lg_teams)},
@@ -4079,6 +4086,107 @@ def leak_hits_at(leak: dict, line: int) -> Optional[int]:
     a reason to reject the fixture.
     """
     return (leak.get("hits") or {}).get(str(line))
+
+
+# ----------------------------- The posted pick -----------------------------
+# A pick posted to the VIP channel quotes its evidence as COUNTS on a ladder — "won 4+ in
+# 10/10, 5+ in 9/10, 6+ in 7/10" — which is the same shape opp_leak already reports the
+# opponent's defending in, and for the same reason: an average hides the difference
+# between a side that wins 6 every week and one that wins 12, 12, 1, 1.
+#
+# Ten games, because that is the denominator the posts already quote, and it is long
+# enough to be evidence without reaching back into a squad that has since been sold.
+CARD_WINDOW = LEAK_WINDOW
+# Under this many games a venue split is too thin to quote, and the ladder falls back to
+# all games AND SAYS WHICH — "6+ in 4/4 at home" invites a confidence four games cannot
+# carry, and silently widening the pool would publish a home record that isn't one.
+CARD_MIN_VENUE = 5
+
+
+def _pool_at(team: dict, venue: str, window: int) -> List[dict]:
+    """Recent games at this venue, WITHOUT the silent fallback _venue_matches applies.
+
+    That helper ends `return pool or rms`, which is right for an average and wrong here:
+    the caller has to be able to tell an empty venue pool from a full one, because the
+    sentence it prints names the venue.
+    """
+    rms = (team or {}).get("real_matches") or []
+    if venue == "home":
+        pool = [m for m in rms if m.get("home")]
+    elif venue == "away":
+        pool = [m for m in rms if not m.get("home")]
+    else:
+        pool = list(rms)
+    return pool[-window:] if window else pool
+
+
+def corner_counts(team: dict, venue: str, key: str, lines=LEAK_LINES,
+                  window: int = CARD_WINDOW, min_venue: int = CARD_MIN_VENUE) -> dict:
+    """How often this side hit each rung of the ladder — won or conceded, per `key`.
+
+    ONE FUNCTION FOR BOTH SIDES OF THE BALL. "Operario won 6+ in 7/10" and "CRB conceded
+    6+ in 8/10" are the same measurement pointed in opposite directions, and two copies
+    of it is how the two ladders end up on different windows.
+
+    `scope` reports which pool actually got used, so the caller can name the venue only
+    when the venue is what was measured.
+    """
+    pool = _pool_at(team, venue, window)
+    scope = venue
+    if len(pool) < min_venue:
+        pool = _pool_at(team, "overall", window)
+        scope = "overall"
+    n = len(pool)
+    if not n:
+        return {"games": 0, "hits": {}, "avg": None, "scope": scope}
+    return {"games": n, "scope": scope,
+            "hits": {str(l): sum(1 for m in pool if m.get(key, 0) >= l) for l in lines},
+            "avg": round(sum(m.get(key, 0) for m in pool) / n, 2)}
+
+
+def fh_rate(team: dict, venue: str, window: int = CARD_WINDOW,
+            min_venue: int = CARD_MIN_VENUE) -> dict:
+    """How often this side scores in the first half — the chase catalyst, as a count.
+
+    Reads `fh_goals_for`, which the ordinary sync stores per match. Deliberately NOT
+    goal_profile, whose keys only exist on matches the goal backfill has reached: a card
+    that silently reported 0/0 on an unbackfilled league would read as a side that never
+    scores early, which is a different claim from "not measured".
+    """
+    pool = _pool_at(team, venue, window)
+    scope = venue
+    if len(pool) < min_venue:
+        pool = _pool_at(team, "overall", window)
+        scope = "overall"
+    covered = [m for m in pool if m.get("fh_goals_for") is not None]
+    if not covered:
+        return {"games": 0, "hits": 0, "scope": scope}
+    return {"games": len(covered), "scope": scope,
+            "hits": sum(1 for m in covered if m["fh_goals_for"] >= 1)}
+
+
+def fixture_card(home: dict, away: dict, home_name: str, away_name: str) -> dict:
+    """The evidence a posted pick quotes, for whichever side turns out to be the pick.
+
+    Both sides are computed because the pick is chosen after this is built — the page
+    does not know which line gets posted until someone picks one, and a second round
+    trip to fetch the other half would be a round trip to say something already loaded.
+
+    Each side carries its own ladder and its OPPONENT's, at the venue that opponent is
+    playing: the side backed for corners is met by a defence playing home or away, and
+    which one it is changes the number.
+    """
+    out = {}
+    for team, name, venue, opp, opp_name, opp_venue in (
+            (home, home_name, "home", away, away_name, "away"),
+            (away, away_name, "away", home, home_name, "home")):
+        out[venue] = {
+            "team": name, "venue": venue, "opponent": opp_name,
+            "won": corner_counts(team, venue, "corners_for"),
+            "opp_conceded": corner_counts(opp, opp_venue, "corners_against"),
+            "opp_fh": fh_rate(opp, opp_venue),
+        }
+    return out
 
 
 async def _chase_board(within_days: int = 7, limit: int = 25, league_id: Optional[str] = None):

@@ -194,3 +194,177 @@ export const fixtureStreakShare = ({ fixture = {}, streaks = [], form = [] }) =>
   return `${head}\n\nStreaks running into it:\n${lines.join("\n")}`
     + more(streaks.length, limit) + tail;
 };
+
+// ----------------------------- One posted pick -----------------------------
+//
+// The VIP channel gets a pick written to a fixed shape — date, league, fixture, line,
+// price, model price, then the evidence. It was being typed out by hand every time, which
+// is slow and, more to the point, is how the model price in the post drifts from the model
+// price on the screen it was read off.
+//
+// TWO AUDIENCES, ONE SET OF FACTS. The channel post carries the price, the stake and the
+// book; the X post carries neither. That split is the product — the reasoning is the
+// advert and the price is the thing being sold — so it is enforced here, in the builder,
+// rather than left to whoever is posting to remember at 1am.
+
+const ORDINAL = (n) => {
+  const t = n % 100;
+  if (t >= 11 && t <= 13) return `${n}th`;
+  return `${n}${({ 1: "st", 2: "nd", 3: "rd" })[n % 10] || "th"}`;
+};
+
+/** "Thursday 10th September" — the date line a pick opens with. */
+export const postDate = (iso) => {
+  const d = iso ? new Date(iso) : null;
+  if (!d || Number.isNaN(d.getTime())) return "";
+  return `${d.toLocaleDateString("en-GB", { weekday: "long" })} `
+    + `${ORDINAL(d.getDate())} ${d.toLocaleDateString("en-GB", { month: "long" })}`;
+};
+
+/** "12:30am" — the reader's own clock, same as everywhere else on the site. */
+export const postTime = (iso) => {
+  const d = iso ? new Date(iso) : null;
+  if (!d || Number.isNaN(d.getTime())) return "";
+  return d.toLocaleTimeString("en-GB", { hour: "numeric", minute: "2-digit", hour12: true })
+    .replace(/\s/g, "").toLowerCase();
+};
+
+/** "6+" from a 5.5 line — how the line is said, not how it is stored. */
+export const plusLine = (line) => `${Math.ceil(Number(line))}+`;
+
+/** What the pick is, in words: "6+ Operario-PR corners", "10+ match corners". */
+export const pickLabel = (market = {}, homeName = "", awayName = "") => {
+  const plus = plusLine(market.line);
+  if (market.group === "total") return `${plus} match corners`;
+  return `${plus} ${market.group === "home" ? homeName : awayName} corners`;
+};
+
+// Which pool the ladder actually measured. corner_counts widens a thin venue split to all
+// games and reports that it did — so the sentence names the venue only when the venue is
+// what was counted.
+const scopeWords = (scope) =>
+  scope === "home" ? "at home" : scope === "away" ? "on the road" : "in their last games";
+
+/**
+ * "Operario-PR have won 4+ corners in 10/10 at home. 5+ in 9/10. 6+ in 7/10."
+ *
+ * Rungs that never landed are dropped rather than printed as 0/10: a ladder is evidence
+ * for the pick, and "7+ in 0/10" is a line nobody was being offered anyway.
+ */
+export const wonLadder = (team, won = {}) => {
+  const games = won.games || 0;
+  const rungs = Object.entries(won.hits || {})
+    .map(([line, hits]) => ({ line: Number(line), hits }))
+    .filter((r) => r.hits > 0)
+    .sort((a, b) => a.line - b.line);
+  if (!games || !rungs.length) return "";
+  const [first, ...rest] = rungs;
+  return `🔥 ${team} have won ${first.line}+ corners in ${first.hits}/${games} `
+    + `${scopeWords(won.scope)}.`
+    + rest.map((r) => ` ${r.line}+ in ${r.hits}/${games}.`).join("");
+};
+
+// WHAT MAKES A GAME "OPEN". Both halves have to be true for the verdict to be earned: a
+// defence that ships corners, and a side that scores early enough to stretch the game.
+// A league team averages around 5 corners conceded, so 5.5 is "leakier than most"; 6 in 10
+// first-half goals is a side that usually makes something happen before the break.
+export const LEAKY_CONCEDED = 5.5;
+export const EARLY_RATE = 0.6;
+
+/**
+ * The opponent's half of the case, and a verdict ONLY WHERE IT IS EARNED.
+ *
+ * The line in the channel reads "…so this should be an open, stretched game rather than a
+ * dead one", which is a conclusion, not a statistic. Printed unconditionally it would sit
+ * under a tight defence that never scores early and say the opposite of what the numbers
+ * underneath it say. So the facts are always stated and the conclusion is attached only
+ * when both halves clear their bar — and the ✅ goes with the conclusion, never with the
+ * facts alone.
+ */
+export const openGameCase = (opponent, conceded = {}, fh = {}) => {
+  const parts = [];
+  const leaky = conceded.avg != null && conceded.avg >= LEAKY_CONCEDED;
+  if (conceded.avg != null) parts.push(`concede ${conceded.avg} per game`);
+  const early = fh.games > 0 && fh.hits / fh.games >= EARLY_RATE;
+  // Stated only where it was measured: fh_goals_for is missing on leagues the sync has
+  // not covered, and "score in the first half in 0/0" is a claim about the data.
+  if (fh.games > 0) parts.push(`score in the first half in ${fh.hits}/${fh.games}`);
+  if (!parts.length) return "";
+  const both = leaky && early;
+  const verdict = both
+    ? " — so this should be an open, stretched game rather than a dead one."
+    : ".";
+  return `${both ? "✅" : "📊"} ${opponent} ${parts.join(" AND ")}${verdict}`;
+};
+
+const MODEL_WHO = { home: "for the hosts", away: "for the visitors", total: "in the match" };
+
+/**
+ * The pick as the VIP channel gets it.
+ *
+ * `result` is the settled outcome and is the ONLY thing that changes between the post
+ * that goes out before kick-off and the one that goes out after — which is why it is a
+ * parameter rather than a second builder. Two builders would drift, and the drift would
+ * show up as a results post whose numbers disagree with the pick it is reporting on.
+ */
+export const telegramPick = ({
+  fixture = {}, market = {}, card = {}, lambdas = {},
+  price, book = "", stake, link = "", result = null,
+}) => {
+  const side = market.group === "total" ? null : (card[market.group] || null);
+  const when = postTime(fixture.date);
+  const day = postDate(fixture.date);
+
+  const head = [
+    day && `📅 ${day}`,
+    `${flagBullet(fixture.league_id, "")} ${fixture.league_name || ""}`.trim()
+      + (when ? ` @ ${when}` : ""),
+    `🏟️ ${fixture.home_name} v ${fixture.away_name}`,
+    `🚩 ${pickLabel(market, fixture.home_name, fixture.away_name)}`,
+  ].filter(Boolean);
+
+  // The price line only exists if there IS a price. A pick posted without one is still a
+  // pick; a line reading "[] via 💸 u" is just a broken post.
+  const priced = price != null && price !== "";
+  if (priced) {
+    const mark = result === "win" ? " ✅" : result === "loss" ? " ❌"
+      : result === "void" ? " ➖" : "";
+    head.push(`📈 [${Number(price).toFixed(2)}]${book ? ` via ${book}` : ""}`
+      + (stake ? ` 💸 ${stake}u` : "") + mark);
+  }
+  if (market.fair_odds != null) {
+    // The EV tick is about the PRICE being worth taking, and is a different fact from
+    // whether the bet won — so it stays on the model line even on a results repost.
+    const ev = market.ev != null
+      ? ` | EV: ${market.ev > 0 ? "+" : ""}${market.ev.toFixed(1)}%${market.ev > 0 ? " ✅" : " ❌"}`
+      : "";
+    head.push(`📊 Model price: ${market.fair_odds.toFixed(2)}${ev}`);
+  }
+
+  const body = [];
+  if (side) {
+    const ladder = wonLadder(side.team, side.won);
+    if (ladder) body.push(ladder);
+    const opp = openGameCase(side.opponent, side.opp_conceded, side.opp_fh);
+    if (opp) body.push(opp);
+  }
+
+  const lam = lambdas[market.group];
+  const tail = lam != null
+    ? `📊 Model: ${lam.toFixed(2)} expected corners ${MODEL_WHO[market.group] || ""}`.trim()
+      + (link ? `  ${link}` : "")
+    : (link || "");
+
+  return [head.join("\n"), ...body, tail].filter(Boolean).join("\n\n");
+};
+
+// THERE IS NO PUBLIC VERSION OF THIS POST, and that is the product working as intended.
+//
+// A tease was built here that carried the reasoning — the ladder and the opponent's
+// defending — with the price stripped out. That is the wrong half to keep. The reasoning
+// IS the thing being sold: it is what a subscriber is paying to read, and posting it free
+// on X leaves the channel selling only a price anyone can get from a bookmaker.
+//
+// What goes to X is the streak board (fixtureStreakShare above): a team, a line, how long
+// it has been landing, and the game state around it. Enough to be worth a click, and
+// nothing that answers "why" — the why is behind the subscription.

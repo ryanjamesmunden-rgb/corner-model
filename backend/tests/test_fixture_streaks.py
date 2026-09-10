@@ -187,3 +187,73 @@ def test_unsynced_scores_read_as_unknown_rather_than_as_a_blank_record():
     """A team whose goals were never synced must not be published as having no form."""
     from server import team_form
     assert team_form(team("T", [{"home": True, "corners_for": 5}]), "home") is None
+
+
+# --- the ladders a posted pick quotes ---
+def test_the_won_ladder_counts_rungs_rather_than_averaging_them():
+    """The whole reason the post quotes counts: 12,12,1,1 and 6,6,6,6 average the same
+    and are not the same bet. Only one of them is a side that keeps winning 6."""
+    from server import corner_counts
+    spiky = team("Spiky", [m(True, 12, 3, "1"), m(True, 12, 3, "2"),
+                           m(True, 1, 3, "3"), m(True, 1, 3, "4"),
+                           m(True, 6, 3, "5")])
+    steady = team("Steady", [m(True, 6, 3, "1"), m(True, 7, 3, "2"),
+                             m(True, 6, 3, "3"), m(True, 7, 3, "4"),
+                             m(True, 6, 3, "5")])
+    a, b = corner_counts(spiky, "home", "corners_for"), corner_counts(steady, "home", "corners_for")
+    assert a["avg"] == b["avg"] == 6.4          # identical averages
+    assert a["hits"]["6"] == 3 and b["hits"]["6"] == 5   # and a different bet
+
+
+def test_the_conceded_ladder_is_the_same_function_pointed_the_other_way():
+    from server import corner_counts
+    t = team("Leaky", [m(True, 2, 7, "1"), m(True, 2, 8, "2"), m(True, 2, 6, "3"),
+                       m(True, 2, 3, "4"), m(True, 2, 9, "5")])
+    got = corner_counts(t, "home", "corners_against")
+    assert got["hits"] == {"4": 4, "5": 4, "6": 4}
+    assert got["hits"]["4"] == 4                 # the 3 is the only rung it misses
+
+
+def test_a_thin_venue_split_widens_the_pool_and_says_so():
+    """Four home games is not a home record. Quoting "6+ in 4/4 at home" would invite a
+    confidence four games cannot carry, so the ladder widens — and reports that it did,
+    because the caller is about to name a venue in a sentence."""
+    from server import corner_counts
+    t = team("Thin", [m(True, 7, 3, "1"), m(True, 7, 3, "2"), m(True, 7, 3, "3"),
+                      m(True, 7, 3, "4"),
+                      m(False, 2, 3, "5"), m(False, 2, 3, "6"), m(False, 2, 3, "7")])
+    got = corner_counts(t, "home", "corners_for")
+    assert got["scope"] == "overall" and got["games"] == 7
+    assert got["hits"]["6"] == 4                 # counted over every game, not just home
+
+    fat = team("Fat", [m(True, 7, 3, str(i)) for i in range(6)])
+    assert corner_counts(fat, "home", "corners_for")["scope"] == "home"
+
+
+def test_an_unmeasured_first_half_is_not_a_side_that_never_scores_early():
+    """fh_goals_for is absent on leagues the sync has not covered. Reporting 0 hits over
+    0 games as a rate would publish "scores in the first half in 0/10", which is a claim
+    about the team rather than about the data."""
+    from server import fh_rate
+    blank = team("Blank", [m(True, 6, 4, str(i)) for i in range(6)])
+    assert fh_rate(blank, "home") == {"games": 0, "hits": 0, "scope": "home"}
+
+    scored = team("Early", [{**m(True, 6, 4, str(i)), "fh_goals_for": 1 if i < 4 else 0}
+                            for i in range(6)])
+    got = fh_rate(scored, "home")
+    assert got["games"] == 6 and got["hits"] == 4
+
+
+def test_the_card_meets_each_side_with_the_defence_it_actually_faces():
+    """The home side is met by an AWAY defence and vice versa. Reading the opponent at
+    the wrong venue is the single easiest way to publish a true-looking false number."""
+    from server import fixture_card
+    home = team("H", [m(True, 8, 3, str(i)) for i in range(6)])
+    # Leaky away, tight at home — the card must quote the away half against H.
+    away = team("A", [m(False, 3, 9, f"a{i}") for i in range(6)]
+                     + [m(True, 3, 1, f"h{i}") for i in range(6)])
+    card = fixture_card(home, away, "H", "A")
+    assert card["home"]["opp_conceded"]["scope"] == "away"
+    assert card["home"]["opp_conceded"]["hits"]["6"] == 6     # the away leak, not the home tightness
+    assert card["home"]["opponent"] == "A"
+    assert card["away"]["team"] == "A" and card["away"]["venue"] == "away"

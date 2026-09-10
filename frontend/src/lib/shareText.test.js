@@ -6,7 +6,8 @@
  * describe the list it is actually attached to.
  */
 import { streakShare, fixtureShare, bestTeamsShare, streakResultShare,
-         fixtureStreakShare } from "./shareText";
+         fixtureStreakShare, telegramPick, wonLadder, openGameCase,
+         postDate, postTime, pickLabel } from "./shareText";
 
 const NORWAY = "\u{1F1F3}\u{1F1F4}";
 const soon = () => {
@@ -289,4 +290,171 @@ describe("the fire mark and game state", () => {
     const out = fixtureStreakShare({ fixture, streaks: many, form })(1);
     expect(out.indexOf("more on the site")).toBeLessThan(out.indexOf("unbeaten in 7"));
   });
+});
+
+// A POSTED PICK, against the real thing.
+//
+// The reference is an actual channel post, reproduced from its own numbers. What is
+// pinned is the shape a reader recognises and the two places a generated post could
+// quietly lie: a verdict it has not earned, and a ladder rung that never landed.
+describe("a pick posted to the channel", () => {
+  // Operario-PR v CRB, Série B. Kick-off pinned to UTC noon so the date line is the same
+  // date in every zone the suite might run in — the time itself is asserted separately.
+  const fixture = {
+    league_id: "bra-sb", league_name: "Série B",
+    home_name: "Operario-PR", away_name: "CRB",
+    date: "2026-09-10T12:00:00Z",
+  };
+  const market = { key: "home_over_5.5", group: "home", line: 5.5, label: "Over 5.5",
+                   prob: 61.0, fair_odds: 1.64, book_odds: 1.8, ev: 9.8 };
+  const card = {
+    home: { team: "Operario-PR", venue: "home", opponent: "CRB",
+            won: { games: 10, scope: "home", hits: { 4: 10, 5: 9, 6: 7 }, avg: 6.8 },
+            opp_conceded: { games: 10, scope: "away", hits: { 4: 9, 5: 9, 6: 8 }, avg: 6.7 },
+            opp_fh: { games: 10, scope: "away", hits: 8 } },
+  };
+  const pick = (extra = {}) => telegramPick({
+    fixture, market, card, lambdas: { home: 6.75, away: 4.1, total: 10.85 },
+    price: 1.8, book: "Bet365", stake: 1.5, ...extra });
+
+  test("opens on the date, the league and the fixture", () => {
+    const out = pick();
+    expect(out).toContain("📅 Thursday 10th September");
+    expect(out).toContain("Série B @");
+    expect(out).toContain("🏟️ Operario-PR v CRB");
+  });
+
+  test("says the line the way it is said, not the way it is stored", () => {
+    expect(pick()).toContain("🚩 6+ Operario-PR corners");
+    expect(pickLabel({ group: "total", line: 9.5 }, "A", "B")).toBe("10+ match corners");
+    expect(pickLabel({ group: "away", line: 4.5 }, "A", "B")).toBe("5+ B corners");
+  });
+
+  test("carries the price, the book, the stake and the model's own number", () => {
+    const out = pick();
+    expect(out).toContain("📈 [1.80] via Bet365 💸 1.5u");
+    expect(out).toContain("📊 Model price: 1.64 | EV: +9.8% ✅");
+    expect(out).toContain("📊 Model: 6.75 expected corners for the hosts");
+  });
+
+  test("quotes the ladder as counts, every rung", () => {
+    expect(pick()).toContain(
+      "🔥 Operario-PR have won 4+ corners in 10/10 at home. 5+ in 9/10. 6+ in 7/10.");
+  });
+
+  test("a rung that never landed is dropped, not printed as 0/10", () => {
+    const out = wonLadder("T", { games: 10, scope: "home", hits: { 4: 9, 5: 6, 6: 0 } });
+    expect(out).toContain("4+ corners in 9/10");
+    expect(out).not.toContain("0/10");
+  });
+
+  test("a thin venue split is described as what it actually counted", () => {
+    const out = wonLadder("T", { games: 8, scope: "overall", hits: { 4: 6 } });
+    expect(out).not.toContain("at home");
+    expect(out).toContain("in their last games");
+  });
+});
+
+// THE VERDICT HAS TO BE EARNED. "an open, stretched game" is a conclusion, and a builder
+// that prints it unconditionally will sooner or later put it over a tight defence that
+// never scores early — saying the opposite of the numbers directly above it.
+describe("the open-game verdict", () => {
+  const leaky = { avg: 6.7 }, tight = { avg: 4.1 };
+  const early = { games: 10, hits: 8 }, late = { games: 10, hits: 2 };
+
+  test("both halves true earns the verdict and the tick", () => {
+    const out = openGameCase("CRB", leaky, early);
+    expect(out).toBe("✅ CRB concede 6.7 per game AND score in the first half in 8/10"
+      + " — so this should be an open, stretched game rather than a dead one.");
+  });
+
+  test("a tight defence states the facts and claims nothing", () => {
+    const out = openGameCase("CRB", tight, early);
+    expect(out).toContain("concede 4.1 per game");
+    expect(out).not.toContain("open, stretched");
+    expect(out.startsWith("✅")).toBe(false);
+  });
+
+  test("a side that never scores early does not earn it either", () => {
+    expect(openGameCase("CRB", leaky, late)).not.toContain("open, stretched");
+  });
+
+  test("an unmeasured first half is left out rather than reported as 0/0", () => {
+    const out = openGameCase("CRB", leaky, { games: 0, hits: 0 });
+    expect(out).toContain("concede 6.7 per game");
+    expect(out).not.toContain("first half");
+    expect(out).not.toContain("0/0");
+  });
+});
+
+// THE REASONING DOES NOT GO OUT FREE. X gets the streak board — a line and how long it
+// has been landing. The ladder and the opponent's defending are what the channel is
+// selling, so what is pinned here is that they are absent from anything public.
+describe("what X is allowed to see", () => {
+  const fixture = { league_id: "bra-sb", home_name: "Operario-PR", away_name: "CRB",
+                    date: "2026-09-10T12:00:00Z" };
+  const streaks = [{ subject: "team", team: "Operario-PR", line: 5.5, line_label: "6+",
+                     direction: "over", run: 7, venue: "home" }];
+  const form = [{ team: "Operario-PR", venue: "home", label: "unbeaten in 4" }];
+  const out = fixtureStreakShare({ fixture, streaks, form })(4);
+
+  test("the streak and the game state are the whole of it", () => {
+    expect(out).toContain("Operario-PR 6+ corners — 7 in a row");
+    expect(out).toContain("Operario-PR unbeaten in 4 at home");
+  });
+
+  test("the ladder stays behind the subscription", () => {
+    expect(out).not.toContain("10/10");
+    expect(out).not.toContain("have won");
+  });
+
+  test("so does the opponent's defending, and the verdict drawn from it", () => {
+    expect(out).not.toContain("concede");
+    expect(out).not.toContain("first half");
+    expect(out).not.toContain("open, stretched");
+  });
+
+  test("and so does the price", () => {
+    expect(out).not.toContain("1.64");
+    expect(out).not.toContain("EV");
+  });
+});
+
+describe("a pick reposted after the game", () => {
+  const base = {
+    fixture: { league_id: "bra-sb", league_name: "Série B", home_name: "Operario-PR",
+               away_name: "CRB", date: "2026-09-10T12:00:00Z" },
+    market: { group: "home", line: 5.5, fair_odds: 1.64, ev: 9.8 },
+    card: {}, lambdas: { home: 6.75 }, price: 1.8, book: "Bet365", stake: 1.5,
+  };
+
+  test("the result mark rides on the stake line, and only once settled", () => {
+    expect(telegramPick(base)).not.toContain("💸 1.5u ✅");
+    expect(telegramPick({ ...base, result: "win" })).toContain("💸 1.5u ✅");
+    expect(telegramPick({ ...base, result: "loss" })).toContain("💸 1.5u ❌");
+  });
+
+  test("a losing bet does not retract a price that was worth taking", () => {
+    // EV is a claim about the price, not about the outcome. A settled loss must not
+    // rewrite it — that would be grading the process by the result.
+    expect(telegramPick({ ...base, result: "loss" })).toContain("EV: +9.8% ✅");
+  });
+
+  test("no price at all still produces a usable post rather than empty brackets", () => {
+    const out = telegramPick({ ...base, price: undefined, book: "", stake: undefined });
+    expect(out).not.toContain("[]");
+    expect(out).toContain("🚩 6+ Operario-PR corners");
+  });
+});
+
+test("the date line carries an ordinal, including the teens", () => {
+  expect(postDate("2026-09-10T12:00:00Z")).toBe("Thursday 10th September");
+  expect(postDate("2026-09-11T12:00:00Z")).toBe("Friday 11th September");
+  expect(postDate("2026-09-01T12:00:00Z")).toBe("Tuesday 1st September");
+  expect(postDate("2026-09-22T12:00:00Z")).toBe("Tuesday 22nd September");
+  expect(postDate("")).toBe("");
+});
+
+test("the kick-off reads as a clock time, not a 24-hour stamp", () => {
+  expect(postTime("2026-09-10T12:30:00Z")).toMatch(/^\d{1,2}:\d{2}(am|pm)$/);
 });

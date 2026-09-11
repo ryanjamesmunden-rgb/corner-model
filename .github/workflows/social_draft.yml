@@ -11,13 +11,21 @@
 # and waiting until Thursday, which is exactly how a poster ends up silently skipping a
 # day. The week it produces:
 #
-#   Mon  results — how the weekend's frozen streaks actually landed
-#   Tue  streaks
-#   Wed  one game (3 days)
-#   Thu  streaks
-#   Fri  one game (3 days) + freeze the weekend's streaks
-#   Sat  one game (today)
-#   Sun  one game (today)
+#   Mon  results   how last week's frozen streaks actually landed
+#   Tue  game      the midweek fixture with the strongest angle on it
+#   Wed  streaks   what is trending — AND the weekend card to the paid channel
+#   Thu  —         nothing. A day off, deliberately
+#   Fri  game      the best game of the weekend, and freeze the streaks
+#   Sat  game      what is on today
+#   Sun  game      what is on today
+#
+# THURSDAY IS SILENT ON PURPOSE. Every scheduling instinct says fill the slot, and filling
+# it is how an account starts posting things nobody needed to read. The whole job exits
+# early that day rather than reaching for a board to put in the gap.
+#
+# THE WEEKEND IS PREPPED WEDNESDAY AND POSTED FRIDAY. Wednesday is roughly when the
+# weekend's prices appear, so that is when the channel gets the card — two clear days
+# before anything public names those games. That gap is the product.
 #
 # "One game" is a single fixture across three lines — when, who, and why — rather than a
 # list. The board format fits six rows in a post by cramping each into one line, which
@@ -85,6 +93,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # BEFORE the day step, which now asks postPlan.js whether today is a quiet one.
+      # Relying on whatever node the runner image happens to ship is the kind of thing
+      # that works until the image changes.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
       - name: What day is it
         id: when
         # NO HOUR GATE. There used to be one, and it was quietly eating the job: two crons
@@ -101,17 +116,22 @@ jobs:
           weekday=$(TZ=Europe/London date +%u)   # 1=Mon .. 7=Sun
           echo "London time: $(TZ=Europe/London date '+%A %H:%M %Z')"
           echo "weekday=$weekday" >> "$GITHUB_OUTPUT"
+          # THURSDAY IS SILENT, and the plan says so rather than this file — see
+          # postPlan.js. Asked here rather than hardcoded so the week has exactly one
+          # definition, and a manual run naming a board still overrides it.
+          quiet=$(node -e "import('./frontend/src/lib/postPlan.js').then(m=>console.log(m.isQuietDay($weekday)?1:0))")
+          if [ "$quiet" = "1" ] && [ -z "${{ inputs.board }}" ]; then
+            echo "::notice::Thursday — the week says nothing today"
+            echo "quiet=true" >> "$GITHUB_OUTPUT"
+          fi
           echo "tag=$(TZ=Europe/London date +%F)" >> "$GITHUB_OUTPUT"
           # Monday grades the Friday just gone — three days back, in London, so the tag
           # matches the one that run wrote rather than a UTC day that may differ.
           echo "friday=$(TZ=Europe/London date -d '3 days ago' +%F)" >> "$GITHUB_OUTPUT"
           echo "pretty=$(TZ=Europe/London date '+%a %d %b')" >> "$GITHUB_OUTPUT"
 
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "20"
-
       - name: Wake the backend
+        if: steps.when.outputs.quiet != 'true'
         # Render sleeps the free instance; the first request after a quiet spell can be the
         # one that times out. Same reason sync.yml does this.
         run: |
@@ -126,6 +146,7 @@ jobs:
 
       - name: Build the day's draft
         id: build
+        if: steps.when.outputs.quiet != 'true'
         # --board auto asks postPlan.js what this weekday is for, and takes its day window
         # too. A board named by hand on a manual run overrides both.
         #
@@ -165,7 +186,7 @@ jobs:
         # The image is DECORATION: every failure here is a warning, never an error. A post
         # that goes out as text is a post; a job that dies rendering a picture costs the
         # day for the sake of a graphic.
-        if: steps.build.outputs.empty != 'true'
+        if: steps.when.outputs.quiet != 'true' && steps.build.outputs.empty != 'true'
         run: |
           python3 -c "import json,sys; d=json.load(open('draft.json')); sys.exit(0 if d.get('story') else 1)" \
             || { echo "::notice::no fixture curve in today's draft — text only"; exit 0; }
@@ -209,7 +230,7 @@ jobs:
           fi
 
       - name: Send it to Telegram
-        if: steps.build.outputs.empty != 'true' && env.TG_TOKEN != ''
+        if: steps.when.outputs.quiet != 'true' && steps.build.outputs.empty != 'true' && env.TG_TOKEN != ''
         id: telegram
         # THE POST TEXT GOES IN THE MESSAGE BODY, not only behind the button. A button is
         # one tap when it works, and when it doesn't — a URL Telegram won't accept, an
@@ -296,7 +317,7 @@ jobs:
 
       - name: Make sure the label exists
         # Only needed when an issue is actually going to be filed.
-        if: steps.build.outputs.empty != 'true' && steps.telegram.outputs.sent != 'true'
+        if: steps.when.outputs.quiet != 'true' && steps.build.outputs.empty != 'true' && steps.telegram.outputs.sent != 'true'
         # Created here rather than by hand, so it is not a piece of setup that can be
         # missing. `gh label create` exits non-zero when the label already exists, which is
         # the normal case from the second run onward, so that is not an error.
@@ -314,7 +335,7 @@ jobs:
       - name: File it as an issue instead
         # Only when Telegram is not configured, or did not take it. Never both — two copies
         # of the same draft is two things to check and one of them to forget.
-        if: steps.build.outputs.empty != 'true' && steps.telegram.outputs.sent != 'true'
+        if: steps.when.outputs.quiet != 'true' && steps.build.outputs.empty != 'true' && steps.telegram.outputs.sent != 'true'
         run: |
           gh issue create \
             --title "X draft — ${{ steps.when.outputs.pretty }}" \
@@ -324,7 +345,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Send the weekend card to the channel
-        # FRIDAY ONLY, and separate from the public post on purpose. The daily post goes
+        # WEDNESDAY, and separate from the public post on purpose. The daily post goes
         # out on the DAY of the game, which is the worst moment to hear about it — by
         # Saturday lunchtime the market has found the same game and the price has gone.
         # This gets Sunday's card in front of a paying member on Friday, while it is still
@@ -332,7 +353,7 @@ jobs:
         #
         # It carries the model's numbers, which no public post does. Never sent to X: it
         # has no intent link and is far past 280 characters by design.
-        if: steps.when.outputs.weekday == '5' && env.TG_TOKEN != ''
+        if: steps.when.outputs.weekday == '3' && env.TG_TOKEN != ''
         run: |
           node tools/social_draft.mjs --board weekend --days 3 --out card.md --json-out card.json
           if [ ! -s card.md ]; then

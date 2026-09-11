@@ -174,8 +174,19 @@ jobs:
             echo "::warning::could not install playwright — posting text only"; exit 0; }
           npx playwright install chromium >/dev/null 2>&1 || {
             echo "::warning::could not install chromium — posting text only"; exit 0; }
-          if node tools/render_story.mjs --args story_args.json --out story.png; then
-            echo "drew=true" >> "$GITHUB_OUTPUT"
+          # THE ANIMATION FIRST. A still is a picture of a chart; the clip counts the
+          # percentage up and grows the bars, which is what stops a thumb on a Story. It
+          # needs ffmpeg (preinstalled on this runner) and takes about half a minute.
+          if command -v ffmpeg >/dev/null 2>&1 \
+             && node tools/render_story.mjs --args story_args.json --video story.mp4; then
+            echo "drew=video" >> "$GITHUB_OUTPUT"
+            echo "file=story.mp4" >> "$GITHUB_OUTPUT"
+          elif node tools/render_story.mjs --args story_args.json --out story.png; then
+            # A still is most of the value and none of the encoding risk, so a failed
+            # video falls back here rather than costing the picture entirely.
+            echo "::warning::could not encode the animation — sending the still instead"
+            echo "drew=image" >> "$GITHUB_OUTPUT"
+            echo "file=story.png" >> "$GITHUB_OUTPUT"
           else
             echo "::warning::the render failed — posting text only"
           fi
@@ -218,17 +229,18 @@ jobs:
           # survives, and the caption cap is 1024 — comfortably above a post built for 280.
           # The image cannot ride along to X (an intent link carries text only), so it is
           # here to look at, to save, and to attach by hand.
-          if [ "${{ steps.story.outputs.drew }}" = "true" ] && [ -s story.png ]; then
-            code=$(curl -s -o tg.json -w '%{http_code}' --max-time 60 \
+          FILE="${{ steps.story.outputs.file }}"
+          if [ -n "$FILE" ] && [ -s "$FILE" ]; then
+            code=$(curl -s -o tg.json -w '%{http_code}' --max-time 120 \
               -X POST "https://api.telegram.org/bot$TG_TOKEN/sendDocument" \
               -F "chat_id=$TG_CHAT" \
-              -F "document=@story.png" \
+              -F "document=@$FILE" \
               -F "caption=$(python3 -c "import json;print(json.load(open('payload.json'))['text'])")" \
               -F "reply_markup=$(python3 -c "import json;print(json.dumps(json.load(open('payload.json'))['reply_markup']))")" \
               || true)
             echo "sendDocument HTTP $code"
             if [ "$code" = "200" ]; then
-              echo "::notice::sent to Telegram with the picture, uncompressed"
+              echo "::notice::sent to Telegram with the ${{ steps.story.outputs.drew }}, uncompressed"
               echo "sent=true" >> "$GITHUB_OUTPUT"
               exit 0
             fi

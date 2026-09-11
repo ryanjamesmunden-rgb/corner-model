@@ -1896,6 +1896,7 @@ TOOL_SCRIPTS = {"backfill_shots": "backfill_shots.py", "measure_features": "meas
                 # measured. They were never reachable from here, which is exactly why
                 # neither had ever been run against real data.
                 "backfill_goals": "backfill_goals.py",
+                "tune_model": "tune_model.py",
                 "tune_totals": "tune_totals.py",
                 "measure_game_state": "measure_game_state.py"}
 TOOL_COOLDOWN = {"backfill_shots": 600, "measure_features": 120,
@@ -1906,7 +1907,7 @@ TOOL_COOLDOWN = {"backfill_shots": 600, "measure_features": 120,
                  # Both sweep every stored match. Long cooldowns because re-running one
                  # answers the same question with the same data — the reason to run it
                  # again is new matches, which arrive twice a day at most.
-                 "tune_totals": 900, "measure_game_state": 600,
+                 "tune_model": 900, "tune_totals": 900, "measure_game_state": 600,
                  "backfill_goals": 1800}    # seconds
 # mode -> (script, fixed argv, accepts --league). Modes are an enum precisely so
 # nothing user-supplied ever reaches argv; --league is appended only after validation
@@ -1922,6 +1923,9 @@ MEASURE_MODES = {
     # chosen on a recorded Brier; match totals use a Poisson that nothing in the repo
     # records ever being compared against anything. The two disagree about the same
     # fixture by up to ~6pp, and both curves are drawn on the same page.
+    # IS r=11 RIGHT FOR A TEAM LINE. It was chosen against r=10 and nothing else, and
+    # tune_totals gave a reason to look higher — see the note at the top of tune_model.py.
+    "team_r": ("tune_model", [], False),
     "totals": ("tune_totals", [], False),
     # WHERE THE MODEL IS WRONG, split by what was happening in the match. Distinct from
     # `game_state` above, which is measure_features' feature test — this one scores the

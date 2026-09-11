@@ -261,6 +261,19 @@ export const picksReview = ({ rows = [], channel = "VIP", days = REVIEW_DAYS,
     + lines.join("\n") + more(graded.length, limit) + voids + left;
 };
 
+// A CARD THAT CANNOT BE DELIVERED IS NOT A CARD. Telegram refuses a message over 4096
+// characters, and an unbounded card hit that: sixteen angles came to ~2,300 and the live
+// board was longer still, so the Wednesday send returned HTTP 400 twice and fell back to
+// a GitHub issue nobody was going to read on a Wednesday morning.
+//
+// Eight is the cap, and it is a product decision as much as a size one. The tail of an
+// unbounded card was four-game runs the model gave 55% — rows nobody should price, buried
+// under which was Club Brugge at 79%. A card is the paid half; padding it with the weakest
+// rows on the board makes it worth less, not more.
+const CARD_MAX_ROWS = 8;
+// Same floor the public share uses. A run of four is not a run worth a member's morning.
+const CARD_MIN_RUN = 5;
+
 /** "Sat 11:30am" — inside a weekend card the month is noise; the day is not. */
 export const postDayTime = (iso) => {
   const d = iso ? new Date(iso) : null;
@@ -284,12 +297,22 @@ export const postDayTime = (iso) => {
  * an advert, so every qualifying game goes in — ordered by KICK-OFF, which is the order
  * someone actually placing them needs, rather than by how good they are.
  */
-export const weekendCard = ({ rows = [], generatedAt = null, site = "" } = {}) => {
+export const weekendCard = ({ rows = [], generatedAt = null, site = "",
+                              max = CARD_MAX_ROWS, minRun = CARD_MIN_RUN } = {}) => {
   const run = (r) => Number(r?.streak?.length) || 0;
-  const live = (rows || []).filter((r) => r?.next_fixture?.date && run(r) >= 2);
+  const prob = (r) => Number(r?.projection?.prob ?? 0);
+  const live = (rows || []).filter((r) => r?.next_fixture?.date && run(r) >= minRun);
   if (!live.length) return "";
-  const sorted = [...live].sort(
+
+  // CHOSEN BY STRENGTH, THEN ORDERED BY KICK-OFF. Two different questions, and doing both
+  // in one sort gets one of them wrong: which games deserve the space is about how good
+  // they are, and the order to work through them in is time.
+  const best = [...live]
+    .sort((a, b) => (prob(b) - prob(a)) || (run(b) - run(a)))
+    .slice(0, max);
+  const sorted = best.sort(
     (a, b) => new Date(a.next_fixture.date) - new Date(b.next_fixture.date));
+  const cut = live.length - sorted.length;
 
   const lines = sorted.map((r) => {
     const fx = r.next_fixture;
@@ -319,6 +342,7 @@ export const weekendCard = ({ rows = [], generatedAt = null, site = "" } = {}) =
     + `${lines.join("\n\n")}\n\n`
     // THE FAIR PRICE IS A BAR, NOT A TIP. Said outright, because a card of percentages
     // read without it looks like a list of bets rather than a list of prices to beat.
+    + (cut > 0 ? `Showing the ${sorted.length} strongest; ${cut} more on the site.\n` : "")
     + "The number in brackets is the fair price — the model's own. Anything shorter than "
     + "that is not worth taking, however long the run is.\n"
     + "Tap a game to paste its prices — until one is in, nothing can be called value."

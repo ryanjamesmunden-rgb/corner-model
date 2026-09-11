@@ -7,7 +7,7 @@
  */
 import { streakShare, fixtureShare, bestTeamsShare, streakResultShare,
          fixtureStreakShare, telegramPick, wonLadder, openGameCase, postHeader,
-         pickGame, gameShare,
+         pickGame, gameShare, weekendCard,
          postDate, postTime, pickLabel } from "./shareText";
 
 const NORWAY = "\u{1F1F3}\u{1F1F4}";
@@ -600,5 +600,67 @@ describe("the game of the day", () => {
       const out = gameShare({ row: r })();
       expect(out.length).toBeLessThan(200);
     }
+  });
+});
+
+// THE WEEKEND CARD — the only post that carries the model's numbers, because it is the
+// only one that goes to people who have paid for them.
+describe("the weekend card", () => {
+  const R = (name, lid, ln, ll, run, prob, fair, opp, home, date) => ({
+    name, league_id: lid, league_name: ln, line_label: ll,
+    streak: { length: run }, projection: { prob, fair_odds: fair },
+    next_fixture: { date, opponent: opp, is_home: home },
+  });
+  const rows = [
+    R("Juventus", "ita-sa", "Serie A", "6+", 7, 37.3, 2.68, "Sassuolo", false, "2026-09-13T18:45:00Z"),
+    R("Club Brugge KV", "bel-pl", "Jupiler", "5+", 9, 79.4, 1.26, "Antwerp", true, "2026-09-13T11:30:00Z"),
+    R("Grimsby", "eng-l2", "League Two", "6+", 5, 51.1, 1.96, "Bristol Rovers", true, "2026-09-12T11:30:00Z"),
+  ];
+  const card = weekendCard({ rows, generatedAt: "2026-09-11T11:00:00Z" });
+
+  test("is ordered by kick-off, not by how good the angle is", () => {
+    // Someone placing these works down the card in time order. Club Brugge is the best
+    // row on it and still sits second, behind Saturday's game.
+    const order = ["Grimsby", "Club Brugge KV", "Sassuolo v Juventus"];
+    let at = -1;
+    for (const name of order) {
+      const next = card.indexOf(name);
+      expect(next).toBeGreaterThan(at);
+      at = next;
+    }
+  });
+
+  test("carries the model's number, unlike every public post", () => {
+    expect(card).toContain("79% (1.26)");
+    expect(card).toContain("37% (2.68)");
+  });
+
+  test("says the price is a bar rather than a bet", () => {
+    // A card of percentages read without this looks like a list of bets.
+    expect(card).toContain("fair price");
+    expect(card).toContain("Anything shorter than that is not worth taking");
+  });
+
+  test("keeps every qualifying game — it is a card, not a trimmed post", () => {
+    expect(card).toContain("Juventus");
+    expect(card).toContain("Club Brugge KV");
+    expect(card).toContain("Grimsby");
+    expect(card).not.toContain("more on the site");
+  });
+
+  test("an away team is named on the right side of the v", () => {
+    expect(card).toContain("Sassuolo v Juventus");
+  });
+
+  test("an unpriced row still lists, without inventing a number", () => {
+    const bare = weekendCard({ rows: [{ ...rows[1], projection: {} }] });
+    expect(bare).toContain("Club Brugge KV");
+    expect(bare).toContain("9 in a row");
+    expect(bare).not.toContain("%");
+  });
+
+  test("a weekend with nothing running into it sends nothing", () => {
+    expect(weekendCard({ rows: [] })).toBe("");
+    expect(weekendCard({ rows: [{ name: "X", streak: { length: 9 } }] })).toBe("");
   });
 });

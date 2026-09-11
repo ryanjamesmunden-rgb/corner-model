@@ -6,7 +6,7 @@
  * Saturday morning will still produce a post every day, and the post will look fine. So
  * the week is asserted here rather than discovered on a Thursday.
  */
-import { boardForDay, freezesSnapshot, gradesWeekend } from "./postPlan";
+import { boardForDay, freezesSnapshot, gradesWeekend, extraForDay } from "./postPlan";
 
 const WEEK = [1, 2, 3, 4, 5, 6, 7];
 
@@ -62,4 +62,20 @@ test("a weekday it does not recognise still posts something rather than nothing"
   expect(boardForDay(0).board).toBe("streaks");
   expect(boardForDay(99).board).toBe("streaks");
   expect(boardForDay(undefined).board).toBe("streaks");
+});
+
+// THE WEEKEND CARD IS THE PRODUCT. The public post goes out on the day of the game, by
+// which time the market has found it. What a member is paying for is seeing Sunday's card
+// on Friday, so the day this fires is not a detail.
+test("only Friday sends the weekend card early", () => {
+  expect(extraForDay(5)).toBe("weekend");
+  for (const d of [1, 2, 3, 4, 6, 7]) expect(extraForDay(d)).toBeNull();
+});
+
+test("the card and the snapshot ride the same day", () => {
+  // Both are Friday jobs about the same weekend. If they ever drift apart, one of them is
+  // describing a different set of games from the one that got frozen.
+  for (const d of [1, 2, 3, 4, 5, 6, 7]) {
+    expect(Boolean(extraForDay(d))).toBe(freezesSnapshot(d));
+  }
 });

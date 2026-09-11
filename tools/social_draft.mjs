@@ -28,7 +28,7 @@ const LIB = resolve(HERE, "..", "frontend", "src", "lib");
 
 // The lib modules import each other by relative path and use no bundler features, so
 // they load as-is. `shareText.js` pulls in countryFlag and kickoff itself.
-const { streakShare, fixtureShare, streakResultShare, pickGame, gameShare } =
+const { streakShare, fixtureShare, streakResultShare, pickGame, gameShare, weekendCard } =
   await import(resolve(LIB, "shareText.js"));
 const { fitToPost, weightedLength, URL_WEIGHT, X_SHARE_ROWS } = await import(resolve(LIB, "xLimit.js"));
 const { boardForDay } = await import(resolve(LIB, "postPlan.js"));
@@ -152,6 +152,23 @@ if (!data) fail("backend has no /api/share/rows — it is running an older build
 
 if (data.data_age_hours != null && data.data_age_hours > MAX_DATA_AGE_HOURS) {
   skip(`data is ${data.data_age_hours}h old (limit ${MAX_DATA_AGE_HOURS}h) — not drafting from stale numbers`);
+}
+
+// ---- the weekend card. Goes to the PAID channel on a Friday, carrying the model's own
+// numbers, so a member sees Sunday's games while the price is still there rather than on
+// Sunday morning when it is not. Never trimmed and never posted to X — see weekendCard.
+if (BOARD === "weekend") {
+  const card = weekendCard({ rows: data.streaks || [], generatedAt: data.generated_at });
+  if (!card) skip("nothing with a live run kicks off this weekend");
+  emit(`Weekend card for the channel — not for X.
+
+\`\`\`
+${card}
+\`\`\`
+`, { empty: false, board: "weekend", post: card, intent: "", weight: card.length, full: card,
+     note: `${(data.streaks || []).length} rows${
+       data.data_age_hours != null ? ` · data ${data.data_age_hours}h old` : ""}` });
+  process.exit(0);
 }
 
 // ---- one game, posted whole. A board is a list; this is a game, and it gets three lines

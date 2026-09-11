@@ -11,7 +11,7 @@
 # and waiting until Thursday, which is exactly how a poster ends up silently skipping a
 # day. The week it produces:
 #
-#   Mon  results   how last week's frozen streaks actually landed
+#   Mon  picks     how the angles posted to the channel actually landed
 #   Tue  game      the midweek fixture with the strongest angle on it
 #   Wed  streaks   what is trending — AND the weekend card to the paid channel
 #   Thu  —         nothing. A day off, deliberately
@@ -31,10 +31,12 @@
 # list. The board format fits six rows in a post by cramping each into one line, which
 # reads as a price list; three lines about one game reads as a reason to look.
 #
-# MONDAY IS THE ONLY DAY WITH A FALLBACK. Its board can be empty for a reason that is
-# nobody's fault — a weekend that was never snapshotted, or results not yet synced — so it
-# drops back to streaks. Any other day being empty means there is genuinely nothing worth
-# posting, and the right answer is silence, not a different board to fill the slot.
+# MONDAY IS THE ONLY DAY WITH FALLBACKS, and it has a chain: picks → results → streaks.
+# That order is a ranking of evidence — angles named in advance beat the model's board,
+# and the model's board beats "here is what is running". Each can be empty through nobody's
+# fault (no picks logged, a weekend never snapshotted, results not yet synced), so Monday
+# walks down until something has rows. Any other day being empty means there is genuinely
+# nothing worth posting, and the right answer is silence.
 #
 # DELIVERY. Telegram if TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID are set; otherwise a
 # GitHub issue, exactly as before. That order is deliberate — it means the job keeps
@@ -76,7 +78,7 @@ on:
         description: "Which board (blank = whatever this weekday calls for)"
         required: false
         type: choice
-        options: ["", "game", "streaks", "fixtures", "results", "weekend"]
+        options: ["", "picks", "game", "streaks", "fixtures", "results", "weekend"]
 
 concurrency:
   group: corner-social-draft
@@ -163,9 +165,19 @@ jobs:
           fi
           node tools/social_draft.mjs "$@"
 
-          if [ ! -s draft.md ] && [ "$weekday" = "1" ] && [ -z "$board" ]; then
-            echo "::notice::no weekend results to report — falling back to the streak board"
-            node tools/social_draft.mjs --board streaks --days 3 --out draft.md --json-out draft.json
+          # MONDAY WALKS DOWN ITS CHAIN. picks → results → streaks, which is a ranking of
+          # evidence: angles a person named in advance beat the model's board, and the
+          # model's board beats "here is what is running". Each can be empty through
+          # nobody's fault, so it tries the next rather than going silent. The chain lives
+          # in postPlan.js so the week has one definition.
+          if [ -z "$board" ]; then
+            for next in $(node -e "import('./frontend/src/lib/postPlan.js').then(m=>console.log((m.boardForDay($weekday).fallbacks||[]).join(' ')))"); do
+              [ -s draft.md ] && break
+              echo "::notice::nothing on the previous board — falling back to $next"
+              extra=""
+              [ "$next" = "results" ] && extra="--tag ${{ steps.when.outputs.friday }}"
+              node tools/social_draft.mjs --board "$next" --days 3 $extra --out draft.md --json-out draft.json
+            done
           fi
 
           if [ ! -s draft.md ]; then

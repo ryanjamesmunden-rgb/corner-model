@@ -7,7 +7,7 @@
  */
 import { streakShare, fixtureShare, bestTeamsShare, streakResultShare,
          fixtureStreakShare, telegramPick, wonLadder, openGameCase, postHeader,
-         pickGame, gameShare, weekendCard,
+         pickGame, gameShare, weekendCard, picksReview,
          postDate, postTime, pickLabel } from "./shareText";
 
 const NORWAY = "\u{1F1F3}\u{1F1F4}";
@@ -662,5 +662,83 @@ describe("the weekend card", () => {
   test("a weekend with nothing running into it sends nothing", () => {
     expect(weekendCard({ rows: [] })).toBe("");
     expect(weekendCard({ rows: [{ name: "X", streak: { length: 9 } }] })).toBe("");
+  });
+});
+
+// MONDAY'S REVIEW OF THE CHANNEL'S OWN PICKS.
+//
+// This is the post that makes a claim about the product rather than the model, so the
+// things pinned here are the ways it could flatter itself: hiding a miss when trimmed,
+// counting a void as a win, quietly dropping games still running, or reaching back further
+// than the week it says it covers.
+describe("the picks review", () => {
+  const DAY = 86400000;
+  const now = Date.parse("2026-09-14T12:00:00Z");        // a Monday
+  const row = (name, league_id, line_label, result, value, daysAgo) => ({
+    name, league_id, line_label, result, value,
+    kickoff: new Date(now - daysAgo * DAY).toISOString(),
+  });
+  const rows = [
+    row("Club Brugge", "bel-pl", "5+", "win", 9, 1),
+    row("Juventus", "ita-sa", "6+", "loss", 4, 1),
+    row("Viking", "nor-el", "5+", "win", 8, 2),
+    row("Grimsby", "eng-l2", "6+", "win", 7, 3),
+  ];
+
+  test("heads with the count it can actually support", () => {
+    const out = picksReview({ rows, now })(6);
+    expect(out).toContain("How the VIP picks landed — 3/4 last week:");
+  });
+
+  test("publishes the line, unlike the streak results post", () => {
+    // Those runs are still live and the line is still the product. These are settled: the
+    // bet is over, and a record whose rows cannot be checked against the game is an advert.
+    const out = picksReview({ rows, now })(6);
+    expect(out).toContain("Club Brugge 5+ — 9 corners ✅");
+    expect(out).toContain("Juventus 6+ — 4 corners ❌");
+  });
+
+  test("a trimmed post still shows a miss", () => {
+    // The first N rows can happen to be all wins, and an honest "3/4" over a clean sweep
+    // is a true count and a false impression.
+    const winsFirst = [rows[0], rows[2], rows[3], rows[1]];
+    const out = picksReview({ rows: winsFirst, now })(2);
+    expect(out).toContain("❌");
+    expect(out).toContain("3/4");
+  });
+
+  test("voids are named rather than quietly dropped", () => {
+    const out = picksReview({ rows: [...rows, row("X", "nor-el", "5+", "void", 5, 1)], now })(6);
+    expect(out).toContain("1 void (exact line — stake back)");
+    expect(out).toContain("3/4");          // the void is not counted as a win OR a loss
+  });
+
+  test("games still running are declared, not omitted", () => {
+    // "3/3" posted while three more are outstanding is a different week, and the reader
+    // has no way to tell which one they are being shown.
+    const out = picksReview({ rows: [...rows, row("Y", "nor-el", "5+", null, null, 0)], now })(6);
+    expect(out).toContain("1 still to settle");
+  });
+
+  test("it reaches back exactly the week it claims to", () => {
+    const old = row("Ancient", "ita-sa", "6+", "win", 11, 30);
+    const out = picksReview({ rows: [...rows, old], now })(8);
+    expect(out).not.toContain("Ancient");
+    expect(out).toContain("3/4");
+  });
+
+  test("a fixture that has not kicked off yet cannot be reviewed", () => {
+    const future = row("Tomorrow", "ita-sa", "6+", "win", 11, -2);
+    const out = picksReview({ rows: [...rows, future], now })(8);
+    expect(out).not.toContain("Tomorrow");
+  });
+
+  test("a week with nothing settled posts nothing", () => {
+    expect(picksReview({ rows: [], now })(6)).toBe("");
+    expect(picksReview({ rows: [row("P", "nor-el", "5+", null, null, 1)], now })(6)).toBe("");
+  });
+
+  test("the channel is nameable, since the post says whose picks these are", () => {
+    expect(picksReview({ rows, channel: "Telegram", now })(6)).toContain("Telegram picks");
   });
 });

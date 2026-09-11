@@ -14,7 +14,7 @@ const WEEK = [1, 2, 3, 4, 5, 6, 7];
 
 test("the week is exactly this, and this is the test that keeps it there", () => {
   expect(WEEK.map((d) => boardForDay(d).board)).toEqual([
-    "results",   // Mon — how last week's frozen streaks landed
+    "picks",     // Mon — how the angles posted to the channel landed
     "game",      // Tue — the midweek fixture with the strongest angle
     "streaks",   // Wed — what is trending, plus the weekend card to the channel
     null,        // Thu — nothing, deliberately
@@ -25,9 +25,17 @@ test("the week is exactly this, and this is the test that keeps it there", () =>
 });
 
 test("Monday reports the weekend, because no other day can", () => {
-  expect(boardForDay(MONDAY).board).toBe("results");
+  expect(boardForDay(MONDAY).board).toBe("picks");
   expect(gradesWeekend(MONDAY)).toBe(true);
   expect(gradesWeekend(FRIDAY)).toBe(false);
+});
+
+test("Monday's chain is a ranking of evidence, in that order", () => {
+  // Angles a person named in advance are a stronger claim than the model's board, and the
+  // model's board is stronger than "here is what is running". Each can be empty through
+  // nobody's fault, so Monday walks down rather than going silent.
+  expect(boardForDay(MONDAY).board).toBe("picks");
+  expect(boardForDay(MONDAY).fallbacks).toEqual(["results", "streaks"]);
 });
 
 test("Thursday says nothing, and says so in the plan rather than by accident", () => {
@@ -39,12 +47,10 @@ test("Thursday says nothing, and says so in the plan rather than by accident", (
   expect(boardForDay(THURSDAY).days).toBe(0);
 });
 
-test("only Monday falls back to another board", () => {
-  // Monday's board can be empty through nobody's fault. Any other day being empty means
-  // there is nothing worth posting, and reaching for a different board to fill the slot is
-  // how a daily poster starts posting filler.
-  expect(boardForDay(MONDAY).fallback).toBe("streaks");
-  for (const d of [2, 3, 4, 5, 6, 7]) expect(boardForDay(d).fallback).toBeNull();
+test("only Monday falls back at all", () => {
+  // Any other day being empty means there is nothing worth posting, and reaching for a
+  // different board to fill the slot is how a daily poster starts posting filler.
+  for (const d of [2, 3, 4, 5, 6, 7]) expect(boardForDay(d).fallbacks).toEqual([]);
 });
 
 test("each day looks as far ahead as its own question needs", () => {

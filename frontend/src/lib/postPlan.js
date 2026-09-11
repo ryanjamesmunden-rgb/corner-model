@@ -8,7 +8,7 @@
 // THE WEEK HAS A SHAPE AND KEEPS IT. A poster whose pattern moves is one nobody learns to
 // expect, and the whole value of posting daily is that people know when to look:
 //
-//   Mon  results      how last week's frozen streaks actually landed
+//   Mon  picks        how the angles posted to the channel actually landed
 //   Tue  game         the midweek fixture with the strongest angle on it
 //   Wed  streaks      what is trending, and the weekend card to the channel
 //   Thu  —            nothing. A day off, deliberately
@@ -43,24 +43,28 @@ export const SATURDAY = 6;
  * is the point: a silent day should be a decision the code states, not something that
  * happens because a board came back empty.
  *
- * `fallback` is the board to use when the first one has nothing, and only Monday has one.
- * Monday's board can be empty for a reason that is nobody's fault — a weekend that was
- * never snapshotted, or results not yet synced. Every other day being empty means there is
- * genuinely nothing worth posting, and the answer then is silence rather than reaching for
- * a different board to fill the slot.
+ * `fallbacks` are the boards to try when the first has nothing, IN ORDER, and only Monday
+ * has any. Its chain is picks → results → streaks, which is a ranking of evidence: angles
+ * a person named in advance are a stronger claim than the model's board, and the model's
+ * board is stronger than "here is what is running". Each can be empty through nobody's
+ * fault — no picks logged, a weekend never snapshotted, results not yet synced — so Monday
+ * walks down until something has rows.
+ *
+ * Every other day being empty means there is genuinely nothing worth posting, and the
+ * answer then is silence rather than reaching for a different board to fill the slot.
  */
 export const boardForDay = (weekday) => {
   switch (Number(weekday)) {
-    case 1: return { board: "results", days: 3, fallback: "streaks" };
-    case 2: return { board: "game", days: 2, fallback: null };
-    case 3: return { board: "streaks", days: 3, fallback: null };
-    case 4: return { board: null, days: 0, fallback: null };
-    case 5: return { board: "game", days: 3, fallback: null };
-    case 6: return { board: "game", days: 1, fallback: null };
-    case 7: return { board: "game", days: 1, fallback: null };
+    case 1: return { board: "picks", days: 3, fallbacks: ["results", "streaks"] };
+    case 2: return { board: "game", days: 2, fallbacks: [] };
+    case 3: return { board: "streaks", days: 3, fallbacks: [] };
+    case 4: return { board: null, days: 0, fallbacks: [] };
+    case 5: return { board: "game", days: 3, fallbacks: [] };
+    case 6: return { board: "game", days: 1, fallbacks: [] };
+    case 7: return { board: "game", days: 1, fallbacks: [] };
     // `date +%u` should never hand this a 0 or an 8, but a poster that throws on an
     // unexpected day is a poster that goes silent for a reason nobody looks for.
-    default: return { board: "streaks", days: 3, fallback: null };
+    default: return { board: "streaks", days: 3, fallbacks: [] };
   }
 };
 

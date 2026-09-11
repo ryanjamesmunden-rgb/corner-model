@@ -269,18 +269,17 @@ export const gameShare = ({ row = {} } = {}) => () => {
   // actually winning. Dropped rather than guessed where the window never reported one.
   if (row.avg != null) marks.push(`🎯 averaging ${row.avg} a game`);
 
-  // THE MODEL'S OWN NUMBER, PUBLISHED. This used to be withheld on the rule that the
-  // price is the paid half — and it still is, but a probability and a fair price are the
-  // same fact written two ways (79% is 1.26), so withholding one while the site shows the
-  // other only made the two disagree. Published here because it is the line that makes
-  // the post a claim rather than a fun stat: anyone can count a streak, and only the
-  // model says what it is worth next time.
-  const prob = Number(row.projection?.prob);
-  const modelLine = Number.isFinite(prob) && prob > 0
-    ? `📊 Model makes it ${Math.round(prob)}%` : "";
-
-  return [when && `📅 ${when}`, `${where} / ${home} v ${away}`.trim(),
-          marks.join(" / "), modelLine].filter(Boolean).join("\n");
+  // NO MODEL NUMBER HERE. It was added and taken back out on purpose: a probability and a
+  // fair price are the same fact written two ways — 79% IS 1.26 — so printing the
+  // percentage on a public post gives away the price, which is the thing the channel
+  // sells. The run and the average stay, because those are facts about games already
+  // played that anyone could count for themselves.
+  //
+  // It is still SHOWN to whoever is about to post, just not inside the post: the draft
+  // carries the model's number in its own note line (see tools/social_draft.mjs), which
+  // reaches the Telegram message header and never the tweet.
+  return [when && `📅 ${when}`, `${where} / ${home} v ${away}`.trim(), marks.join(" / ")]
+    .filter(Boolean).join("\n");
 };
 //
 // The VIP channel gets a pick written to a fixed shape — date, league, fixture, line,

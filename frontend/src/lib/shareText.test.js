@@ -564,19 +564,22 @@ describe("the game of the day", () => {
     expect(gameShare({ row: board[1] })()).toContain("🔥");
   });
 
-  test("the model's number is published, the bookmaker's price is not", () => {
+  test("the model's number never reaches the tweet, in either form", () => {
+    // A percentage and a fair price are the same fact — 79% IS 1.26 — so publishing the
+    // percentage publishes the price. Both are pinned out.
     const out = gameShare({ row: pickGame(board) })();
-    expect(out).toContain("📊 Model makes it 79%");
-    // A decimal price still never appears. The percentage is the same fact in the form a
-    // reader can act on without converting; a price beside it would read as one to take.
+    expect(out).not.toContain("%");
+    expect(out).not.toContain("1.26");
     expect(out).not.toMatch(/\d\.\d\d/);
+    expect(out).not.toMatch(/model/i);
   });
 
-  test("an unpriced row drops the model line rather than printing 0%", () => {
-    const bare = { ...board[1], projection: {} };
-    const out = gameShare({ row: bare })();
-    expect(out).not.toContain("Model makes it");
-    expect(out).toContain("🔥 Club Brugge");
+  test("what it does carry is countable by anyone", () => {
+    // The run and the average are facts about games already played. Giving those away
+    // costs nothing; giving the price away costs the subscription.
+    const out = gameShare({ row: pickGame(board) })();
+    expect(out).toContain("9 straight");
+    expect(out).toContain("averaging 8.2 a game");
   });
 
   test("an unmeasured average is dropped rather than printed as a number", () => {

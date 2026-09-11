@@ -20,7 +20,8 @@
 // The args file is whatever renderFixtureStory takes: homeName, awayName, leagueId,
 // kickoff, dist, group, markets.
 
-import { readFileSync, writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync, mkdirSync, rmSync, statSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 import { createServer } from "node:http";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve, extname } from "node:path";
@@ -34,6 +35,13 @@ const arg = (n, d = null) => {
 };
 const ARGS = arg("args");
 const OUT = arg("out", "story.png");
+// With --video, the same drawing is rendered frame by frame and encoded instead of
+// snapshotted. Timings match recordStoryVideo's defaults so the automated clip and the one
+// the Share button makes are the same length and the same pace.
+const VIDEO = arg("video", null);
+const DURATION_MS = Number(arg("duration", "4200"));
+const HOLD_MS = Number(arg("hold", "1100"));
+const FPS = Number(arg("fps", "30"));
 const fail = (m) => { console.error(`render_story: ${m}`); process.exit(1); };
 if (!ARGS) fail("--args <file.json> is required");
 
@@ -65,6 +73,14 @@ const HARNESS = `<!doctype html><meta charset="utf-8">
     // toDataURL rather than an element screenshot: the canvas is 1080x1920 and the page
     // is not, so screenshotting would capture it scaled to the viewport.
     return c.toDataURL("image/png");
+  };
+  // The SAME call as the still, with progress threaded through — renderFixtureStory takes
+  // progress and draws the finished frame at 1, so the video and the image cannot end up
+  // being two different pictures.
+  window.__renderFrame = (a, progress) => {
+    const c = document.getElementById("c");
+    renderFixtureStory(c, { ...a, progress });
+    return c.toDataURL("image/jpeg", 0.95);
   };
   window.__ready = true;
 </script>`;
@@ -104,16 +120,65 @@ try {
   await page.waitForFunction(() => window.__ready === true, { timeout: 15000 })
     .catch(() => fail(`the harness never loaded${errors.length ? ` — ${errors[0]}` : ""}`));
 
-  const dataUrl = await page.evaluate((a) => window.__render(a), storyArgs);
-  if (!dataUrl || !dataUrl.startsWith("data:image/png;base64,")) {
-    fail("the canvas produced no PNG");
+  if (VIDEO) {
+    // FRAMES AND FFMPEG, NOT MediaRecorder.
+    //
+    // The site records with MediaRecorder because it is running in the user's own Chrome,
+    // which ships proprietary codecs and can produce MP4 directly. Playwright's Chromium
+    // does not: MediaRecorder there falls back to WebM, and WebM is a format Instagram
+    // refuses. So the frames are drawn deterministically and handed to ffmpeg, which also
+    // removes the one real flaw in recording — a slow machine dropping frames.
+    //
+    // JPEG for the intermediate frames. They are about to be H.264 encoded, so lossless
+    // PNG buys nothing and costs roughly five times the transfer over CDP, across 150-odd
+    // round trips.
+    const frames = Math.round((DURATION_MS / 1000) * FPS);
+    const holds = Math.round((HOLD_MS / 1000) * FPS);
+    const dir = resolve(process.cwd(), ".story_frames");
+    mkdirSync(dir, { recursive: true });
+    let n = 0;
+    for (let i = 0; i < frames + holds; i += 1) {
+      // Past `frames` the progress pins at 1: that is the HOLD, and it exists because a
+      // story that cuts the instant the last element lands takes the number away from
+      // whoever is still reading it.
+      const progress = Math.min(1, i / Math.max(1, frames - 1));
+      const url = await page.evaluate(
+        ([a, p]) => window.__renderFrame(a, p), [storyArgs, progress]);
+      writeFileSync(resolve(dir, `f${String(n).padStart(5, "0")}.jpg`),
+                    Buffer.from(url.split(",")[1], "base64"));
+      n += 1;
+    }
+    // yuv420p and an even frame size, because a phone that cannot decode the pixel format
+    // shows a black rectangle rather than an error. The silent audio track is there for
+    // the same defensive reason: some uploaders reject a video with no audio stream at all.
+    const ff = spawnSync("ffmpeg", [
+      "-y", "-hide_banner", "-loglevel", "error",
+      "-framerate", String(FPS), "-i", resolve(dir, "f%05d.jpg"),
+      "-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=44100",
+      "-shortest",
+      "-c:v", "libx264", "-preset", "medium", "-crf", "20",
+      "-pix_fmt", "yuv420p", "-movflags", "+faststart",
+      "-c:a", "aac", "-b:a", "64k",
+      VIDEO,
+    ], { encoding: "utf8" });
+    rmSync(dir, { recursive: true, force: true });
+    if (ff.status !== 0) fail(`ffmpeg failed — ${(ff.stderr || "").trim().split("\n").pop()}`);
+    const size = statSync(VIDEO).size;
+    if (size < 20000) fail(`encoded video is only ${size} bytes — it encoded nothing`);
+    console.log(`render_story: wrote ${VIDEO} (${Math.round(size / 1024)} KB, `
+      + `${n} frames, ${(n / FPS).toFixed(1)}s)`);
+  } else {
+    const dataUrl = await page.evaluate((a) => window.__render(a), storyArgs);
+    if (!dataUrl || !dataUrl.startsWith("data:image/png;base64,")) {
+      fail("the canvas produced no PNG");
+    }
+    const buf = Buffer.from(dataUrl.split(",")[1], "base64");
+    // A 1080x1920 card is tens of kilobytes at minimum. A few hundred bytes means the
+    // canvas drew nothing and we are about to post a black rectangle.
+    if (buf.length < 10000) fail(`rendered image is only ${buf.length} bytes — it drew nothing`);
+    writeFileSync(OUT, buf);
+    console.log(`render_story: wrote ${OUT} (${Math.round(buf.length / 1024)} KB)`);
   }
-  const buf = Buffer.from(dataUrl.split(",")[1], "base64");
-  // A 1080x1920 card is tens of kilobytes at minimum. A few hundred bytes means the
-  // canvas drew nothing and we are about to post a black rectangle.
-  if (buf.length < 10000) fail(`rendered image is only ${buf.length} bytes — it drew nothing`);
-  writeFileSync(OUT, buf);
-  console.log(`render_story: wrote ${OUT} (${Math.round(buf.length / 1024)} KB)`);
 } finally {
   await browser.close();
   server.close();

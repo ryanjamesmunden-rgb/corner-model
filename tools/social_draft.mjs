@@ -225,7 +225,8 @@ if (data.data_age_hours != null && data.data_age_hours > MAX_DATA_AGE_HOURS) {
 // numbers, so a member sees Sunday's games while the price is still there rather than on
 // Sunday morning when it is not. Never trimmed and never posted to X — see weekendCard.
 if (BOARD === "weekend") {
-  const card = weekendCard({ rows: data.streaks || [], generatedAt: data.generated_at });
+  const card = weekendCard({ rows: data.streaks || [], generatedAt: data.generated_at,
+                             site: SITE });
   if (!card) skip("nothing with a live run kicks off this weekend");
   emit(`Weekend card for the channel — not for X.
 

@@ -845,3 +845,28 @@ describe("picking on value rather than form", () => {
     expect(pickGame(rows)).toBe(pickGameDetailed(rows).row);
   });
 });
+
+describe("the weekend card as a to-do list", () => {
+  const R = (id) => ({
+    name: "Club Brugge KV", league_id: "bel-pl", line_label: "5+",
+    streak: { length: 9 }, projection: { prob: 79.4, fair_odds: 1.26 },
+    next_fixture: { fixture_id: id, date: "2026-09-13T11:30:00Z",
+                    opponent: "Antwerp", is_home: true },
+  });
+
+  test("every row links to the fixture it is about", () => {
+    const out = weekendCard({ rows: [R("bel-pl-1558631")], site: "https://thecornermodel.com" });
+    expect(out).toContain("↳ thecornermodel.com/fixture/bel-pl-1558631");
+  });
+
+  test("and says why the link is there", () => {
+    const out = weekendCard({ rows: [R("f1")], site: "https://thecornermodel.com" });
+    expect(out).toContain("until one is in, nothing can be called value");
+  });
+
+  test("no site, or no fixture id, means no dangling arrow", () => {
+    expect(weekendCard({ rows: [R("f1")] })).not.toContain("↳");
+    const noId = { ...R("f1"), next_fixture: { ...R("f1").next_fixture, fixture_id: null } };
+    expect(weekendCard({ rows: [noId], site: "https://thecornermodel.com" })).not.toContain("↳");
+  });
+});

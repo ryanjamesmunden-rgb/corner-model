@@ -14,6 +14,7 @@ import uuid
 
 import auth
 import billing
+import telegram_bot
 from pathlib import Path
 from pydantic import BaseModel
 from typing import List, Optional, Dict
@@ -5277,6 +5278,151 @@ async def public_results(weeks: int = RESULTS_WEEKS):
 # needs the first two — see the `boards` parameter below.
 SHARE_BOARDS = ("streaks", "fixtures", "mismatches", "chase", "value")
 SHARE_BOARDS_DEFAULT = "streaks,fixtures"
+
+
+# ----------------------------- The bot, inbound -----------------------------
+# Everything above this point sends. This is the part that listens — see telegram_bot.py
+# for the command routing and why step one answers only /start and /help.
+
+TELEGRAM_UPDATE_KEEP = 500        # how many seen update ids stay on record
+_tg_calls = defaultdict(deque)    # per-chat throttle, same shape as _explain_calls
+TELEGRAM_PER_MINUTE = 20
+
+
+async def _telegram_reply(update: dict):
+    """Work out the answer and send it. Runs AFTER the webhook has already returned 200 —
+    see the endpoint below for why that ordering is not optional."""
+    try:
+        text = telegram_bot.reply_for(update)
+        chat = telegram_bot.chat_id_of(update)
+        if text and chat is not None:
+            await telegram_bot.send(chat, text)
+    except Exception:
+        # A thrown task here is invisible: the webhook has already answered, so nothing
+        # surfaces it. Logged rather than allowed to vanish.
+        logger.exception("telegram reply failed")
+
+
+@api_router.post("/telegram/webhook")
+async def telegram_webhook(request: Request):
+    """Telegram delivering a message someone sent the bot.
+
+    UNAUTHENTICATED BY NECESSITY, SECRET-VERIFIED WITHOUT EXCEPTION — the same shape as the
+    Stripe webhook above. Telegram cannot present a session, and this URL is on the public
+    internet, so the `secret_token` echoed in the header is the only thing between a real
+    message and anyone who finds the address. Without it a stranger could forge updates and
+    make the bot answer as though a person had typed.
+
+    IT ANSWERS 200 BEFORE IT DOES THE WORK, and that is the whole reason for the background
+    task. Telegram waits a short time for a response and REDELIVERS when it does not get
+    one — and this runs on a free instance that sleeps, where a cold start is 30-60 seconds.
+    Replying inside the request would therefore guarantee a retry, and the retry would
+    arrive while the first one was still being handled: one message, two answers.
+
+    DE-DUPLICATED ON `update_id` regardless, because "answers fast" is a mitigation and not
+    a guarantee. The id is the document key, so a redelivery collides on insert and is
+    dropped rather than answered twice.
+
+    A BAD SECRET GETS 403 AND NOTHING ELSE. Not a hint about whether the secret is set,
+    configured, or merely wrong — a forged request should learn nothing from being refused.
+    """
+    if not telegram_bot.configured():
+        # 503, because this is a deployment that has not finished being set up rather than
+        # a request that did anything wrong. The two need different fixes.
+        raise HTTPException(status_code=503, detail="Bot is not configured")
+    if not telegram_bot.verify(request.headers.get(telegram_bot.SECRET_HEADER)):
+        raise HTTPException(status_code=403, detail="Forbidden")
+
+    try:
+        update = await request.json()
+    except Exception:
+        # Answer 200 on unreadable input. A 400 would be retried for as long as Telegram
+        # keeps trying, and a body this end cannot parse will not parse next time either.
+        return {"ok": True, "ignored": "unreadable body"}
+
+    uid = update.get("update_id")
+    if uid is not None:
+        from pymongo.errors import DuplicateKeyError
+        try:
+            await db.telegram_updates.insert_one(
+                {"_id": uid, "at": datetime.now(timezone.utc).isoformat()})
+        except DuplicateKeyError:
+            return {"ok": True, "duplicate": True}
+        # Trimmed here rather than on a timer: this collection exists only to answer "have
+        # I seen this id", and a few hundred is far past any redelivery window.
+        old = await db.telegram_updates.find({}, {"_id": 1}).sort("at", -1)             .skip(TELEGRAM_UPDATE_KEEP).to_list(2000)
+        if old:
+            await db.telegram_updates.delete_many({"_id": {"$in": [o["_id"] for o in old]}})
+
+    # A PER-CHAT CEILING, because this endpoint is reachable by anyone who finds the bot
+    # and every reply costs an outbound request. Same deque the explainer uses. Silence
+    # rather than a "slow down" message: telling a flooder they are being throttled just
+    # gives them something else to trigger.
+    chat = telegram_bot.chat_id_of(update)
+    if chat is not None:
+        now_ts = datetime.now(timezone.utc).timestamp()
+        bucket = _tg_calls[chat]
+        while bucket and now_ts - bucket[0] > 60:
+            bucket.popleft()
+        if len(bucket) >= TELEGRAM_PER_MINUTE:
+            return {"ok": True, "throttled": True}
+        bucket.append(now_ts)
+
+    asyncio.create_task(_telegram_reply(update))
+    return {"ok": True}
+
+
+@api_router.post("/telegram/register")
+async def telegram_register(request: Request, url: Optional[str] = None,
+                            token: Optional[str] = None):
+    """Point Telegram at this deployment. Run once, and again whenever the URL changes.
+
+    TOOLS-TOKEN GATED, like every other operator action here. It is also why the bot token
+    never has to leave the server: registering by hand means pasting the bot token into a
+    curl, and a token in a shell history is a token that gets committed eventually.
+
+    `url` defaults to this request's own origin, so the usual case is a POST with no body
+    from wherever the backend is actually reachable — which is also the address least
+    likely to be typed wrong."""
+    _check_tools_token(token)
+    if not telegram_bot.configured():
+        raise HTTPException(status_code=503,
+                            detail="Set TELEGRAM_BOT_TOKEN and TELEGRAM_WEBHOOK_SECRET first")
+    # An explicit url wins; then a configured one; then this request's own origin. The
+    # scheme is FORCED to https rather than trusted: behind Render's proxy the app sees
+    # plain http unless the forwarded headers are wired through, so deriving the origin
+    # would otherwise hand Telegram an http:// address it refuses — and the error would
+    # read as a Telegram problem rather than a proxy one.
+    base = ((url or "").strip()
+            or os.environ.get("PUBLIC_BASE_URL", "").strip()
+            or str(request.base_url))
+    base = re.sub(r"^http://", "https://", base.rstrip("/"))
+    target = base if base.endswith("/api/telegram/webhook") else f"{base}/api/telegram/webhook"
+    if not target.startswith("https://"):
+        # Telegram refuses plain HTTP anyway; saying so here beats relaying its error.
+        raise HTTPException(status_code=400, detail="The webhook URL must be https")
+    try:
+        res = await telegram_bot.set_webhook(target)
+    except RuntimeError as e:
+        raise HTTPException(status_code=503, detail=str(e))
+    return {"registered": target, "telegram": res}
+
+
+@api_router.get("/telegram/status")
+async def telegram_status(token: Optional[str] = None):
+    """What Telegram thinks the current wiring is — the URL it is delivering to, anything
+    it is failing on, and how far behind it has fallen. `pending_update_count` sitting high
+    with a `last_error_message` is the shape of a bot that looks alive and answers nobody."""
+    _check_tools_token(token)
+    out = {"bot_token_set": bool(telegram_bot.BOT_TOKEN),
+           "webhook_secret_set": bool(telegram_bot.WEBHOOK_SECRET)}
+    if not telegram_bot.BOT_TOKEN:
+        return {**out, "note": "TELEGRAM_BOT_TOKEN is not set on this backend"}
+    try:
+        out["telegram"] = (await telegram_bot.webhook_info()).get("result")
+    except Exception as e:
+        out["error"] = str(e)
+    return out
 
 
 @api_router.get("/share/rows")

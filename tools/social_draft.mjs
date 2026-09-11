@@ -28,7 +28,8 @@ const LIB = resolve(HERE, "..", "frontend", "src", "lib");
 
 // The lib modules import each other by relative path and use no bundler features, so
 // they load as-is. `shareText.js` pulls in countryFlag and kickoff itself.
-const { streakShare, fixtureShare, streakResultShare } = await import(resolve(LIB, "shareText.js"));
+const { streakShare, fixtureShare, streakResultShare, pickGame, gameShare } =
+  await import(resolve(LIB, "shareText.js"));
 const { fitToPost, weightedLength, URL_WEIGHT, X_SHARE_ROWS } = await import(resolve(LIB, "xLimit.js"));
 const { boardForDay } = await import(resolve(LIB, "postPlan.js"));
 
@@ -151,6 +152,32 @@ if (!data) fail("backend has no /api/share/rows — it is running an older build
 
 if (data.data_age_hours != null && data.data_age_hours > MAX_DATA_AGE_HOURS) {
   skip(`data is ${data.data_age_hours}h old (limit ${MAX_DATA_AGE_HOURS}h) — not drafting from stale numbers`);
+}
+
+// ---- one game, posted whole. A board is a list; this is a game, and it gets three lines
+// to say when it is, who is playing and why it is worth a look. See gameShare.
+if (BOARD === "game") {
+  const row = pickGame(data.streaks || []);
+  if (!row) skip("no game today carries a run worth posting on its own");
+  const post = gameShare({ row })();
+  if (!post) skip("the best row has no fixture attached — nothing to post about");
+  const weight = weightedLength(post) + 1 + URL_WEIGHT;
+  const intent = `https://x.com/intent/tweet?text=${encodeURIComponent(post)}&url=${encodeURIComponent(SITE)}`;
+  const prob = row.projection?.prob;
+  emit(`**[Post this on X](${intent})** — opens the composer already filled in. Nothing is posted until you hit Post.
+
+\`\`\`
+${post}
+\`\`\`
+
+${weight} / 280 characters as X counts them.
+${row.name} ${row.line_label}: ${row.streak?.length} in a row, model ${prob ?? "—"}%${
+  row.projection?.fair_odds ? ` (fair ${row.projection.fair_odds})` : ""}${
+  data.data_age_hours != null ? `, on data ${data.data_age_hours}h old` : ""}.
+No price appears in this post — see gameShare.
+`, { empty: false, board: "game", post, intent, weight, full: post,
+     note: `${row.name} ${row.line_label} · ${row.streak?.length} in a row · model ${prob ?? "—"}%` });
+  process.exit(0);
 }
 
 const build = BOARD === "fixtures"

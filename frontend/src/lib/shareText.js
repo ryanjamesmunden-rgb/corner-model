@@ -198,7 +198,80 @@ export const fixtureStreakShare = ({ fixture = {}, streaks = [], form = [],
     + more(streaks.length, limit) + tail;
 };
 
-// ----------------------------- One posted pick -----------------------------
+// ----------------------------- One game, posted whole -----------------------------
+//
+// A board is a list; this is a game. The fixture boards fit six rows in a post by giving
+// each one a single cramped line, which reads as a list of names and prices — fine for
+// someone already looking for a bet, useless as an advert. One game across three lines
+// has room to say when it is, who is playing, and why it is worth a look.
+//
+// WHAT MAKES IT THE GAME OF THE DAY is not the longest run. A streak is the hook, but a
+// line that keeps landing and is still unlikely to land again is a bad advert: it goes out
+// free, nobody sees a price next to it, and when it misses it just looks wrong. So the run
+// only breaks ties among lines the model actually likes.
+
+// Above this, a run is worth a fire rather than a flag. Same tier as FIRE_RUN — a run that
+// stands out from the ones it would be listed beside.
+export const GAME_FIRE_RUN = 8;
+// A line the model makes more likely than not. Below this the run is carrying the post on
+// its own, which is exactly the post that ages badly.
+export const GAME_MIN_PROB = 50;
+
+/**
+ * The one row worth posting today.
+ *
+ * Prefers lines the model gives an even chance or better, ranked by how long the run is.
+ * Where nothing clears that bar the ranking INVERTS — best probability first, run second —
+ * because the reason to drop the bar is that there is no strong line today, and answering
+ * that with the longest shot on the board would be the opposite of the intent.
+ */
+export const pickGame = (rows = [], minProb = GAME_MIN_PROB) => {
+  const run = (r) => Number(r?.streak?.length) || 0;
+  const prob = (r) => Number(r?.projection?.prob ?? 0);
+  const live = (rows || []).filter((r) => r?.next_fixture?.date && run(r) >= 2);
+  if (!live.length) return null;
+  const strong = live.filter((r) => prob(r) >= minProb);
+  const byRun = (a, b) => (run(b) - run(a)) || (prob(b) - prob(a));
+  const byProb = (a, b) => (prob(b) - prob(a)) || (run(b) - run(a));
+  return [...(strong.length ? strong : live)].sort(strong.length ? byRun : byProb)[0];
+};
+
+/**
+ * That game, in three lines:
+ *
+ *   📅 Friday 11th September @ 11:00am
+ *   🇯🇵 J-League / Kashima v Urawa
+ *   🔥 Kashima 6+ corners in 9 straight / 🎯 averaging 8.2 a game
+ *
+ * NO PRICE, same rule as every other public post. The run and the average are facts about
+ * games already played, which anyone could look up; the model's number is the product.
+ */
+export const gameShare = ({ row = {} } = {}) => () => {
+  const fx = row?.next_fixture;
+  if (!fx?.date) return "";
+  const home = fx.is_home ? row.name : fx.opponent;
+  const away = fx.is_home ? fx.opponent : row.name;
+  if (!home || !away) return "";
+
+  const day = postDate(fx.date);
+  const time = postTime(fx.date);
+  const when = [day, time].filter(Boolean).join(" @ ");
+  const league = row.league_name || "";
+  const where = `${flagBullet(row.league_id, "")} ${league}`.trim();
+
+  const run = Number(row.streak?.length) || 0;
+  const marks = [];
+  if (run >= 2 && row.line_label) {
+    marks.push(`${run >= GAME_FIRE_RUN ? "🔥" : "🚩"} ${row.name} ${row.line_label} `
+      + `corners in ${run} straight`);
+  }
+  // Trending form, in the only sense this post is about: how many corners they are
+  // actually winning. Dropped rather than guessed where the window never reported one.
+  if (row.avg != null) marks.push(`🎯 averaging ${row.avg} a game`);
+
+  return [when && `📅 ${when}`, `${where} / ${home} v ${away}`.trim(), marks.join(" / ")]
+    .filter(Boolean).join("\n");
+};
 //
 // The VIP channel gets a pick written to a fixed shape — date, league, fixture, line,
 // price, model price, then the evidence. It was being typed out by hand every time, which

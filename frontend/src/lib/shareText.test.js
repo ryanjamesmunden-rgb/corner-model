@@ -7,6 +7,7 @@
  */
 import { streakShare, fixtureShare, bestTeamsShare, streakResultShare,
          fixtureStreakShare, telegramPick, wonLadder, openGameCase, postHeader,
+         pickGame, gameShare,
          postDate, postTime, pickLabel } from "./shareText";
 
 const NORWAY = "\u{1F1F3}\u{1F1F4}";
@@ -495,5 +496,98 @@ describe("the header every fixture post opens with", () => {
     const lines = postHeader({ fixture: { ...fixture, date: null }, leagueName: "Série B" });
     expect(lines.some((l) => l.startsWith("📅"))).toBe(false);
     expect(lines[0]).toContain("Série B");
+  });
+});
+
+// ONE GAME, POSTED WHOLE.
+//
+// Rows here are real, taken from a live /api/share/rows response, because the trap this
+// board has is a judgement one: the longest run on that board was Juventus 6+ at 7 games
+// and a model probability of 37%. Posting it free, with no price beside it, is the post
+// that looks wrong the moment it misses.
+describe("the game of the day", () => {
+  const row = (name, league_id, league_name, line_label, run, prob, opponent, is_home, avg) => ({
+    name, league_id, league_name, line_label, avg,
+    streak: { length: run, status: "active" },
+    projection: { prob, fair_odds: Number((100 / prob).toFixed(2)) },
+    next_fixture: { date: "2026-09-13T10:00:00Z", opponent, is_home },
+  });
+  const board = [
+    row("Juventus", "ita-sa", "Serie A", "6+", 7, 37.3, "Sassuolo", false, 8.0),
+    row("Club Brugge", "bel-pl", "Jupiler Pro League", "5+", 9, 79.4, "Antwerp", true, 8.2),
+    row("Viking", "nor-el", "Eliteserien", "5+", 8, 76.7, "Kristiansund BK", true, 8.2),
+    row("Grimsby", "eng-l2", "League Two", "6+", 5, 51.1, "Bristol Rovers", true, 7.0),
+  ];
+
+  test("the run breaks ties, it does not win them on its own", () => {
+    // Club Brugge: 9 in a row AND 79%. Juventus has the second-longest run and the worst
+    // number on the board, and must not be what goes out.
+    expect(pickGame(board).name).toBe("Club Brugge");
+  });
+
+  test("a long run the model dislikes loses to a shorter one it likes", () => {
+    const pick = pickGame([
+      row("Longshot", "ita-sa", "Serie A", "8+", 11, 22.0, "X", true, 9.0),
+      row("Solid", "nor-el", "Eliteserien", "5+", 5, 71.0, "Y", true, 8.0),
+    ]);
+    expect(pick.name).toBe("Solid");
+  });
+
+  test("when nothing clears the bar the ranking inverts to best odds first", () => {
+    // The reason to drop the bar is that there is no strong line today. Answering that
+    // with the longest shot on the board would be the opposite of the intent.
+    const pick = pickGame([
+      row("LongAndUnlikely", "ita-sa", "Serie A", "7+", 12, 18.0, "X", true, 9.0),
+      row("ShortAndLessBad", "nor-el", "Eliteserien", "5+", 3, 44.0, "Y", true, 7.0),
+    ]);
+    expect(pick.name).toBe("ShortAndLessBad");
+  });
+
+  test("renders the three lines, in the right order", () => {
+    const out = gameShare({ row: pickGame(board) })();
+    const [when, where, why] = out.split("\n");
+    // The hour is the READER'S clock, so it is asserted by shape — pinning 11:00am
+    // would only be asserting the timezone the suite happens to run in.
+    expect(when).toMatch(/^📅 Sunday 13th September @ \d{1,2}:\d{2}(am|pm)$/);
+    expect(where).toBe("🇧🇪 Jupiler Pro League / Club Brugge v Antwerp");
+    expect(why).toBe("🔥 Club Brugge 5+ corners in 9 straight / 🎯 averaging 8.2 a game");
+  });
+
+  test("an away team is named on the right side of the v", () => {
+    const out = gameShare({ row: board[0] })();
+    expect(out).toContain("Sassuolo v Juventus");
+    expect(out).not.toContain("Juventus v Sassuolo");
+  });
+
+  test("a flag rather than a fire below the fire line", () => {
+    expect(gameShare({ row: board[3] })()).toContain("🚩 Grimsby 6+ corners in 5 straight");
+    expect(gameShare({ row: board[1] })()).toContain("🔥");
+  });
+
+  test("no price, ever", () => {
+    const out = gameShare({ row: pickGame(board) })();
+    expect(out).not.toContain("1.26");
+    expect(out).not.toMatch(/\d\.\d\d/);
+    expect(out).not.toContain("%");
+  });
+
+  test("an unmeasured average is dropped rather than printed as a number", () => {
+    const bare = { ...board[1], avg: null };
+    const out = gameShare({ row: bare })();
+    expect(out).not.toContain("🎯");
+    expect(out).toContain("🔥 Club Brugge");
+  });
+
+  test("a row with no fixture attached produces nothing to post", () => {
+    expect(gameShare({ row: { ...board[1], next_fixture: null } })()).toBe("");
+    expect(pickGame([])).toBeNull();
+    expect(pickGame([{ name: "NoFixture", streak: { length: 9 } }])).toBeNull();
+  });
+
+  test("the whole post fits a tweet with room for the link", () => {
+    for (const r of board) {
+      const out = gameShare({ row: r })();
+      expect(out.length).toBeLessThan(200);
+    }
   });
 });

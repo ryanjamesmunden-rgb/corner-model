@@ -13,11 +13,15 @@
 #
 #   Mon  results — how the weekend's frozen streaks actually landed
 #   Tue  streaks
-#   Wed  fixtures (3 days)
+#   Wed  one game (3 days)
 #   Thu  streaks
-#   Fri  fixtures (3 days) + freeze the weekend's streaks
-#   Sat  fixtures (today)
-#   Sun  fixtures (today)
+#   Fri  one game (3 days) + freeze the weekend's streaks
+#   Sat  one game (today)
+#   Sun  one game (today)
+#
+# "One game" is a single fixture across three lines — when, who, and why — rather than a
+# list. The board format fits six rows in a post by cramping each into one line, which
+# reads as a price list; three lines about one game reads as a reason to look.
 #
 # MONDAY IS THE ONLY DAY WITH A FALLBACK. Its board can be empty for a reason that is
 # nobody's fault — a weekend that was never snapshotted, or results not yet synced — so it
@@ -64,7 +68,7 @@ on:
         description: "Which board (blank = whatever this weekday calls for)"
         required: false
         type: choice
-        options: ["", "streaks", "fixtures", "results"]
+        options: ["", "game", "streaks", "fixtures", "results"]
 
 concurrency:
   group: corner-social-draft

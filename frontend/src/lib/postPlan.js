@@ -32,11 +32,11 @@ export const boardForDay = (weekday) => {
   switch (Number(weekday)) {
     case 1: return { board: "results", days: 3, fallback: "streaks" };
     case 2: return { board: "streaks", days: 3, fallback: null };
-    case 3: return { board: "fixtures", days: 3, fallback: null };
+    case 3: return { board: "game", days: 3, fallback: null };
     case 4: return { board: "streaks", days: 3, fallback: null };
-    case 5: return { board: "fixtures", days: 3, fallback: null };
-    case 6: return { board: "fixtures", days: 1, fallback: null };
-    case 7: return { board: "fixtures", days: 1, fallback: null };
+    case 5: return { board: "game", days: 3, fallback: null };
+    case 6: return { board: "game", days: 1, fallback: null };
+    case 7: return { board: "game", days: 1, fallback: null };
     default: return { board: "streaks", days: 3, fallback: null };
   }
 };

@@ -13,7 +13,7 @@ const WEEK = [1, 2, 3, 4, 5, 6, 7];
 test("every day of the week has something to post", () => {
   for (const d of WEEK) {
     const { board, days } = boardForDay(d);
-    expect(["results", "streaks", "fixtures"]).toContain(board);
+    expect(["results", "streaks", "game"]).toContain(board);
     expect(days).toBeGreaterThan(0);
   }
 });
@@ -32,9 +32,12 @@ test("only Monday falls back to another board", () => {
 });
 
 test("the weekend carries games, the midweek carries streaks", () => {
-  expect(boardForDay(5).board).toBe("fixtures");
-  expect(boardForDay(6).board).toBe("fixtures");
-  expect(boardForDay(7).board).toBe("fixtures");
+  // A single game across three lines, not a board of them: see gameShare. The list format
+  // fits six rows in a post by cramping each one, which reads as a price list rather than
+  // a reason to look.
+  expect(boardForDay(5).board).toBe("game");
+  expect(boardForDay(6).board).toBe("game");
+  expect(boardForDay(7).board).toBe("game");
   expect(boardForDay(2).board).toBe("streaks");
   expect(boardForDay(4).board).toBe("streaks");
 });

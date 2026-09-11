@@ -1891,12 +1891,23 @@ TOOL_SCRIPTS = {"backfill_shots": "backfill_shots.py", "measure_features": "meas
                 "backfill_goal_events": "backfill_goal_events.py",
                 "probe_corner_halves": "probe_corner_halves.py",
                 "probe_stat_types": "probe_stat_types.py",
-                "probe_leagues": "probe_leagues.py"}
+                "probe_leagues": "probe_leagues.py",
+                # The two harnesses written to answer questions nothing in the repo had
+                # measured. They were never reachable from here, which is exactly why
+                # neither had ever been run against real data.
+                "backfill_goals": "backfill_goals.py",
+                "tune_totals": "tune_totals.py",
+                "measure_game_state": "measure_game_state.py"}
 TOOL_COOLDOWN = {"backfill_shots": 600, "measure_features": 120,
                  "measure_chase_board": 120, "backfill_fh": 120,
                  "backfill_goal_events": 600,
                  "probe_corner_halves": 600,
-                 "probe_stat_types": 600, "probe_leagues": 120}    # seconds
+                 "probe_stat_types": 600, "probe_leagues": 120,
+                 # Both sweep every stored match. Long cooldowns because re-running one
+                 # answers the same question with the same data — the reason to run it
+                 # again is new matches, which arrive twice a day at most.
+                 "tune_totals": 900, "measure_game_state": 600,
+                 "backfill_goals": 1800}    # seconds
 # mode -> (script, fixed argv, accepts --league). Modes are an enum precisely so
 # nothing user-supplied ever reaches argv; --league is appended only after validation
 # AND only for the scripts that actually take it — backfill_fh.py does not, and passing
@@ -1907,6 +1918,15 @@ MEASURE_MODES = {
     "game_state": ("measure_features", ["--game-state"], True),
     "chase_board": ("measure_chase_board", [], True),
     "backfill_fh": ("backfill_fh", [], False),
+    # WHICH DISTRIBUTION SHOULD PRICE A MATCH TOTAL. Team lines use a Negative Binomial
+    # chosen on a recorded Brier; match totals use a Poisson that nothing in the repo
+    # records ever being compared against anything. The two disagree about the same
+    # fixture by up to ~6pp, and both curves are drawn on the same page.
+    "totals": ("tune_totals", [], False),
+    # WHERE THE MODEL IS WRONG, split by what was happening in the match. Distinct from
+    # `game_state` above, which is measure_features' feature test — this one scores the
+    # live model inside each half-time state and prints the bias.
+    "state_bias": ("measure_game_state", [], False),
 }
 TOOL_OUTPUT_CAP = 60000                                            # chars kept per run
 
@@ -2076,6 +2096,28 @@ async def tool_backfill_goals(token: Optional[str] = None, league_id: Optional[s
         argv.append("--project-only")
         parts.append("project-only")
     return await _start_tool("backfill_goal_events", argv, " ".join(parts) or "all leagues")
+
+
+@api_router.post("/tools/backfill-goal-scores")
+async def tool_backfill_goal_scores(token: Optional[str] = None,
+                                    user: dict = Depends(get_current_user)):
+    """Fill final and HALF-TIME scores onto the cached fixtures.
+
+    SPENDS API CREDITS — which is why it is here rather than behind /tools/measure, whose
+    whole promise is that every mode it offers costs nothing. Roughly three calls per
+    managed league: one to resolve the current season, then the season's fixture list and
+    the one before it. No per-fixture calls, so it is cheap, not free.
+
+    WHAT NEEDS IT. measure_game_state scores the model separately inside each half-time
+    state — leading, level, trailing, two up, two down — and every one of those buckets is
+    decided by `home_fh_goals` / `away_fh_goals` on fixture_stats. Without this the harness
+    has nothing to bucket on and says so rather than reporting an empty result.
+
+    Distinct from /tools/backfill-goals, which fetches per-fixture EVENTS — scorers, minutes
+    trailing, red cards — at one call per fixture. That one is the expensive one. This is
+    the score line only."""
+    _check_tools_token(token)
+    return await _start_tool("backfill_goals", [], "goals + half-time scores onto the cache")
 
 
 @api_router.post("/tools/measure")

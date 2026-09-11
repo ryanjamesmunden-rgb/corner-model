@@ -1,0 +1,171 @@
+# Run a measurement harness against the live database, and print what it found.
+#
+# WHY A WORKFLOW. The harnesses read every stored match, so they have to run where the
+# database is — on Render, not on a laptop and not in a dev container. The backend already
+# knows how to run one as a subprocess and keep its output (see _start_tool); what was
+# missing was a way to ASK it to, and somewhere to read the answer. Two harnesses sat
+# written and never once run for exactly that reason.
+#
+# NOTHING IS SCHEDULED. A measurement is not a cron job: re-running one answers the same
+# question with the same data, and the reason to run it again is new matches, which arrive
+# twice a day at most. So this is dispatch-only, and the cooldowns in TOOL_COOLDOWN stop a
+# double-click costing anything.
+#
+# THE OUTPUT IS THE POINT, so it goes three places: the job log, the run summary, and —
+# because a measurement worth running is worth keeping — a GitHub issue. A harness result
+# that lives only in a workflow log is one nobody reads twice.
+#
+# COST. `totals` and `state_bias` touch the database only and cost nothing. `goal_scores`
+# spends API credits — roughly three calls per managed league — and is here because
+# state_bias cannot bucket anything without it. It is a separate choice for that reason.
+name: Run a harness
+
+on:
+  workflow_dispatch:
+    inputs:
+      harness:
+        description: "Which measurement to run"
+        required: true
+        type: choice
+        default: totals
+        options:
+          - totals          # which distribution should price a match total
+          - state_bias      # where the model is wrong, by half-time game state
+          - goal_scores     # SPENDS CREDITS — fill half-time scores, needed by state_bias
+          - chase_board     # does the chase board's ranking find underrated spots
+          - sweep           # model weight sweep
+      file_issue:
+        description: "Keep the result as a GitHub issue"
+        required: false
+        type: boolean
+        default: true
+
+concurrency:
+  group: corner-harness
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  measure:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Wake the backend
+        # Render sleeps the free instance. A harness POST to a sleeping instance is the
+        # request that eats the cold start and times out — same reason sync.yml does this.
+        run: |
+          for i in 1 2 3 4 5 6; do
+            code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 60 "$BACKEND/api/" || true)
+            echo "attempt $i: HTTP $code"
+            [ "$code" = "200" ] && break
+            sleep 15
+          done
+        env:
+          BACKEND: ${{ vars.BACKEND_URL || 'https://corner-model.onrender.com' }}
+
+      - name: Start it
+        id: start
+        run: |
+          H='${{ inputs.harness }}'
+          # goal_scores is the one that is not a measurement, so it is the one that is not
+          # on /tools/measure — that endpoint's promise is that everything it offers is
+          # free, and this spends credits.
+          if [ "$H" = "goal_scores" ]; then
+            URL="$BACKEND/api/tools/backfill-goal-scores?token=$TOOLS_TOKEN"
+            SCRIPT="backfill_goals"
+          else
+            URL="$BACKEND/api/tools/measure?mode=$H&token=$TOOLS_TOKEN"
+            case "$H" in
+              totals)      SCRIPT="tune_totals" ;;
+              state_bias)  SCRIPT="measure_game_state" ;;
+              chase_board) SCRIPT="measure_chase_board" ;;
+              *)           SCRIPT="measure_features" ;;
+            esac
+          fi
+          echo "script=$SCRIPT" >> "$GITHUB_OUTPUT"
+
+          code=$(curl -s -o start.json -w '%{http_code}' --max-time 120 -X POST "$URL" || true)
+          echo "HTTP $code"
+          case "$code" in
+            200) ;;
+            409) echo "::error::that harness is already running, or is inside its cooldown"
+                 cat start.json; exit 1 ;;
+            403) echo "::error::backend rejected the token — check the TOOLS_TOKEN secret"; exit 1 ;;
+            503) echo "::error::the backend has no TOOLS_TOKEN of its own — set it on Render"; exit 1 ;;
+            *)   echo "::error::could not start the harness (HTTP $code)"; cat start.json; exit 1 ;;
+          esac
+          echo "started $SCRIPT"
+        env:
+          BACKEND: ${{ vars.BACKEND_URL || 'https://corner-model.onrender.com' }}
+          TOOLS_TOKEN: ${{ secrets.TOOLS_TOKEN }}
+
+      - name: Wait for it, then read what it said
+        id: result
+        # POLLED, because _start_tool answers immediately and does the work in a background
+        # task — the run id comes back before there is anything to read. Twenty minutes of
+        # ceiling: tune_totals sweeps eleven candidate distributions across every stored
+        # match, and a free instance is not fast.
+        run: |
+          SCRIPT='${{ steps.start.outputs.script }}'
+          for i in $(seq 1 60); do
+            sleep 20
+            curl -s --max-time 60 -o runs.json \
+              "$BACKEND/api/tools/runs?script=$SCRIPT&limit=1&token=$TOOLS_TOKEN" || true
+            status=$(python3 -c "import json;r=(json.load(open('runs.json')).get('runs') or [{}]);print(r[0].get('status',''))" 2>/dev/null || echo "")
+            echo "poll $i: ${status:-unreachable}"
+            [ "$status" = "success" ] && break
+            if [ "$status" = "failed" ]; then
+              echo "::error::the harness exited non-zero — its output is below"
+              break
+            fi
+          done
+
+          python3 - <<'PY' > result.md
+          import json, os
+          runs = json.load(open("runs.json")).get("runs") or []
+          r = runs[0] if runs else {}
+          out = (r.get("output") or "").strip() or "(no output)"
+          print(f"### `{os.environ['H']}` — {r.get('status','unknown')}"
+                f" (exit {r.get('exit_code')})\n")
+          print(f"Started {r.get('started_at','?')}, finished {r.get('finished_at','?')}.\n")
+          if r.get("truncated"):
+              print("_Output was longer than the stored cap and is truncated at the front._\n")
+          print("```")
+          print(out)
+          print("```")
+          PY
+          cat result.md >> "$GITHUB_STEP_SUMMARY"
+          cat result.md
+          # A harness that ran but found nothing to measure is not a success worth
+          # reporting as one — state_bias says so in words when the scores are missing.
+          if grep -q "Nothing to measure" result.md; then
+            echo "::warning::the harness ran but had no data to work with — read the output"
+          fi
+        env:
+          BACKEND: ${{ vars.BACKEND_URL || 'https://corner-model.onrender.com' }}
+          TOOLS_TOKEN: ${{ secrets.TOOLS_TOKEN }}
+          H: ${{ inputs.harness }}
+
+      - name: Keep the result
+        if: inputs.file_issue
+        run: |
+          gh issue create \
+            --title "Harness: ${{ inputs.harness }} — $(date -u '+%Y-%m-%d %H:%M') UTC" \
+            --body-file result.md \
+            --label "measurement" 2>/dev/null \
+          || {
+            gh label create "measurement" \
+              --description "Output of a measurement harness run against live data" \
+              --color "8250DF" >/dev/null 2>&1 || true
+            gh issue create \
+              --title "Harness: ${{ inputs.harness }} — $(date -u '+%Y-%m-%d %H:%M') UTC" \
+              --body-file result.md \
+              --label "measurement"
+          }
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

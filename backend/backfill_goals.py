@@ -24,7 +24,12 @@ async def main():
                 continue
             want = set(ids)
             updated = 0
-            for season in (await current_season(hc, api), (await current_season(hc, api)) - 1):
+            # ONE season lookup, not two. This was `(await current_season(...), (await
+            # current_season(...)) - 1)`, which makes the identical /leagues request twice
+            # per league to work out a number and that number minus one — 28 wasted API
+            # calls across the managed set before a single fixture is fetched.
+            cur = await current_season(hc, api)
+            for season in (cur, cur - 1):
                 try:
                     resp = await af_get(hc, "/fixtures", {"league": api, "season": season})
                 except Exception as e:

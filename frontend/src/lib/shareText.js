@@ -198,6 +198,69 @@ export const fixtureStreakShare = ({ fixture = {}, streaks = [], form = [],
     + more(streaks.length, limit) + tail;
 };
 
+// ----------------------------- The picks, reviewed -----------------------------
+//
+// Monday reports on the angles actually posted to the channel, which is a stronger claim
+// than the streak board's: those were a person's picks, named in advance, and this says
+// how they went. Evidence that the thing being sold works.
+//
+// ONLY WHAT WAS CLAIMED BEFORE KICK-OFF. The backend already splits posted angles into
+// `claimed` and `recalled` by a server-clock stamp, and only the first can count — a rate
+// you can add winners to afterwards is not a rate. This takes the claimed list and does
+// not offer a way to pass the other one, so the split cannot be undone by a caller.
+//
+// THE LINE IS PUBLISHED HERE, unlike on the streak results post. That post withholds it
+// because those runs are still live and the line is still the product. These are settled:
+// the bet is over, the line has no value left, and a record whose rows cannot be checked
+// against the actual game is an advert rather than a record. The site's own results page
+// publishes it for exactly the same reason.
+
+/** How long a Monday review looks back. A week, because that is what Monday reports on. */
+export const REVIEW_DAYS = 7;
+
+/**
+ * "How the VIP picks landed — 4/6 last week", and the rows behind it.
+ *
+ * Counts and voids and unsettled games are all declared, same discipline as
+ * streakResultShare: a week reported as 4/4 that was really 4/4 plus two stake-backs and
+ * three still running is a different week, and the reader has no way to tell.
+ */
+export const picksReview = ({ rows = [], channel = "VIP", days = REVIEW_DAYS,
+                              now = Date.now() } = {}) => (limit) => {
+  const since = now - days * 86400000;
+  const recent = rows.filter((r) => {
+    const t = r.kickoff ? new Date(r.kickoff).getTime() : NaN;
+    return Number.isFinite(t) && t >= since && t <= now;
+  });
+  const graded = recent.filter((r) => r.result === "win" || r.result === "loss");
+  if (!graded.length) return "";
+
+  const landed = graded.filter((r) => r.result === "win").length;
+  const voided = recent.filter((r) => r.result === "void" || r.result === "push").length;
+  const pending = recent.filter((r) => !r.result || r.result === "pending").length;
+
+  // A TRIMMED RESULTS POST MUST STILL SHOW A MISS — the same rule, and the same reason:
+  // the first N rows can happen to be all wins, and an honest "4/6" headline over a clean
+  // sweep is a true count and a false impression.
+  let shown = graded.slice(0, limit);
+  const missed = graded.filter((r) => r.result === "loss");
+  if (missed.length && !shown.some((r) => r.result === "loss")) {
+    shown = [...shown.slice(0, Math.max(0, shown.length - 1)), missed[0]];
+  }
+
+  const mark = { win: "✅", loss: "❌" };
+  const lines = shown.map((r) => {
+    const line = r.line_label ? ` ${r.line_label}` : "";
+    const got = r.value != null ? ` — ${r.value} corners` : "";
+    return `${flagBullet(r.league_id)} ${r.name}${line}${got} ${mark[r.result]}`;
+  });
+
+  const voids = voided ? `\n${voided} void (exact line — stake back)` : "";
+  const left = pending ? `\n${pending} still to settle` : "";
+  return `How the ${channel} picks landed — ${landed}/${graded.length} last week:\n`
+    + lines.join("\n") + more(graded.length, limit) + voids + left;
+};
+
 /** "Sat 11:30am" — inside a weekend card the month is noise; the day is not. */
 export const postDayTime = (iso) => {
   const d = iso ? new Date(iso) : null;

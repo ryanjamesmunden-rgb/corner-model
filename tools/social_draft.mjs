@@ -28,8 +28,8 @@ const LIB = resolve(HERE, "..", "frontend", "src", "lib");
 
 // The lib modules import each other by relative path and use no bundler features, so
 // they load as-is. `shareText.js` pulls in countryFlag and kickoff itself.
-const { streakShare, fixtureShare, streakResultShare, pickGame, gameShare, weekendCard } =
-  await import(resolve(LIB, "shareText.js"));
+const { streakShare, fixtureShare, streakResultShare, pickGame, gameShare, weekendCard,
+        picksReview } = await import(resolve(LIB, "shareText.js"));
 const { fixtureStoryMarkets } = await import(resolve(LIB, "storyImage.js"));
 const { kickoffLabel } = await import(resolve(LIB, "kickoff.js"));
 const { fitToPost, weightedLength, URL_WEIGHT, X_SHARE_ROWS } = await import(resolve(LIB, "xLimit.js"));
@@ -123,6 +123,49 @@ function emit(body, payload = null) {
 }
 
 if (!TOKEN) fail("TOOLS_TOKEN is not set — add it as a repo secret");
+
+// ---- picks: the angles actually posted to the channel, and how they went.
+//
+// /api/results is the one OPEN endpoint on the site — no token — because it is the
+// evidence the product works, and evidence behind a login persuades nobody. Same reason
+// this reads it rather than the members-only bets board: that board is other people's
+// betting; this is the record of what was claimed here, in advance.
+if (BOARD === "picks") {
+  const r = await getSoft("/api/results");
+  if (!r) skip("could not read the public record — nothing to review");
+  // CLAIMED ONLY. The backend splits posted angles by a server-clock stamp taken at the
+  // moment they were logged; `recalled` is the ones added after kick-off. Both are
+  // published on the site, and only the first can count towards a rate.
+  const rows = r.posted?.claimed?.rows || [];
+  const build = picksReview({ rows });
+  const post = fitToPost(build, X_SHARE_ROWS);
+  if (!post) skip("no channel picks settled in the last week");
+  const full = build(12);
+  const weight = weightedLength(post) + 1 + URL_WEIGHT;
+  const intent = `https://x.com/intent/tweet?text=${encodeURIComponent(post)}&url=${encodeURIComponent(SITE)}`;
+  const t = r.posted?.claimed || {};
+  emit(`**[Post this on X](${intent})** — opens the composer already filled in. Nothing is posted until you hit Post.
+
+\`\`\`
+${post}
+\`\`\`
+
+${weight} / 280 characters as X counts them.
+All time on the record: ${t.landed ?? "—"} landed of ${t.settled ?? "—"} settled${
+  t.voided ? `, ${t.voided} void` : ""}${t.pending ? `, ${t.pending} still to settle` : ""}.
+Only angles logged BEFORE kick-off appear — see /api/results.
+
+<details><summary>Longer version, for Telegram (no character limit)</summary>
+
+\`\`\`
+${full}
+\`\`\`
+
+</details>
+`, { empty: false, board: "picks", post, intent, weight, full,
+     note: `${t.landed ?? "—"}/${t.settled ?? "—"} on the record all time` });
+  process.exit(0);
+}
 
 // ---- results: graded off the snapshot frozen before kick-off, never off the live board.
 // A streak row only exists while its run is alive, so the board on Monday lists the

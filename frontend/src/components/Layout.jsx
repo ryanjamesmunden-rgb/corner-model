@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
-import { CornerDownRight, LayoutDashboard, Radar, Flame, Zap, Star, Sparkles, Receipt, Trophy } from "lucide-react";
+import { CornerDownRight, LayoutDashboard, Radar, Flame, Zap, Star, Sparkles, Receipt, Trophy,
+         TrendingUp, ClipboardPaste } from "lucide-react";
 import { LeagueContext } from "@/context/LeagueContext";
 import ExportMenu from "@/components/ExportMenu";
 import { api } from "@/lib/api";
@@ -48,11 +49,18 @@ export default function Layout({ children }) {
     { to: "/quick-scan", label: "Quick Scan", icon: Zap },
     { to: "/dashboard", label: "Leagues", icon: LayoutDashboard },
     { to: "/streaks", label: "Streaks", icon: Flame },
+    // Next to Streaks because it answers the neighbouring question: Streaks is what a
+    // team keeps doing, this is what the model expects THIS game to produce.
+    { to: "/projections", label: "Projected", icon: TrendingUp },
     { to: "/saved", label: "Saved", icon: Star },
     { to: "/bets", label: "Bets", icon: Receipt },
     // Last, but present for signed-out visitors too — it is the one page that argues
     // for the others, and it cannot do that from behind a login.
     { to: "/results", label: "Results", icon: Trophy },
+    // MEMBERS ONLY, and not because the page is precious — because it WRITES. Every other
+    // entry here reads. Putting a data-entry page in front of every visitor invites
+    // strangers to type prices into the board the site's own posts are chosen from.
+    ...(member ? [{ to: "/prices", label: "Prices", icon: ClipboardPaste }] : []),
   ];
 
   return (

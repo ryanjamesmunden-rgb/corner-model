@@ -198,6 +198,62 @@ export const fixtureStreakShare = ({ fixture = {}, streaks = [], form = [],
     + more(streaks.length, limit) + tail;
 };
 
+/** "Sat 11:30am" — inside a weekend card the month is noise; the day is not. */
+export const postDayTime = (iso) => {
+  const d = iso ? new Date(iso) : null;
+  if (!d || Number.isNaN(d.getTime())) return "";
+  return `${d.toLocaleDateString("en-GB", { weekday: "short" })} ${postTime(iso)}`;
+};
+
+/**
+ * The whole weekend, sent to the paid channel on Friday.
+ *
+ * WHY THIS EXISTS SEPARATELY FROM THE DAILY POST. The public post goes out on the day of
+ * the game, which is the worst moment to be told about it: by Saturday lunchtime the
+ * market has had all week to find the same game and the price has gone. Someone paying
+ * monthly should be looking at Sunday's card on Friday, while it is still there to take.
+ * That is the product — not better information, EARLIER information.
+ *
+ * SO THIS CARRIES THE MODEL'S NUMBERS and the public posts do not. It goes to the people
+ * who have bought exactly that number.
+ *
+ * NOT TRIMMED TO 280. Telegram has no limit, and this is a card to work from rather than
+ * an advert, so every qualifying game goes in — ordered by KICK-OFF, which is the order
+ * someone actually placing them needs, rather than by how good they are.
+ */
+export const weekendCard = ({ rows = [], generatedAt = null } = {}) => {
+  const run = (r) => Number(r?.streak?.length) || 0;
+  const live = (rows || []).filter((r) => r?.next_fixture?.date && run(r) >= 2);
+  if (!live.length) return "";
+  const sorted = [...live].sort(
+    (a, b) => new Date(a.next_fixture.date) - new Date(b.next_fixture.date));
+
+  const lines = sorted.map((r) => {
+    const fx = r.next_fixture;
+    const home = fx.is_home ? r.name : fx.opponent;
+    const away = fx.is_home ? fx.opponent : r.name;
+    const prob = Number(r.projection?.prob);
+    const fair = Number(r.projection?.fair_odds);
+    // "Not priced" and "no chance" are different facts, so an unpriced row says neither.
+    const model = Number.isFinite(prob) && prob > 0
+      ? ` · ${Math.round(prob)}%${Number.isFinite(fair) ? ` (${fair.toFixed(2)})` : ""}`
+      : "";
+    const when = postDayTime(fx.date);
+    return `${flagBullet(r.league_id, "•")} ${home} v ${away}${when ? ` · ${when}` : ""}\n`
+      + `   ${run(r) >= GAME_FIRE_RUN ? "🔥" : "🚩"} ${r.name} ${r.line_label || ""} — `
+      + `${run(r)} in a row${model}`;
+  });
+
+  const stamp = generatedAt ? postDayTime(generatedAt) : "";
+  return `🗓 Weekend corner card — ${sorted.length} angle${sorted.length === 1 ? "" : "s"}\n\n`
+    + `${lines.join("\n\n")}\n\n`
+    // THE FAIR PRICE IS A BAR, NOT A TIP. Said outright, because a card of percentages
+    // read without it looks like a list of bets rather than a list of prices to beat.
+    + "The number in brackets is the fair price — the model's own. Anything shorter than "
+    + "that is not worth taking, however long the run is."
+    + (stamp ? `\nBuilt ${stamp}, before the weekend's prices move.` : "");
+};
+
 // ----------------------------- One game, posted whole -----------------------------
 //
 // A board is a list; this is a game. The fixture boards fit six rows in a post by giving

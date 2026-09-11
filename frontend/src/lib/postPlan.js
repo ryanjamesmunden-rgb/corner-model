@@ -44,5 +44,19 @@ export const boardForDay = (weekday) => {
 /** Friday freezes the weekend's streaks so Monday has something honest to grade. */
 export const freezesSnapshot = (weekday) => Number(weekday) === 5;
 
+/**
+ * A SECOND thing Friday sends, to the paid channel rather than to X.
+ *
+ * The public post goes out on the day of the game, which is the worst moment to hear
+ * about it — by Saturday lunchtime the market has found the same game and the price has
+ * gone. A member should see Sunday's card on Friday, while it is still there to take.
+ * The product is earlier information, not different information, and a daily-only
+ * schedule quietly gives that away.
+ *
+ * Null on every other day: the weekend is the only block of fixtures far enough ahead to
+ * be worth sending early, and a "card" of one midweek game is just the post again.
+ */
+export const extraForDay = (weekday) => (Number(weekday) === 5 ? "weekend" : null);
+
 /** Monday is the only day that can report on a weekend that has finished. */
 export const gradesWeekend = (weekday) => Number(weekday) === MONDAY;

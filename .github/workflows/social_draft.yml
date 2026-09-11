@@ -68,7 +68,7 @@ on:
         description: "Which board (blank = whatever this weekday calls for)"
         required: false
         type: choice
-        options: ["", "game", "streaks", "fixtures", "results"]
+        options: ["", "game", "streaks", "fixtures", "results", "weekend"]
 
 concurrency:
   group: corner-social-draft
@@ -240,6 +240,45 @@ jobs:
             --label "social-draft"
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Send the weekend card to the channel
+        # FRIDAY ONLY, and separate from the public post on purpose. The daily post goes
+        # out on the DAY of the game, which is the worst moment to hear about it — by
+        # Saturday lunchtime the market has found the same game and the price has gone.
+        # This gets Sunday's card in front of a paying member on Friday, while it is still
+        # there to take. The product is earlier information, not different information.
+        #
+        # It carries the model's numbers, which no public post does. Never sent to X: it
+        # has no intent link and is far past 280 characters by design.
+        if: steps.when.outputs.weekday == '5' && env.TG_TOKEN != ''
+        run: |
+          node tools/social_draft.mjs --board weekend --days 3 --out card.md --json-out card.json
+          if [ ! -s card.md ]; then
+            echo "::notice::nothing with a live run kicks off this weekend"
+            exit 0
+          fi
+          python3 - <<'PY' > card_payload.json
+          import json, os
+          d = json.load(open("card.json"))
+          print(json.dumps({"chat_id": os.environ["TG_CHAT"],
+                            "text": d["post"], "disable_web_page_preview": True}))
+          PY
+          code=$(curl -s -o tgc.json -w '%{http_code}' --max-time 30 \
+            -X POST "https://api.telegram.org/bot$TG_TOKEN/sendMessage" \
+            -H 'content-type: application/json' --data-binary @card_payload.json || true)
+          if [ "$code" = "200" ]; then
+            echo "::notice::weekend card sent to Telegram"
+          else
+            # Not fatal. The public post has already gone; losing the card costs a nudge,
+            # not the day, and failing here would make a green run look red for it.
+            echo "::warning::weekend card send failed (HTTP $code)"
+          fi
+        env:
+          BACKEND_URL: ${{ vars.BACKEND_URL || 'https://corner-model.onrender.com' }}
+          SITE_URL: ${{ vars.SITE_URL || 'https://corner-model.vercel.app' }}
+          TOOLS_TOKEN: ${{ secrets.TOOLS_TOKEN }}
+          TG_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TG_CHAT: ${{ secrets.TELEGRAM_CHAT_ID }}
 
       - name: Freeze the weekend's streaks
         # Friday only, and last: see the note at the top of this file for why this exists

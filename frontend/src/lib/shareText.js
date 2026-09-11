@@ -269,8 +269,18 @@ export const gameShare = ({ row = {} } = {}) => () => {
   // actually winning. Dropped rather than guessed where the window never reported one.
   if (row.avg != null) marks.push(`🎯 averaging ${row.avg} a game`);
 
-  return [when && `📅 ${when}`, `${where} / ${home} v ${away}`.trim(), marks.join(" / ")]
-    .filter(Boolean).join("\n");
+  // THE MODEL'S OWN NUMBER, PUBLISHED. This used to be withheld on the rule that the
+  // price is the paid half — and it still is, but a probability and a fair price are the
+  // same fact written two ways (79% is 1.26), so withholding one while the site shows the
+  // other only made the two disagree. Published here because it is the line that makes
+  // the post a claim rather than a fun stat: anyone can count a streak, and only the
+  // model says what it is worth next time.
+  const prob = Number(row.projection?.prob);
+  const modelLine = Number.isFinite(prob) && prob > 0
+    ? `📊 Model makes it ${Math.round(prob)}%` : "";
+
+  return [when && `📅 ${when}`, `${where} / ${home} v ${away}`.trim(),
+          marks.join(" / "), modelLine].filter(Boolean).join("\n");
 };
 //
 // The VIP channel gets a pick written to a fixed shape — date, league, fixture, line,
@@ -438,7 +448,11 @@ export const telegramPick = ({
     const ev = market.ev != null
       ? ` | EV: ${market.ev > 0 ? "+" : ""}${market.ev.toFixed(1)}%${market.ev > 0 ? " ✅" : " ❌"}`
       : "";
-    head.push(`📊 Model price: ${market.fair_odds.toFixed(2)}${ev}`);
+    // The price and the percentage are the same fact, and the channel gets both: the
+    // price is what a bookmaker's number is compared against, the percentage is what it
+    // means. Quoting only one leaves the reader converting in their head.
+    const pct = market.prob != null ? ` (${Math.round(market.prob)}%)` : "";
+    head.push(`📊 Model price: ${market.fair_odds.toFixed(2)}${pct}${ev}`);
   }
 
   const body = [];

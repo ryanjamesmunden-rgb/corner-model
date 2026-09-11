@@ -50,7 +50,12 @@ const OUT = arg("out", null);
 // The post on its own, as JSON, for a caller that is going to deliver it somewhere other
 // than a GitHub issue — the daily job sends it to Telegram with a one-tap post button.
 const JSON_OUT = arg("json-out", null);
-const SITE = process.env.SITE_URL || "https://corner-model.vercel.app";
+// THE DOMAIN PEOPLE ARE MEANT TO LAND ON. This defaulted to the Vercel deployment URL,
+// which is the address the host happens to serve from rather than the address the site is
+// called — so every posted tweet advertised corner-model.vercel.app. It sends the wrong
+// signal on a post whose whole job is to look like a place worth visiting, and it ties
+// every link already published to one particular host.
+const SITE = process.env.SITE_URL || "https://thecornermodel.com";
 const BACKEND = process.env.BACKEND_URL || "https://corner-model.onrender.com";
 const TOKEN = process.env.TOOLS_TOKEN;
 

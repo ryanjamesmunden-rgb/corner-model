@@ -4,6 +4,7 @@ import { ClipboardPaste, Loader2, Check, AlertTriangle } from "lucide-react";
 import { toast } from "sonner";
 import { api } from "@/lib/api";
 import { parseBulk } from "@/lib/pastePrices";
+import MembersOnly from "@/components/MembersOnly";
 import { flagBullet } from "@/lib/countryFlag";
 import { kickoffLabel } from "@/lib/kickoff";
 
@@ -21,7 +22,23 @@ import { kickoffLabel } from "@/lib/kickoff";
 // is indistinguishable from a real one.
 //
 // See lib/pastePrices for the routing, which is where the tests are.
+// THE WALL IS ON THE PAGE, NOT ONLY ON THE LINK. Hiding the nav item for non-members
+// hides the door; it does not lock it, and the URL is four words long. The server refuses
+// the write either way — this is so the refusal arrives before a paste rather than after
+// one, and so it explains itself instead of reading as a bug.
 export default function Prices() {
+  return (
+    <MembersOnly
+      title="Pasting prices is a members' feature"
+      blurb="Prices entered here are what the model measures value against — they drive the
+             value board, and they decide which game the daily post goes out on. That is
+             why writing them is not open.">
+      <PricesBoard />
+    </MembersOnly>
+  );
+}
+
+function PricesBoard() {
   const [text, setText] = useState("");
   const [busy, setBusy] = useState(false);
   const [done, setDone] = useState(null);
@@ -58,6 +75,7 @@ export default function Prices() {
     setBusy(true);
     let ok = 0;
     const failed = [];
+    let refused = null;
     for (const e of preview.entries) {
       try {
         // One call per fixture, deliberately sequential. A burst of parallel writes to a
@@ -66,13 +84,22 @@ export default function Prices() {
         await api.setOdds(e.fixture.fixture_id,
           Object.fromEntries(Object.entries(e.odds).map(([k, v]) => [k, Number(v)])));
         ok += 1;
-      } catch {
+      } catch (err) {
+        // A REFUSAL IS NOT A FAILURE, and reporting it as one sends someone to retry a
+        // thing that will never work. 401 and 402 mean the write was understood and
+        // declined, and they need different answers — one is "sign in", the other is
+        // "subscribe". Everything else really is worth trying again.
+        const code = err?.response?.status;
+        if (code === 401 || code === 402) { refused = code; break; }
         failed.push(`${e.fixture.home_name} v ${e.fixture.away_name}`);
       }
     }
     setBusy(false);
-    setDone({ ok, failed });
-    if (failed.length) toast.error(`${ok} saved, ${failed.length} failed`);
+    setDone({ ok, failed, refused });
+    if (refused) {
+      toast.error(refused === 401 ? "Sign in to enter prices"
+                                  : "Entering prices is a members' feature");
+    } else if (failed.length) toast.error(`${ok} saved, ${failed.length} failed`);
     else { toast.success(`Priced ${ok} game${ok === 1 ? "" : "s"}`); setText(""); }
   };
 
@@ -153,7 +180,23 @@ export default function Prices() {
         </div>
       )}
 
-      {done && (
+      {done?.refused && (
+        <div className="bg-amber-500/10 border border-amber-500/30 rounded-lg p-3 text-xs
+                        leading-relaxed" data-testid="prices-refused">
+          <p className="text-amber-400 font-semibold mb-1">
+            {done.refused === 401 ? "Sign in first" : "Members only"}
+          </p>
+          <p className="text-muted-foreground">
+            Prices entered here drive the value board and decide which game the daily post
+            goes out on, so they are not open to write.{" "}
+            {done.refused === 401
+              ? "Sign in at the top right, then paste again — nothing you typed is lost."
+              : "Your paste is still here; subscribing turns the save on."}
+          </p>
+        </div>
+      )}
+
+      {done && !done.refused && (
         <div className="text-xs" data-testid="prices-done">
           <span className="text-emerald-400 inline-flex items-center gap-1">
             <Check className="h-3.5 w-3.5" /> {done.ok} saved

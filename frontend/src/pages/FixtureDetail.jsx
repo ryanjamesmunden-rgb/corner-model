@@ -72,7 +72,14 @@ export default function FixtureDetail() {
       const fl = {}; Object.keys(payload).forEach((k) => { fl[k] = true; });
       setFlash(fl); setTimeout(() => setFlash({}), 800);
       toast.success("EV recalculated");
-    } catch { toast.error("Could not save odds"); }
+    } catch (err) {
+      // The same three-way split the bulk page makes. "Could not save" on a 402 reads as
+      // a bug and gets retried; it is a decision, and it has an answer.
+      const code = err?.response?.status;
+      toast.error(code === 401 ? "Sign in to enter prices"
+        : code === 402 ? "Entering prices is a members' feature"
+        : "Could not save odds");
+    }
   };
 
   const nameHit = (line, name) => {

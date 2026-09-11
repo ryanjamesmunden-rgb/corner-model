@@ -2939,8 +2939,47 @@ class OddsBody(BaseModel):
     odds: Dict[str, float]
 
 
+def _has_tools_token(token: Optional[str]) -> bool:
+    """The same check _check_tools_token makes, as a question rather than a refusal.
+
+    Exists so an endpoint can offer the token as ONE way in among several. The raising
+    version is right where the token is the only credential; here a member is the normal
+    caller and the token is the operator's guaranteed path in."""
+    import secrets
+    return bool(TOOLS_TOKEN and token and secrets.compare_digest(token, TOOLS_TOKEN))
+
+
 @api_router.post("/fixtures/{fixture_id}/odds")
-async def set_odds(fixture_id: str, body: OddsBody, user: dict = Depends(get_current_user)):
+async def set_odds(fixture_id: str, body: OddsBody, token: Optional[str] = None,
+                   user: dict = Depends(get_current_user)):
+    """Store bookmaker prices against a fixture.
+
+    MEMBERS ONLY, AND THIS IS THE ONE WRITE ON THE SITE THAT HAD NO GATE AT ALL. It ran on
+    `get_current_user`, which by design never refuses — so any anonymous visitor could write
+    prices to any fixture, and the write stamped `"source": "manual"`.
+
+    That flag is not decoration. It is the check that stops the model finding value in its
+    own jitter: seed_team_odds writes `fair_odds * uniform(0.90, 1.15)`, and pickGameDetailed
+    will only choose a game on VALUE when `odds_source == "manual"` — i.e. when a human typed
+    the number. A stranger's price carried the same stamp as the operator's, into the same
+    single odds document per fixture, and from there into the value board, the angle menu,
+    and the automatic choice of the daily public post. A planted price could pick the tweet.
+
+    THE TOKEN IS A SECOND WAY IN, not a loosening. `require_member` as the only gate would
+    lock the operator out of their own pricing page the moment their membership row is not
+    what anyone assumed — and the pricing page is the thing every value feature waits on.
+    The token is already the credential for every other automation endpoint here.
+
+    WHO wrote it is recorded now as well as THAT a human did. One shared document per
+    fixture means two members pricing the same game overwrite each other silently, and
+    `source: manual` could never say whose number was live."""
+    by_token = _has_tools_token(token)
+    if not by_token and not user.get("member"):
+        # Two codes because they need two different asks — see require_member.
+        if user.get("user_id") == PUBLIC_USER_ID:
+            raise HTTPException(status_code=401, detail="Sign in to enter prices")
+        raise HTTPException(status_code=402,
+                            detail="Members only — prices you enter drive the value board")
     fx = await db.fixtures.find_one({"fixture_id": fixture_id}, {"_id": 0})
     if not fx:
         raise HTTPException(status_code=404, detail="Fixture not found")
@@ -2957,6 +2996,7 @@ async def set_odds(fixture_id: str, body: OddsBody, user: dict = Depends(get_cur
         # jitter them, so an EV computed against those is the model finding value in its
         # own noise. Anything ranked or posted on EV has to be able to tell them apart.
         {"$set": {"odds": merged, "source": "manual",
+                  "priced_by": "tools-token" if by_token else user.get("user_id"),
                   "updated_at": datetime.now(timezone.utc).isoformat()}},
         upsert=True)
     model = await get_fixture_model(fx, merged)

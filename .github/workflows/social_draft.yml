@@ -175,8 +175,25 @@ jobs:
           npx playwright install chromium >/dev/null 2>&1 || {
             echo "::warning::could not install chromium — posting text only"; exit 0; }
           # THE ANIMATION FIRST. A still is a picture of a chart; the clip counts the
-          # percentage up and grows the bars, which is what stops a thumb on a Story. It
-          # needs ffmpeg (preinstalled on this runner) and takes about half a minute.
+          # percentage up and grows the bars, which is what stops a thumb on a Story.
+          #
+          # ffmpeg IS NOT ON THE RUNNER. It was assumed to be, and the assumption cost a
+          # run: `command -v ffmpeg` failed silently, the && short-circuited with no output
+          # at all, and the job fell through to the still reporting success. Installed
+          # explicitly now, and the outcome is logged either way so a silent fallback
+          # cannot happen twice.
+          if ! command -v ffmpeg >/dev/null 2>&1; then
+            echo "installing ffmpeg"
+            sudo apt-get update -qq >/dev/null 2>&1 \
+              && sudo apt-get install -y --no-install-recommends ffmpeg >/dev/null 2>&1 \
+              || echo "::warning::could not install ffmpeg"
+          fi
+          if command -v ffmpeg >/dev/null 2>&1; then
+            echo "ffmpeg: $(ffmpeg -version 2>/dev/null | head -1)"
+          else
+            echo "::warning::no ffmpeg — the animation cannot be encoded"
+          fi
+
           if command -v ffmpeg >/dev/null 2>&1 \
              && node tools/render_story.mjs --args story_args.json --video story.mp4; then
             echo "drew=video" >> "$GITHUB_OUTPUT"

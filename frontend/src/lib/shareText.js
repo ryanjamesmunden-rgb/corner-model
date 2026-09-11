@@ -703,3 +703,245 @@ export const telegramPick = ({
 // What goes to X is the streak board (fixtureStreakShare above): a team, a line, how long
 // it has been landing, and the game state around it. Enough to be worth a click, and
 // nothing that answers "why" — the why is behind the subscription.
+
+// ----------------------------- The menu of angles -----------------------------
+//
+// WHY A MENU AND NOT A POST. The daily job used to hand over ONE streak and offer it as
+// the thing to post. A streak is the weakest angle the site finds when it stands alone: it
+// says a team cleared a line five times and nothing at all about who they play next, what
+// the game will look like, or what the price is. Five clears can be five coin flips.
+//
+// The site already finds four different kinds of angle, and they answer different
+// questions:
+//
+//   streaks     what this team keeps doing            (a habit)
+//   mismatches  who they have drawn                   (an opponent who leaks corners)
+//   chase       what the game will look like          (a side likely to be pushing)
+//   value       where a real price is longer than fair (the only one that is about money)
+//
+// So this offers all four, numbered, and the person posting picks. That is a better post
+// than the model's favourite streak, and it is also the honest shape: none of these four
+// is a ranking of the others, and picking for the reader would imply they are.
+//
+// THEY ARE NOT INDEPENDENT, and the menu says so rather than selling agreement as
+// confirmation. A streak and a mismatch are both driven partly by how many corners the
+// team wins, so a strong corner side tends to appear in both whoever it plays. What is
+// genuinely additional is the OPPONENT half of a mismatch, measured on the opponent's
+// games. The honest reading of a row marked both ways is "a good run, against someone who
+// leaks" — not "two models agreed".
+
+/** Per section, so the whole menu stays one readable message rather than four boards. */
+export const MENU_PER_SECTION = 5;
+
+/** The most streak rows a FREE post may carry. See angleMenu's note on why this is 5. */
+export const PUBLIC_STREAK_ROWS = 5;
+
+const menuFixture = (fx = {}, name = "") => {
+  if (!fx?.date) return null;
+  return {
+    id: fx.fixture_id,
+    home: fx.is_home ? name : fx.opponent,
+    away: fx.is_home ? fx.opponent : name,
+    when: postDayTime(fx.date),
+    date: fx.date,
+  };
+};
+
+const pct = (p) => (Number.isFinite(Number(p)) && Number(p) > 0 ? `${Math.round(Number(p))}%` : "");
+
+/** "79% (1.26)" — the model's two ways of saying the same thing, or nothing at all. */
+const modelBit = (prob, fair) => {
+  const p = pct(prob);
+  const f = Number(fair);
+  if (!p) return "";
+  return ` · ${p}${Number.isFinite(f) && f > 0 ? ` (${f.toFixed(2)})` : ""}`;
+};
+
+/**
+ * Every angle the site currently has, as one numbered list to choose from.
+ *
+ * Returns `{ text, items }`. `items` is the flat list in the order the numbers run, so a
+ * caller can act on "send number 7" without re-deriving which section that landed in.
+ *
+ * DE-DUPLICATED ACROSS SECTIONS, by team and fixture. The same team appearing three times
+ * under three headings makes a menu of twelve rows look like a menu of four, and the reader
+ * has to work out which one to pick. A row's FIRST appearance keeps it, and the corroboration
+ * is shown as a marker on that row instead — which is also the more useful fact: a run that
+ * agrees with the matchup is a better post than either on its own.
+ *
+ * THE VALUE SECTION SAYS WHEN IT IS EMPTY, and says which kind of empty. "Nothing priced"
+ * and "priced, and nothing beats its price" are opposite facts — the first is a job to do,
+ * the second is a reason not to bet — and a blank section reads as neither.
+ */
+const buildMenu = ({ streaks = [], mismatches = [], chase = [], value = [],
+                     generatedAt = null, site = "", per = MENU_PER_SECTION } = {}) => {
+  const run = (r) => Number(r?.streak?.length) || 0;
+  const seen = new Set();
+  const key = (name, fid) => `${fid || ""}|${String(name || "").toLowerCase()}`;
+  const items = [];
+  const where = String(site).replace(/^https?:\/\//, "").replace(/\/$/, "");
+
+  // Which fixtures the mismatch board also likes, computed BEFORE anything is consumed —
+  // a streak row needs to know about a mismatch that the de-duplication is about to hide.
+  const mismatched = new Set(mismatches.map((m) => key(m.name, m.next_fixture?.fixture_id)));
+
+  // AND WHICH ONES CARRY A PRICE WORTH TAKING. The value section is keyed by fixture and
+  // market rather than by team, so it is deliberately NOT de-duplicated against the rows
+  // above it: "this team keeps clearing the line" and "this price is longer than fair" are
+  // different claims about the same game, and the second is the one worth posting. But a
+  // game appearing twice with nothing connecting the two reads as the menu repeating
+  // itself, and the reader picks the first one — which is the weaker of the two.
+  const priced = new Set(value.filter((v) => v.odds_source === "manual"
+                                             && Number(v.best?.ev) > 0)
+                              .map((v) => v.fixture_id));
+  const markers = (name, fid) =>
+    (mismatched.has(key(name, fid)) ? " ⚔️ matchup agrees" : "")
+    + (priced.has(fid) ? " 💰 priced, see Value" : "");
+
+  const take = (rows, kind, render) => {
+    const out = [];
+    for (const r of rows) {
+      if (out.length >= per) break;
+      const fx = menuFixture(r.next_fixture, r.name);
+      if (!fx?.id) continue;
+      const k = key(r.name, fx.id);
+      if (seen.has(k)) continue;
+      seen.add(k);
+      const body = render(r, fx);
+      if (!body) continue;
+      items.push({ n: items.length + 1, kind, fixtureId: fx.id, team: r.name,
+                   row: r, headline: body.headline });
+      out.push(`${items.length}. ${body.headline}\n   ${body.detail}`);
+    }
+    return out;
+  };
+
+  const gameLine = (fx) => `${fx.home} v ${fx.away}${fx.when ? ` · ${fx.when}` : ""}`
+    + (where && fx.id ? `\n   ↳ ${where}/fixture/${fx.id}` : "");
+
+  // 1. STREAKS. Sorted so the longest runs lead — an 8-from-8 is the row worth the slot —
+  // and, among equal runs, the ones the matchup also likes. Both orderings are descriptive:
+  // neither has been measured as a ranking, and the board is a filter, not a leaderboard.
+  const streakRows = take(
+    [...streaks]
+      .filter((r) => run(r) >= 2)
+      .sort((a, b) => (run(b) - run(a))
+        || (Number(b.projection?.prob || 0) - Number(a.projection?.prob || 0))),
+    "streak",
+    (r, fx) => ({
+      headline: `${flagBullet(r.league_id, "•")} ${r.name} ${r.line_label || ""} — `
+        + `${run(r)} in a row${modelBit(r.projection?.prob, r.projection?.fair_odds)}`
+        + (run(r) >= GAME_FIRE_RUN ? " 🔥" : "") + markers(r.name, fx.id),
+      detail: gameLine(fx),
+    }));
+
+  // 2. MISMATCHES. The opponent half is the part a streak cannot see, so it is what the
+  // row leads on.
+  const mismatchRows = take(mismatches, "mismatch", (r, fx) => ({
+    headline: `${flagBullet(r.league_id, "•")} ${r.name} ${plusLine(r.line)} — wins `
+      + `${r.team_for}, they concede ${r.opp_conceded}${modelBit(r.prob, r.fair_odds)}`
+      + (priced.has(fx.id) ? " 💰 priced, see Value" : ""),
+    detail: gameLine(fx),
+  }));
+
+  // 3. CHASE. Consistency is printed as the fraction it is rather than as a percentage:
+  // "4/5" carries its own sample size, and a lone "80%" does not.
+  const chaseRows = take(chase, "chase", (r, fx) => ({
+    headline: `${flagBullet(r.league_id, "•")} ${r.name} ${plusLine(r.line)} — hit `
+      + `${r.consistency}/${r.consistency_of} lately${modelBit(r.prob, r.fair_odds)}`
+      + (priced.has(fx.id) ? " 💰 priced, see Value" : ""),
+    detail: gameLine(fx),
+  }));
+
+  // 4. VALUE. The only section about money, and the only one that can be checked: it needs
+  // a price someone typed in. A seeded price is the model's own number with noise on it, so
+  // an EV against one is the model finding value in its own jitter — refused here rather
+  // than shown with a caveat, because on screen it is indistinguishable from a real edge.
+  const realPriced = value.filter((v) => v.odds_source === "manual" && v.best
+                                         && Number(v.best.ev) > 0);
+  const valueRows = [];
+  for (const v of realPriced.slice(0, per)) {
+    const b = v.best || {};
+    items.push({ n: items.length + 1, kind: "value", fixtureId: v.fixture_id,
+                 team: b.label || "", row: v, headline: b.label });
+    valueRows.push(`${items.length}. ${flagBullet(v.league_id, "•")} ${b.label} @ `
+      + `${Number(b.book_odds).toFixed(2)} vs fair ${Number(b.fair_odds).toFixed(2)} — `
+      + `EV +${Number(b.ev).toFixed(1)}%\n   ${v.home_name} v ${v.away_name}`
+      + `${v.date ? ` · ${postDayTime(v.date)}` : ""}`
+      + (where ? `\n   ↳ ${where}/fixture/${v.fixture_id}` : ""));
+  }
+
+  const section = (icon, title, why, rows, empty) =>
+    `${icon} ${title.toUpperCase()} — ${why}\n`
+    + (rows.length ? rows.join("\n") : `   ${empty}`);
+
+  // THREE WAYS TO BE EMPTY, and they are three different instructions. Nothing typed in is
+  // a job to do. Typed in and beaten by no price is a reason not to bet. And an edge that
+  // exists only against a price the model generated is neither — it is a warning, because
+  // that row looks exactly like a real edge and would be the most attractive thing on the
+  // menu. Collapsing the three into one blank section loses the only one that can mislead.
+  const typed = value.filter((v) => v.odds_source === "manual");
+  const fakeEdge = value.some((v) => v.odds_source !== "manual" && Number(v.best?.ev) > 0);
+  const valueEmpty = typed.length
+    ? "every price you typed in is shorter than the model's — no edge on the board today"
+    : fakeEdge
+      ? "the only prices stored are seeded demo numbers, which are the model's own with "
+        + "noise on them. An edge against one of those is not an edge. Paste real prices at "
+        + `${where || "the site"}/prices`
+      : "nothing is priced yet, so nothing here can be called value. Paste prices at "
+        + `${where || "the site"}/prices`;
+
+  const parts = [
+    section("🔥", "Streaks", "a run, and nothing about the opponent",
+            streakRows, "no run of 2+ into a game in this window"),
+    section("⚔️", "Mismatches", "they win corners, this opponent leaks them",
+            mismatchRows, "nobody clears the league average on both halves"),
+    section("🏃", "Chase board", "the game state points at one side pushing",
+            chaseRows, "no side with enough games on record"),
+    section("💰", "Value", "a real price longer than the model's own",
+            valueRows, valueEmpty),
+  ];
+
+  if (!items.length) return { text: "", items: [] };
+
+  const stamp = generatedAt ? postDayTime(generatedAt) : "";
+  return {
+    items,
+    text: `🧭 Angles on the board${stamp ? ` — ${stamp}` : ""}\n`
+      + `Reply with a number and I'll write that one up.\n\n`
+      + parts.join("\n\n")
+      + "\n\nA streak alone is the weakest of these — it says what a team keeps doing and "
+      + "nothing about who they play. The sections are four readings of the board, not a "
+      + "ranking of it.",
+  };
+};
+
+/** Telegram refuses a sendMessage body over this. Not a style limit — a hard 400. */
+export const TELEGRAM_MAX = 4096;
+
+/**
+ * The menu, at the largest size that Telegram will actually deliver.
+ *
+ * THE CAP IS A CEILING, NOT A PROMISE — the same rule fitToPost follows for X, and for the
+ * same reason. Five per section is the right number on a normal board, and a board of long
+ * names is not a normal board: twenty rows of "Borussia Monchengladbach II v Sportverein
+ * Wehen Wiesbaden" plus a link each measures 4,544 characters, and Telegram answers that
+ * with HTTP 400 and nothing else.
+ *
+ * This is not hypothetical. The weekend card was written without a cap, hit exactly this,
+ * and failed to send twice — reporting success both times, because the failure was in the
+ * delivery step and the draft that produced it was fine. A picked number would have the
+ * same failure mode one long fixture list later, so the menu is REBUILT smaller until it
+ * fits rather than trimmed at the end: trimming mid-row would cut a link in half, and the
+ * numbering has to stay continuous at whatever size survives.
+ */
+export const angleMenu = (opts = {}) => {
+  const per = Number(opts.per ?? MENU_PER_SECTION);
+  for (let n = per; n >= 1; n -= 1) {
+    const built = buildMenu({ ...opts, per: n });
+    if (!built.items.length || built.text.length <= TELEGRAM_MAX) return built;
+  }
+  // One row per section and still too long. Cannot happen with real rows, and returning a
+  // message that cannot be sent would be worse than returning none.
+  return { text: "", items: [] };
+};

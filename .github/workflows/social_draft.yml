@@ -78,7 +78,7 @@ on:
         description: "Which board (blank = whatever this weekday calls for)"
         required: false
         type: choice
-        options: ["", "picks", "game", "streaks", "fixtures", "results", "weekend"]
+        options: ["", "picks", "game", "streaks", "fixtures", "results", "weekend", "menu"]
 
 concurrency:
   group: corner-social-draft
@@ -256,16 +256,21 @@ jobs:
           python3 - <<'PY' > payload.json
           import json, os
           d = json.load(open("draft.json"))
+          # NOT EVERY BOARD IS AN X POST. The weekend card and the angle menu have no intent
+          # link — one is a paid-channel card far past 280 characters, the other is a list to
+          # choose from — so the "/280" and the Post button are attached only where they mean
+          # something. A button with an empty URL is an HTTP 400 from Telegram, which would
+          # send the whole message down the retry path to arrive stripped of its keyboard.
+          intent = d.get("intent") or ""
           body = (f"{os.environ['PRETTY']} — {d['board']}\n"
-                  f"{d['note']} · {d['weight']}/280\n\n"
+                  f"{d['note']}" + (f" · {d['weight']}/280" if intent else "") + "\n\n"
                   f"{d['post']}")
-          print(json.dumps({
-              "chat_id": os.environ["TG_CHAT"],
-              "text": body,
-              "disable_web_page_preview": True,
-              "reply_markup": {"inline_keyboard": [[
-                  {"text": "Post on X", "url": d["intent"]}]]},
-          }))
+          payload = {"chat_id": os.environ["TG_CHAT"], "text": body,
+                     "disable_web_page_preview": True}
+          if intent:
+              payload["reply_markup"] = {"inline_keyboard": [[
+                  {"text": "Post on X", "url": intent}]]}
+          print(json.dumps(payload))
           PY
           # WITH THE PICTURE IF THERE IS ONE, AS A FILE RATHER THAN A PHOTO.
           #
@@ -281,13 +286,15 @@ jobs:
           # here to look at, to save, and to attach by hand.
           FILE="${{ steps.story.outputs.file }}"
           if [ -n "$FILE" ] && [ -s "$FILE" ]; then
+            # The keyboard is omitted ENTIRELY rather than sent empty when the board has no
+            # X post behind it. Telegram validates the shape, and `reply_markup={}` is not a
+            # valid InlineKeyboardMarkup — it would fail the upload rather than be ignored.
+            MARKUP=$(python3 -c "import json;d=json.load(open('payload.json'));print(json.dumps(d['reply_markup']) if 'reply_markup' in d else '')")
+            set -- -F "chat_id=$TG_CHAT" -F "document=@$FILE" \
+                   -F "caption=$(python3 -c "import json;print(json.load(open('payload.json'))['text'])")"
+            [ -n "$MARKUP" ] && set -- "$@" -F "reply_markup=$MARKUP"
             code=$(curl -s -o tg.json -w '%{http_code}' --max-time 120 \
-              -X POST "https://api.telegram.org/bot$TG_TOKEN/sendDocument" \
-              -F "chat_id=$TG_CHAT" \
-              -F "document=@$FILE" \
-              -F "caption=$(python3 -c "import json;print(json.load(open('payload.json'))['text'])")" \
-              -F "reply_markup=$(python3 -c "import json;print(json.dumps(json.load(open('payload.json'))['reply_markup']))")" \
-              || true)
+              -X POST "https://api.telegram.org/bot$TG_TOKEN/sendDocument" "$@" || true)
             echo "sendDocument HTTP $code"
             if [ "$code" = "200" ]; then
               echo "::notice::sent to Telegram with the ${{ steps.story.outputs.drew }}, uncompressed"
@@ -310,7 +317,7 @@ jobs:
           # link carries the whole post in a query string and can get long. Retry without
           # it rather than lose the message: the text is in the body either way.
           echo "::warning::Telegram rejected the message with the button (HTTP $code) — retrying as plain text"
-          python3 -c "import json;d=json.load(open('payload.json'));d.pop('reply_markup');print(json.dumps(d))" > plain.json
+          python3 -c "import json;d=json.load(open('payload.json'));d.pop('reply_markup',None);print(json.dumps(d))" > plain.json
           code=$(curl -s -o tg2.json -w '%{http_code}' --max-time 30 \
             -X POST "https://api.telegram.org/bot$TG_TOKEN/sendMessage" \
             -H 'content-type: application/json' --data-binary @plain.json || true)
@@ -355,6 +362,56 @@ jobs:
             --label "social-draft"
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Send you the menu of angles
+        # NOT A POST. This goes to you, not to a channel, and its job is to be chosen from.
+        #
+        # The draft above picks ONE angle and offers it. On most days that is a streak, and
+        # a streak alone is the weakest thing this site finds: it says what a team keeps
+        # doing and nothing about who they play, what the game will look like, or what the
+        # price is. Five clears can be five coin flips. So the menu follows the draft with
+        # every kind of angle the site has — streaks, mismatches, chase spots, and any real
+        # price the model beats — numbered, so a better one can go out instead.
+        #
+        # AFTER the draft is delivered, and never fatal. The post is the thing that has to
+        # happen; the menu is a second opinion, and a second opinion that fails should not
+        # take the day's post down with it.
+        #
+        # Skipped on a quiet day — Thursday is silent, and a menu is still a notification.
+        if: steps.when.outputs.quiet != 'true' && inputs.board == '' && env.TG_TOKEN != ''
+        run: |
+          node tools/social_draft.mjs --board menu --days 3 --out menu.md --json-out menu.json || {
+            echo "::warning::could not build the angle menu — the post above is unaffected"; exit 0; }
+          if [ ! -s menu.md ]; then
+            echo "::notice::no angles on any of the four boards — no menu to send"
+            exit 0
+          fi
+          python3 - <<'PY' > menu_payload.json
+          import json, os
+          d = json.load(open("menu.json"))
+          print(json.dumps({"chat_id": os.environ["TG_CHAT"],
+                            "text": d["post"], "disable_web_page_preview": True}))
+          PY
+          # Plain text, no parse_mode, for the same reason every other send here is: the
+          # body carries team names with slashes and accents in them, and a message that
+          # fails to parse is a message that never arrives.
+          code=$(curl -s -o tgm.json -w '%{http_code}' --max-time 30 \
+            -X POST "https://api.telegram.org/bot$TG_TOKEN/sendMessage" \
+            -H 'content-type: application/json' --data-binary @menu_payload.json || true)
+          if [ "$code" = "200" ]; then
+            echo "::notice::angle menu sent — $(python3 -c "import json;print(json.load(open('menu.json'))['note'])")"
+          else
+            # angleMenu rebuilds itself smaller until it is under Telegram's 4096, so a 400
+            # here is something else — worth seeing in the log, not worth failing the run.
+            echo "::warning::angle menu send failed (HTTP $code)"
+            head -c 400 tgm.json || true
+          fi
+        env:
+          BACKEND_URL: ${{ vars.BACKEND_URL || 'https://corner-model.onrender.com' }}
+          SITE_URL: ${{ vars.SITE_URL || 'https://thecornermodel.com' }}
+          TOOLS_TOKEN: ${{ secrets.TOOLS_TOKEN }}
+          TG_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TG_CHAT: ${{ secrets.TELEGRAM_CHAT_ID }}
 
       - name: Send the weekend card to the channel
         # WEDNESDAY, and separate from the public post on purpose. The daily post goes

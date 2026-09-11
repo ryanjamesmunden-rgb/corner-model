@@ -15,7 +15,7 @@
 // same modules are imported directly. They are plain ES modules with no React, no
 // window and no fetch, which is what makes that possible.
 //
-// Usage:  node tools/social_draft.mjs --board streaks|fixtures|results [--days 3]
+// Usage:  node tools/social_draft.mjs --board streaks|fixtures|results|game|weekend|picks|menu [--days 3]
 //                                    [--tag YYYY-MM-DD] [--out draft.md]
 // Env:    BACKEND_URL (default the live Render backend), TOOLS_TOKEN (required)
 
@@ -29,7 +29,7 @@ const LIB = resolve(HERE, "..", "frontend", "src", "lib");
 // The lib modules import each other by relative path and use no bundler features, so
 // they load as-is. `shareText.js` pulls in countryFlag and kickoff itself.
 const { streakShare, fixtureShare, streakResultShare, pickGame, pickGameDetailed, gameShare, weekendCard,
-        picksReview } = await import(resolve(LIB, "shareText.js"));
+        picksReview, angleMenu, PUBLIC_STREAK_ROWS } = await import(resolve(LIB, "shareText.js"));
 const { fixtureStoryMarkets } = await import(resolve(LIB, "storyImage.js"));
 const { kickoffLabel } = await import(resolve(LIB, "kickoff.js"));
 const { fitToPost, weightedLength, URL_WEIGHT, X_SHARE_ROWS } = await import(resolve(LIB, "xLimit.js"));
@@ -214,11 +214,51 @@ ${full}
 // the log.
 // limit=60 rather than the default 12: the game post advertises how many OTHER angles are
 // live, and a page of twelve would under-report that by however many it cut off.
-const data = await get(`/api/share/rows?days=${DAYS}&limit=60&token=${encodeURIComponent(TOKEN)}`, "backend");
+// The menu is the only board that reads all four. The other three boards walk every team
+// in the database, so asking for them on a Tuesday game post would make it pay for work it
+// never reads — on a free-tier backend that is the difference between a post and a timeout.
+const BOARDS = BOARD === "menu" ? "streaks,mismatches,chase,value" : "streaks,fixtures";
+const data = await get(`/api/share/rows?days=${DAYS}&limit=60&boards=${BOARDS}`
+  + `&token=${encodeURIComponent(TOKEN)}`, "backend");
 if (!data) fail("backend has no /api/share/rows — it is running an older build");
+// FastAPI ignores a query parameter it does not know, so an older backend answers a menu
+// request with streaks and fixtures and nothing else — and the menu would render with three
+// empty sections, looking exactly like a quiet day. `boards` comes back only on a build that
+// understood the ask, which is what makes that difference visible.
+if (BOARD === "menu" && !data.boards) {
+  fail("backend does not understand ?boards= — it is running a build from before the angle "
+       + "menu, and would answer with streaks only");
+}
 
 if (data.data_age_hours != null && data.data_age_hours > MAX_DATA_AGE_HOURS) {
   skip(`data is ${data.data_age_hours}h old (limit ${MAX_DATA_AGE_HOURS}h) — not drafting from stale numbers`);
+}
+
+// ---- the menu. NOT A POST — it goes to whoever is running the account, and it is the one
+// message here whose job is to be chosen from rather than published.
+//
+// The daily job used to hand over one streak. A streak on its own is the weakest angle the
+// site finds: it says what a team keeps doing and nothing about who they play, what the game
+// will look like, or what the price is. This offers all four readings, numbered, and a person
+// picks. See angleMenu.
+if (BOARD === "menu") {
+  const { text, items } = angleMenu({
+    streaks: data.streaks || [], mismatches: data.mismatches || [],
+    chase: data.chase || [], value: data.value || [],
+    generatedAt: data.generated_at, site: SITE,
+  });
+  if (!items.length) skip("nothing on any of the four boards — no menu to send");
+  const counts = ["streak", "mismatch", "chase", "value"]
+    .map((k) => `${items.filter((i) => i.kind === k).length} ${k}`).join(", ");
+  emit(`Angle menu — for you, not for posting.
+
+\`\`\`
+${text}
+\`\`\`
+`, { empty: false, board: "menu", post: text, intent: "", weight: text.length, full: text,
+     note: `${items.length} angles to choose from: ${counts}${
+       data.data_age_hours != null ? ` · data ${data.data_age_hours}h old` : ""}` });
+  process.exit(0);
 }
 
 // ---- the weekend card. Goes to the PAID channel on a Friday, carrying the model's own
@@ -321,7 +361,12 @@ const countRows = (text) =>
 const rowCount = (BOARD === "fixtures" ? data.fixtures : data.streaks || []).length;
 if (rowCount < MIN_ROWS) skip(`only ${rowCount} rows cleared the bar — nothing worth posting`);
 
-const full = build(BOARD === "fixtures" ? 8 : 6);
+// FIVE STREAKS, NOT SIX — and the cap is a product decision, not a formatting one. A free
+// post that lists every run on the board leaves the channel with nothing to sell: a member
+// is paying for the rest of the list, the price beside it, and the reasoning under it. The X
+// version is capped tighter still by the character limit; this is the Telegram one, which
+// has no limit and therefore no natural brake. See PUBLIC_STREAK_ROWS.
+const full = build(BOARD === "fixtures" ? 8 : PUBLIC_STREAK_ROWS);
 const post = fitToPost(build, X_SHARE_ROWS);
 const weight = weightedLength(post) + 1 + URL_WEIGHT;
 const intent = `https://x.com/intent/tweet?text=${encodeURIComponent(post)}&url=${encodeURIComponent(SITE)}`;

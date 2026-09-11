@@ -3091,6 +3091,13 @@ async def value_board(within_days: Optional[int] = 7, min_ev: float = 0.0,
     for fid, doc in priced.items():
         row = {"fixture_id": fid,
                "priced_at": doc.get("updated_at"),      # None on rows entered before stamping
+               # WHERE THE PRICE CAME FROM, carried so a caller can refuse to act on one the
+               # model effectively wrote itself. seed_team_odds and reseed_odds generate demo
+               # prices as `fair_odds * rng.uniform(0.90, 1.15)`, and an EV computed against
+               # that is the model finding value in its own jitter — indistinguishable from a
+               # real edge on screen. Unstamped documents predate the stamp, so they come
+               # back as None: unknown, not trusted.
+               "odds_source": doc.get("source"),
                "market_count": len(doc.get("odds") or {}),
                "league_id": "", "league_name": "", "tier": None,
                "home_name": "", "away_name": "", "date": None, "round": None,
@@ -5082,8 +5089,16 @@ async def public_results(weeks: int = RESULTS_WEEKS):
     }
 
 
+# Which boards `/share/rows` will assemble. Named rather than "everything, always",
+# because three of the five walk every team in the database and the daily poster only ever
+# needs the first two — see the `boards` parameter below.
+SHARE_BOARDS = ("streaks", "fixtures", "mismatches", "chase", "value")
+SHARE_BOARDS_DEFAULT = "streaks,fixtures"
+
+
 @api_router.get("/share/rows")
-async def share_rows(days: int = 3, limit: int = 12, token: Optional[str] = None):
+async def share_rows(days: int = 3, limit: int = 12, token: Optional[str] = None,
+                     boards: str = SHARE_BOARDS_DEFAULT):
     """The raw rows behind the shared boards, for the scheduled draft job.
 
     Returns ROWS, not rendered text, on purpose. The share format lives in the frontend
@@ -5098,8 +5113,34 @@ async def share_rows(days: int = 3, limit: int = 12, token: Optional[str] = None
     workflow holds the token as a repo secret.
 
     `data_age_hours` rides along so the caller can refuse to draft from stale numbers:
-    a post is public and permanent in a way a stale screen is not."""
+    a post is public and permanent in a way a stale screen is not.
+
+    `boards` NAMES WHAT TO BUILD, and defaults to the two the daily poster uses. The other
+    three — mismatches, chase, value — exist for the angle MENU: a message that offers every
+    kind of angle the site finds rather than only the one board a streak post happens to
+    come from. A streak is one reading of a game and the weakest one on its own (five
+    clears could be five coin flips); a mismatch is about the opponent, the chase board is
+    about game state, and the value board is about a price. Handing over only streaks makes
+    every post the same claim.
+
+    They are OPT-IN because each walks the whole team collection, and making the Tuesday
+    game post pay for three boards it will not read is how a free-tier backend times out.
+
+    WHY THESE BYPASS THEIR OWN ROUTES' GATES. `/top-mismatches` and `/chase-board` trim to a
+    preview for a non-member and `/value-board` refuses one outright. Those gates guard the
+    BROWSER — they are what stops the paid product being read for free. This endpoint is
+    already gated, by the tools token, on behalf of the one person who owns the data. Going
+    through the browser-facing gates with a guest identity would hand the owner three rows
+    of their own board."""
     _check_tools_token(token)
+    want = {b.strip() for b in (boards or "").split(",") if b.strip()}
+    unknown = want - set(SHARE_BOARDS)
+    if unknown:
+        # Named boards fail loudly. A typo'd board name silently returning nothing would
+        # look identical to a quiet day, and the caller would post nothing and log success.
+        raise HTTPException(status_code=400,
+                            detail=f"unknown board(s): {', '.join(sorted(unknown))}; "
+                                   f"known: {', '.join(SHARE_BOARDS)}")
     now = datetime.now(timezone.utc)
     newest = await db.leagues.find({"data_source": "real"}, {"_id": 0, "synced_at": 1}) \
         .sort("synced_at", -1).limit(1).to_list(1)
@@ -5110,20 +5151,36 @@ async def share_rows(days: int = 3, limit: int = 12, token: Optional[str] = None
         except Exception:
             age_h = None
 
-    # The same grid the Streak Finder opens on, so the draft matches the screen the
-    # numbers would be checked against.
-    streaks_rows = await streaks(league_id="all", side="overall", window=5, min_hits=5,
-                                 threshold=None, min_line=3, within_days=days,
-                                 direction="over", subject="team", user={})
-    board = await _fixture_board(days=days, per_day=5, league_id="all", user={})
-    fixtures = [f for d in (board.get("days") or []) for f in (d.get("fixtures") or [])]
-    return {
+    out = {
         "generated_at": now.isoformat(),
         "data_age_hours": age_h,
         "within_days": days,
-        "streaks": streaks_rows[:limit],
-        "fixtures": fixtures[:limit],
+        "boards": sorted(want),
     }
+
+    if "streaks" in want:
+        # The same grid the Streak Finder opens on, so the draft matches the screen the
+        # numbers would be checked against.
+        streaks_rows = await streaks(league_id="all", side="overall", window=5, min_hits=5,
+                                     threshold=None, min_line=3, within_days=days,
+                                     direction="over", subject="team", user={})
+        out["streaks"] = streaks_rows[:limit]
+    if "fixtures" in want:
+        board = await _fixture_board(days=days, per_day=5, league_id="all", user={})
+        out["fixtures"] = [f for d in (board.get("days") or [])
+                           for f in (d.get("fixtures") or [])][:limit]
+    if "mismatches" in want:
+        out["mismatches"] = await _all_mismatches(days, limit)
+    if "chase" in want:
+        out["chase"] = await _chase_board(days, limit)
+    if "value" in want:
+        # ONLY THE ROWS THAT ARE ACTUALLY BETS. The board deliberately keeps every price as
+        # a row so nothing vanishes unexplained, and those `status` rows are the right
+        # answer on a screen someone is debugging. In a menu of angles to post, a price on
+        # a game that has kicked off is not an angle.
+        rows = await value_board(within_days=days, min_ev=0.0, limit=limit, user={})
+        out["value"] = [r for r in rows if r.get("status") == "ok"]
+    return out
 
 
 @api_router.get("/export/streaks")

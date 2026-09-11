@@ -8,7 +8,7 @@
 import { streakShare, fixtureShare, bestTeamsShare, streakResultShare,
          fixtureStreakShare, telegramPick, wonLadder, openGameCase, postHeader,
          pickGame, pickGameDetailed, gameShare, weekendCard, picksReview, moreVia,
-         postDate, postTime, pickLabel } from "./shareText";
+         postDate, postTime, pickLabel, angleMenu } from "./shareText";
 
 const NORWAY = "\u{1F1F3}\u{1F1F4}";
 const soon = () => {
@@ -928,5 +928,170 @@ describe("the weekend card fits in a Telegram message", () => {
   test("a card inside the cap says nothing about a remainder", () => {
     const out = weekendCard({ rows: [R(1, 9, 80)], site: "https://thecornermodel.com" });
     expect(out).not.toContain("strongest");
+  });
+});
+
+/**
+ * The menu is not a post. It goes to whoever is running the account, and its job is to be
+ * CHOSEN FROM — so the failures worth pinning are the ones that quietly remove a choice:
+ * a section that vanishes when it is empty, a team listed three times so four angles look
+ * like twelve, and a price the model effectively wrote itself being offered as value.
+ */
+describe("the menu of angles", () => {
+  const when = () => {
+    const d = new Date();
+    d.setDate(d.getDate() + 2);
+    d.setHours(15, 0, 0, 0);
+    return d.toISOString();
+  };
+  const fx = (id, opponent = "Rovers") =>
+    ({ fixture_id: id, date: when(), opponent, is_home: true });
+  const S = (name, run, prob = 70, id = `fx-${name}`) => ({
+    name, league_id: "nor-el", league_name: "Eliteserien", line_label: "5+",
+    streak: { length: run }, projection: { prob, fair_odds: 100 / prob },
+    next_fixture: fx(id),
+  });
+  const M = (name, id = `fx-${name}`) => ({
+    name, league_id: "nor-el", league_name: "Eliteserien", line: 5,
+    team_for: 6.9, opp_conceded: 6.4, prob: 64, fair_odds: 1.56, next_fixture: fx(id),
+  });
+  const C = (name, id = `fx-${name}`) => ({
+    name, league_id: "nor-el", league_name: "Eliteserien", line: 5,
+    consistency: 4, consistency_of: 5, prob: 61, fair_odds: 1.64, next_fixture: fx(id),
+  });
+  const V = (ev, source = "manual") => ({
+    fixture_id: "fx-v", league_id: "nor-el", home_name: "Viking", away_name: "Brann",
+    date: when(), status: "ok", odds_source: source,
+    best: { label: "Viking Over 4.5", book_odds: 1.45, fair_odds: 1.3, prob: 77, ev },
+  });
+  const menu = (over = {}) => angleMenu({ site: "https://thecornermodel.com", ...over });
+
+  test("all four kinds are offered, numbered continuously", () => {
+    const { text, items } = menu({ streaks: [S("Viking", 8)], mismatches: [M("Brann")],
+                                   chase: [C("Molde")], value: [V(11.5)] });
+    expect(items.map((i) => i.kind)).toEqual(["streak", "mismatch", "chase", "value"]);
+    // Continuous numbering is what makes "send number 3" mean one thing. Numbering each
+    // section from 1 would give four number 1s.
+    expect(items.map((i) => i.n)).toEqual([1, 2, 3, 4]);
+    for (const n of [1, 2, 3, 4]) expect(text).toContain(`${n}. `);
+  });
+
+  test("every section keeps its heading when it is empty, and says WHY", () => {
+    // A section that disappears takes the fact that it was looked at with it. "Nothing
+    // priced" is a job to do; a missing value section is indistinguishable from no value.
+    const { text } = menu({ streaks: [S("Viking", 8)] });
+    expect(text).toContain("MISMATCHES");
+    expect(text).toContain("CHASE BOARD");
+    expect(text).toContain("VALUE");
+    expect(text).toContain("nothing is priced yet");
+    expect(text).toContain("/prices");
+  });
+
+  test("priced with no edge is a DIFFERENT empty from not priced at all", () => {
+    // One means there is work to do; the other means the board says don't bet. A single
+    // blank section would read as neither.
+    const { text } = menu({ streaks: [S("Viking", 8)], value: [V(-4)] });
+    expect(text).toContain("no edge on the board today");
+    expect(text).not.toContain("nothing is priced yet");
+  });
+
+  test("a seeded price is never offered as value, and the menu says so", () => {
+    // seed_team_odds writes fair_odds * uniform(0.90, 1.15). An EV against that is the
+    // model finding value in its own jitter, and on screen it looks like a real edge — so
+    // refusing it silently is not enough. Reported as "no edge today" it would read as the
+    // board having been checked and found quiet, which is the opposite of the truth.
+    const { items, text } = menu({ streaks: [S("Viking", 8)], value: [V(14, "seed")] });
+    expect(items.some((i) => i.kind === "value")).toBe(false);
+    expect(text).toContain("seeded demo numbers");
+    expect(text).not.toContain("no edge on the board today");
+  });
+
+  test("a real price beside a seeded one is still value", () => {
+    // The guard is per row, not per board: one demo price left in the collection must not
+    // suppress a price that was actually typed in.
+    const { items } = menu({ value: [V(14, "seed"), { ...V(9), fixture_id: "fx-real" }] });
+    expect(items.filter((i) => i.kind === "value")).toHaveLength(1);
+  });
+
+  test("one team, one row — the corroboration becomes a marker instead", () => {
+    const { items, text } = menu({ streaks: [S("Viking", 9, 80, "same")],
+                                   mismatches: [M("Viking", "same")] });
+    expect(items).toHaveLength(1);
+    expect(text).toContain("matchup agrees");
+  });
+
+  test("a game that is also priced says so, above the price", () => {
+    // Value is keyed by fixture and market, so it is deliberately NOT de-duplicated
+    // against the rows above it — "they keep clearing it" and "the price is wrong" are
+    // different claims about the same game, and the second is the one worth posting. But
+    // the same game appearing twice with nothing connecting them reads as the menu
+    // repeating itself, and the reader picks the first, which is the weaker of the two.
+    const { text } = menu({ streaks: [S("Viking", 8, 70, "fx-v")], value: [V(11)] });
+    expect(text).toContain("💰 priced, see Value");
+    expect(text.indexOf("priced, see Value")).toBeLessThan(text.indexOf("EV +11.0%"));
+  });
+
+  test("a seeded price does not decorate a streak row either", () => {
+    const { text } = menu({ streaks: [S("Viking", 8, 70, "fx-v")], value: [V(11, "seed")] });
+    expect(text).not.toContain("priced, see Value");
+  });
+
+  test("the same team in a DIFFERENT game is a different angle", () => {
+    const { items } = menu({ streaks: [S("Viking", 9, 80, "sat")],
+                             mismatches: [M("Viking", "sun")] });
+    expect(items).toHaveLength(2);
+  });
+
+  test("longest run leads, and gets the fire", () => {
+    const { text } = menu({ streaks: [S("Short", 3), S("Long", 9)] });
+    expect(text.indexOf("Long")).toBeLessThan(text.indexOf("Short"));
+    expect(text).toMatch(/Long .* 9 in a row.*🔥/);
+    expect(text).not.toMatch(/Short .* 3 in a row.*🔥/);
+  });
+
+  test("each section is capped, so the menu stays a menu", () => {
+    const many = Array.from({ length: 12 }, (_, i) => S(`T${i}`, 6));
+    const { items } = menu({ streaks: many, per: 5 });
+    expect(items).toHaveLength(5);
+  });
+
+  test("a row with no fixture is not a choice", () => {
+    const orphan = { ...S("Nowhere", 9), next_fixture: null };
+    expect(menu({ streaks: [orphan] }).items).toHaveLength(0);
+  });
+
+  test("nothing on any board is an empty menu, not a menu of empties", () => {
+    // The caller skips on this. A message of four "nothing here" lines sent every quiet
+    // day trains the reader to ignore the one that matters.
+    expect(menu().text).toBe("");
+  });
+
+  test("a board of long names is rebuilt smaller, not sent and refused", () => {
+    // MEASURED, not guessed. Twenty rows of German second-division names plus a link each
+    // comes to 4,544 characters, and Telegram answers that with HTTP 400 and nothing else.
+    // The weekend card was written without a cap, hit exactly this, and failed to send
+    // twice while reporting success — the failure is in the delivery step, so the draft
+    // that produced it looks fine.
+    const long = "Borussia Monchengladbach II";
+    const big = (make) => Array.from({ length: 12 }, (_, i) => make(`${long} ${i}`, `f${i}`));
+    const { text, items } = menu({
+      streaks: big((n, id) => S(n, 9, 79, id)),
+      mismatches: big((n, id) => M(n, id)),
+      chase: big((n, id) => C(n, id)),
+      value: Array.from({ length: 12 }, (_, i) =>
+        ({ ...V(14), fixture_id: `v${i}`, home_name: long, away_name: long })),
+    });
+    expect(text.length).toBeLessThanOrEqual(4096);
+    // It shrank rather than dropping a whole section — every kind of angle is still offered.
+    expect(new Set(items.map((i) => i.kind)).size).toBe(4);
+    // And the numbering is still continuous at the size that survived, which is what makes
+    // "send number 9" mean one thing.
+    expect(items.map((i) => i.n)).toEqual(items.map((_, i) => i + 1));
+  });
+
+  test("it says a streak alone is the weak one", () => {
+    // The whole reason the menu exists. Offering four kinds and staying silent about why
+    // would leave the reader picking the top row, which is a streak.
+    expect(menu({ streaks: [S("Viking", 8)] }).text).toContain("weakest");
   });
 });

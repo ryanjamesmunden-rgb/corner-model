@@ -344,16 +344,56 @@ export const GAME_MIN_PROB = 50;
  * because the reason to drop the bar is that there is no strong line today, and answering
  * that with the longest shot on the board would be the opposite of the intent.
  */
-export const pickGame = (rows = [], minProb = GAME_MIN_PROB) => {
+/**
+ * The one row worth posting, and WHY it was chosen.
+ *
+ * VALUE BEATS FORM, WHERE THERE IS A PRICE TO MEASURE IT AGAINST. A run of 5 from 5 is a
+ * fact about five games and might be five coin flips that landed; a price the model beats
+ * is a claim about THIS game. So when a real bookmaker's number exists, the pick is the
+ * biggest edge over it, and the run only breaks ties.
+ *
+ * "REAL" MEANS `odds_source === "manual"`, and the check is not paranoia. seed_team_odds
+ * and reseed_odds generate demo prices as `fair_odds * rng.uniform(0.90, 1.15)` — the
+ * model's own number with noise on it. An EV computed against that is the model finding
+ * value in its own jitter, and it would look exactly like a real edge. Unmarked documents
+ * predate the stamp, so they are treated as unknown rather than as real.
+ *
+ * WITHOUT A PRICE THIS IS NOT A VALUE RANKING AND MUST NOT BE READ AS ONE. It falls back
+ * to the model's probability, which is CONFIDENCE — how likely the line is to land, not
+ * whether it pays enough. Ranking on that alone walks straight into short-priced
+ * favourites, which are the lines a bookmaker prices most accurately and where an edge is
+ * least likely to exist. The `basis` is returned so a caller can say which of the two it
+ * is looking at rather than guess.
+ */
+export const pickGameDetailed = (rows = [], minProb = GAME_MIN_PROB) => {
   const run = (r) => Number(r?.streak?.length) || 0;
   const prob = (r) => Number(r?.projection?.prob ?? 0);
+  const ev = (r) => Number(r?.projection?.ev);
+  const realPrice = (r) => r?.projection?.odds_source === "manual" && Number.isFinite(ev(r));
+
   const live = (rows || []).filter((r) => r?.next_fixture?.date && run(r) >= 2);
-  if (!live.length) return null;
+  if (!live.length) return { row: null, basis: "none" };
+
+  // Only a POSITIVE edge counts. The best of a bad set is still a bad bet, and posting
+  // "the least negative EV on the board" is worse than posting form.
+  const value = live.filter((r) => realPrice(r) && ev(r) > 0);
+  if (value.length) {
+    const byEv = (a, b) => (ev(b) - ev(a)) || (run(b) - run(a));
+    return { row: [...value].sort(byEv)[0], basis: "value" };
+  }
+
   const strong = live.filter((r) => prob(r) >= minProb);
   const byRun = (a, b) => (run(b) - run(a)) || (prob(b) - prob(a));
   const byProb = (a, b) => (prob(b) - prob(a)) || (run(b) - run(a));
-  return [...(strong.length ? strong : live)].sort(strong.length ? byRun : byProb)[0];
+  return {
+    row: [...(strong.length ? strong : live)].sort(strong.length ? byRun : byProb)[0],
+    basis: "confidence",
+  };
 };
+
+/** The row alone, for callers that do not care how it was chosen. */
+export const pickGame = (rows = [], minProb = GAME_MIN_PROB) =>
+  pickGameDetailed(rows, minProb).row;
 
 /**
  * That game, in three lines:

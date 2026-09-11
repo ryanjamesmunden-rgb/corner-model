@@ -2906,7 +2906,12 @@ async def set_odds(fixture_id: str, body: OddsBody, user: dict = Depends(get_cur
     # tell a live edge from a stale one.
     await db.odds.update_one(
         {"fixture_id": fixture_id},
-        {"$set": {"odds": merged, "updated_at": datetime.now(timezone.utc).isoformat()}},
+        # SOURCE, because a seeded demo price and a typed one are otherwise the same
+        # document. seed_team_odds.py and reseed_odds.py derive prices FROM the model and
+        # jitter them, so an EV computed against those is the model finding value in its
+        # own noise. Anything ranked or posted on EV has to be able to tell them apart.
+        {"$set": {"odds": merged, "source": "manual",
+                  "updated_at": datetime.now(timezone.utc).isoformat()}},
         upsert=True)
     model = await get_fixture_model(fx, merged)
     return {"model": model, "odds": merged}
@@ -3626,6 +3631,9 @@ async def streaks(league_id: Optional[str] = None, side: str = "overall", window
     fx_ids = list({v["fixture_id"] for v in next_fx.values()})
     odds_docs = await db.odds.find({"fixture_id": {"$in": fx_ids}}, {"_id": 0}).to_list(2000)
     odds_map = {o["fixture_id"]: o.get("odds", {}) for o in odds_docs}
+    # Unmarked documents predate the stamp OR came from a seeder; either way they are not
+    # known to be a real bookmaker's price, and "unknown" must not read as "real".
+    odds_src = {o["fixture_id"]: o.get("source") for o in odds_docs}
     now = datetime.now(timezone.utc)
 
     direction = "under" if direction == "under" else "over"
@@ -3687,6 +3695,8 @@ async def streaks(league_id: Optional[str] = None, side: str = "overall", window
                                             ls_map.get(t["league_id"], REF_SHOTS),
                                             odds_map.get(nf["fixture_id"], {}),
                                             bl_map.get(t["league_id"], 0.0))
+            if projection is not None:
+                projection["odds_source"] = odds_src.get(nf["fixture_id"])
         results.append({
             "team_id": t["team_id"], "name": t["name"], "league_id": t["league_id"],
             "league_name": leagues.get(t["league_id"], ""),

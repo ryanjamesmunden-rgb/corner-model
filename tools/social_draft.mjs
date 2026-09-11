@@ -212,7 +212,9 @@ ${full}
 // while or fail outright. A crash here would surface in CI as a raw stack trace with
 // the token in the URL; catching it keeps the failure readable and the secret out of
 // the log.
-const data = await get(`/api/share/rows?days=${DAYS}&token=${encodeURIComponent(TOKEN)}`, "backend");
+// limit=60 rather than the default 12: the game post advertises how many OTHER angles are
+// live, and a page of twelve would under-report that by however many it cut off.
+const data = await get(`/api/share/rows?days=${DAYS}&limit=60&token=${encodeURIComponent(TOKEN)}`, "backend");
 if (!data) fail("backend has no /api/share/rows — it is running an older build");
 
 if (data.data_age_hours != null && data.data_age_hours > MAX_DATA_AGE_HOURS) {
@@ -241,7 +243,10 @@ ${card}
 if (BOARD === "game") {
   const row = pickGame(data.streaks || []);
   if (!row) skip("no game today carries a run worth posting on its own");
-  const post = gameShare({ row })();
+  // EVERY OTHER ANGLE ON THE SITE, not what this post trimmed. The post shows one game;
+  // the reason to click is all the ones it is not showing.
+  const more = Math.max(0, (data.streaks || []).length - 1);
+  const post = gameShare({ row, more, site: SITE })();
   if (!post) skip("the best row has no fixture attached — nothing to post about");
 
   // THE PICTURE, built from the same fixture the text is about.
@@ -271,8 +276,11 @@ if (BOARD === "game") {
       };
     }
   }
-  const weight = weightedLength(post) + 1 + URL_WEIGHT;
-  const intent = `https://x.com/intent/tweet?text=${encodeURIComponent(post)}&url=${encodeURIComponent(SITE)}`;
+  // NO &url= HERE. The post already ends on the link, and the intent parameter would put
+  // a second copy of the same address underneath it. The URL still costs its flat t.co
+  // weight inside the text, which is what weightedLength already charges for it.
+  const weight = weightedLength(post);
+  const intent = `https://x.com/intent/tweet?text=${encodeURIComponent(post)}`;
   const prob = row.projection?.prob;
   emit(`**[Post this on X](${intent})** — opens the composer already filled in. Nothing is posted until you hit Post.
 

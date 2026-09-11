@@ -870,3 +870,63 @@ describe("the weekend card as a to-do list", () => {
     expect(weekendCard({ rows: [noId], site: "https://thecornermodel.com" })).not.toContain("↳");
   });
 });
+
+// A CARD THAT CANNOT BE DELIVERED IS NOT A CARD.
+//
+// The live Wednesday card returned HTTP 400 from Telegram twice and fell back to a GitHub
+// issue: unbounded, it went past the 4096-character message limit. So the cap is pinned
+// against that number rather than against taste.
+describe("the weekend card fits in a Telegram message", () => {
+  const TELEGRAM_MAX = 4096;
+  const R = (i, run, prob) => ({
+    name: `Team ${i} With A Long Sponsored Name`, league_id: "nor-el",
+    line_label: "5+", streak: { length: run },
+    projection: { prob, fair_odds: Number((100 / prob).toFixed(2)) },
+    next_fixture: { fixture_id: `nor-el-159473${i}`, date: `2026-09-13T1${i % 9}:30:00Z`,
+                    opponent: `Opponent ${i} Also Long`, is_home: i % 2 === 0 },
+  });
+
+  test("thirty qualifying games still produce a message that can be sent", () => {
+    const rows = Array.from({ length: 30 }, (_, i) => R(i, 5 + (i % 6), 40 + (i % 45)));
+    const out = weekendCard({ rows, site: "https://thecornermodel.com",
+                              generatedAt: "2026-09-11T11:00:00Z" });
+    expect(out.length).toBeLessThan(TELEGRAM_MAX);
+  });
+
+  test("it keeps the strongest, not the first eight it happened to see", () => {
+    const rows = [
+      R(1, 5, 41), R(2, 5, 42), R(3, 5, 43), R(4, 5, 44),
+      R(5, 5, 45), R(6, 5, 46), R(7, 5, 47), R(8, 5, 48),
+      R(9, 9, 88),          // the best row on the board, listed last
+    ];
+    const out = weekendCard({ rows, site: "https://thecornermodel.com" });
+    expect(out).toContain("Team 9");
+    expect(out).toContain("88%");
+  });
+
+  test("but still reads in kick-off order, which is how they get placed", () => {
+    const rows = [R(8, 9, 90), R(2, 8, 85), R(5, 7, 80)];
+    const out = weekendCard({ rows, site: "https://thecornermodel.com" });
+    const at = (n) => out.indexOf(`Team ${n} `);
+    expect(at(2)).toBeLessThan(at(5));      // 12:30 before 15:30
+    expect(at(5)).toBeLessThan(at(8));      // 15:30 before 18:30
+  });
+
+  test("a four-game run does not make the paid card", () => {
+    // The tail of the unbounded card was runs of four the model gave 55%. Padding the
+    // product with the weakest rows on the board makes it worth less, not more.
+    const out = weekendCard({ rows: [R(1, 4, 70)], site: "https://thecornermodel.com" });
+    expect(out).toBe("");
+  });
+
+  test("what it left out is declared, not quietly dropped", () => {
+    const rows = Array.from({ length: 12 }, (_, i) => R(i, 6, 60));
+    const out = weekendCard({ rows, site: "https://thecornermodel.com" });
+    expect(out).toContain("Showing the 8 strongest; 4 more on the site.");
+  });
+
+  test("a card inside the cap says nothing about a remainder", () => {
+    const out = weekendCard({ rows: [R(1, 9, 80)], site: "https://thecornermodel.com" });
+    expect(out).not.toContain("strongest");
+  });
+});

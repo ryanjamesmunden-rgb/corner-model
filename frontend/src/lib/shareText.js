@@ -284,7 +284,7 @@ export const postDayTime = (iso) => {
  * an advert, so every qualifying game goes in — ordered by KICK-OFF, which is the order
  * someone actually placing them needs, rather than by how good they are.
  */
-export const weekendCard = ({ rows = [], generatedAt = null } = {}) => {
+export const weekendCard = ({ rows = [], generatedAt = null, site = "" } = {}) => {
   const run = (r) => Number(r?.streak?.length) || 0;
   const live = (rows || []).filter((r) => r?.next_fixture?.date && run(r) >= 2);
   if (!live.length) return "";
@@ -302,9 +302,16 @@ export const weekendCard = ({ rows = [], generatedAt = null } = {}) => {
       ? ` · ${Math.round(prob)}%${Number.isFinite(fair) ? ` (${fair.toFixed(2)})` : ""}`
       : "";
     const when = postDayTime(fx.date);
+    // A LINK PER ROW, so the card is a to-do list rather than a list. Wednesday is when
+    // the weekend's prices appear and when this arrives; without a way to reach the
+    // fixture, pricing it means finding it by hand, and prices that are annoying to enter
+    // do not get entered. Bare URL rather than markup: this is sent with no parse_mode
+    // precisely so it cannot fail to parse, and Telegram links a bare domain anyway.
+    const where = String(site).replace(/^https?:\/\//, "").replace(/\/$/, "");
+    const link = where && fx.fixture_id ? `\n   ↳ ${where}/fixture/${fx.fixture_id}` : "";
     return `${flagBullet(r.league_id, "•")} ${home} v ${away}${when ? ` · ${when}` : ""}\n`
       + `   ${run(r) >= GAME_FIRE_RUN ? "🔥" : "🚩"} ${r.name} ${r.line_label || ""} — `
-      + `${run(r)} in a row${model}`;
+      + `${run(r)} in a row${model}${link}`;
   });
 
   const stamp = generatedAt ? postDayTime(generatedAt) : "";
@@ -313,7 +320,8 @@ export const weekendCard = ({ rows = [], generatedAt = null } = {}) => {
     // THE FAIR PRICE IS A BAR, NOT A TIP. Said outright, because a card of percentages
     // read without it looks like a list of bets rather than a list of prices to beat.
     + "The number in brackets is the fair price — the model's own. Anything shorter than "
-    + "that is not worth taking, however long the run is."
+    + "that is not worth taking, however long the run is.\n"
+    + "Tap a game to paste its prices — until one is in, nothing can be called value."
     + (stamp ? `\nBuilt ${stamp}, before the weekend's prices move.` : "");
 };
 

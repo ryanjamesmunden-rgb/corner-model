@@ -156,6 +156,30 @@ jobs:
           SITE_URL: ${{ vars.SITE_URL || 'https://thecornermodel.com' }}
           TOOLS_TOKEN: ${{ secrets.TOOLS_TOKEN }}
 
+      - name: Draw the picture
+        id: story
+        # ONLY when the draft carries one. A streaks or results board has no single fixture
+        # to draw a curve for, and installing a browser for a post that will not use it is
+        # a minute of runner time spent on nothing.
+        #
+        # The image is DECORATION: every failure here is a warning, never an error. A post
+        # that goes out as text is a post; a job that dies rendering a picture costs the
+        # day for the sake of a graphic.
+        if: steps.build.outputs.empty != 'true'
+        run: |
+          python3 -c "import json,sys; d=json.load(open('draft.json')); sys.exit(0 if d.get('story') else 1)" \
+            || { echo "::notice::no fixture curve in today's draft — text only"; exit 0; }
+          python3 -c "import json; d=json.load(open('draft.json')); json.dump(d['story'], open('story_args.json','w'))"
+          npm i --no-save playwright@1.49.1 >/dev/null 2>&1 || {
+            echo "::warning::could not install playwright — posting text only"; exit 0; }
+          npx playwright install chromium >/dev/null 2>&1 || {
+            echo "::warning::could not install chromium — posting text only"; exit 0; }
+          if node tools/render_story.mjs --args story_args.json --out story.png; then
+            echo "drew=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::the render failed — posting text only"
+          fi
+
       - name: Send it to Telegram
         if: steps.build.outputs.empty != 'true' && env.TG_TOKEN != ''
         id: telegram
@@ -182,6 +206,27 @@ jobs:
                   {"text": "Post on X", "url": d["intent"]}]]},
           }))
           PY
+          # WITH THE PICTURE IF THERE IS ONE. sendPhoto takes the same inline keyboard, so
+          # the Post on X button survives — and the caption cap is 1024, comfortably above
+          # a post built to fit 280. The image cannot ride along to X (an intent link
+          # carries text only), so it is here to look at and to attach by hand.
+          if [ "${{ steps.story.outputs.drew }}" = "true" ] && [ -s story.png ]; then
+            code=$(curl -s -o tg.json -w '%{http_code}' --max-time 60 \
+              -X POST "https://api.telegram.org/bot$TG_TOKEN/sendPhoto" \
+              -F "chat_id=$TG_CHAT" \
+              -F "photo=@story.png" \
+              -F "caption=$(python3 -c "import json;print(json.load(open('payload.json'))['text'])")" \
+              -F "reply_markup=$(python3 -c "import json;print(json.dumps(json.load(open('payload.json'))['reply_markup']))")" \
+              || true)
+            echo "sendPhoto HTTP $code"
+            if [ "$code" = "200" ]; then
+              echo "::notice::sent to Telegram with the picture"
+              echo "sent=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            echo "::warning::sendPhoto failed (HTTP $code) — falling back to text"
+          fi
+
           code=$(curl -s -o tg.json -w '%{http_code}' --max-time 30 \
             -X POST "https://api.telegram.org/bot$TG_TOKEN/sendMessage" \
             -H 'content-type: application/json' --data-binary @payload.json || true)

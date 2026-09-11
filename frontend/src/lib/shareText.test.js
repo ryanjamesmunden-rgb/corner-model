@@ -7,7 +7,7 @@
  */
 import { streakShare, fixtureShare, bestTeamsShare, streakResultShare,
          fixtureStreakShare, telegramPick, wonLadder, openGameCase, postHeader,
-         pickGame, gameShare, weekendCard, picksReview,
+         pickGame, gameShare, weekendCard, picksReview, moreVia,
          postDate, postTime, pickLabel } from "./shareText";
 
 const NORWAY = "\u{1F1F3}\u{1F1F4}";
@@ -543,14 +543,38 @@ describe("the game of the day", () => {
     expect(pick.name).toBe("ShortAndLessBad");
   });
 
-  test("renders the three lines, in the right order", () => {
+  test("renders plain — one stat a line, no separators between clauses", () => {
     const out = gameShare({ row: pickGame(board) })();
-    const [when, where, why] = out.split("\n");
+    const lines = out.split("\n");
     // The hour is the READER'S clock, so it is asserted by shape — pinning 11:00am
     // would only be asserting the timezone the suite happens to run in.
-    expect(when).toMatch(/^📅 Sunday 13th September @ \d{1,2}:\d{2}(am|pm)$/);
-    expect(where).toBe("🇧🇪 Jupiler Pro League / Club Brugge v Antwerp");
-    expect(why).toBe("🔥 Club Brugge 5+ corners in 9 straight / 🎯 averaging 8.2 a game");
+    expect(lines[0]).toMatch(/^📅 Sunday 13th September \d{1,2}:\d{2}(am|pm)$/);
+    expect(lines[1]).toBe("🇧🇪 Jupiler Pro League Club Brugge v Antwerp");
+    expect(lines[2]).toBe("🔥 Club Brugge 5+ corners 9 in a row");
+    expect(lines[3]).toBe("🎯 averaging 8.2 a game");
+  });
+
+  test("no template punctuation anywhere in it", () => {
+    // A post that reads as generated gets scrolled past. The @, the slashes between
+    // clauses and the em-dashes all went for that reason.
+    const out = gameShare({ row: pickGame(board) })();
+    expect(out).not.toContain(" @ ");
+    expect(out).not.toContain(" / ");
+    expect(out).not.toContain("—");
+    expect(out).not.toContain(" · ");
+  });
+
+  test("the only blank line in the post is the one before the tail", () => {
+    const out = gameShare({ row: pickGame(board), more: 14, site: "https://thecornermodel.com" })();
+    expect(out.split("\n\n")).toHaveLength(2);
+    expect(out.endsWith("14+ more via: thecornermodel.com")).toBe(true);
+  });
+
+  test("the tail counts other angles, and drops the scheme X does not need", () => {
+    expect(moreVia(14, "https://thecornermodel.com")).toBe("\n\n14+ more via: thecornermodel.com");
+    expect(moreVia(0, "https://thecornermodel.com")).toBe("\n\nMore via: thecornermodel.com");
+    // No site configured is not a reason to publish a dangling "more via:".
+    expect(moreVia(14, "")).toBe("");
   });
 
   test("an away team is named on the right side of the v", () => {
@@ -560,7 +584,7 @@ describe("the game of the day", () => {
   });
 
   test("a flag rather than a fire below the fire line", () => {
-    expect(gameShare({ row: board[3] })()).toContain("🚩 Grimsby 6+ corners in 5 straight");
+    expect(gameShare({ row: board[3] })()).toContain("🚩 Grimsby 6+ corners 5 in a row");
     expect(gameShare({ row: board[1] })()).toContain("🔥");
   });
 
@@ -578,7 +602,7 @@ describe("the game of the day", () => {
     // The run and the average are facts about games already played. Giving those away
     // costs nothing; giving the price away costs the subscription.
     const out = gameShare({ row: pickGame(board) })();
-    expect(out).toContain("9 straight");
+    expect(out).toContain("9 in a row");
     expect(out).toContain("averaging 8.2 a game");
   });
 

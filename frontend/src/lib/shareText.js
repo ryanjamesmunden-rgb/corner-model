@@ -365,7 +365,37 @@ export const pickGame = (rows = [], minProb = GAME_MIN_PROB) => {
  * NO PRICE, same rule as every other public post. The run and the average are facts about
  * games already played, which anyone could look up; the model's number is the product.
  */
-export const gameShare = ({ row = {} } = {}) => () => {
+/**
+ * The tail every game post ends on: a clear gap, then where the rest are.
+ *
+ * THE LINK IS IN THE TEXT, not appended by the share intent. X's `&url=` parameter would
+ * put a second copy of the same address at the end of the tweet, which is what happens
+ * when a post carries its own link and the intent adds one too.
+ *
+ * The scheme is stripped because X linkifies a bare domain anyway, and "https://" is eight
+ * characters of nothing on a post with 280 to spend.
+ */
+export const moreVia = (count, site = "") => {
+  const where = String(site).replace(/^https?:\/\//, "").replace(/\/$/, "");
+  if (!where) return "";
+  return count > 0 ? `\n\n${count}+ more via: ${where}` : `\n\nMore via: ${where}`;
+};
+
+/**
+ * One game, the way it actually gets typed.
+ *
+ * PLAIN. No `@`, no slashes between clauses, no em-dashes — those read as a template
+ * rather than as someone posting a game, and a post that looks generated gets scrolled
+ * past. What is left is an emoji, a fact, and a line break.
+ *
+ * ONE STAT PER LINE, and no blank line between them. The gap is reserved for the tail, so
+ * the only visual break in the post is the one that separates the game from the call to
+ * action.
+ *
+ * `more` is how many OTHER angles are live on the site, not how many this post trimmed.
+ * The post shows one game; the reason to click is everything it is not showing.
+ */
+export const gameShare = ({ row = {}, more = 0, site = "" } = {}) => () => {
   const fx = row?.next_fixture;
   if (!fx?.date) return "";
   const home = fx.is_home ? row.name : fx.opponent;
@@ -374,15 +404,16 @@ export const gameShare = ({ row = {} } = {}) => () => {
 
   const day = postDate(fx.date);
   const time = postTime(fx.date);
-  const when = [day, time].filter(Boolean).join(" @ ");
+  const when = [day, time].filter(Boolean).join(" ");
   const league = row.league_name || "";
-  const where = `${flagBullet(row.league_id, "")} ${league}`.trim();
+  const where = `${flagBullet(row.league_id, "")} ${league} ${home} v ${away}`
+    .replace(/\s+/g, " ").trim();
 
   const run = Number(row.streak?.length) || 0;
   const marks = [];
   if (run >= 2 && row.line_label) {
     marks.push(`${run >= GAME_FIRE_RUN ? "🔥" : "🚩"} ${row.name} ${row.line_label} `
-      + `corners in ${run} straight`);
+      + `corners ${run} in a row`);
   }
   // Trending form, in the only sense this post is about: how many corners they are
   // actually winning. Dropped rather than guessed where the window never reported one.
@@ -397,8 +428,8 @@ export const gameShare = ({ row = {} } = {}) => () => {
   // It is still SHOWN to whoever is about to post, just not inside the post: the draft
   // carries the model's number in its own note line (see tools/social_draft.mjs), which
   // reaches the Telegram message header and never the tweet.
-  return [when && `📅 ${when}`, `${where} / ${home} v ${away}`.trim(), marks.join(" / ")]
-    .filter(Boolean).join("\n");
+  return [when && `📅 ${when}`, where, ...marks].filter(Boolean).join("\n")
+    + moreVia(more, site);
 };
 //
 // The VIP channel gets a pick written to a fixed shape — date, league, fixture, line,

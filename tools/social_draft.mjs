@@ -28,7 +28,7 @@ const LIB = resolve(HERE, "..", "frontend", "src", "lib");
 
 // The lib modules import each other by relative path and use no bundler features, so
 // they load as-is. `shareText.js` pulls in countryFlag and kickoff itself.
-const { streakShare, fixtureShare, streakResultShare, pickGame, gameShare, weekendCard,
+const { streakShare, fixtureShare, streakResultShare, pickGame, pickGameDetailed, gameShare, weekendCard,
         picksReview } = await import(resolve(LIB, "shareText.js"));
 const { fixtureStoryMarkets } = await import(resolve(LIB, "storyImage.js"));
 const { kickoffLabel } = await import(resolve(LIB, "kickoff.js"));
@@ -241,7 +241,10 @@ ${card}
 // ---- one game, posted whole. A board is a list; this is a game, and it gets three lines
 // to say when it is, who is playing and why it is worth a look. See gameShare.
 if (BOARD === "game") {
-  const row = pickGame(data.streaks || []);
+  // VALUE FIRST where a real price exists, form only when none does. `basis` says which,
+  // so the note can be honest about it rather than letting a confidence ranking read as a
+  // value one — see pickGameDetailed.
+  const { row, basis } = pickGameDetailed(data.streaks || []);
   if (!row) skip("no game today carries a run worth posting on its own");
   // EVERY OTHER ANGLE ON THE SITE, not what this post trimmed. The post shows one game;
   // the reason to click is all the ones it is not showing.
@@ -289,12 +292,17 @@ ${post}
 \`\`\`
 
 ${weight} / 280 characters as X counts them.
+Chosen on ${basis === "value" ? "VALUE — the biggest edge over a price you typed in"
+  : "FORM — no bookmaker price stored, so this is the model's confidence, NOT value"}.
 ${row.name} ${row.line_label}: ${row.streak?.length} in a row, model ${prob ?? "—"}%${
   row.projection?.fair_odds ? ` (fair ${row.projection.fair_odds})` : ""}${
   data.data_age_hours != null ? `, on data ${data.data_age_hours}h old` : ""}.
 No price appears in this post — see gameShare.
 `, { empty: false, board: "game", post, intent, weight, full: post, story,
-     note: `${row.name} ${row.line_label} · ${row.streak?.length} in a row · model ${prob ?? "—"}%` });
+     note: `${row.name} ${row.line_label} · ${row.streak?.length} in a row · model ${prob ?? "—"}%`
+       + (basis === "value"
+           ? ` · picked on VALUE, EV ${row.projection?.ev > 0 ? "+" : ""}${row.projection?.ev}%`
+           : " · picked on form — no real price to measure value against") });
   process.exit(0);
 }
 

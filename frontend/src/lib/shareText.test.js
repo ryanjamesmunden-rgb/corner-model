@@ -7,7 +7,7 @@
  */
 import { streakShare, fixtureShare, bestTeamsShare, streakResultShare,
          fixtureStreakShare, telegramPick, wonLadder, openGameCase, postHeader,
-         pickGame, gameShare, weekendCard, picksReview, moreVia,
+         pickGame, pickGameDetailed, gameShare, weekendCard, picksReview, moreVia,
          postDate, postTime, pickLabel } from "./shareText";
 
 const NORWAY = "\u{1F1F3}\u{1F1F4}";
@@ -764,5 +764,84 @@ describe("the picks review", () => {
 
   test("the channel is nameable, since the post says whose picks these are", () => {
     expect(picksReview({ rows, channel: "Telegram", now })(6)).toContain("Telegram picks");
+  });
+});
+
+// VALUE BEATS FORM, WHERE THERE IS A PRICE TO MEASURE IT AGAINST.
+//
+// A run of 5 from 5 is a fact about five games that might be five coin flips. A price the
+// model beats is a claim about THIS game. What is pinned here is that order, and the one
+// way it could go badly wrong: ranking on a price the model generated for itself.
+describe("picking on value rather than form", () => {
+  const R = (name, run, prob, ev, odds_source) => ({
+    name, league_id: "nor-el", league_name: "L", line_label: "5+", avg: 7,
+    streak: { length: run },
+    projection: { prob, fair_odds: Number((100 / prob).toFixed(2)), ev, odds_source },
+    next_fixture: { date: "2026-09-13T10:00:00Z", opponent: "X", is_home: true },
+  });
+
+  test("a real priced edge beats a longer run with no price", () => {
+    const got = pickGameDetailed([
+      R("LongRunNoPrice", 11, 70, null, null),
+      R("SmallerRunRealEdge", 4, 58, 8.4, "manual"),
+    ]);
+    expect(got.row.name).toBe("SmallerRunRealEdge");
+    expect(got.basis).toBe("value");
+  });
+
+  test("the biggest edge wins, not the longest run among the priced", () => {
+    const got = pickGameDetailed([
+      R("BigRunSmallEdge", 12, 75, 1.2, "manual"),
+      R("SmallRunBigEdge", 3, 52, 14.0, "manual"),
+    ]);
+    expect(got.row.name).toBe("SmallRunBigEdge");
+  });
+
+  test("a seeded demo price cannot pose as an edge", () => {
+    // seed_team_odds writes fair_odds * rng.uniform(0.90, 1.15). An EV against that is the
+    // model finding value in its own jitter, and it looks exactly like a real edge.
+    const got = pickGameDetailed([
+      R("SeededFakeEdge", 3, 52, 22.0, "demo"),
+      R("HonestForm", 9, 71, null, null),
+    ]);
+    expect(got.row.name).toBe("HonestForm");
+    expect(got.basis).toBe("confidence");
+  });
+
+  test("an unmarked price is unknown, and unknown is not real", () => {
+    // Documents written before the stamp existed. Treating them as real would quietly
+    // re-open the exact hole the stamp closes.
+    const got = pickGameDetailed([
+      R("UnstampedEdge", 3, 52, 19.0, undefined),
+      R("HonestForm", 9, 71, null, null),
+    ]);
+    expect(got.row.name).toBe("HonestForm");
+    expect(got.basis).toBe("confidence");
+  });
+
+  test("a negative edge is not an edge — it falls back to form", () => {
+    // The best of a bad set is still a bad bet, and posting the least negative EV on the
+    // board is worse than posting form.
+    const got = pickGameDetailed([
+      R("PricedButBad", 3, 52, -6.0, "manual"),
+      R("GoodForm", 9, 71, null, null),
+    ]);
+    expect(got.row.name).toBe("GoodForm");
+    expect(got.basis).toBe("confidence");
+  });
+
+  test("with no prices at all it says so rather than implying value", () => {
+    const got = pickGameDetailed([R("A", 9, 71, null, null), R("B", 4, 60, null, null)]);
+    expect(got.basis).toBe("confidence");
+    expect(got.row.name).toBe("A");
+  });
+
+  test("an empty board reports neither a row nor a basis to trust", () => {
+    expect(pickGameDetailed([])).toEqual({ row: null, basis: "none" });
+  });
+
+  test("pickGame still returns just the row, for callers that do not care", () => {
+    const rows = [R("A", 9, 71, null, null)];
+    expect(pickGame(rows)).toBe(pickGameDetailed(rows).row);
   });
 });

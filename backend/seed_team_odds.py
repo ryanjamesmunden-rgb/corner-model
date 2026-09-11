@@ -35,7 +35,7 @@ async def main():
                 fo = fair_odds(p)
                 if fo and 1.2 <= fo <= 15:  # skip implausible extremes
                     odds[f"{group}_over_{line}"] = round(fo * rng.uniform(0.90, 1.15), 2)
-        await db.odds.update_one({"fixture_id": fx["fixture_id"]}, {"$set": {"odds": odds}}, upsert=True)
+        await db.odds.update_one({"fixture_id": fx["fixture_id"]}, {"$set": {"source": "demo", "odds": odds}}, upsert=True)
         updated += 1
     print(f"Seeded team-corner demo odds for {updated} fixtures")
 

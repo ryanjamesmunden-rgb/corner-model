@@ -32,7 +32,7 @@ async def main():
             fo = fair_odds(p)
             if fo:
                 odds[f"total_over_{line}"] = round(fo * rng.uniform(0.92, 1.16), 2)
-        await db.odds.update_one({"fixture_id": fx["fixture_id"]}, {"$set": {"odds": odds}})
+        await db.odds.update_one({"fixture_id": fx["fixture_id"]}, {"$set": {"source": "demo", "odds": odds}})
         updated += 1
     print(f"Realigned demo odds for {updated} fixtures")
 

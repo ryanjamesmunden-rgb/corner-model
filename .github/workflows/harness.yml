@@ -30,6 +30,7 @@ on:
         default: totals
         options:
           - totals          # which distribution should price a match total
+          - team_r          # is NB_R=11 the right dispersion for a team line
           - state_bias      # where the model is wrong, by half-time game state
           - goal_scores     # SPENDS CREDITS — fill half-time scores, needed by state_bias
           - chase_board     # does the chase board's ranking find underrated spots
@@ -82,6 +83,7 @@ jobs:
             URL="$BACKEND/api/tools/measure?mode=$H&token=$TOOLS_TOKEN"
             case "$H" in
               totals)      SCRIPT="tune_totals" ;;
+              team_r)      SCRIPT="tune_model" ;;
               state_bias)  SCRIPT="measure_game_state" ;;
               chase_board) SCRIPT="measure_chase_board" ;;
               *)           SCRIPT="measure_features" ;;

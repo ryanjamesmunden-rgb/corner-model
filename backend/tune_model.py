@@ -1,5 +1,22 @@
 """Offline model tuning: walk-forward compare candidate corner models on Brier +
-calibration. Finds a v2 that beats v1 before anything ships to production."""
+calibration. Finds a v2 that beats v1 before anything ships to production.
+
+WHY THE r SWEEP IS WIDER THAN IT WAS. This chose NB_R = 11 for team lines, and for a long
+time the only candidates it compared were r=10 and r=11 — so "11 is best" meant "11 beat
+10", which is a much smaller claim than it reads as. Nothing here had ever looked above 11.
+
+tune_totals.py then produced a reason to. Convolving the shipped team curves (r=11) to get
+a match total lands 4pp LOW at 7+ — 79.9% against an actual 84.0% — and raising r closes
+it: r=24 reaches 82.4%. That is indirect evidence about the team curves, because it reaches
+them through the convolution, but the obvious escape route does not work. Convolution
+assumes the two sides are independent; they are positively correlated, so the true total is
+WIDER than the convolution says, which would push P(7+) DOWN — further from the actual, not
+towards it. Correlation cannot explain a convolution that is already too low. The team
+curves being too dispersed can.
+
+So this now sweeps r properly and scores it where it belongs: against team corner outcomes
+directly, rather than inferred through a sum.
+"""
 import os
 import math
 import asyncio
@@ -15,6 +32,10 @@ db = AsyncIOMotorClient(os.environ["MONGO_URL"])[os.environ["DB_NAME"]]
 LINES = [4, 5, 6, 7]
 WINDOW = 10
 MIN_GAMES = 5
+# What ships today, and the range around it. 10 and 11 were the entire sweep before —
+# see the note at the top for why the useful range turned out to be higher.
+NB_R_LIVE = 11
+R_SWEEP = [8, 10, 11, 14, 18, 24, 30]
 
 
 def pois_ge(L, lam):
@@ -43,7 +64,12 @@ def avg(d):
 
 async def run():
     matches = await db.fixture_stats.find({}, {"_id": 0}).to_list(40000)
-    matches.sort(key=lambda m: m["date"])
+    # A cached fixture with no corner count is a document this cannot score, and reaching
+    # m["home_corners"] on one is a KeyError thirty seconds into a run. tune_totals.py
+    # already filters the same way.
+    matches = [m for m in matches
+               if m.get("home_corners") is not None and m.get("away_corners") is not None]
+    matches.sort(key=lambda m: m.get("date") or "")
     all_sf = [m.get("home_shots", 0) for m in matches] + [m.get("away_shots", 0) for m in matches]
     lg_shots = sum(all_sf) / len(all_sf) if all_sf else 12.0
 
@@ -53,8 +79,8 @@ async def run():
     fhg = defaultdict(lambda: deque(maxlen=WINDOW))
 
     # model -> line -> [pred_sum, hit, n, brier]
-    models = ["v1_pois", "nb_r10", "nb_r11",
-              "nb10_shots", "nb10_shotsform", "nb11_shotsform"]
+    models = (["v1_pois"] + [f"nb_r{r}" for r in R_SWEEP]
+              + ["nb10_shots", "nb10_shotsform", "nb11_shotsform"])
     stat = {m: {L: [0.0, 0, 0, 0.0] for L in LINES} for m in models}
 
     def predict(model, tf, oa, tsf, tfhg):
@@ -96,6 +122,7 @@ async def run():
 
     print(f"matches={len(matches)}\n")
     print(f"{'model':22} {'Brier':>7} {'avg|gap|':>9}   per-line gap (model% vs actual%)")
+    rows = []
     for model in models:
         tb = tn = 0.0; gaps = []; detail = []
         for L in LINES:
@@ -106,7 +133,29 @@ async def run():
             gaps.append(abs(mp - ah)); tb += s[3]; tn += s[2]
             detail.append(f"{L}+:{mp:4.1f}/{ah:4.1f}")
         brier = tb / tn if tn else 0
-        print(f"{model:22} {brier:7.4f} {sum(gaps)/len(gaps):9.2f}   {' '.join(detail)}")
+        gap = sum(gaps) / len(gaps) if gaps else 0
+        rows.append((brier, gap, model))
+        print(f"{model:22} {brier:7.4f} {gap:9.2f}   {' '.join(detail)}")
+
+    # WITHOUT THIS IT IS A TABLE, AND A TABLE GETS READ AS WHICHEVER ROW THE READER LIKED.
+    # The r sweep exists to answer one question — is 11 the right dispersion for a team
+    # line — so the answer has to be stated, including when the answer is "yes, leave it".
+    pure = [r for r in rows if r[2].startswith("nb_r")]
+    if pure:
+        best = min(pure)
+        live = next((r for r in pure if r[2] == f"nb_r{NB_R_LIVE}"), None)
+        print(f"\nbest r on Brier:  {best[2]} ({best[0]:.4f}, avg gap {best[1]:.2f}pp)")
+        print(f"best r on gap:    {min(pure, key=lambda x: x[1])[2]}")
+        if live:
+            d = live[0] - best[0]
+            print(f"live today:       nb_r{NB_R_LIVE} ({live[0]:.4f}, avg gap {live[1]:.2f}pp)")
+            print(f"Brier improvement available: {d:+.4f}"
+                  f"{'  — nothing beats what ships' if d <= 1e-9 else ''}")
+        print("\nr is DISPERSION, and higher means narrower: var = lam + lam^2/r. A win of"
+              "\nless than ~0.001 Brier is noise at this sample size — r=11 was itself chosen"
+              "\non a margin this harness can reproduce. Read the per-line columns before"
+              "\nmoving anything: a model that wins on average while missing badly at 5+ or 6+"
+              "\nis worse where the lines actually get bet.")
 
 
 if __name__ == "__main__":

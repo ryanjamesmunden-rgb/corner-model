@@ -206,25 +206,33 @@ jobs:
                   {"text": "Post on X", "url": d["intent"]}]]},
           }))
           PY
-          # WITH THE PICTURE IF THERE IS ONE. sendPhoto takes the same inline keyboard, so
-          # the Post on X button survives — and the caption cap is 1024, comfortably above
-          # a post built to fit 280. The image cannot ride along to X (an intent link
-          # carries text only), so it is here to look at and to attach by hand.
+          # WITH THE PICTURE IF THERE IS ONE, AS A FILE RATHER THAN A PHOTO.
+          #
+          # sendPhoto COMPRESSES: Telegram re-encodes and caps the long side around 1280,
+          # so a 1080x1920 card arrives as roughly 720x1280. That is fine to glance at and
+          # not fine to post — the card is drawn at exactly Instagram Story size, and the
+          # whole point of saving it is to put the full-resolution original up. sendDocument
+          # stores the bytes untouched.
+          #
+          # It takes the same caption and the same inline keyboard, so the Post on X button
+          # survives, and the caption cap is 1024 — comfortably above a post built for 280.
+          # The image cannot ride along to X (an intent link carries text only), so it is
+          # here to look at, to save, and to attach by hand.
           if [ "${{ steps.story.outputs.drew }}" = "true" ] && [ -s story.png ]; then
             code=$(curl -s -o tg.json -w '%{http_code}' --max-time 60 \
-              -X POST "https://api.telegram.org/bot$TG_TOKEN/sendPhoto" \
+              -X POST "https://api.telegram.org/bot$TG_TOKEN/sendDocument" \
               -F "chat_id=$TG_CHAT" \
-              -F "photo=@story.png" \
+              -F "document=@story.png" \
               -F "caption=$(python3 -c "import json;print(json.load(open('payload.json'))['text'])")" \
               -F "reply_markup=$(python3 -c "import json;print(json.dumps(json.load(open('payload.json'))['reply_markup']))")" \
               || true)
-            echo "sendPhoto HTTP $code"
+            echo "sendDocument HTTP $code"
             if [ "$code" = "200" ]; then
-              echo "::notice::sent to Telegram with the picture"
+              echo "::notice::sent to Telegram with the picture, uncompressed"
               echo "sent=true" >> "$GITHUB_OUTPUT"
               exit 0
             fi
-            echo "::warning::sendPhoto failed (HTTP $code) — falling back to text"
+            echo "::warning::sendDocument failed (HTTP $code) — falling back to text"
           fi
 
           code=$(curl -s -o tg.json -w '%{http_code}' --max-time 30 \

@@ -87,6 +87,9 @@ export const api = {
   betsWeek: (days) => axios.get(`${API}/bets/week`, { params: { days } }).then((r) => r.data),
   chaseBoard: (params) => axios.get(`${API}/chase-board`, { params }).then(withPreview),
   fixtureBoard: (params) => axios.get(`${API}/fixture-board`, { params }).then((r) => r.data),
+  // Every upcoming game ranked by projected corners — including the ones the fixture
+  // board drops, which is the whole point. See the note on /api/projections.
+  projections: (params) => axios.get(`${API}/projections`, { params }).then(withPreview),
   topCornerTeams: (params) => axios.get(`${API}/top-corner-teams`, { params }).then((r) => r.data),
   perfectGames: (params) => axios.get(`${API}/perfect-games`, { params }).then(withPreview),
   topMismatches: (params) => axios.get(`${API}/top-mismatches`, { params }).then(withPreview),

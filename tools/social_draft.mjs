@@ -30,6 +30,8 @@ const LIB = resolve(HERE, "..", "frontend", "src", "lib");
 // they load as-is. `shareText.js` pulls in countryFlag and kickoff itself.
 const { streakShare, fixtureShare, streakResultShare, pickGame, gameShare, weekendCard } =
   await import(resolve(LIB, "shareText.js"));
+const { fixtureStoryMarkets } = await import(resolve(LIB, "storyImage.js"));
+const { kickoffLabel } = await import(resolve(LIB, "kickoff.js"));
 const { fitToPost, weightedLength, URL_WEIGHT, X_SHARE_ROWS } = await import(resolve(LIB, "xLimit.js"));
 const { boardForDay } = await import(resolve(LIB, "postPlan.js"));
 
@@ -83,6 +85,21 @@ const get = async (path, label) => {
     return await res.json();
   } catch (err) {
     fail(`could not reach ${BACKEND} — ${err.name === "TimeoutError" ? "timed out after 60s" : err.message}`);
+  }
+};
+
+/** Like get, but a failure is NOT fatal.
+ *
+ * For things the post is better with and fine without — the picture, so far. `get` exits
+ * the process on any non-404, which is right when the fetch IS the post and catastrophic
+ * when it is the decoration: a 500 on the fixture endpoint would take down a text post
+ * that was already built and correct. */
+const getSoft = async (path) => {
+  try {
+    const res = await fetch(`${BACKEND}${path}`, { signal: AbortSignal.timeout(45000) });
+    return res.ok ? await res.json() : null;
+  } catch {
+    return null;
   }
 };
 
@@ -183,6 +200,34 @@ if (BOARD === "game") {
   if (!row) skip("no game today carries a run worth posting on its own");
   const post = gameShare({ row })();
   if (!post) skip("the best row has no fixture attached — nothing to post about");
+
+  // THE PICTURE, built from the same fixture the text is about.
+  //
+  // A separate call, because the board rows carry no probability CURVE — only the single
+  // number for their own line. The curve is what makes the image worth looking at, and it
+  // lives on the fixture endpoint, which is public: no token, and a failure here must not
+  // cost the post, so it degrades to text rather than throwing.
+  let story = null;
+  const fid = row.next_fixture?.fixture_id;
+  if (fid) {
+    const detail = await getSoft(`/api/fixtures/${encodeURIComponent(fid)}`);
+    const dists = detail?.model?.distribution;
+    // The group the ANGLE is about — a home-corners streak should not draw the match
+    // total's curve underneath it.
+    const group = String(row.projection?.market_key || "total").split("_")[0];
+    const dist = dists?.[group] || dists?.total;
+    if (dist?.length) {
+      story = {
+        homeName: detail.fixture?.home_name || "",
+        awayName: detail.fixture?.away_name || "",
+        leagueId: detail.fixture?.league_id || row.league_id || "",
+        kickoff: kickoffLabel(detail.fixture?.date || row.next_fixture?.date),
+        dist, group: dists?.[group] ? group : "total",
+        markets: fixtureStoryMarkets(detail.model?.markets || [], detail.model?.lambdas || {},
+          { homeName: detail.fixture?.home_name, awayName: detail.fixture?.away_name }),
+      };
+    }
+  }
   const weight = weightedLength(post) + 1 + URL_WEIGHT;
   const intent = `https://x.com/intent/tweet?text=${encodeURIComponent(post)}&url=${encodeURIComponent(SITE)}`;
   const prob = row.projection?.prob;
@@ -197,7 +242,7 @@ ${row.name} ${row.line_label}: ${row.streak?.length} in a row, model ${prob ?? "
   row.projection?.fair_odds ? ` (fair ${row.projection.fair_odds})` : ""}${
   data.data_age_hours != null ? `, on data ${data.data_age_hours}h old` : ""}.
 No price appears in this post — see gameShare.
-`, { empty: false, board: "game", post, intent, weight, full: post,
+`, { empty: false, board: "game", post, intent, weight, full: post, story,
      note: `${row.name} ${row.line_label} · ${row.streak?.length} in a row · model ${prob ?? "—"}%` });
   process.exit(0);
 }

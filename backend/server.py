@@ -4511,15 +4511,23 @@ def board_days(rows: List[dict], per_day: int) -> List[dict]:
     return out
 
 
-async def _fixture_board(days: int = 7, per_day: int = FIXTURE_BOARD_PER_DAY,
-                         league_id: Optional[str] = None, user: dict = None,
-                         min_games: int = BOARD_MIN_GAMES, min_run: int = BOARD_MIN_RUN,
-                         min_edge: float = BOARD_MIN_EDGE) -> dict:
-    per_day = max(1, min(int(per_day), 20))
+async def _fixture_projections(days: int = 7, league_id: Optional[str] = None) -> Dict[str, dict]:
+    """Every upcoming fixture with the model's projection on it, keyed by fixture id.
+
+    SPLIT OUT OF `_fixture_board` RATHER THAN WRITTEN BESIDE IT. The board computes this
+    for every game in the window and then throws most of it away — a fixture with no
+    strong angle is dropped, and the whole bottom of the distribution with it. That is
+    right for "what should I look at tonight" and wrong for "which of these games projects
+    highest", which needs the games that did not qualify, including the quiet ones.
+
+    A second implementation would be a second `expected_lambdas` call site to keep in step,
+    and the number it produced would eventually disagree with the board's on the same
+    fixture. So there is one, and both callers use it.
+
+    NO FILTERING AT ALL beyond the date window: the caller decides what to keep. The
+    mismatch angles are built here because they are per-fixture and cheap; the chase and
+    streak angles are the board's own and stay there."""
     days = max(1, min(int(days), BOARD_MAX_DAYS))
-    min_games = max(0, min(int(min_games), 30))
-    min_run = max(1, min(int(min_run), 20))
-    min_edge = max(0.0, min(float(min_edge), 3.0))
     lid = league_id or "all"
     q = {} if lid == "all" else {"league_id": lid}
 
@@ -4583,6 +4591,21 @@ async def _fixture_board(days: int = 7, per_day: int = FIXTURE_BOARD_PER_DAY,
                                  bl_map.get(fx["league_id"], 0.0))
             if _mm:
                 rows[fx["fixture_id"]]["angles"].append(_mm)
+    return rows
+
+
+async def _fixture_board(days: int = 7, per_day: int = FIXTURE_BOARD_PER_DAY,
+                         league_id: Optional[str] = None, user: dict = None,
+                         min_games: int = BOARD_MIN_GAMES, min_run: int = BOARD_MIN_RUN,
+                         min_edge: float = BOARD_MIN_EDGE) -> dict:
+    per_day = max(1, min(int(per_day), 20))
+    days = max(1, min(int(days), BOARD_MAX_DAYS))
+    min_games = max(0, min(int(min_games), 30))
+    min_run = max(1, min(int(min_run), 20))
+    min_edge = max(0.0, min(float(min_edge), 3.0))
+    lid = league_id or "all"
+
+    rows = await _fixture_projections(days, league_id)
     if not rows:
         return {"days": [], "per_day": per_day, "within_days": days, "fixtures": 0}
 
@@ -4679,6 +4702,80 @@ async def fixture_board(days: int = 7, per_day: int = FIXTURE_BOARD_PER_DAY,
             and min_run == BOARD_MIN_RUN and min_edge == BOARD_MIN_EDGE):
         return await _screen("fixture_board")
     return await _fixture_board(days, per_day, league_id, user, min_games, min_run, min_edge)
+
+
+PROJECTION_SORTS = ("total", "edge", "home", "away")
+
+
+@api_router.get("/projections")
+async def projections(days: int = 7, league_id: Optional[str] = None,
+                      sort: str = "total", limit: int = 200,
+                      min_games: int = 0,
+                      response: Response = None,
+                      user: dict = Depends(get_current_user)):
+    """EVERY upcoming fixture ranked by projected corners — both ends of the list.
+
+    WHY THIS IS NOT THE FIXTURE BOARD. That board answers "what should I look at
+    tonight": it requires a strong angle, applies an absolute quality bar, groups by day
+    and caps each day. Three of those four make it structurally unable to answer this
+    question. A game with a big projection and nothing to bet on is dropped as trivia,
+    and the quiet end of the distribution — the games projecting LOWEST, which is what an
+    under is bet on — can never appear at all. Same numbers, opposite job.
+
+    TWO ORDERINGS, AND THEY ARE DIFFERENT QUESTIONS. Both ride on every row so they can
+    be compared rather than chosen between:
+
+      sort=total  the raw projection. "Will this game have a lot of corners?"
+      sort=edge   the projection over what that league normally produces. "Is this game
+                  busy FOR ITS LEAGUE?"
+
+    RAW TOTALS DO NOT COMPARE ACROSS LEAGUES, which is the trap this endpoint has to be
+    read with. A projected 10.5 in a league averaging 9.0 is a busy game; the same 10.5
+    where the norm is 11.5 is a quiet one. Sorted by `total` the head of the list is
+    largely a ranking of which competitions produce corners, not of which matches are
+    unusual — so `league_avg_total` is on every row, and `corner_edge` is the ordering to
+    use when the question is really "where does the model disagree with normal".
+
+    NOT A PRICE AND NOT A BET. Lambda is an expected count; it says nothing about what a
+    bookmaker is offering. A high projection with no price beside it is a lead to check,
+    which is why nothing is filtered on it here.
+
+    `min_games` is off by default so the list is complete. Raising it drops fixtures whose
+    sides have thin records — the projection for a side with four games on file is mostly
+    the league prior wearing a team's name."""
+    if sort not in PROJECTION_SORTS:
+        raise HTTPException(status_code=400,
+                            detail=f"sort must be one of: {', '.join(PROJECTION_SORTS)}")
+    rows = await _fixture_projections(days, league_id)
+    keep = [r for r in rows.values()
+            if min(r["home_games"], r["away_games"]) >= max(0, int(min_games))]
+    key = {"total": "lambda_total", "edge": "corner_edge",
+           "home": "lambda_home", "away": "lambda_away"}[sort]
+    keep.sort(key=lambda r: (r.get(key) or 0, r.get("lambda_total") or 0), reverse=True)
+
+    out = []
+    for i, r in enumerate(keep[:max(1, min(int(limit), 500))]):
+        out.append({
+            "rank": i + 1,
+            "fixture_id": r["fixture_id"], "date": r["date"],
+            "league_id": r["league_id"], "league_name": r["league_name"],
+            "home": r["home"], "away": r["away"],
+            "lambda_total": r["lambda_total"], "lambda_home": r["lambda_home"],
+            "lambda_away": r["lambda_away"],
+            "league_avg_total": r["league_avg_total"], "corner_edge": r["corner_edge"],
+            "home_games": r["home_games"], "away_games": r["away_games"],
+            # Whether there is anything to actually bet, WITHOUT making it a condition of
+            # appearing. The board's job is to hide these rows; this one's is to show them
+            # and say which carry an angle.
+            "angle_count": len(r.get("angles") or []),
+        })
+    # The full count rides along so a preview can say what it is a preview OF, and so a
+    # member can tell "nothing else qualified" from "the list was cut".
+    if response is not None:
+        response.headers["X-Total-Rows"] = str(len(keep))
+    return {"sort": sort, "within_days": days, "scanned": len(rows),
+            "returned": len(out), "total": len(keep),
+            "rows": _preview(out, user, response, limit=PREVIEW_ROWS)}
 
 
 @api_router.get("/top-corner-teams")

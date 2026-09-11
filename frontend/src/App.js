@@ -19,6 +19,7 @@ const FaqPage = lazy(() => import("@/pages/FaqPage"));
 const Saved = lazy(() => import("@/pages/Saved"));
 const Bets = lazy(() => import("@/pages/Bets"));
 const Results = lazy(() => import("@/pages/Results"));
+const Projections = lazy(() => import("@/pages/Projections"));
 
 const RouteFallback = () => (
   <div className="py-20 text-center text-muted-foreground animate-pulse font-mono-data text-sm">
@@ -53,6 +54,7 @@ function AppRouter() {
       <Route path="/results" element={page(Results)} />
       <Route path="/fixture/:id" element={page(FixtureDetail)} />
       <Route path="/prices" element={page(Prices)} />
+      <Route path="/projections" element={page(Projections)} />
       <Route path="/account" element={page(Account)} />
       {/* Deliberately OUTSIDE page(): the subscription page is for people who are not
           members yet, so it carries no app chrome — no league switcher, no nav to

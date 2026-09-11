@@ -8,6 +8,7 @@ import { fixtureShare } from "@/lib/shareText";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import StarButton from "@/components/StarButton";
 import { TONE, toneClass, toneLabel } from "@/lib/angleTone";
+import { FILTERS, applyFilter } from "@/lib/fixtureFilters";
 
 // The best upcoming games, grouped by day — a schedule you can scan, not another ranked
 // list of teams. Every other board here is team-first with the fixture riding along;
@@ -60,6 +61,10 @@ export default function FixtureBoard({ leagueId = "all" }) {
   const [loading, setLoading] = useState(true);
   const [perDay, setPerDay] = useState("5");
   const [days, setDays] = useState("3");
+  // CLIENT-SIDE, because every angle the filter tests is already on the rows the board
+  // returned. A round trip would re-ask the server a question it has already answered,
+  // and toggling between "home streak" and "both teams" would cost a spinner each time.
+  const [filter, setFilter] = useState("all");
 
   useEffect(() => {
     setLoading(true);
@@ -70,8 +75,13 @@ export default function FixtureBoard({ leagueId = "all" }) {
       .finally(() => setLoading(false));
   }, [leagueId, perDay, days]);
 
-  const allFixtures = (board?.days || []).flatMap((d) => d.fixtures || []);
+  // Filtered FIRST, so everything downstream — the count, the share text, the day groups
+  // — describes what is actually on screen. A share button that posts games the reader
+  // cannot see is worse than no share button.
+  const shown = applyFilter(board, filter);
+  const allFixtures = (shown?.days || []).flatMap((d) => d.fixtures || []);
   const fixtureCount = allFixtures.length;
+  const hidden = (shown?.before_filter || 0) - fixtureCount;
   // Shared with the scheduled post — see lib/shareText.
   const SHARE_ROWS = 8;
   const buildShare = fixtureShare({ fixtures: allFixtures, days });
@@ -114,6 +124,44 @@ export default function FixtureBoard({ leagueId = "all" }) {
 
       {/* The key. It was in the footer at 10px and went unread — colour is only useful
           if its meaning is where you meet the colour, not 300px below it. */}
+      {/* THE FILTER ROW. The board answers "what is worth opening tonight" and returns
+          every kind of angle at once, which is right as a default and wrong to scan when
+          you have a specific idea — "which of these has the HOME side on a run". */}
+      {!loading && board?.days?.length > 0 && (
+        <div className="px-4 py-2 border-b border-border flex items-center gap-1.5 flex-wrap"
+          data-testid="fb-filters">
+          <span className="text-[10px] uppercase tracking-wider text-muted-foreground mr-1">
+            Show
+          </span>
+          {FILTERS.map((f) => (
+            <button key={f.key} onClick={() => setFilter(f.key)} title={f.hint}
+              data-testid={`fb-filter-${f.key}`}
+              className={`text-[11px] px-2 py-1 rounded border transition-colors ${
+                filter === f.key
+                  ? "bg-primary text-primary-foreground border-primary font-semibold"
+                  : "bg-secondary/40 text-muted-foreground border-border hover:text-foreground"}`}>
+              {f.label}
+            </button>
+          ))}
+          {filter !== "all" && (
+            <span className="text-[10px] text-muted-foreground w-full mt-1">
+              {FILTERS.find((f) => f.key === filter)?.hint}
+              {hidden > 0 && (
+                <>
+                  {" "}Hiding {hidden} of {shown.before_filter} that cleared the bar.
+                  {/* The per-day CEILING is applied server-side, before this filter ever
+                      sees a row. So "no games" here can mean "none exist" or "the ones
+                      that do were trimmed before they arrived" — two different facts, and
+                      only one of them is about football. */}
+                  {fixtureCount === 0 && " Try a longer window, or raise the per-day count —"
+                    + " this filters what the board already trimmed."}
+                </>
+              )}
+            </span>
+          )}
+        </div>
+      )}
+
       {!loading && board?.days?.length > 0 && (
         <div className="px-4 py-2 border-b border-border flex items-center gap-2 flex-wrap"
           data-testid="fb-legend">
@@ -150,7 +198,7 @@ export default function FixtureBoard({ leagueId = "all" }) {
         </p>
       ) : (
         <div className="divide-y divide-border">
-          {board.days.map((d) => (
+          {shown.days.map((d) => (
             <div key={d.day} data-testid="fb-day">
               <div className="flex items-center gap-2 px-4 py-2 bg-secondary/40">
                 <span className="text-xs font-head font-semibold text-foreground">{dayLabel(d.day)}</span>
@@ -166,8 +214,10 @@ export default function FixtureBoard({ leagueId = "all" }) {
                 // Saying so beats hiding the day: a missing date reads as broken data,
                 // and "nothing qualified" is itself the answer to "what's on tonight".
                 <p className="px-4 py-3 text-xs text-muted-foreground" data-testid="fb-day-empty">
-                  Nothing cleared the bar
-                  {d.scanned ? ` — ${d.scanned} fixture${d.scanned === 1 ? "" : "s"} on, none with enough behind ${d.scanned === 1 ? "it" : "them"}` : ""}.
+                  {filter !== "all" && d.before_filter > 0
+                    ? `${d.before_filter} game${d.before_filter === 1 ? "" : "s"} cleared the bar, none matching this filter.`
+                    : <>Nothing cleared the bar
+                  {d.scanned ? ` — ${d.scanned} fixture${d.scanned === 1 ? "" : "s"} on, none with enough behind ${d.scanned === 1 ? "it" : "them"}` : ""}.</>}
                 </p>
               )}
             </div>

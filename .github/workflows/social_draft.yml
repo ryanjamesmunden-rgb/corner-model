@@ -14,14 +14,26 @@
 #   Mon  picks     how the angles posted to the channel actually landed
 #   Tue  game      the midweek fixture with the strongest angle on it
 #   Wed  streaks   what is trending — AND the weekend card to the paid channel
-#   Thu  —         nothing. A day off, deliberately
+#   Thu  —         nothing published. A day off, deliberately
 #   Fri  game      the best game of the weekend, and freeze the streaks
 #   Sat  game      what is on today
 #   Sun  game      what is on today
 #
-# THURSDAY IS SILENT ON PURPOSE. Every scheduling instinct says fill the slot, and filling
-# it is how an account starts posting things nobody needed to read. The whole job exits
-# early that day rather than reaching for a board to put in the gap.
+# THAT TABLE IS WHAT GOES OUT TO AN AUDIENCE. Two further messages go to YOU, every day
+# including Thursday, and neither is a publication:
+#
+#   the angle menu      every angle the site has, numbered, to pick from
+#   the day's best game the single strongest pick, with the animation, its own Post button
+#
+# The best-game message is SKIPPED on Tue/Fri/Sat/Sun, because on those days the public
+# draft above already is that same pick rendered from the same call — and a daily poster
+# that sends you the same thing twice is one you learn to ignore.
+#
+# THURSDAY IS SILENT ON PURPOSE, and that means silent towards an AUDIENCE. Every
+# scheduling instinct says fill the public slot, and filling it is how an account starts
+# posting things nobody needed to read. The two messages above have no audience but you,
+# and the week's own description of Thursday is "scan the weekend" — which needs something
+# to scan. So Thursday drafts nothing and still tells you what is coming.
 #
 # THE WEEKEND IS PREPPED WEDNESDAY AND POSTED FRIDAY. Wednesday is roughly when the
 # weekend's prices appear, so that is when the channel gets the card — two clear days
@@ -131,9 +143,18 @@ jobs:
           # matches the one that run wrote rather than a UTC day that may differ.
           echo "friday=$(TZ=Europe/London date -d '3 days ago' +%F)" >> "$GITHUB_OUTPUT"
           echo "pretty=$(TZ=Europe/London date '+%a %d %b')" >> "$GITHUB_OUTPUT"
+          # WHICH BOARD THE WEEK CALLS FOR TODAY. Needed because the daily best-game post
+          # below must not double up on the days the public draft is already a game — Tue,
+          # Fri, Sat and Sun. Read from the plan rather than re-listed here, so the week
+          # keeps exactly one definition.
+          echo "board=$(node -e "import('./frontend/src/lib/postPlan.js').then(m=>console.log(m.boardForDay($weekday).board||''))")" >> "$GITHUB_OUTPUT"
+          echo "plandays=$(node -e "import('./frontend/src/lib/postPlan.js').then(m=>console.log(m.boardForDay($weekday).days||3))")" >> "$GITHUB_OUTPUT"
 
       - name: Wake the backend
-        if: steps.when.outputs.quiet != 'true'
+        # NO LONGER GATED ON THE QUIET DAY. Thursday publishes nothing, but the two
+        # messages that go to you rather than to an audience still go out — and they need
+        # the backend up.
+        #
         # Render sleeps the free instance; the first request after a quiet spell can be the
         # one that times out. Same reason sync.yml does this.
         run: |
@@ -378,7 +399,11 @@ jobs:
         # take the day's post down with it.
         #
         # Skipped on a quiet day — Thursday is silent, and a menu is still a notification.
-        if: steps.when.outputs.quiet != 'true' && inputs.board == '' && env.TG_TOKEN != ''
+        # RUNS ON THURSDAY TOO, and that is not a contradiction of the quiet day. Thursday
+        # is silent towards an AUDIENCE — no X draft, no channel card. The menu has no
+        # audience but you, and the week's own description of Thursday is "scan the
+        # weekend", which needs something to scan.
+        if: inputs.board == '' && env.TG_TOKEN != ''
         run: |
           node tools/social_draft.mjs --board menu --days 3 --out menu.md --json-out menu.json || {
             echo "::warning::could not build the angle menu — the post above is unaffected"; exit 0; }
@@ -412,6 +437,110 @@ jobs:
           TOOLS_TOKEN: ${{ secrets.TOOLS_TOKEN }}
           TG_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TG_CHAT: ${{ secrets.TELEGRAM_CHAT_ID }}
+
+      - name: Send you the day's best game, with the animation
+        # THE PICK, EVERY DAY, AS ITS OWN MESSAGE.
+        #
+        # The week's public rotation is unchanged: Monday still reviews, Wednesday still
+        # does streaks and the weekend card. But those days left you with no single game to
+        # look at, and the animation — which is the thing that stops a thumb — only ever
+        # gets rendered for the `game` board. So the best pick now goes out every day
+        # regardless of what the day is publishing.
+        #
+        # SEPARATE, NOT MERGED. It carries its own Post on X button and its own clip, and
+        # folding it into the day's draft would mean one message with two posts in it and
+        # no way to tell which button belonged to which.
+        #
+        # SKIPPED WHEN THE DAY IS ALREADY A GAME — Tue, Fri, Sat, Sun — because on those
+        # days the draft above IS this, rendered from the same call. Sending it twice is
+        # how a daily poster teaches you to ignore it.
+        #
+        # RUNS ON THURSDAY, like the menu. Thursday is silent towards an audience; this has
+        # no audience but you, and "scan the weekend" needs something to scan.
+        if: inputs.board == '' && steps.when.outputs.board != 'game' && env.TG_TOKEN != ''
+        run: |
+          # Thursday's plan window is 0 because Thursday publishes nothing. For a scan of
+          # what is coming, three days is the useful horizon.
+          DAYS='${{ steps.when.outputs.plandays }}'
+          [ "${DAYS:-0}" -lt 1 ] && DAYS=3
+          node tools/social_draft.mjs --board game --days "$DAYS" \
+            --out best.md --json-out best.json || {
+              echo "::warning::could not build the day's best game — the rest of the run is unaffected"
+              exit 0; }
+          if [ ! -s best.md ]; then
+            echo "::notice::no game carries a run worth posting on its own today"
+            exit 0
+          fi
+
+          # THE CLIP. Same renderer the scheduled game post uses, installed here because on
+          # Monday and Wednesday nothing above this point has needed a browser. Every
+          # failure is a warning: a post that goes out as text is a post, and dying on a
+          # graphic would cost the pick for the sake of decoration.
+          FILE=""
+          if python3 -c "import json,sys; sys.exit(0 if json.load(open('best.json')).get('story') else 1)"; then
+            python3 -c "import json; json.dump(json.load(open('best.json'))['story'], open('best_args.json','w'))"
+            npm i --no-save playwright@1.49.1 >/dev/null 2>&1 \
+              && npx playwright install chromium >/dev/null 2>&1 || \
+              echo "::warning::could not install the browser — text only"
+            if ! command -v ffmpeg >/dev/null 2>&1; then
+              sudo apt-get update -qq >/dev/null 2>&1 \
+                && sudo apt-get install -y --no-install-recommends ffmpeg >/dev/null 2>&1 \
+                || echo "::warning::could not install ffmpeg"
+            fi
+            if command -v ffmpeg >/dev/null 2>&1 \
+               && node tools/render_story.mjs --args best_args.json --video best.mp4; then
+              FILE=best.mp4
+            elif node tools/render_story.mjs --args best_args.json --out best.png; then
+              echo "::warning::could not encode the animation — sending the still"
+              FILE=best.png
+            else
+              echo "::warning::the render failed — sending text only"
+            fi
+          else
+            echo "::notice::no fixture curve in this pick — text only"
+          fi
+
+          python3 - <<'PY' > best_payload.json
+          import json, os
+          d = json.load(open("best.json"))
+          body = (f"⭐ Best game today — {os.environ['PRETTY']}\n"
+                  f"{d['note']} · {d['weight']}/280\n\n"
+                  f"{d['post']}")
+          print(json.dumps({
+              "chat_id": os.environ["TG_CHAT"], "text": body,
+              "disable_web_page_preview": True,
+              "reply_markup": {"inline_keyboard": [[
+                  {"text": "Post on X", "url": d["intent"]}]]}}))
+          PY
+
+          if [ -n "$FILE" ] && [ -s "$FILE" ]; then
+            code=$(curl -s -o tgb.json -w '%{http_code}' --max-time 120 \
+              -X POST "https://api.telegram.org/bot$TG_TOKEN/sendDocument" \
+              -F "chat_id=$TG_CHAT" -F "document=@$FILE" \
+              -F "caption=$(python3 -c "import json;print(json.load(open('best_payload.json'))['text'])")" \
+              -F "reply_markup=$(python3 -c "import json;print(json.dumps(json.load(open('best_payload.json'))['reply_markup']))")" \
+              || true)
+            echo "sendDocument HTTP $code"
+            [ "$code" = "200" ] && { echo "::notice::best game sent with the clip"; exit 0; }
+            echo "::warning::sendDocument failed (HTTP $code) — falling back to text"
+          fi
+          code=$(curl -s -o tgb.json -w '%{http_code}' --max-time 30 \
+            -X POST "https://api.telegram.org/bot$TG_TOKEN/sendMessage" \
+            -H 'content-type: application/json' --data-binary @best_payload.json || true)
+          if [ "$code" = "200" ]; then
+            echo "::notice::best game sent as text"
+          else
+            # Never fatal. The day's own draft has already gone; losing this costs a
+            # second opinion, not the day.
+            echo "::warning::best game send failed (HTTP $code)"
+          fi
+        env:
+          BACKEND_URL: ${{ vars.BACKEND_URL || 'https://corner-model.onrender.com' }}
+          SITE_URL: ${{ vars.SITE_URL || 'https://thecornermodel.com' }}
+          TOOLS_TOKEN: ${{ secrets.TOOLS_TOKEN }}
+          TG_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TG_CHAT: ${{ secrets.TELEGRAM_CHAT_ID }}
+          PRETTY: ${{ steps.when.outputs.pretty }}
 
       - name: Send the weekend card to the channel
         # WEDNESDAY, and separate from the public post on purpose. The daily post goes

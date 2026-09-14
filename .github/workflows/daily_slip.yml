@@ -1,0 +1,161 @@
+# The morning slate: today's games as a card, with a link under each row.
+#
+# A SEPARATE WORKFLOW FROM THE NOON DRAFT, and that is the whole reason this file exists
+# rather than a second cron in social_draft.yml. GitHub hands a scheduled run no reliable
+# way to know WHICH of a workflow's crons fired, so two crons in one file means gating on
+# the clock — and social_draft.yml's own header is a post-mortem of exactly that: the hour
+# check ate three of its first five runs, the workflow went green having done nothing, and
+# a real failure sat unnoticed underneath. One workflow, one cron, no gate.
+#
+# WHAT IT SENDS, AND WHY IT IS NOT THE ANGLE MENU. The menu goes to the person running the
+# account and asks them to choose. This is the thing that goes OUT: the day's games,
+# already chosen, with a link under each row to the page every number on it came from.
+#
+# THE IMAGE IS NOT THE POST. It is the part that stops a thumb; the links are the part that
+# does the work. A graphic is a claim a reader has to take on trust, and the fixture page
+# behind each row is the answer to "says who". That is also the only route back to the site
+# from a Telegram channel, so the caption carries the links whether or not the card renders.
+#
+# WHERE IT GOES. TELEGRAM_SLIP_CHAT_ID if it is set, otherwise TELEGRAM_CHAT_ID. That seam
+# is deliberate: a second channel — one for the slate and the context, separate from the
+# stream of everything else — becomes a repo secret rather than a code change, and until
+# that secret exists the slate lands in the same place everything else does.
+name: Morning slate
+
+on:
+  schedule:
+    # 07:00 UTC — 08:00 London in summer, 07:00 in winter. Taken whenever it lands, for the
+    # reasons in the header. GitHub delays scheduled runs routinely, so "morning" here means
+    # the first hour it can, not a promise about the minute.
+    - cron: "0 7 * * *"
+  workflow_dispatch:
+    inputs:
+      rows:
+        description: "How many games (2-5)"
+        required: false
+        default: "3"
+        type: string
+
+concurrency:
+  group: corner-morning-slate
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  slate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      # Render sleeps the free instance. A cold start can take most of a minute, and the
+      # first call failing outright is normal rather than a fault.
+      - name: Wake the backend
+        env:
+          BACKEND: ${{ vars.BACKEND_URL || 'https://corner-model.onrender.com' }}
+        run: |
+          for i in 1 2 3 4 5 6; do
+            code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 60 "$BACKEND/api/" || true)
+            echo "attempt $i: HTTP $code"
+            [ "$code" = "200" ] && break
+            sleep 15
+          done
+
+      - name: Build today's slate
+        id: build
+        env:
+          BACKEND_URL: ${{ vars.BACKEND_URL || 'https://corner-model.onrender.com' }}
+          SITE_URL: ${{ vars.SITE_URL || 'https://thecornermodel.com' }}
+          TOOLS_TOKEN: ${{ secrets.TOOLS_TOKEN }}
+        run: |
+          node tools/social_draft.mjs --board slip --rows "${{ inputs.rows || '3' }}" \
+            --out slate.md --json-out slate.json
+          # An empty file is how social_draft says "quiet day" — fewer than two angles kick
+          # off today. Not a failure, and not something to post a thin card about.
+          if [ ! -s slate.md ]; then
+            echo "::notice::fewer than two angles kick off today — no slate"
+            echo "empty=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Draw the card
+        id: card
+        if: steps.build.outputs.empty != 'true'
+        # DECORATION, so every failure here is a warning. The caption carries the games and
+        # the links on its own; a job that dies rendering a picture costs the morning for
+        # the sake of a graphic.
+        run: |
+          python3 -c "import json; d=json.load(open('slate.json')); json.dump({'slip': d['slip']}, open('card_args.json','w'))"
+          npm i --no-save playwright@1.49.1 >/dev/null 2>&1 || {
+            echo "::warning::could not install playwright — sending text only"; exit 0; }
+          npx playwright install chromium >/dev/null 2>&1 || {
+            echo "::warning::could not install chromium — sending text only"; exit 0; }
+          if node tools/render_story.mjs --kind slip --args card_args.json --out slate.png \
+             && [ -s slate.png ]; then
+            echo "file=slate.png" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::the card did not render — sending text only"
+          fi
+
+      - name: Send it
+        if: steps.build.outputs.empty != 'true' && env.TG_TOKEN != ''
+        env:
+          TG_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          # The seam described in the header: a dedicated channel when one exists, and the
+          # usual chat until it does.
+          TG_CHAT: ${{ secrets.TELEGRAM_SLIP_CHAT_ID || secrets.TELEGRAM_CHAT_ID }}
+          FILE: ${{ steps.card.outputs.file }}
+        run: |
+          # THE CAPTION CAP IS 1024 AND TELEGRAM ANSWERS A LONGER ONE WITH HTTP 400.
+          # A five-row slate with long club names and a link per row clears that easily, so
+          # the length decides the shape of the send rather than being discovered by a
+          # rejection: short enough, one photo with the text on it; too long, the photo goes
+          # first and the text follows as its own message. Either way nothing is truncated —
+          # the links are the part of this that does the work.
+          python3 - <<'PY'
+          import json, os
+          d = json.load(open("slate.json"))
+          open("caption.txt", "w").write(d["post"])
+          print("long" if len(d["post"]) > 1024 else "short", file=open("shape.txt", "w"))
+          PY
+          SHAPE=$(cat shape.txt)
+          echo "caption is $(wc -c < caption.txt) bytes — sending $SHAPE"
+
+          sent=0
+          if [ -n "$FILE" ] && [ -s "$FILE" ]; then
+            # sendPhoto, not sendDocument. This is meant to be LOOKED AT in the channel, and
+            # a document arrives as a file attachment nobody opens. The weekend card uses
+            # sendDocument for the opposite reason — it exists to be downloaded and reposted
+            # at full resolution.
+            set -- -F "chat_id=$TG_CHAT" -F "photo=@$FILE"
+            [ "$SHAPE" = "short" ] && set -- "$@" -F "caption=$(cat caption.txt)"
+            code=$(curl -s -o tg.json -w '%{http_code}' --max-time 120 \
+              -X POST "https://api.telegram.org/bot$TG_TOKEN/sendPhoto" "$@" || true)
+            echo "sendPhoto HTTP $code"
+            if [ "$code" = "200" ]; then
+              sent=1
+            else
+              echo "::warning::sendPhoto failed (HTTP $code) — falling back to text"
+              head -c 300 tg.json || true
+            fi
+          fi
+
+          # The text goes out when the photo carried no caption, and when there was no photo
+          # at all. Both are the same need: the games and the links have to arrive.
+          if [ "$sent" = "0" ] || [ "$SHAPE" = "long" ]; then
+          python3 - <<'PY' > text.json
+          import json, os
+          print(json.dumps({"chat_id": os.environ["TG_CHAT"],
+                            "text": open("caption.txt").read(),
+                            "disable_web_page_preview": True}))
+          PY
+            code=$(curl -s -o tg2.json -w '%{http_code}' --max-time 30 \
+              -X POST "https://api.telegram.org/bot$TG_TOKEN/sendMessage" \
+              -H 'content-type: application/json' --data-binary @text.json || true)
+            echo "sendMessage HTTP $code"
+            [ "$code" = "200" ] || { echo "::warning::could not send the slate (HTTP $code)"; head -c 300 tg2.json || true; }
+          fi

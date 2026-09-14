@@ -15,8 +15,9 @@
 // same modules are imported directly. They are plain ES modules with no React, no
 // window and no fetch, which is what makes that possible.
 //
-// Usage:  node tools/social_draft.mjs --board streaks|fixtures|results|game|weekend|picks|menu [--days 3]
+// Usage:  node tools/social_draft.mjs --board streaks|fixtures|results|game|weekend|picks|menu|slip [--days 3]
 //                                    [--tag YYYY-MM-DD] [--out draft.md]
+//         node tools/social_draft.mjs --board slip [--rows 3] [--tag YYYY-MM-DD]
 // Env:    BACKEND_URL (default the live Render backend), TOOLS_TOKEN (required)
 
 import { readFileSync, writeFileSync } from "node:fs";
@@ -34,6 +35,7 @@ const { fixtureStoryMarkets } = await import(resolve(LIB, "storyImage.js"));
 const { kickoffLabel } = await import(resolve(LIB, "kickoff.js"));
 const { fitToPost, weightedLength, URL_WEIGHT, X_SHARE_ROWS } = await import(resolve(LIB, "xLimit.js"));
 const { boardForDay } = await import(resolve(LIB, "postPlan.js"));
+const { slipFrom, slipPost, dayKey } = await import(resolve(LIB, "dailySlip.js"));
 
 const arg = (name, fallback = null) => {
   const i = process.argv.indexOf(`--${name}`);
@@ -236,6 +238,42 @@ if (BOARD === "menu" && !data.boards) {
 
 if (data.data_age_hours != null && data.data_age_hours > MAX_DATA_AGE_HOURS) {
   skip(`data is ${data.data_age_hours}h old (limit ${MAX_DATA_AGE_HOURS}h) — not drafting from stale numbers`);
+}
+
+// ---- the morning slate: today's games, as a card and a post with a link under each row.
+//
+// THE ONE BOARD THAT LOOKS ONE DAY AHEAD AND MEANS IT. Everything else here answers "what
+// is interesting this week", which is the right question for a draft somebody will post
+// when they get to it. A morning post answers "what is on today", and a row a reader cannot
+// act on before lunchtime is a row that should not be on it.
+//
+// THE LINKS ARE WHY THIS IS NOT JUST AN IMAGE. A graphic is a claim you have to take on
+// trust; the link under each row is the page with the distribution, the run, and every
+// number the row was built from. It is also the only part of the post that can bring
+// somebody back to the site.
+if (BOARD === "slip") {
+  const slip = slipFrom({ rows: data.streaks || [], day: TAG || dayKey(),
+                          max: Number(arg("rows", "3")) });
+  // Not a failure. A morning with two playable angles on it is a quiet morning, and the
+  // card for one is the same card the good days use, advertising that today is not one.
+  if (!slip) skip("fewer than two angles kick off today — nothing worth a slate");
+  const post = slipPost({ slip, site: SITE });
+  emit(`Today's slate — ${slip.n} ${slip.label.toLowerCase()}, with a link under each.
+
+\`\`\`
+${post}
+\`\`\`
+
+${slip.priced} of ${slip.n} carry a real price; the rest show the model's fair odds, which
+the card labels and the post says once at the bottom.
+`, { empty: false, board: "slip", post, intent: "", weight: post.length, full: post,
+     // The card is drawn from the SAME object the post was built from, so the graphic and
+     // the text cannot disagree about what today's games are.
+     slip,
+     note: `${slip.n} ${slip.label.toLowerCase()} today`
+       + (slip.priced ? `, ${slip.priced} priced` : ", none priced yet")
+       + (data.data_age_hours != null ? ` · data ${data.data_age_hours}h old` : "") });
+  process.exit(0);
 }
 
 // ---- the menu. NOT A POST — it goes to whoever is running the account, and it is the one

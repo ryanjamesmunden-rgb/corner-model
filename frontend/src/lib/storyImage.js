@@ -78,14 +78,46 @@ export const flagsRender = (ctx) => {
  * not, and canvas does not wrap or clip — it draws straight off the edge and the letters
  * are simply gone from the file.
  */
-const fitFont = (ctx, text, { size, max, weight = 700, family }) => {
+// `min` exists because the floor was a hardcoded 28: asking for anything at or below it
+// returned the starting size WITHOUT EVER MEASURING, so a caller drawing 27px text into a
+// 212px column got 27px text however wide it was, and the label ran straight through its
+// neighbour. Silent, and only visible by rendering the card and looking at it.
+const fitFont = (ctx, text, { size, max, weight = 700, family, min = 28 }) => {
   let px = size;
-  while (px > 28) {
+  while (px > min) {
     ctx.font = `${weight} ${px}px ${family}`;
     if (ctx.measureText(text).width <= max) break;
     px -= 2;
   }
   return ctx.font;
+};
+
+/**
+ * The largest size at which BOTH strings fit — for two lines that belong together, like the
+ * two sides of a fixture. Sized apart they land at different sizes and stop reading as one
+ * thing. Returns a number rather than a font string, so the caller sets it once.
+ */
+const fitPair = (ctx, a, b, { size, max, weight = 700, family, min = 28 }) => {
+  let px = size;
+  while (px > min) {
+    ctx.font = `${weight} ${px}px ${family}`;
+    if (Math.max(ctx.measureText(a || "").width, ctx.measureText(b || "").width) <= max) break;
+    px -= 1;
+  }
+  return px;
+};
+
+/**
+ * Cut a string to fit, with an ellipsis. The last resort after fitFont has hit its floor:
+ * something has to give, and a truncated club name is a great deal better than one drawn
+ * straight through the column next to it. Assumes ctx.font is already set.
+ */
+const ellipsize = (ctx, text, max) => {
+  const s = String(text || "");
+  if (ctx.measureText(s).width <= max) return s;
+  let cut = s.length;
+  while (cut > 1 && ctx.measureText(`${s.slice(0, cut)}…`).width > max) cut -= 1;
+  return `${s.slice(0, cut)}…`;
 };
 
 const roundRect = (ctx, x, y, w, h, r) => {
@@ -1932,4 +1964,264 @@ export const dayCardDate = (key = "") => {
   if (!y || !m || !d) return "";
   const dt = new Date(Date.UTC(y, m - 1, d));
   return `${DAY_NAMES[dt.getUTCDay()]} ${d} ${MONTH_NAMES[m - 1]}`;
+};
+
+/**
+ * The morning slate: today's games as a table, in the shape a tipster slip uses.
+ *
+ * NO PLAYER PHOTOGRAPHY, and that is a decision rather than an omission. The cards this
+ * imitates are built on cut-out press shots of the players involved, which are licensed
+ * sports photography — reproducing them on a graphic that advertises a paid product is
+ * somebody else's copyright, and the account posting it is the one that carries that. Club
+ * badges are the same category, milder. So the league is a country chip, the way the rest
+ * of this file already falls back when flag glyphs are missing, and the card earns its
+ * weight from type and spacing instead. Which is the half of the reference that actually
+ * made it readable.
+ *
+ * THE PRICE BOX IS DRAWN TWO DIFFERENT WAYS, and this is the reason the whole card exists
+ * in a separate module with its own tests. A slip puts a big number on the right of every
+ * row and a reader takes it for a bookmaker's price. Only a price somebody actually typed
+ * in is one — see dailySlip.isBookPrice. The model's fair odds are a break-even figure,
+ * and drawing them in the same box would publish a number nobody can bet to an audience
+ * who would read it as one they can. So a book price gets the solid box, and a fair price
+ * gets an outlined one with the word on it.
+ *
+ * `slip` is whatever lib/dailySlip.slipFrom returned. Null draws nothing and returns false:
+ * a slate card with one row is worse than silence, and dailySlip decides that, not this.
+ */
+export const renderDailySlip = (canvas, {
+  slip = null, site = "thecornermodel.com", brand = "CORNER MODEL",
+  tagline = "DATA. DISCIPLINE. EXECUTION.",
+} = {}) => {
+  if (!slip || !slip.rows?.length) return false;
+  const W = FEED_W;
+  const H = FEED_H;
+  canvas.width = W;
+  canvas.height = H;
+  const ctx = canvas.getContext("2d");
+  const pad = 56;
+  const inner = W - pad * 2;
+
+  ctx.fillStyle = C.bg;
+  ctx.fillRect(0, 0, W, H);
+  // Behind the headline rather than centred on the card: the table below is a grid of
+  // boxes and a glow under it muddies the edges that make it readable.
+  const glow = ctx.createRadialGradient(W / 2, 330, 80, W / 2, 330, 760);
+  glow.addColorStop(0, `${C.primary}26`);
+  glow.addColorStop(1, `${C.primary}00`);
+  ctx.fillStyle = glow;
+  ctx.fillRect(0, 0, W, 760);
+
+  ctx.textBaseline = "middle";
+
+  // ---- the band across the top
+  ctx.fillStyle = C.text;
+  ctx.font = `800 34px ${FONT_HEAD}`;
+  ctx.letterSpacing = "2px";
+  ctx.fillText(brand, pad, 78);
+  ctx.letterSpacing = "0px";
+
+  ctx.textAlign = "right";
+  ctx.fillStyle = C.muted;
+  ctx.font = `700 19px ${FONT_BODY}`;
+  ctx.letterSpacing = "3px";
+  tagline.split(" ").forEach((word, i) => {
+    ctx.fillText(word, W - pad, 62 + i * 26);
+  });
+  ctx.letterSpacing = "0px";
+  ctx.textAlign = "left";
+
+  ctx.strokeStyle = C.border;
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(pad, 148);
+  ctx.lineTo(W - pad, 148);
+  ctx.stroke();
+
+  // ---- THE TABLE IS CENTRED IN WHAT IS LEFT, not hung from one end.
+  //
+  // Anchored purely from the bottom, a three-row slate put ~290px of nothing between the
+  // headline and the first row, which reads as a card that failed to finish rendering —
+  // the same failure the record card hit from the opposite direction. Giving the headline a
+  // FIXED block and centring the table in the remainder splits the slack in two, and rows
+  // that grow to fill the space mean a short slate looks deliberate rather than thin.
+  const footerY = H - 92;
+  const caveatY = footerY - 74;
+  const tableBottom = caveatY - (slip.priced === slip.n ? 30 : 48);
+  const headBottom = 478;
+  const gap = 14;
+  const region = tableBottom - headBottom;
+  const rowH = Math.max(84, Math.min(150, (region - (slip.n - 1) * gap) / slip.n));
+  const tableH = slip.n * rowH + (slip.n - 1) * gap;
+  // The slack above is CAPPED rather than split evenly. On a two-row slate an even split
+  // pushed the table into the middle of the card with a hole above it and another below,
+  // and the reader's eye lost the thread between the headline and the rows it is counting.
+  // Held close to the headline, the remaining air pools above the footer, where the caveat
+  // and the site name give it a bottom edge.
+  const tableTop = headBottom + Math.min(90, Math.max(0, (region - tableH) / 2));
+
+  // ---- the headline, in its own block rather than in whatever was left over
+  const headCentre = (148 + headBottom) / 2;
+  const count = String(slip.n);
+  ctx.font = `800 210px ${FONT_HEAD}`;
+  const countW = ctx.measureText(count).width;
+  ctx.font = `800 96px ${FONT_HEAD}`;
+  const wordW = ctx.measureText(slip.label).width;
+  const headX = (W - (countW + 24 + wordW)) / 2;
+
+  ctx.fillStyle = C.primary;
+  ctx.font = `800 210px ${FONT_HEAD}`;
+  ctx.fillText(count, headX, headCentre - 18);
+  ctx.fillStyle = C.text;
+  ctx.font = `800 96px ${FONT_HEAD}`;
+  ctx.fillText(slip.label, headX + countW + 24, headCentre - 34);
+  ctx.fillStyle = C.muted;
+  ctx.font = `600 52px ${FONT_HEAD}`;
+  ctx.letterSpacing = "10px";
+  ctx.fillText("TODAY", headX + countW + 28, headCentre + 34);
+  ctx.letterSpacing = "0px";
+
+  // WHICH CLOCK THE TIMES ARE ON. A bare "13:30" against a game the reader knows kicks off
+  // at 14:30 where they are reads as a card that got the fixture wrong, rather than as a
+  // card stating a different zone.
+  ctx.fillStyle = C.muted;
+  ctx.font = `600 27px ${FONT_BODY}`;
+  const dayLabel = [dayCardDate(slip.day), slip.zone ? `times ${slip.zone}` : ""]
+    .filter(Boolean).join("  ·  ");
+  if (dayLabel) {
+    ctx.textAlign = "center";
+    ctx.fillText(dayLabel, W / 2, headCentre + 104);
+    ctx.textAlign = "left";
+  }
+
+  // ---- the rows
+  //
+  // Column edges are computed once rather than per row, so a long club name cannot push
+  // the price box out of line on one row and not the others — a table whose right edge
+  // moves reads as broken even when every value in it is right.
+  // A COLUMN IS ONLY RESERVED WHEN SOMETHING FILLS IT. The chip column held 86px open for
+  // every row even when no league resolved to a country, leaving a hole down the left; the
+  // market column was sized by arithmetic that assumed "13:30" and overlapped its
+  // neighbours the moment a real label was wider. Both are measured off what the rows
+  // actually contain, once, so every row shares the same edges — a table whose right edge
+  // moves from row to row reads as broken even when every value in it is correct.
+  const anyChip = slip.rows.some((r) => countryCodeFor(r.leagueId));
+  const priceW = 140;
+  const priceX = W - pad - priceW - 18;
+  const stakeW = slip.hasStakes ? 58 : 0;
+  const stakeX = priceX - stakeW - 16;
+  const chipX = pad + 18;
+  const chipW = anyChip ? 60 : 0;
+  const teamX = chipX + (anyChip ? chipW + 14 : 0);
+  const teamW = 304;
+  const timeX = teamX + teamW + 20;
+  const timeW = 90;
+  const marketX = timeX + timeW + 14;
+  const marketW = Math.max(120, stakeX - marketX - 14);
+
+  slip.rows.forEach((r, i) => {
+    const y = tableTop + i * (rowH + gap);
+    const mid = y + rowH / 2;
+
+    ctx.fillStyle = C.card;
+    roundRect(ctx, pad, y, inner, rowH, 14);
+    ctx.fill();
+    ctx.strokeStyle = C.border;
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+
+    // The league, as a country code. See the note above about badges.
+    const code = countryCodeFor(r.leagueId);
+    if (anyChip && code) {
+      ctx.fillStyle = C.secondary;
+      roundRect(ctx, chipX, mid - 21, chipW, 42, 8);
+      ctx.fill();
+      ctx.fillStyle = C.muted;
+      ctx.font = `700 21px ${FONT_DATA}`;
+      ctx.textAlign = "center";
+      ctx.fillText(code, chipX + chipW / 2, mid + 1);
+      ctx.textAlign = "left";
+    }
+
+    // Both sides, one per line, so the fixture reads as a fixture rather than as the one
+    // team the streak happens to be about.
+    //
+    // ONE SIZE FOR THE PAIR. Fitted independently, "Borussia Mönchengladbach" came out at
+    // 19px above an "Eintracht Frankfurt" at 29px, which reads as two different kinds of
+    // thing rather than as one fixture. And a name that does not fit even at the floor is
+    // truncated rather than left to run through the kick-off time beside it.
+    ctx.fillStyle = C.text;
+    const teamPx = fitPair(ctx, r.home, r.away,
+                           { size: 29, max: teamW, weight: 600, family: FONT_BODY, min: 19 });
+    ctx.font = `600 ${teamPx}px ${FONT_BODY}`;
+    ctx.fillText(ellipsize(ctx, r.home, teamW), teamX, mid - 17);
+    ctx.fillText(ellipsize(ctx, r.away, teamW), teamX, mid + 19);
+
+    ctx.fillStyle = C.muted;
+    ctx.font = `500 24px ${FONT_DATA}`;
+    if (r.time) ctx.fillText(r.time, timeX, mid);
+
+    ctx.fillStyle = C.text;
+    ctx.font = fitFont(ctx, r.market, { size: 27, max: marketW, weight: 500, family: FONT_BODY, min: 17 });
+    ctx.fillText(r.market, marketX, mid);
+
+    if (slip.hasStakes) {
+      ctx.fillStyle = r.stake === null ? C.dim : C.muted;
+      ctx.font = `600 25px ${FONT_DATA}`;
+      ctx.textAlign = "center";
+      // An em dash, not "0u". A row nobody staked is not a row staked at nothing.
+      ctx.fillText(r.stake === null ? "—" : `${r.stake}u`, stakeX + stakeW / 2, mid);
+      ctx.textAlign = "left";
+    }
+
+    // THE TWO BOXES. Solid for a price you can take, outlined and labelled for the model's.
+    const book = r.priceKind === "book";
+    const boxY = mid - 30;
+    if (book) {
+      ctx.fillStyle = C.primary;
+      roundRect(ctx, priceX, boxY, priceW, 60, 10);
+      ctx.fill();
+    } else {
+      ctx.strokeStyle = C.border;
+      ctx.lineWidth = 2;
+      roundRect(ctx, priceX, boxY, priceW, 60, 10);
+      ctx.stroke();
+    }
+    ctx.textAlign = "center";
+    if (book) {
+      ctx.fillStyle = C.bg;
+      ctx.font = `800 34px ${FONT_DATA}`;
+      ctx.fillText(String(r.price ?? "—"), priceX + priceW / 2, mid + 1);
+    } else {
+      ctx.fillStyle = C.muted;
+      ctx.font = `600 15px ${FONT_BODY}`;
+      ctx.letterSpacing = "2px";
+      ctx.fillText("FAIR", priceX + priceW / 2, boxY + 15);
+      ctx.letterSpacing = "0px";
+      ctx.fillStyle = C.text;
+      ctx.font = `700 30px ${FONT_DATA}`;
+      ctx.fillText(String(r.price ?? "—"), priceX + priceW / 2, boxY + 40);
+    }
+    ctx.textAlign = "left";
+  });
+
+  // ---- the caveat, once, where somebody who read the rows will meet it
+  if (slip.priced !== slip.n) {
+    ctx.fillStyle = C.muted;
+    ctx.font = `500 23px ${FONT_BODY}`;
+    ctx.textAlign = "center";
+    ctx.fillText("Fair = the model's break-even price, not an offer. Shop your own.",
+                 W / 2, caveatY);
+    ctx.textAlign = "left";
+  }
+
+  ctx.fillStyle = C.text;
+  ctx.font = `700 34px ${FONT_HEAD}`;
+  ctx.fillText(site, pad, footerY);
+  ctx.textAlign = "right";
+  ctx.fillStyle = C.muted;
+  ctx.font = `500 23px ${FONT_BODY}`;
+  ctx.fillText("18+ · gambleaware.org", W - pad, footerY);
+  ctx.textAlign = "left";
+  return true;
 };

@@ -90,7 +90,21 @@ jobs:
           if [ ! -s slate.md ]; then
             echo "::notice::fewer than two angles kick off today — no slate"
             echo "empty=true" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
+          # WHAT IT ACTUALLY CHOSE, in the run itself. social_draft writes the draft to files
+          # and prints nothing when it does, so the log recorded that a slate had been built
+          # and not one word about which games were on it — leaving Telegram as the only place
+          # to find out what the job had just done, and no record at all once that message is
+          # scrolled past. This is also where to look first when a row looks wrong.
+          python3 -c "import json;print('::notice::'+json.load(open('slate.json'))['note'])"
+          {
+            echo "## $(python3 -c "import json;print(json.load(open('slate.json'))['note'])")"
+            echo
+            echo '```'
+            python3 -c "import json;print(json.load(open('slate.json'))['post'])"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Draw the card
         id: card

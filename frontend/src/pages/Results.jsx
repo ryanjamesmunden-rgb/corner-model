@@ -7,12 +7,19 @@ import { renderResultStory } from "@/lib/storyImage";
 import { canRecord, extFor, recordStoryVideo } from "@/lib/storyVideo";
 import { kickoffLabel } from "@/lib/kickoff";
 import SignedInOnly from "@/components/SignedInOnly";
+import { renderRecordCard } from "@/lib/storyImage";
+import { cardFrom } from "@/lib/recordCard";
 
-// THE RECORD. The only page here anyone can read without an account.
+// THE RECORD, behind a free account.
 //
-// Everything else on this site is either the product or a tease for it. This is the
-// evidence that the product is worth paying for, and evidence behind a login persuades
-// nobody — so it is open, and it stays open.
+// It was open, and the reasoning was that this is the evidence the product is worth paying
+// for — and evidence behind a login persuades nobody. That reasoning still holds; the
+// trade was made anyway, because the record IS the list of picks this site made and the
+// picks are the product. Signing in costs nothing, so it is a door and not a wall.
+//
+// WHICH IS WHY THE SHARE CARD MATTERS MORE NOW. The page is gated; the card is not. It
+// carries the same fraction to somewhere a stranger will actually see it — see
+// lib/recordCard for the three rules it has to obey to be worth anything.
 //
 // WHAT MAKES IT WORTH READING is that it cannot flatter itself. Every row comes from a
 // list frozen BEFORE kick-off, so what is graded is what was claimed. Grading the streak
@@ -109,6 +116,34 @@ export default function Results() {
     </SignedInOnly>
   );}
 
+/**
+ * Share the whole record, rather than one game.
+ *
+ * DRAWS NOTHING WHEN THERE IS NOTHING TO SHOW. cardFrom returns null before anything has
+ * settled, and a button that produces a blank graphic is worse than no button — so it
+ * disappears instead, and the reason is a real one rather than a disabled tooltip.
+ */
+function RecordCardButtons({ data }) {
+  const feed = cardFrom(data, { shape: "feed" });
+  if (!feed) return null;
+  const shapes = [
+    { key: "feed", label: "Feed card", shape: "feed",
+      title: "1080x1350 — the record as an Instagram feed post" },
+    { key: "story", label: "Story card", shape: "story",
+      title: "1080x1920 — the record as a Story" },
+  ];
+  return (
+    <span className="flex gap-2 flex-wrap">
+      {shapes.map((s) => (
+        <StoryButton key={s.key} days={[{ key: `record-${s.key}` }]}
+          testId={`record-card-${s.key}`} label={s.label} title={s.title}
+          render={(canvas) => renderRecordCard(canvas, {
+            card: cardFrom(data, { shape: s.shape }), shape: s.shape })} />
+      ))}
+    </span>
+  );
+}
+
 function ResultsBoard() {
   const [data, setData] = useState(null);
   const [failed, setFailed] = useState(false);
@@ -133,7 +168,15 @@ function ResultsBoard() {
   return (
     <div className="space-y-4 max-w-4xl" data-testid="results-page">
       <header className="space-y-2">
-        <h1 className="font-head text-2xl font-bold tracking-tight">The record</h1>
+        <div className="flex items-start gap-3 flex-wrap">
+          <h1 className="font-head text-2xl font-bold tracking-tight">The record</h1>
+          {/* THE PAGE IS GATED; THIS IS NOT. A card is how the fraction reaches someone
+              who has not signed in — which, now that the record is behind an account, is
+              the only way it reaches them at all. Two shapes because Instagram wants a
+              1080x1350 feed post and a 1080x1920 story, and one cropped into the other
+              loses either the headline or the strip. */}
+          <RecordCardButtons data={data} />
+        </div>
         <p className="text-sm text-muted-foreground leading-relaxed max-w-2xl">
           Every corner streak posted, and how it actually landed. The list is frozen before
           kick-off, so what you see graded here is exactly what was claimed — misses and all.

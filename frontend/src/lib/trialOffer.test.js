@@ -4,7 +4,7 @@
 // decides the trial, from billing.trial_days_for, and these tests pin this module to the
 // same rule: one trial per customer, and none at all when the backend has it switched off.
 
-import { trialOffer } from "./trialOffer.js";
+import { trialOffer, offerStillStands } from "./trialOffer.js";
 
 describe("who gets offered a trial", () => {
   test("a new visitor, signed out", () => {
@@ -61,4 +61,38 @@ describe("what it says", () => {
     expect(note).toContain("10 days");
   });
 
+});
+
+describe("an offer that expires between the click and the checkout", () => {
+  const eligible = { eligible: true, days: 7 };
+  const not = { eligible: false, days: 0 };
+
+  test("a trial click by somebody who turns out to have had one is held", () => {
+    // The whole point. They pressed "start 7 days free" and would otherwise land on a
+    // page asking for £20 today — a bait and switch to a person who has paid before.
+    expect(offerStillStands({ clickedTrial: true, offer: not })).toBe(false);
+  });
+
+  test("a trial click by somebody genuinely new carries straight through", () => {
+    // The auto-continue exists because the pause after signing in is where people leave.
+    expect(offerStillStands({ clickedTrial: true, offer: eligible })).toBe(true);
+  });
+
+  test("somebody who never clicked a trial is never held", () => {
+    // They pressed a plain Subscribe. Nothing about their terms has changed, so stopping
+    // them would be friction invented for its own sake.
+    expect(offerStillStands({ clickedTrial: false, offer: not })).toBe(true);
+    expect(offerStillStands({ clickedTrial: false, offer: eligible })).toBe(true);
+  });
+
+  test("a missing offer is treated as the trial being gone", () => {
+    // Fails towards telling them rather than towards a surprise charge.
+    expect(offerStillStands({ clickedTrial: true, offer: null })).toBe(false);
+    expect(offerStillStands({ clickedTrial: true })).toBe(false);
+  });
+
+  test("nothing clicked at all stands, so a bare call cannot block the page", () => {
+    expect(offerStillStands({})).toBe(true);
+    expect(offerStillStands()).toBe(true);
+  });
 });

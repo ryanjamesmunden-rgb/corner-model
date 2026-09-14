@@ -28,7 +28,7 @@ export const trialOffer = ({ trialDays = 0, user = null, member = false } = {}) 
   // someone is paying to see reads as a mistake about who they are.
   if (days < 1 || member) return none;
   // The same rule as billing.trial_days_for. Without it the trial is an unlimited free
-  // subscription with a ten-day chore attached — subscribe, cancel on day nine, repeat.
+  // subscription with a weekly chore attached — subscribe, cancel on day six, repeat.
   if (user?.has_billing) return none;
   return {
     eligible: true,

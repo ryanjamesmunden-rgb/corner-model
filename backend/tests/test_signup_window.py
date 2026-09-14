@@ -17,7 +17,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 MONDAY = 1
 
 
-def _signup(day="1", scope="all"):
+def _signup(day="1", scope="trial"):
     os.environ["SIGNUP_DAY"] = day
     os.environ["SIGNUP_SCOPE"] = scope
     import signup
@@ -137,19 +137,40 @@ class TestScope:
         assert s.blocks(is_trial=True, now=utc(2026, 9, 15)) is True
         assert s.blocks(is_trial=False, now=utc(2026, 9, 15)) is True
 
-    def test_trial_only_lets_a_paying_customer_through(self):
-        # The weekly tracking comes from trials starting together. Somebody paying full
-        # price on a Wednesday does not affect it, and turning them away is £20 a month
-        # refused for no measurement at all.
+    def test_trial_scope_lets_through_exactly_the_people_forming_no_cohort(self):
+        # WHO THIS IS FOR IS NARROWER THAN IT LOOKS. A brand-new visitor is offered a trial
+        # and cannot decline one, so trial_days_for answers 7 for them and they wait under
+        # either setting. The ones let through are returning ex-subscribers, whose
+        # trial_days_for is 0 — and they are forming no cohort, so there is no free week of
+        # theirs to align and the weekly record is unaffected by when they rejoin.
         s = _signup(scope="trial")
         assert s.blocks(is_trial=True, now=utc(2026, 9, 15)) is True
         assert s.blocks(is_trial=False, now=utc(2026, 9, 15)) is False
+
+    def test_and_that_is_the_only_difference_between_the_scopes(self):
+        # Both settings treat a trial signup identically; they differ only on the person
+        # who would not get one.
+        closed = utc(2026, 9, 15)
+        assert _signup(scope="all").blocks(is_trial=True, now=closed) is True
+        assert _signup(scope="trial").blocks(is_trial=True, now=closed) is True
 
     def test_nothing_is_blocked_on_the_open_day_under_either_scope(self):
         for scope in ("all", "trial"):
             s = _signup(scope=scope)
             assert s.blocks(is_trial=True, now=utc(2026, 9, 14)) is False
             assert s.blocks(is_trial=False, now=utc(2026, 9, 14)) is False
+
+    def test_the_default_scope_is_the_trial_rather_than_everything(self):
+        # The window exists for the cohort, and the cohort is made of trials. A full-price
+        # subscriber is in no cohort and has no week to align, so refusing them on a
+        # Wednesday buys no tracking and costs a month's revenue.
+        import importlib
+        os.environ.pop("SIGNUP_SCOPE", None)
+        import signup
+        s = importlib.reload(signup)
+        assert s.SIGNUP_SCOPE == "trial"
+        assert s.blocks(is_trial=False, now=utc(2026, 9, 15)) is False
+        assert s.blocks(is_trial=True, now=utc(2026, 9, 15)) is True
 
     def test_an_unknown_scope_falls_back_to_gating_the_trial_only(self):
         # The safer direction of the two: a typo costs a cohort, not a month's revenue.

@@ -38,16 +38,27 @@ TZ = ZoneInfo("Europe/London")
 # because of a typo in an environment variable is worse than one with no window at all.
 SIGNUP_DAY = max(0, min(7, int(os.environ.get("SIGNUP_DAY", "1") or 0)))
 
-# WHAT THE WINDOW APPLIES TO, and it is worth the setting rather than being assumed.
+# WHAT THE WINDOW APPLIES TO.
 #
-#   "all"   — nobody subscribes except on the open day
-#   "trial" — the FREE TRIAL is cohort-gated; somebody who wants to pay today still can
+#   "trial" — only a checkout that WOULD START A TRIAL waits for the open day
+#   "all"   — nobody subscribes at all except on the open day
 #
-# "trial" is the one that costs nothing. The weekly tracking comes from trials starting
-# together; a person paying full price on a Wednesday does not affect it either way, and
-# turning them away is turning away £20 a month for no measurement benefit at all.
-SIGNUP_SCOPE = (os.environ.get("SIGNUP_SCOPE", "all").strip().lower()
-                if os.environ.get("SIGNUP_SCOPE", "").strip() else "all")
+# WHO THIS ACTUALLY DIFFERS FOR, stated precisely because the obvious reading is wrong.
+# It is tempting to describe "trial" as "somebody willing to pay full price can join any
+# day". That is not what it does. A brand-new visitor is offered a trial and has no way to
+# decline one, so billing.trial_days_for answers 7 for them and they wait for the open day
+# under either setting.
+#
+# The people it lets through are RETURNING EX-SUBSCRIBERS — trial_days_for answers 0 once
+# an account has a Stripe customer — and that is exactly right. Somebody who cancelled in
+# March and wants back in on a Wednesday is not forming a cohort; there is no free week of
+# theirs to align with anybody else's, and the weekly record is unaffected by when they
+# rejoin. Making them wait is friction that buys no measurement and costs a month.
+#
+# So the default is "trial": the window covers the cohort it exists for, and nothing else.
+# Anything unrecognised lands here too, which is the safer direction to be wrong in — a
+# typo costs a returning customer's convenience, where the other way round it costs revenue.
+SIGNUP_SCOPE = os.environ.get("SIGNUP_SCOPE", "").strip().lower() or "trial"
 
 DAY_NAMES = {1: "Monday", 2: "Tuesday", 3: "Wednesday", 4: "Thursday",
              5: "Friday", 6: "Saturday", 7: "Sunday"}

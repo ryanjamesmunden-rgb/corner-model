@@ -51,8 +51,11 @@ ACTIVE_STATUSES = ("active", "trialing", "past_due")
 # cancels. A trial with no card is a mailing list: almost nobody comes back to enter one,
 # and you cannot tell the people who decided to stay from the ones who simply forgot.
 #
-# Set TRIAL_DAYS=0 to turn it off without a deploy.
-TRIAL_DAYS = max(0, int(os.environ.get("TRIAL_DAYS", "10") or 0))
+# Set TRIAL_DAYS=0 to turn it off without a deploy, or to any other length to change it.
+# The default is the offer as advertised, so an unset variable is the right offer rather
+# than a different one — a page and a checkout disagreeing about the length is the exact
+# failure /api/config exists to prevent.
+TRIAL_DAYS = max(0, int(os.environ.get("TRIAL_DAYS", "7") or 0))
 
 MEMBER_SOURCE_STRIPE = "stripe"
 MEMBER_SOURCE_CODE = "code"
@@ -69,8 +72,8 @@ def trial_days_for(user: dict) -> int:
 
     ONE TRIAL PER CUSTOMER, and the check is "have we ever created a Stripe customer for
     them" rather than anything about their current status. Without it the trial is an
-    unlimited free subscription with a ten-day chore attached: subscribe, cancel on day
-    nine, subscribe again. Stripe does not dedupe this for us — `trial_period_days` is
+    unlimited free subscription with a weekly chore attached: subscribe, cancel on day
+    six, subscribe again. Stripe does not dedupe this for us — `trial_period_days` is
     honoured on every session it is passed on, however many the same customer has had.
     """
     if not TRIAL_DAYS:

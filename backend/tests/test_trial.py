@@ -12,7 +12,7 @@ import importlib
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
-def _billing(days="10"):
+def _billing(days="7"):
     """Freshly imported, so TRIAL_DAYS is read rather than inherited."""
     os.environ["TRIAL_DAYS"] = days
     import billing
@@ -21,7 +21,7 @@ def _billing(days="10"):
 
 class TestEligibility:
     def test_a_new_account_gets_the_full_trial(self):
-        assert _billing().trial_days_for({"user_id": "u1"}) == 10
+        assert _billing().trial_days_for({"user_id": "u1"}) == 7
 
     def test_an_account_that_has_subscribed_before_gets_none(self):
         # The repeat-trial hole. `stripe_customer_id` is set the first time they check out
@@ -44,8 +44,17 @@ class TestEligibility:
 
     def test_missing_user_fields_do_not_throw(self):
         b = _billing()
-        assert b.trial_days_for({}) == 10
-        assert b.trial_days_for(None) == 10
+        assert b.trial_days_for({}) == 7
+        assert b.trial_days_for(None) == 7
+
+    def test_an_unset_variable_gives_the_advertised_offer(self):
+        # The default has to BE the offer. An unset TRIAL_DAYS falling back to a different
+        # length would have the page and the checkout disagree, which is the one failure
+        # serving the number from /api/config exists to prevent.
+        import importlib
+        os.environ.pop("TRIAL_DAYS", None)
+        import billing
+        assert importlib.reload(billing).TRIAL_DAYS == 7
 
 
 class TestCheckout:
@@ -62,7 +71,7 @@ class TestCheckout:
         monkeypatch.setattr(b, "_stripe", lambda: type(
             "S", (), {"checkout": type("C", (), {"Session": _Session})})())
         b.create_checkout_session({"user_id": "u1", "email": "a@b.c"})
-        assert captured["subscription_data"]["trial_period_days"] == 10
+        assert captured["subscription_data"]["trial_period_days"] == 7
 
     def test_and_is_omitted_entirely_for_a_returning_customer(self, monkeypatch):
         # Omitted rather than sent as 0 — Stripe rejects trial_period_days=0, so a returning

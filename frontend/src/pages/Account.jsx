@@ -154,6 +154,10 @@ export default function Account() {
   // page says so outright rather than leaving someone wondering what happens next.
   const isGrandfathered = user.grandfathered;
   const ending = ends === null ? user.cancel_at_period_end : ends;
+  // Stripe's own word for a subscription inside its free period. It is already in
+  // ACTIVE_STATUSES, so a trial member is a member everywhere else on the site — this is
+  // only about what the dates on this page are CALLED.
+  const trialing = user.subscription_status === "trialing";
 
   // One line that tells you where you stand, in the voice of the channel rather than of
   // a payments processor. It is the first thing under the greeting because "am I still
@@ -313,8 +317,14 @@ export default function Account() {
           </Row>
         )}
         {user.member_since && <Row label="Member since">{fmtDate(user.member_since)}</Row>}
+        {/* "Renews" IS WRONG DURING A TRIAL — nothing has been paid yet, so that date is the
+            FIRST charge rather than a repeat one, and it is the single date a trial member
+            most wants to be sure of. The FAQ promises this page shows it; this is the line
+            that has to keep that promise. */}
         {isStripe && user.subscription_ends_at && (
-          <Row label={ending ? "Access ends" : "Renews"}>{fmtDate(user.subscription_ends_at)}</Row>
+          <Row label={ending ? "Access ends" : trialing ? "Trial ends" : "Renews"}>
+            {fmtDate(user.subscription_ends_at)}
+          </Row>
         )}
 
         {/* THE OTHER HALF OF WHAT THEY BOUGHT. Paying unlocked this site; the channel is

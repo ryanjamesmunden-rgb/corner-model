@@ -17,6 +17,12 @@ name: Check the live setup
 
 on:
   workflow_dispatch:
+    inputs:
+      register:
+        description: "Also register the Telegram bot (webhook + join tracking + menu)"
+        required: false
+        default: false
+        type: boolean
 
 concurrency:
   group: corner-check-setup
@@ -30,6 +36,34 @@ jobs:
     timeout-minutes: 6
     steps:
       - uses: actions/checkout@v4
+
+      # REGISTERING IS A POST WITH A TOKEN, which is a terminal command, and needing one
+      # to finish setting up a Telegram bot is a step that simply does not get done. The
+      # runner already holds the token and can reach the backend, so it is a checkbox here
+      # instead — and it runs BEFORE the checks, so one dispatch both fixes and verifies
+      # rather than reporting a state it was about to change.
+      - name: Register the bot
+        if: inputs.register
+        env:
+          BACKEND: ${{ vars.BACKEND_URL || 'https://corner-model.onrender.com' }}
+          TOOLS_TOKEN: ${{ secrets.TOOLS_TOKEN }}
+        run: |
+          for i in 1 2 3 4 5 6; do
+            code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 60 "$BACKEND/api/" || true)
+            echo "wake attempt $i: HTTP $code"
+            [ "$code" = "200" ] && break
+            sleep 15
+          done
+          code=$(curl -s -o reg.json -w '%{http_code}' --max-time 60 -X POST \
+            "$BACKEND/api/telegram/register?token=$TOOLS_TOKEN" || echo 000)
+          echo "register: HTTP $code"
+          # The body names the webhook it set and whether the menu went up. No token is in
+          # it — the response echoes the URL, not what authorised the call.
+          python3 -c "import json;d=json.load(open('reg.json'));print(json.dumps(d,indent=2))" \
+            2>/dev/null || head -c 400 reg.json
+          if [ "$code" != "200" ]; then
+            echo "::warning::registration failed (HTTP $code) — the checks below will say what is still missing"
+          fi
 
       - name: Ask the backend
         env:

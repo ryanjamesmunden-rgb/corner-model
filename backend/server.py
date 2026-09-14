@@ -14,6 +14,7 @@ import uuid
 
 import auth
 import billing
+import signup
 import telegram_bot
 from pathlib import Path
 from pydantic import BaseModel
@@ -803,6 +804,17 @@ async def billing_checkout(user: dict = Depends(require_user)):
                                    "and STRIPE_PRICE_ID in the backend environment")
     if user.get("member") and user.get("member_source") == billing.MEMBER_SOURCE_STRIPE:
         raise HTTPException(status_code=409, detail="You already have an active subscription")
+    # THE WINDOW IS ENFORCED HERE, and this is the only place it counts. The join page
+    # hides the button on a closed day, but a hidden button stops nobody who calls this
+    # endpoint — and this endpoint starts a subscription.
+    #
+    # Whether a CLOSED day blocks THIS person depends on what they are starting: with
+    # SIGNUP_SCOPE=trial the cohort rule applies to the free trial only, and somebody
+    # willing to pay full price on a Wednesday is let through, because turning them away
+    # buys no measurement and costs £20 a month. signup.blocks owns that decision so the
+    # page and the endpoint cannot disagree about it.
+    if signup.blocks(is_trial=billing.trial_days_for(user) > 0):
+        raise HTTPException(status_code=409, detail=signup.closed_message())
     try:
         return {"url": billing.create_checkout_session(user)}
     except Exception as e:
@@ -1174,7 +1186,11 @@ async def public_config():
             # changes what checkout DOES. A page advertising ten free days against a
             # checkout that grants none is the one version of this worth designing against.
             # 0 means no trial is running and the page says nothing about one.
-            "trial_days": billing.TRIAL_DAYS}
+            "trial_days": billing.TRIAL_DAYS,
+            # WHEN THE DOOR IS OPEN. Served whole — open/closed, the day it opens, the
+            # next date and the sentence to show — so the page renders the closed state
+            # without reimplementing the rule and drifting from what checkout enforces.
+            "signup": signup.state()}
 
 
 @api_router.get("/health")

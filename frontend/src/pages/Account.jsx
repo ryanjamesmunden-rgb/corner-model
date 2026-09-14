@@ -55,6 +55,11 @@ export default function Account() {
   const { user, ready, member, signOut, renderButton, clientId, setMember } = useAuth();
   const [params] = useSearchParams();
   const [busy, setBusy] = useState(false);
+  // The member's channel invite. Fetched on demand rather than on page load: it is a
+  // write (it mints a link on Telegram the first time) and every visit to this page is
+  // not a request for one.
+  const [invite, setInvite] = useState(null);
+  const [inviteBusy, setInviteBusy] = useState(false);
   // Cancelling is two steps, not one. A single click that ends a paid subscription is
   // too easy to hit by accident on a phone, and an accidental cancellation costs the
   // same support conversation the whole page exists to avoid.
@@ -94,6 +99,21 @@ export default function Account() {
   // what the timed-out state has to say, along with how to reach a person — see the
   // banner below.
   const [stalled, setStalled] = useState(false);
+
+  const getInvite = async () => {
+    if (inviteBusy) return;
+    setInviteBusy(true);
+    try {
+      const { invite_link } = await api.vipInvite();
+      setInvite(invite_link);
+    } catch (e) {
+      // The detail is written to be read by whoever is standing in front of it — a 503
+      // names the missing setting, a 502 names the bot's channel permission.
+      toast.error(e?.response?.data?.detail || "Couldn't create your channel invite");
+    } finally {
+      setInviteBusy(false);
+    }
+  };
   useEffect(() => {
     if (!justPaid || member) return;
     let alive = true;
@@ -295,6 +315,40 @@ export default function Account() {
         {user.member_since && <Row label="Member since">{fmtDate(user.member_since)}</Row>}
         {isStripe && user.subscription_ends_at && (
           <Row label={ending ? "Access ends" : "Renews"}>{fmtDate(user.subscription_ends_at)}</Row>
+        )}
+
+        {/* THE OTHER HALF OF WHAT THEY BOUGHT. Paying unlocked this site; the channel is
+            where the picks actually go out, and until now nothing here handed it over.
+            Highest on the page a member looks at, because on a ten-day trial the cost of
+            them not finding it is a tenth of the window gone. */}
+        {member && (
+          <div className="mt-4 pt-4 border-t border-border">
+            {invite ? (
+              <a
+                href={invite}
+                target="_blank"
+                rel="noreferrer"
+                data-testid="vip-invite-link"
+                className="w-full inline-flex items-center justify-center gap-2 px-4 py-3 rounded-md bg-primary text-black font-semibold hover:opacity-90 transition-opacity">
+                <Send className="h-4 w-4" /> Open the VIP channel
+              </a>
+            ) : (
+              <button
+                onClick={getInvite}
+                disabled={inviteBusy}
+                data-testid="vip-invite-button"
+                className="w-full inline-flex items-center justify-center gap-2 px-4 py-3 rounded-md bg-primary text-black font-semibold hover:opacity-90 transition-opacity disabled:opacity-50">
+                {inviteBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
+                Join the VIP channel
+              </button>
+            )}
+            {/* SAID BEFORE THEY PRESS IT. The link works once and is theirs — somebody who
+                forwards it to a friend has given away their own seat and finds out at the
+                door, which is a worse way to learn it than being told here. */}
+            <p className="mt-2 text-xs text-muted-foreground">
+              Your own invite — it works once and can't be shared.
+            </p>
+          </div>
         )}
       </section>
 

@@ -51,7 +51,7 @@ export default function FaqPage() {
         </div>
 
         <Faq price={PRICE} instant={instant} hasTutorial={hasTutorial} support={support}
-             trialDays={trialDays} />
+             trialDays={instant ? trialDays : 0} />
 
         <div className="flex flex-wrap gap-3 pt-2">
           <Link to="/join"

@@ -5,6 +5,7 @@ import { toast } from "sonner";
 import { api } from "@/lib/api";
 import Faq from "@/components/Faq";
 import { supportPhrase } from "@/lib/support";
+import { trialOffer } from "@/lib/trialOffer";
 import { useAuth } from "@/context/AuthContext";
 
 // The subscription page the payment link points at.
@@ -59,6 +60,10 @@ export default function Join() {
   const [joinUrl, setJoinUrl] = useState(BUILD_JOIN_URL);
   const [configReached, setConfigReached] = useState(null);   // null = still asking
   const [stripeReady, setStripeReady] = useState(false);
+  // How many free days checkout will actually grant. From the backend, so switching the
+  // trial off there silences this page in the same moment rather than leaving it
+  // advertising an offer Stripe no longer honours.
+  const [trialDays, setTrialDays] = useState(0);
   // Named in the guarantee below and in the FAQ, so "just ask" says who to ask.
   const [support, setSupport] = useState("");
   const [busy, setBusy] = useState(false);
@@ -69,6 +74,9 @@ export default function Join() {
   const navigate = useNavigate();
   const { user, member, renderButton, clientId } = useAuth();
   const signInSlot = useRef(null);
+  // Derived rather than stored: it depends on the config, the account and membership,
+  // and any of the three can arrive after the first render.
+  const offer = trialOffer({ trialDays, user, member });
 
   useEffect(() => {
     // Runtime config wins over anything compiled into this bundle.
@@ -77,6 +85,7 @@ export default function Join() {
         setConfigReached(true);
         if (c?.join_url) setJoinUrl(c.join_url);
         setStripeReady(!!c?.stripe_ready);
+        setTrialDays(Number(c?.trial_days) || 0);
         setSupport(supportPhrase(c || {}));
       })
       .catch(() => setConfigReached(false));
@@ -185,11 +194,32 @@ export default function Join() {
         </section>
 
         <section className="bg-card border border-border rounded-lg p-5" data-testid="join-cta">
-          <div className="flex flex-wrap items-baseline gap-x-2">
-            <span className="font-head font-bold text-3xl">{PRICE}</span>
-            <span className="text-muted-foreground">per month</span>
-            <span className="ml-auto text-xs text-muted-foreground">cancel any time</span>
-          </div>
+          {/* THE TRIAL LEADS, because it is the thing being offered and the price is the
+              thing being asked. `offer` is false-y whenever there is nothing to promise —
+              trial switched off, already a member, or an account that has subscribed
+              before — so the page falls back to the plain price with no branching here. */}
+          {offer.eligible ? (
+            <div className="flex flex-wrap items-baseline gap-x-2" data-testid="join-trial">
+              <span className="font-head font-bold text-3xl text-primary">{offer.headline}</span>
+              <span className="text-muted-foreground">then {PRICE}/month</span>
+              <span className="ml-auto text-xs text-muted-foreground">cancel any time</span>
+            </div>
+          ) : (
+            <div className="flex flex-wrap items-baseline gap-x-2">
+              <span className="font-head font-bold text-3xl">{PRICE}</span>
+              <span className="text-muted-foreground">per month</span>
+              <span className="ml-auto text-xs text-muted-foreground">cancel any time</span>
+            </div>
+          )}
+          {/* SAID HERE RATHER THAN LEFT TO STRIPE'S CHECKOUT. A trial that mentions the
+              card only once someone is already on the payment page is how a service
+              collects chargebacks and a reputation — the person who felt tricked is the
+              one who tells everybody. */}
+          {offer.eligible && (
+            <p className="mt-2 text-sm text-muted-foreground" data-testid="join-trial-note">
+              {offer.note}
+            </p>
+          )}
           {/* SIGN IN FIRST, then pay — checkout has to carry the account id, which is what
               makes a cancel button possible later. But it is presented as ONE action:
               press Subscribe, sign in, arrive at payment. The account is a step in
@@ -204,7 +234,7 @@ export default function Join() {
                 onClick={() => setIntent(true)}
                 data-testid="join-button"
                 className="mt-4 w-full inline-flex items-center justify-center gap-2 px-4 py-3 rounded-md bg-primary text-black font-semibold hover:opacity-90 transition-opacity">
-                Subscribe — {PRICE}/month
+                {offer.eligible ? offer.cta : `Subscribe — ${PRICE}/month`}
               </button>
             ) : (
               <div className="mt-4" data-testid="join-signin">
@@ -275,7 +305,7 @@ export default function Join() {
             leave to find out whether they can cancel usually just leaves. */}
         <section data-testid="join-faq">
           <h2 className="font-head font-semibold text-lg mb-3">Questions</h2>
-          <Faq price={PRICE} instant={stripeReady} support={support} />
+          <Faq price={PRICE} instant={stripeReady} support={support} trialDays={trialDays} />
         </section>
 
         <section className="border border-border rounded-lg p-5" data-testid="join-guarantee">

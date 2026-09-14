@@ -38,6 +38,11 @@ BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
 WEBHOOK_SECRET = os.environ.get("TELEGRAM_WEBHOOK_SECRET", "").strip()
 SECRET_HEADER = "x-telegram-bot-api-secret-token"
 
+# The paid channel. Numeric and usually negative for a channel (-100...), and the bot has
+# to be an ADMIN of it with "invite users via link" — createChatInviteLink is refused
+# otherwise, which is the one setup mistake worth expecting.
+VIP_CHAT_ID = os.environ.get("TELEGRAM_VIP_CHAT_ID", "").strip()
+
 # Telegram caps a message at 4096 characters and answers a longer one with HTTP 400 and
 # nothing else. Same limit that silently ate the weekend card twice.
 MAX_MESSAGE = 4096
@@ -103,8 +108,14 @@ async def set_webhook(url: str) -> dict:
             "secret_token": WEBHOOK_SECRET,
             "drop_pending_updates": True,
             # Only what is actually handled. Asking for every update type means being
-            # woken for edits, reactions and member joins that go straight in the bin.
-            "allowed_updates": ["message"],
+            # woken for edits and reactions that go straight in the bin.
+            #
+            # `chat_member` HAS TO BE ASKED FOR EXPLICITLY — Telegram never sends it by
+            # default, even to an admin bot, and its absence is silent. It carries the
+            # invite link somebody joined through, which is the only thread connecting a
+            # Telegram account to a subscription; without it the channel has no way to know
+            # which of its members paid, and no way to remove the right one when they stop.
+            "allowed_updates": ["message", "chat_member"],
         })
     return r.json()
 
@@ -252,3 +263,113 @@ def parse_pick_reply(text: str):
         p = float(pm.group(1))
         price = p if p > 1 else None
     return {"n": n, "price": price, "stake": stake if (stake or 0) > 0 else None}
+
+
+# ----------------------------- Getting a subscriber into the channel -----------------------------
+#
+# THE GAP THIS CLOSES. Stripe checkout unlocked the SITE and nothing at all handed the new
+# subscriber the Telegram channel — the half of the product they are actually paying for.
+# That was a manual add per person, and on a ten-day trial it is worse than it sounds: a
+# signup at 11pm added the following afternoon has burned a day of the window that exists
+# specifically to convince them.
+#
+# ONE LINK PER PERSON, USABLE ONCE. `member_limit=1` is the whole design. A single shared
+# invite posted on the account page would be forwarded, screenshotted and eventually
+# public, and there would be no way to tell which of the people in the channel had paid.
+# A link that dies the moment one person walks through it cannot be shared usefully.
+#
+# NAMED, so the channel's own invite-link list becomes the answer to "who is this". Telegram
+# shows the name against the link and against the member who joined with it.
+
+
+def vip_configured() -> bool:
+    """Can an invite be issued at all? Both halves: a token to call the API with, and a
+    channel to invite anybody to."""
+    return bool(BOT_TOKEN and VIP_CHAT_ID)
+
+
+def invite_label(user: dict) -> str:
+    """What the link is called in the channel's admin list.
+
+    TELEGRAM CAPS THIS AT 32 CHARACTERS and answers a longer one with an error rather than
+    truncating, so it is cut here. Their name if Stripe gave us one, otherwise the email —
+    whichever makes the admin list readable to a person scanning it.
+    """
+    label = (user or {}).get("billing_name") or (user or {}).get("name") \
+        or (user or {}).get("email") or (user or {}).get("user_id") or "member"
+    return str(label).strip()[:32]
+
+
+async def create_invite(user: dict) -> Optional[str]:
+    """A single-use invite to the paid channel, or None when it could not be made.
+
+    NONE RATHER THAN AN EXCEPTION, because the caller is an endpoint a paying member is
+    looking at: "we could not create your invite, here is how to reach me" is a recoverable
+    moment, and a 500 on the page that is supposed to deliver the product is not.
+    """
+    if not vip_configured():
+        return None
+    body = {
+        "chat_id": VIP_CHAT_ID,
+        "name": invite_label(user),
+        # ONE PERSON. Not a shared link with a big limit — see the note above.
+        "member_limit": 1,
+        # NO EXPIRY, deliberately. The link dies when it is used, so the thing an expiry
+        # would protect against is already handled; what an expiry WOULD do is break the
+        # link for somebody who signed up on a Friday and opened the email on Monday.
+    }
+    try:
+        async with httpx.AsyncClient(timeout=20) as hc:
+            r = await hc.post(
+                f"https://api.telegram.org/bot{BOT_TOKEN}/createChatInviteLink", json=body)
+        data = r.json() if r.status_code == 200 else {}
+        if not data.get("ok"):
+            # The body names the cause — "not enough rights to manage chat invite link" is
+            # the one to expect, and it means the bot is not an admin of the channel.
+            logger.warning("telegram createChatInviteLink %s: %s",
+                           r.status_code, r.text[:300])
+            return None
+        return (data.get("result") or {}).get("invite_link")
+    except Exception:
+        logger.exception("telegram createChatInviteLink failed")
+        return None
+
+
+async def revoke_invite(link: str) -> bool:
+    """Kill a link that has not been used yet. For a subscription that lapsed before the
+    person ever joined — otherwise the invite outlives the thing it was issued for."""
+    if not vip_configured() or not link:
+        return False
+    try:
+        async with httpx.AsyncClient(timeout=20) as hc:
+            r = await hc.post(f"https://api.telegram.org/bot{BOT_TOKEN}/revokeChatInviteLink",
+                              json={"chat_id": VIP_CHAT_ID, "invite_link": link})
+        return r.status_code == 200 and (r.json() or {}).get("ok") is True
+    except Exception:
+        logger.exception("telegram revokeChatInviteLink failed")
+        return False
+
+
+def joined_via(update: dict) -> tuple[Optional[str], Optional[dict]]:
+    """Did somebody just join the channel through one of our links?
+
+    Returns (invite_link, telegram_user) for a join, and (None, None) for everything else
+    a `chat_member` update covers — leaving, being removed, a promotion.
+
+    THIS IS THE ONLY WAY TO MAP A TELEGRAM ACCOUNT TO A SUBSCRIPTION. Nothing else connects
+    them: the person pays on the website as one identity and appears in the channel as
+    another, and the invite link is the single thread running between the two. Without
+    recording it there is no way to remove the right person when a subscription ends, which
+    is the whole reason a paid channel leaks.
+    """
+    cm = update.get("chat_member") or {}
+    new = cm.get("new_chat_member") or {}
+    old = cm.get("old_chat_member") or {}
+    # "member" covers joining; restricted-but-present counts too. What matters is that they
+    # were NOT in before and are now, so a promotion of an existing member is not a join.
+    was_in = old.get("status") in ("member", "administrator", "creator")
+    is_in = new.get("status") in ("member", "administrator", "creator")
+    if was_in or not is_in:
+        return None, None
+    link = (cm.get("invite_link") or {}).get("invite_link")
+    return link, (new.get("user") or None)

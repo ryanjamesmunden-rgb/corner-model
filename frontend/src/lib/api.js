@@ -57,6 +57,7 @@ export const api = {
   // subscription, portal is where cancelling actually happens.
   billingCheckout: () => axios.post(`${API}/billing/checkout`).then((r) => r.data),
   billingPortal: () => axios.post(`${API}/billing/portal`).then((r) => r.data),
+  vipInvite: () => axios.get(`${API}/telegram/vip-invite`).then((r) => r.data),
   // cancel:false resumes a subscription that was set to end.
   billingCancel: (cancel = true) => axios.post(`${API}/billing/cancel`, { cancel }).then((r) => r.data),
   favourites: () => axios.get(`${API}/favourites`).then((r) => r.data),

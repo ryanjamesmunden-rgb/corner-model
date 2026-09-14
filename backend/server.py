@@ -899,6 +899,16 @@ async def billing_webhook(request: Request):
         # bank debit through.
         uid = obj.get("client_reference_id")
         sub_id = obj.get("subscription")
+        # THE NAME ON THE CARD, captured here because this is the only event that carries
+        # it — a Subscription object does not. It is what the channel's invite-link list is
+        # labelled with, which is how you tell who a given Telegram member actually is.
+        #
+        # IT IS NOT AN ANTI-FRAUD CONTROL and must not be treated as one: a name is typed,
+        # and anybody wanting a second trial types a different one. The trial is limited by
+        # stripe_customer_id, which is issued rather than claimed.
+        name = ((obj.get("customer_details") or {}).get("name") or "").strip()
+        if uid and name:
+            await db.users.update_one({"user_id": uid}, {"$set": {"billing_name": name}})
         if sub_id:
             sub = billing._stripe().Subscription.retrieve(sub_id)
             result = await billing.apply_subscription(db, sub, user_id=uid)
@@ -5574,6 +5584,13 @@ async def telegram_webhook(request: Request):
             return {"ok": True, "throttled": True}
         bucket.append(now_ts)
 
+    # A CHANNEL JOIN IS NOT A MESSAGE and must not go down the reply path — there is no
+    # chat to answer and nothing was asked. It is handled here and the function returns,
+    # so a join never reaches _telegram_reply to be parsed as a pick.
+    if update.get("chat_member"):
+        asyncio.create_task(_record_channel_join(update))
+        return {"ok": True}
+
     asyncio.create_task(_telegram_reply(update))
     return {"ok": True}
 
@@ -5604,6 +5621,79 @@ class MenuItem(BaseModel):
 class MenuBody(BaseModel):
     chat_id: str
     items: List[MenuItem]
+
+
+@api_router.get("/telegram/vip-invite")
+async def telegram_vip_invite(user: dict = Depends(require_member)):
+    """The member's own single-use invite to the paid channel.
+
+    THE MISSING HALF OF CHECKOUT. Paying unlocked the SITE and nothing handed anyone the
+    Telegram channel — the part they are actually subscribing for. That was a manual add per
+    person, and on a ten-day trial it is worse than it sounds: a signup at 11pm added the
+    next afternoon has spent a tenth of the window that exists to convince them.
+
+    MEMBERS ONLY, via require_member, which is what makes the link safe to hand out at all.
+    `trialing` counts as a member — that is the point of the trial — so a trial subscriber
+    gets in immediately and is removed with everybody else if they never convert.
+
+    ISSUED ONCE AND REMEMBERED. Pressing the button twice must not mint a second link: each
+    one is a seat in a paid room, and a member who generated five over a week would have
+    four spare invites to give away. The stored one is returned instead.
+    """
+    if not telegram_bot.vip_configured():
+        raise HTTPException(status_code=503,
+                            detail="The channel invite is not set up yet — set "
+                                   "TELEGRAM_VIP_CHAT_ID and make the bot an admin of it")
+    existing = user.get("vip_invite_link")
+    if existing:
+        return {"invite_link": existing, "reused": True}
+    link = await telegram_bot.create_invite(user)
+    if not link:
+        # 502 rather than 500: this end is fine and Telegram refused. The usual cause is
+        # the bot not being an admin of the channel, which the log line names.
+        raise HTTPException(status_code=502,
+                            detail="Telegram would not create the invite — check the bot "
+                                   "is an admin of the channel with permission to invite")
+    await db.users.update_one({"user_id": user["user_id"]}, {"$set": {
+        "vip_invite_link": link,
+        "vip_invite_at": datetime.now(timezone.utc).isoformat()}})
+    return {"invite_link": link, "reused": False}
+
+
+async def _record_channel_join(update: dict):
+    """Somebody walked into the paid channel. Write down who, against which invite.
+
+    THE ONLY THREAD BETWEEN THE TWO IDENTITIES. A person pays on the website as one account
+    and appears in the channel as another, and nothing connects them except the link they
+    came through. Recorded here, at the one moment both are visible in the same event.
+
+    Without it a paid channel leaks by construction: subscriptions lapse, and there is no
+    way to tell which Telegram member that was. Matching later by name is guesswork, and
+    guessing wrong means removing somebody who paid.
+    """
+    try:
+        link, tg_user = telegram_bot.joined_via(update)
+        if not tg_user:
+            return                      # not a join: a leave, a removal, a promotion
+        if not link:
+            # Added by hand in the Telegram app rather than through an issued link. Fine,
+            # and worth a line: once invites are the normal route, an arrival nobody can
+            # account for is the shape an unpaid member takes.
+            logger.info("telegram: %s joined the channel with no invite link",
+                        tg_user.get("id"))
+            return
+        res = await db.users.update_one(
+            {"vip_invite_link": link},
+            {"$set": {"telegram_user_id": tg_user.get("id"),
+                      "telegram_username": tg_user.get("username"),
+                      "vip_joined_at": datetime.now(timezone.utc).isoformat()}})
+        if not res.matched_count:
+            # Somebody joined through a link this site did not issue — an invite made by
+            # hand in the Telegram app, which is fine and worth seeing rather than
+            # swallowing, because it is also what an unpaid member looks like.
+            logger.info("telegram: join via an unknown invite link (%s)", tg_user.get("id"))
+    except Exception:
+        logger.exception("recording a channel join failed")
 
 
 @api_router.post("/telegram/menu")

@@ -43,3 +43,20 @@ export const trialOffer = ({ trialDays = 0, user = null, member = false } = {}) 
       + "and you pay nothing at all.",
   };
 };
+
+/**
+ * Does the offer they clicked still apply, now that signing in has revealed who they are?
+ *
+ * THE GAP THIS NAMES. A signed-out visitor is shown the trial because nothing on the page
+ * can tell whether they have had one, and refusing a genuinely new visitor on a guess is
+ * the more expensive mistake. Signing in is the first moment the answer exists — and for a
+ * returning ex-subscriber it is no.
+ *
+ * The join page carries a click through the sign-in and on to checkout, which is right for
+ * somebody whose terms have not changed and wrong for somebody whose have: they pressed
+ * "start 7 days free" and would land on a page asking for £20 today. That is a bait and
+ * switch to a person who has paid you before, and it is why this is a named rule with a
+ * test rather than a condition inside an effect.
+ */
+export const offerStillStands = ({ clickedTrial = false, offer = null } = {}) =>
+  !clickedTrial || Boolean(offer?.eligible);

@@ -5,7 +5,7 @@ import { toast } from "sonner";
 import { api } from "@/lib/api";
 import Faq from "@/components/Faq";
 import { supportPhrase } from "@/lib/support";
-import { trialOffer } from "@/lib/trialOffer";
+import { trialOffer, offerStillStands } from "@/lib/trialOffer";
 import { closedNotice } from "@/lib/signupWindow";
 import { summarise, totalLabel, periodNote } from "@/lib/resultsSummary";
 import { useAuth } from "@/context/AuthContext";
@@ -82,6 +82,12 @@ export default function Join() {
   // straight to payment. Someone who signs in to look around must not be thrown at a
   // checkout page they never asked for.
   const [intent, setIntent] = useState(false);
+  // WHAT THEY WERE PROMISED WHEN THEY PRESSED IT. A signed-out visitor is shown the trial
+  // because nothing on the page can tell whether they have had one — see lib/trialOffer.
+  // Signing in is where that becomes knowable, and this is what makes the answer matter.
+  const [intentTrial, setIntentTrial] = useState(false);
+  // Set when signing in revealed the offer they clicked does not apply to them.
+  const [withdrawn, setWithdrawn] = useState(false);
   const navigate = useNavigate();
   const { user, member, renderButton, clientId } = useAuth();
   const signInSlot = useRef(null);
@@ -121,6 +127,22 @@ export default function Join() {
   // charges nobody. And it only fires for someone who asked to subscribe.
   useEffect(() => {
     if (!intent || !user || member || !stripeReady || busy) return;
+    // THE ONE THING THE AUTO-CONTINUE MUST NOT DO IS CARRY A PROMISE THAT HAS JUST EXPIRED.
+    //
+    // A signed-out visitor is offered the trial, because the page genuinely cannot know
+    // whether they have had one. Signing in answers that — and for a returning
+    // ex-subscriber the answer is no. Continuing straight to checkout then lands somebody
+    // who pressed "Start 7 days free" on a page asking for £20 today, which is the single
+    // worst thing this flow can do: it reads as a bait and switch rather than as a rule,
+    // and the person it happens to is one who has paid before.
+    //
+    // trialOffer's own note claimed the copy corrects itself before checkout. It does not
+    // when the click carries through the sign-in, which is exactly the case this catches.
+    if (!offerStillStands({ clickedTrial: intentTrial, offer })) {
+      setIntent(false);
+      setWithdrawn(true);
+      return;
+    }
     setIntent(false);
     subscribe();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -240,6 +262,24 @@ export default function Join() {
               {offer.note}
             </p>
           )}
+          {/* THE TERMS CHANGED BETWEEN THE CLICK AND THE CHECKOUT, so they get told rather
+              than carried. Signing in is the first moment the page can know they have had
+              their free week; before that it offers the trial to everybody, because
+              refusing a genuinely new visitor on a guess is the more expensive mistake.
+              What must NOT happen is the promise riding through the sign-in into a payment
+              page — that reads as a bait and switch, to somebody who has paid before. */}
+          {withdrawn && (
+            <div className="mt-3 rounded-md border border-amber-500/30 bg-amber-500/10 p-3"
+                 data-testid="join-trial-withdrawn">
+              <p className="text-sm text-amber-200">
+                You've had your free week on this account already — it's one per person.
+              </p>
+              <p className="mt-1 text-sm text-amber-200/80">
+                Subscribing now starts at {PRICE}/month straight away, and you can still
+                cancel any time.
+              </p>
+            </div>
+          )}
           {/* A DOOR THAT SAYS WHEN IT OPENS, not one that is simply locked. Most of whether
               somebody comes back on the right day is whether this block gave them a reason
               and a date rather than a refusal — and the reason is served by the backend, so
@@ -277,7 +317,7 @@ export default function Join() {
           {!user && stripeReady ? (
             !intent ? (
               <button
-                onClick={() => setIntent(true)}
+                onClick={() => { setIntentTrial(offer.eligible); setIntent(true); }}
                 data-testid="join-button"
                 className="mt-4 w-full inline-flex items-center justify-center gap-2 px-4 py-3 rounded-md bg-primary text-black font-semibold hover:opacity-90 transition-opacity">
                 {offer.eligible ? offer.cta : `Subscribe — ${PRICE}/month`}

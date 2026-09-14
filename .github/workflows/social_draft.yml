@@ -209,6 +209,12 @@ jobs:
           BACKEND_URL: ${{ vars.BACKEND_URL || 'https://corner-model.onrender.com' }}
           SITE_URL: ${{ vars.SITE_URL || 'https://thecornermodel.com' }}
           TOOLS_TOKEN: ${{ secrets.TOOLS_TOKEN }}
+          # NEEDED BECAUSE --board menu CAN COME THROUGH HERE. The dedicated menu step
+          # below is skipped on a manual dispatch that names a board, so a hand-fired
+          # `board: menu` builds the menu in THIS step instead — and the menu has to be
+          # stored against the chat it was sent to, or a reply of "3" resolves to nothing.
+          # Without this the menu arrived fine and the store silently keyed itself to "".
+          TG_CHAT: ${{ secrets.TELEGRAM_CHAT_ID }}
 
       - name: Draw the picture
         id: story

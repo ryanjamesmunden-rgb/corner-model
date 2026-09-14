@@ -280,15 +280,25 @@ if (BOARD === "menu") {
       prob: num(r.prob ?? r.projection?.prob),
     };
   });
-  const stored = await fetch(
+  // THE CHAT IS CHECKED BEFORE THE CALL, not left to the backend. A menu is stored under
+  // the chat it was sent to, and an absent TG_CHAT would key it to "" — a row nothing can
+  // ever match, written and accepted without complaint. That is exactly what happened on a
+  // hand-fired `board: menu`, where the step building the menu had no TG_CHAT in its env:
+  // the message arrived, the store reported success, and replying to it said "I haven't
+  // sent you a menu yet". A missing chat is a configuration fault, so it is named as one.
+  const chat = String(process.env.TG_CHAT || "").trim();
+  const stored = !chat ? null : await fetch(
     `${BACKEND}/api/telegram/menu?token=${encodeURIComponent(TOKEN)}`,
     { method: "POST", headers: { "content-type": "application/json" },
-      body: JSON.stringify({ chat_id: String(process.env.TG_CHAT || ""), items: menuItems }),
+      body: JSON.stringify({ chat_id: chat, items: menuItems }),
       signal: AbortSignal.timeout(30000) }).catch(() => null);
   // NOT FATAL. The menu is worth sending even when the reply handler cannot be armed —
   // it is a list to read as well as a list to answer. But it is worth saying in the log,
   // because "I replied 3 and nothing happened" is otherwise unexplainable.
-  if (!stored || !stored.ok) {
+  if (!chat) {
+    console.log("::warning::TG_CHAT is not set for this step — the menu cannot be stored"
+      + " against a chat, so replying with a number will not resolve");
+  } else if (!stored || !stored.ok) {
     console.log(`::warning::could not store the menu (${stored ? stored.status : "unreachable"})`
       + " — replying with a number will not resolve");
   }

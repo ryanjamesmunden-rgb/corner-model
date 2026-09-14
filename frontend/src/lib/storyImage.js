@@ -1639,3 +1639,169 @@ export const renderResultWide = (canvas, {
 
   return canvas;
 };
+
+// ----------------------------- The record card -----------------------------
+//
+// The aggregate, not one game: how many of the posted angles landed, over what period,
+// with the outcomes drawn as a strip so the misses are visible rather than summarised.
+//
+// WHAT IT MAY CLAIM IS DECIDED ELSEWHERE. lib/recordCard builds the content and enforces
+// the three rules that matter — a card that would hide every miss is made to show one, a
+// rate never appears without its denominator, and no units figure appears at all because
+// the data cannot support one. Those rules live in a tested module rather than in here,
+// because drawing code is where a rule goes to be quietly forgotten.
+//
+// TWO SHAPES. 1080x1350 is the Instagram feed post; 1080x1920 is the story. Same content,
+// and the strip fits more on the taller one.
+
+export const FEED_W = 1080;
+export const FEED_H = 1350;
+
+const TONE = { win: "#39D0A3", loss: "#F2557E", void: "#3B4654" };
+
+/**
+ * Draw the strip of outcomes as squares that wrap.
+ *
+ * SQUARES RATHER THAN A SPARKLINE, because a line implies a running total and this is not
+ * one — it is a sequence of independent calls. A rising line would be a claim about
+ * compounding returns that nothing here measures.
+ */
+/**
+ * The largest cell that lets the whole strip fit the space it has been given.
+ *
+ * SIZED TO THE SPACE RATHER THAN FIXED, because the two shapes have very different amounts
+ * of it and the same strip drawn at a fixed 44px left roughly half a story card empty — a
+ * card that looks unfinished rather than confident. Walking the size down from the top also
+ * means a short record gets big squares and a long one gets small ones, which is the right
+ * way round: fewer results should not read as less to show.
+ */
+const fitStrip = (n, w, h, gap = 12, max = 104, min = 26) => {
+  for (let cell = max; cell >= min; cell -= 2) {
+    const perRow = Math.max(1, Math.floor((w + gap) / (cell + gap)));
+    if (Math.ceil(n / perRow) * (cell + gap) <= h) return { cell, perRow };
+  }
+  const perRow = Math.max(1, Math.floor((w + gap) / (min + gap)));
+  return { cell: min, perRow };
+};
+
+/** How tall the strip will actually be, so the caller can centre it in its space. */
+const stripHeight = (n, w, h, gap = 12) => {
+  if (!n) return 0;
+  const { cell, perRow } = fitStrip(n, w, h, gap);
+  return Math.ceil(n / perRow) * (cell + gap) - gap;
+};
+
+const drawStrip = (ctx, strip, { x, y, w, h, gap = 12 }) => {
+  if (!strip.length) return y;
+  const { cell, perRow } = fitStrip(strip.length, w, h, gap);
+  strip.forEach((result, i) => {
+    const cx = x + (i % perRow) * (cell + gap);
+    const cy = y + Math.floor(i / perRow) * (cell + gap);
+    ctx.fillStyle = TONE[result] || TONE.void;
+    roundRect(ctx, cx, cy, cell, cell, Math.round(cell * 0.2));
+    ctx.fill();
+  });
+  return y + Math.ceil(strip.length / perRow) * (cell + gap);
+};
+
+/**
+ * The record card. `card` is whatever lib/recordCard.cardFrom returned.
+ *
+ * Returns false and draws nothing when handed null — which is what cardFrom gives back
+ * when nothing has settled. A graphic reading "0 of 0" is a claim about a record that has
+ * not been made yet, and the honest response is to not post one.
+ */
+export const renderRecordCard = (canvas, {
+  card = null, shape = "feed", site = "thecornermodel.com", brand = "CORNER MODEL",
+} = {}) => {
+  if (!card) return false;
+  const W = FEED_W;
+  const H = shape === "story" ? STORY_H : FEED_H;
+  canvas.width = W;
+  canvas.height = H;
+  const ctx = canvas.getContext("2d");
+
+  ctx.fillStyle = C.bg;
+  ctx.fillRect(0, 0, W, H);
+  const glow = ctx.createRadialGradient(W / 2, 200, 60, W / 2, 200, 820);
+  glow.addColorStop(0, `${C.primary}22`);
+  glow.addColorStop(1, `${C.primary}00`);
+  ctx.fillStyle = glow;
+  ctx.fillRect(0, 0, W, Math.min(900, H));
+
+  ctx.textBaseline = "middle";
+  const pad = 72;
+  let y = shape === "story" ? 240 : 150;
+
+  ctx.fillStyle = C.primary;
+  ctx.font = `700 30px ${FONT_HEAD}`;
+  ctx.letterSpacing = "6px";
+  ctx.fillText(brand, pad, y);
+  ctx.letterSpacing = "0px";
+
+  y += shape === "story" ? 130 : 110;
+  ctx.fillStyle = C.muted;
+  ctx.font = `600 34px ${FONT_BODY}`;
+  ctx.fillText("Posted before kick-off", pad, y);
+
+  // THE FRACTION IS THE HEADLINE, not the percentage. "31 of 47" is checkable against the
+  // record on the site; "66%" is a number a reader has to take on trust.
+  y += 120;
+  ctx.fillStyle = C.text;
+  ctx.font = fitFont(ctx, card.big, { size: 168, max: W - pad * 2, family: FONT_HEAD });
+  ctx.fillText(card.big, pad, y);
+
+  y += 110;
+  ctx.fillStyle = C.solid;
+  ctx.font = `700 52px ${FONT_DATA}`;
+  ctx.fillText(`${card.rate}%`, pad, y);
+  ctx.fillStyle = C.muted;
+  ctx.font = `500 34px ${FONT_BODY}`;
+  const suffix = [card.period, card.voided ? `${card.voided} void` : "",
+                  card.pending ? `${card.pending} pending` : ""].filter(Boolean).join("  ·  ");
+  ctx.fillText(suffix, pad + ctx.measureText(`${card.rate}%`).width + 140, y);
+
+  // ANCHORED FROM THE BOTTOM UP, so the strip gets whatever is left rather than the card
+  // getting whatever the strip did not use. Drawn top-down, the closing lines landed
+  // wherever the strip happened to end and left ~900px of empty card underneath on a
+  // story — which reads as a graphic that failed to finish rendering.
+  const footerTop = H - 150;
+  const closingTop = footerTop - 170;
+  y += 90;
+  // CENTRED IN WHAT IS LEFT. The strip caps its cell size so a short record does not get
+  // absurd blocks, which means it rarely fills the space exactly — and all of the slack
+  // falling underneath reads as a card that ran out rather than one that was laid out.
+  const stripSpace = closingTop - y - 40;
+  const stripH = stripHeight(card.strip.length, W - pad * 2, stripSpace);
+  drawStrip(ctx, card.strip, { x: pad, y: y + Math.max(0, (stripSpace - stripH) / 2),
+                               w: W - pad * 2, h: stripSpace });
+
+  // THE ARGUMENT, once, in the one place a sceptic looks. Everything above is a number;
+  // this is the reason the numbers mean anything.
+  let cy = closingTop;
+  ctx.fillStyle = C.primary;
+  ctx.font = `600 32px ${FONT_BODY}`;
+  wrapText(ctx, card.basis, W - pad * 2).forEach((line) => {
+    ctx.fillText(line, pad, cy);
+    cy += 44;
+  });
+
+  ctx.fillStyle = C.muted;
+  ctx.font = `500 28px ${FONT_BODY}`;
+  cy += 10;
+  wrapText(ctx, "Every row on the site, checkable against the actual result.",
+           W - pad * 2).forEach((line) => {
+    ctx.fillText(line, pad, cy);
+    cy += 38;
+  });
+
+  // Pinned to the bottom rather than flowing, so the legal line cannot be pushed off a
+  // taller card by a longer strip.
+  ctx.fillStyle = C.text;
+  ctx.font = `700 40px ${FONT_HEAD}`;
+  ctx.fillText(site, pad, footerTop);
+  ctx.fillStyle = C.muted;
+  ctx.font = `500 24px ${FONT_BODY}`;
+  ctx.fillText(card.legal, pad, H - 96);
+  return true;
+};

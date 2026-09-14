@@ -6,6 +6,7 @@ import StoryButton from "@/components/StoryButton";
 import { renderResultStory } from "@/lib/storyImage";
 import { canRecord, extFor, recordStoryVideo } from "@/lib/storyVideo";
 import { kickoffLabel } from "@/lib/kickoff";
+import SignedInOnly from "@/components/SignedInOnly";
 
 // THE RECORD. The only page here anyone can read without an account.
 //
@@ -89,7 +90,26 @@ const weekLabel = (tag) => {
     : d.toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" });
 };
 
+// BEHIND A FREE ACCOUNT NOW. This was the one deliberately open page — the record of
+// every posted streak and how it landed — on the reasoning that evidence behind a login
+// persuades nobody. That reasoning still holds and the trade was made anyway: the record
+// is a list of the picks this site made, and the picks are the product.
+//
+// Signing in costs nothing, so this is a door and not a wall. What it stops is the record
+// being read by someone who has given nothing at all. The API agrees — /api/results answers
+// 401 to a guest — so this is the experience, not the gate.
 export default function Results() {
+  return (
+    <SignedInOnly
+      title="The record is for account holders"
+      blurb="Every streak this site posted before kick-off, and how each one landed —
+             wins, misses and voids, graded off a snapshot taken while it was still a
+             prediction. It cannot flatter itself, which is the whole point of it.">
+      <ResultsBoard />
+    </SignedInOnly>
+  );}
+
+function ResultsBoard() {
   const [data, setData] = useState(null);
   const [failed, setFailed] = useState(false);
 

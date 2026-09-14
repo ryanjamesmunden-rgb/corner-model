@@ -3,6 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { TrendingUp, ArrowRight, ArrowUpRight } from "lucide-react";
 import { api } from "@/lib/api";
 import PreviewWall from "@/components/PreviewWall";
+import { lockClass, lockCounts } from "@/lib/locked";
 import TeamStar from "@/components/TeamStar";
 import { withFlag } from "@/lib/countryFlag";
 import { useLeague } from "@/context/LeagueContext";
@@ -94,7 +95,7 @@ export default function TrendFinder() {
                 key={r.team_id}
                 data-testid="trend-row"
                 onClick={() => r.next_fixture && navigate(`/fixture/${r.next_fixture.fixture_id}`)}
-                className={`border-b border-border/50 transition-colors duration-150 ${r.next_fixture ? "hover:bg-white/5 cursor-pointer" : ""}`}
+                className={lockClass(r, `border-b border-border/50 transition-colors duration-150 ${r.next_fixture ? "hover:bg-white/5 cursor-pointer" : ""}`)}
                 style={{ borderLeft: "2px solid #22D3EE" }}
               >
                 <td className="px-2 py-1.5 sm:px-4 sm:py-2.5">
@@ -120,7 +121,8 @@ export default function TrendFinder() {
           </tbody>
         </table>
       </div>
-      {preview && <PreviewWall total={preview.total} shown={rows.length} noun="teams" />}
+      {preview && <PreviewWall total={preview.total} shown={rows.length}
+        locked={lockCounts(rows).locked} noun="teams" />}
     </section>
   );
 }

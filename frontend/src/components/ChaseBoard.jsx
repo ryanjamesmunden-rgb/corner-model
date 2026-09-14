@@ -3,6 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { Target, Flame, ArrowRight, Plus, Zap } from "lucide-react";
 import { api, tierMeta } from "@/lib/api";
 import PreviewWall from "@/components/PreviewWall";
+import { lockClass, lockCounts } from "@/lib/locked";
 import { withFlag } from "@/lib/countryFlag";
 
 const fmtDate = (d) => (d ? new Date(d).toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" }) : "");
@@ -64,7 +65,7 @@ export default function ChaseBoard({ leagueId = "all", withinDays = 7, limit = 2
                   key={`${r.team_id}-${i}`}
                   data-testid="chase-row"
                   onClick={() => nf.fixture_id && navigate(`/fixture/${nf.fixture_id}`)}
-                  className="border-b border-border/50 hover:bg-white/5 cursor-pointer transition-colors duration-150"
+                  className={lockClass(r, "border-b border-border/50 hover:bg-white/5 cursor-pointer transition-colors duration-150")}
                 >
                   <td className="px-2 py-2 sm:px-4 sm:py-3 text-muted-foreground">{i + 1}</td>
                   <td className="px-2 py-2 sm:px-4 sm:py-3">
@@ -112,7 +113,8 @@ export default function ChaseBoard({ leagueId = "all", withinDays = 7, limit = 2
           </tbody>
         </table>
       </div>
-      {preview && <PreviewWall total={preview.total} shown={rows.length} noun="spots" />}
+      {preview && <PreviewWall total={preview.total} shown={rows.length}
+        locked={lockCounts(rows).locked} noun="spots" />}
       {/* Measured, and it does not rank. Saying so on the panel matters more than the
           panel looking authoritative — the row order is a filter, not a pick order. */}
       <p className="px-2 py-1.5 sm:px-4 sm:py-2.5 border-t border-border text-[10px] text-muted-foreground">

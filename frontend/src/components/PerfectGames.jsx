@@ -3,6 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { Crosshair, ArrowRight, Info } from "lucide-react";
 import { api } from "@/lib/api";
 import PreviewWall from "@/components/PreviewWall";
+import { lockClass, lockCounts } from "@/lib/locked";
 import { withFlag } from "@/lib/countryFlag";
 import { kickoffLabel } from "@/lib/kickoff";
 import { tightestWin } from "@/lib/cushion";
@@ -124,6 +125,7 @@ export default function PerfectGames() {
               const lineGap = r.mismatch.line - r.streak.line;
               return (
                 <tr key={`${r.team_id}-${nf.fixture_id}`} data-testid="perfect-row"
+                  className={lockClass(r)}
                   onClick={() => nf.fixture_id && navigate(`/fixture/${nf.fixture_id}`)}
                   className="border-b border-border/50 hover:bg-white/5 cursor-pointer transition-colors"
                   style={{ borderLeft: "2px solid #10B981" }}>
@@ -198,7 +200,8 @@ export default function PerfectGames() {
         </table>
       </div>
 
-      {preview && <PreviewWall total={preview.total} shown={rows.length} noun="games" />}
+      {preview && <PreviewWall total={preview.total} shown={rows.length}
+        locked={lockCounts(rows).locked} noun="games" />}
 
       {/* THE CAVEAT IS PART OF THE FEATURE. "Perfect" plus two green ticks is exactly the
           screen someone over-stakes off, and the two signals are not independent. */}

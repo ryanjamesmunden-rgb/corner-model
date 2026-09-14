@@ -18,9 +18,13 @@ import { useAuth } from "@/context/AuthContext";
 // Two audiences, two asks — the same split MembersOnly makes. Signed out you need an
 // account before you can buy anything; signed in and unpaid you need the subscription.
 // Sending the second group to a "create an account" message is how a ready buyer bounces.
-export default function PreviewWall({ total, shown, noun = "rows", className = "" }) {
+export default function PreviewWall({ total, shown, locked, noun = "rows", className = "" }) {
   const { user } = useAuth();
-  const hidden = Number.isFinite(total) && Number.isFinite(shown) ? total - shown : null;
+  // `locked` is the new, exact number: the rows that came back with the model's numbers
+  // stripped off. It beats total-minus-shown, which stopped being right the moment the
+  // server began sending the blurred rows too — `shown` is now the whole list.
+  const hidden = Number.isFinite(locked) ? locked
+    : (Number.isFinite(total) && Number.isFinite(shown) ? total - shown : null);
 
   return (
     <div className={`border-t border-border bg-secondary/30 px-4 py-4 text-center ${className}`}
@@ -29,7 +33,9 @@ export default function PreviewWall({ total, shown, noun = "rows", className = "
         <Lock className="h-3.5 w-3.5" />
         <span className="text-sm">
           {hidden && hidden > 0
-            ? <>Showing {shown} of {total}. <span className="text-foreground">{hidden} more {noun}</span> for members.</>
+            ? <>{Number.isFinite(locked) ? <>Readable: {shown - locked} of {shown}.</> : <>Showing {shown} of {total}.</>}{" "}
+                <span className="text-foreground">{hidden} more {noun}</span>
+                {Number.isFinite(locked) ? " are blurred." : " for members."}</>
             : <>You're seeing a sample. <span className="text-foreground">The full board</span> is for members.</>}
         </span>
       </div>

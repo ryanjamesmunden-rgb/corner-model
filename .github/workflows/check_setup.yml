@@ -69,7 +69,19 @@ jobs:
         env:
           BACKEND: ${{ vars.BACKEND_URL || 'https://corner-model.onrender.com' }}
           TOOLS_TOKEN: ${{ secrets.TOOLS_TOKEN }}
+          # WHERE THE DAILY POSTS LAND. These are GitHub secrets read by the posting
+          # workflows, not Render variables, so the backend cannot report them and the
+          # question "does any of this go to the paid channel" had no answer anywhere.
+          # Compared, never printed — an id in a public log is a chat anybody can post to
+          # if they also have the token.
+          TG_CHAT: ${{ secrets.TELEGRAM_CHAT_ID }}
+          TG_SLIP: ${{ secrets.TELEGRAM_SLIP_CHAT_ID }}
         run: |
+          if [ -z "$TG_SLIP" ] || [ "$TG_SLIP" = "$TG_CHAT" ]; then
+            echo "same" > slip_target.txt
+          else
+            echo "separate" > slip_target.txt
+          fi
           # Render sleeps the free instance; the first call after a quiet spell can take
           # most of a minute or fail outright, which is not a configuration problem.
           for i in 1 2 3 4 5 6; do
@@ -116,9 +128,13 @@ jobs:
           vip = tg.get("vip_channel") or {}
           sign = cfg.get("signup") or {}
 
-          def row(ok, label, detail=""):
-              mark = "✅" if ok else "❌"
-              print(f"| {mark} | {label} | {detail} |")
+          def row(ok, label, detail="", mark=None):
+              print(f"| {mark or ('✅' if ok else '❌')} | {label} | {detail} |")
+
+          try:
+              slip_target = open("slip_target.txt").read().strip()
+          except Exception:
+              slip_target = "same"
 
           print("## Live setup\n")
           # SAID BEFORE THE TABLE, because if the backend never answered then every cross
@@ -166,6 +182,19 @@ jobs:
           row(bool(vip.get("reachable")), "Bot can see the channel", vip.get("title") or "")
           row(bool(vip.get("can_invite")), "Bot can create invites",
               vip.get("error") or "")
+
+          # WHERE THINGS ARE SENT, which is a different question from whether they work and
+          # the one that decides whether a paying channel gets filled with working notes.
+          # Nothing is ever posted to the VIP channel: TELEGRAM_VIP_CHAT_ID is used only to
+          # mint, revoke and enforce invites, never as a send target. The one setting that
+          # could route a post anywhere else is TELEGRAM_SLIP_CHAT_ID.
+          print("| | | |")
+          row(True, "Daily posts, menu, best game", "your own chat — never the VIP channel")
+          if slip_target == "same":
+              row(True, "Morning board", "your own chat")
+          else:
+              row(False, "Morning board", "a SEPARATE chat — check that is not the VIP "
+                  "channel; unset TELEGRAM_SLIP_CHAT_ID to send it to your own", mark="⚠️")
 
           print()
           if not ready:

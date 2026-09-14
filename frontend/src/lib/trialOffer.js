@@ -21,9 +21,20 @@
  * Returns `eligible: false` and empty copy whenever there is nothing to offer, so the
  * caller can render the block or not on one flag rather than assembling the rule again.
  */
-export const trialOffer = ({ trialDays = 0, user = null, member = false } = {}) => {
+export const trialOffer = ({ trialDays = 0, user = null, member = false,
+                             stripeReady = false } = {}) => {
   const days = Number(trialDays) || 0;
   const none = { eligible: false, days: 0, headline: "", cta: "", note: "" };
+  // A TRIAL IS SOMETHING ONLY THE REAL CHECKOUT CAN GRANT, and this caught it live. With
+  // no Stripe keys configured the join page falls back to a bare Payment Link — which is
+  // configured in the Stripe dashboard, carries no trial, and cannot be tied to an account
+  // at all. The page still had trial_days from the backend, so it advertised seven free
+  // days above a button that went straight to a payment form. Somebody pressed it.
+  //
+  // DEFAULTS TO FALSE, deliberately, so a caller that forgets to pass it under-promises
+  // rather than over-promises. Not offering a trial that was available costs a conversion
+  // and is visible; offering one that is not costs trust and is not.
+  if (!stripeReady) return none;
   // Nothing to offer a member: they are already in, and "start your free trial" on a page
   // someone is paying to see reads as a mistake about who they are.
   if (days < 1 || member) return none;

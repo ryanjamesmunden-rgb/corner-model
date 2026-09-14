@@ -93,7 +93,9 @@ export default function Join() {
   const signInSlot = useRef(null);
   // Derived rather than stored: it depends on the config, the account and membership,
   // and any of the three can arrive after the first render.
-  const offer = trialOffer({ trialDays, user, member });
+  // stripeReady matters: without it the page falls back to a bare Payment Link,
+  // which cannot grant a trial however many days the backend reports.
+  const offer = trialOffer({ trialDays, user, member, stripeReady });
   // Null unless THIS visitor is shut out — a member is never blocked from a
   // page they are already past, and under a trial-only scope somebody paying
   // full price gets through on any day.
@@ -393,7 +395,10 @@ export default function Join() {
             leave to find out whether they can cancel usually just leaves. */}
         <section data-testid="join-faq">
           <h2 className="font-head font-semibold text-lg mb-3">Questions</h2>
-          <Faq price={PRICE} instant={stripeReady} support={support} trialDays={trialDays} />
+          {/* Zero when checkout cannot grant one — the FAQ is a second surface that would
+              otherwise answer "yes, 7 days" over a payment link carrying none. */}
+          <Faq price={PRICE} instant={stripeReady} support={support}
+               trialDays={stripeReady ? trialDays : 0} />
         </section>
 
         <section className="border border-border rounded-lg p-5" data-testid="join-guarantee">

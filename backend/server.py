@@ -5827,7 +5827,42 @@ async def telegram_register(request: Request, url: Optional[str] = None,
         res = await telegram_bot.set_webhook(target)
     except RuntimeError as e:
         raise HTTPException(status_code=503, detail=str(e))
-    return {"registered": target, "telegram": res}
+    # THE MENU GOES UP WITH THE WEBHOOK, because the two are one setup step in practice and
+    # a separate command nobody remembers to run is a menu that never appears. A registered
+    # webhook with no menu is the state this bot sat in for weeks.
+    #
+    # NOT FATAL. The webhook is what makes the bot work; the menu only makes it findable.
+    # Failing the whole registration over the decoration would mean a bot that cannot hear
+    # at all because its menu could not be set.
+    menu = None
+    try:
+        menu = await telegram_bot.set_my_commands()
+    except Exception:
+        logger.exception("telegram setMyCommands failed during register")
+    return {"registered": target, "telegram": res,
+            "menu": (menu or {}).get("ok", False),
+            "commands": [c["command"] for c in telegram_bot.COMMANDS]}
+
+
+@api_router.post("/telegram/commands")
+async def telegram_commands(token: Optional[str] = None):
+    """Re-publish the menu on its own, without touching the webhook.
+
+    SEPARATE FROM REGISTER because the two change for different reasons. The webhook URL
+    moves when the deployment does — rarely. The command list moves whenever a command is
+    added, which is exactly when nobody wants to re-point Telegram at a URL that was
+    already correct.
+
+    Answers with what Telegram reports as LIVE rather than with what was sent: setMyCommands
+    returning ok means the call was accepted, which is not the same as the menu a person
+    sees having changed.
+    """
+    _check_tools_token(token)
+    if not telegram_bot.BOT_TOKEN:
+        raise HTTPException(status_code=503, detail="TELEGRAM_BOT_TOKEN is not set")
+    sent = await telegram_bot.set_my_commands()
+    live = await telegram_bot.my_commands()
+    return {"set": sent.get("ok", False), "live": live.get("result")}
 
 
 @api_router.get("/telegram/status")

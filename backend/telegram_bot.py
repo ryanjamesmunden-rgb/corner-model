@@ -4,16 +4,21 @@ WHAT THIS IS FOR. The bot has only ever been able to SEND — the scheduled job 
 sendMessage and that is the whole relationship. Nothing listens, so a message typed at it
 sits in Telegram's queue and is never read. This is the part that listens.
 
-STEP ONE ON PURPOSE, and the scope is the point. It answers /start and /help and nothing
-else. Everything interesting — /value, /game, /streaks — needs to know WHO is asking, and
-there is currently no link between a Telegram account and a member row. Building the
-commands first would mean either leaving the paid boards open to anyone who finds the bot,
-or inventing an identity scheme under time pressure. So the pipe gets proven first:
-delivery, the secret, and de-duplication.
+STILL A SMALL SURFACE ON PURPOSE. It answers /start, /help and /pick, and it logs an angle
+replied to the daily menu. Everything else interesting — /value, /game, /streaks — needs to
+know WHO is asking, and there is still no link between a Telegram account and a member row
+for a DM. Building those first would mean either leaving the paid boards open to anyone who
+finds the bot, or inventing an identity scheme under time pressure.
 
-WHAT /help SAYS IS WHAT WORKS. It lists two commands because two commands exist. Listing
-the planned ones would repeat the mistake already sitting in the daily angle menu, which
-ends "Reply with a number and I'll write that one up" at a bot that cannot hear it.
+WHAT IS LISTED IS WHAT WORKS, in the help text and in the menu button both. Listing a
+planned command would repeat the mistake the daily angle menu once made, ending "Reply with
+a number and I'll write that one up" at a bot that could not hear it.
+
+THE MENU MAKES THAT RULE STRICTER RATHER THAN LOOSER. Tapping an item SENDS the command, so
+an entry the bot does not handle has somebody send it and be told it does not exist — the
+bot looks broken at the exact moment it is first explored. Registering /pick is what
+surfaced the bug where a bare `/pick`, which is precisely what the button sends, answered
+"I don't know /pick yet". See set_my_commands.
 
 SECURITY. The webhook URL is not a secret — it is on the public internet and anyone can
 POST to it. Telegram's `secret_token` is: it is set when the webhook is registered, sent
@@ -193,6 +198,20 @@ def reply_for(update: dict) -> Optional[str]:
 
     if name in ("start", "help"):
         return HELP
+    # `/pick` WITH NOTHING AFTER IT IS EXACTLY WHAT THE MENU BUTTON SENDS. Telegram inserts
+    # the bare command and leaves the cursor there, and plenty of people send it as-is to
+    # see what happens. Without this it answered "I don't know /pick yet" — about the one
+    # command that does the most useful thing the bot can do, and which parse_pick_reply
+    # has always accepted with an argument. Registering it in the menu is what made a
+    # latent wrong answer into the first thing a new user would see.
+    if name == "pick":
+        # IN A GROUP IT IS REDIRECTED, NOT EXPLAINED. A pick is logged against whoever sent
+        # it and the bot deliberately ignores numbers typed in a group, so printing the
+        # syntax there would invite somebody to try something that is then ignored. The
+        # one-liner is what is_private's note anticipated: answer in a DM, say so in the
+        # group. Short on purpose — a bot that talks in a group is a bot that gets muted.
+        return PICK_HELP if is_private(update) else \
+            "Send me /pick in a direct message — picks are logged against the sender."
     if name:
         return (f"I don't know /{name} yet. /help lists what I can do."
                 if is_private(update) else None)
@@ -418,3 +437,64 @@ async def remove_member(tg_user_id) -> bool:
     except Exception:
         logger.exception("telegram remove_member failed")
         return False
+
+
+# ----------------------------- The menu button -----------------------------
+#
+# WHAT setMyCommands ACTUALLY DOES. It is what puts the "Menu" button beside the message
+# box and fills the list that drops out of it. Without it the bot has no discoverable
+# surface at all: everything it can do has to be typed by somebody who already knows, which
+# for most people means the bot appears to do nothing.
+#
+# THE LIST IS WHAT WORKS, NOT WHAT IS PLANNED. Same rule the help text follows, and it
+# matters more here: tapping a menu item SENDS that command immediately. A menu offering
+# /value would have people send /value and be told it does not exist — the bot would look
+# broken at the exact moment somebody first explored it, which is worse than having no menu.
+#
+# /pick IS IN THE LIST BECAUSE IT REALLY WORKS. parse_pick_reply has always accepted it, and
+# it is the most useful thing the bot does. Registering it is what surfaced the bug directly
+# above: a bare `/pick`, which is exactly what the menu button sends, used to answer "I
+# don't know /pick yet".
+
+COMMANDS = [
+    # Telegram requires lowercase, 1-32 chars; descriptions 1-256. The description is what
+    # people read in the dropdown, so it says what the thing does rather than naming it again.
+    {"command": "pick", "description": "Log an angle from the menu — /pick 3 @ 1.80 1.5u"},
+    {"command": "help", "description": "What I can do, and how to reply to the daily menu"},
+]
+
+
+async def set_my_commands(commands=None) -> dict:
+    """Register the menu. Idempotent — Telegram replaces the whole list every time.
+
+    SCOPED TO PRIVATE CHATS. The default scope would put this menu in every group the bot
+    is in, where /pick is meaningless: a pick is logged against the person who sent it, and
+    the bot deliberately ignores numbers typed in a group because "3" there is somebody
+    talking. Offering a command in a room where it is ignored is the same broken-looking
+    failure the list above exists to avoid.
+    """
+    if not BOT_TOKEN:
+        raise RuntimeError("TELEGRAM_BOT_TOKEN is not set")
+    async with httpx.AsyncClient(timeout=20) as hc:
+        r = await hc.post(f"https://api.telegram.org/bot{BOT_TOKEN}/setMyCommands", json={
+            "commands": commands if commands is not None else COMMANDS,
+            "scope": {"type": "all_private_chats"},
+        })
+    try:
+        return r.json()
+    except Exception:
+        return {"ok": False, "status": r.status_code, "body": r.text[:300]}
+
+
+async def my_commands() -> dict:
+    """What Telegram currently thinks the menu is. For checking a registration landed —
+    setMyCommands answering ok tells you it was accepted, not what is live."""
+    if not BOT_TOKEN:
+        raise RuntimeError("TELEGRAM_BOT_TOKEN is not set")
+    async with httpx.AsyncClient(timeout=20) as hc:
+        r = await hc.get(f"https://api.telegram.org/bot{BOT_TOKEN}/getMyCommands",
+                         params={"scope": '{"type":"all_private_chats"}'})
+    try:
+        return r.json()
+    except Exception:
+        return {"ok": False, "status": r.status_code, "body": r.text[:300]}

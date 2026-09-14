@@ -6,6 +6,7 @@ import { api } from "@/lib/api";
 import Faq from "@/components/Faq";
 import { supportPhrase } from "@/lib/support";
 import { trialOffer } from "@/lib/trialOffer";
+import { summarise, totalLabel, periodNote } from "@/lib/resultsSummary";
 import { useAuth } from "@/context/AuthContext";
 
 // The subscription page the payment link points at.
@@ -44,9 +45,16 @@ const PRICE = "£20";
 //
 // Edit this list each month. It becomes computed — and verifiable — once real picks are
 // logged through POST /api/picks and the record can be built from settled results.
+//
+// A MONTH STILL RUNNING CARRIES `partial: true` and is labelled on the row AND in the
+// total. September at +16 beside two closed months, with the total reading as final, is a
+// true number arranged into a false impression — the same trap the day card had. Drop the
+// flag when the month closes and both labels disappear on their own.
 const RESULTS = [
   { period: "June - July", units: 17.14 },
   { period: "August", units: 20.73 },
+  // Month to date. Update as it settles, and remove `partial` once September has closed.
+  { period: "September", units: 16.00, partial: true },
 ];
 
 const INCLUDED = [
@@ -158,6 +166,9 @@ export default function Join() {
             {RESULTS.map((r) => (
               <div key={r.period} className="flex items-baseline gap-3 px-4 py-2.5">
                 <span className="text-sm text-muted-foreground">{r.period}</span>
+                {periodNote(r) && (
+                  <span className="text-xs text-muted-foreground/70">{periodNote(r)}</span>
+                )}
                 <span className={`ml-auto font-mono-data text-lg ${
                   r.units > 0 ? "text-emerald-400" : r.units < 0 ? "text-red-400" : "text-foreground"}`}>
                   {r.units > 0 ? "+" : ""}{r.units.toFixed(2)}
@@ -166,9 +177,9 @@ export default function Join() {
               </div>
             ))}
             <div className="flex items-baseline gap-3 px-4 py-2.5 bg-secondary/40">
-              <span className="text-sm font-medium">Since June</span>
+              <span className="text-sm font-medium">{totalLabel(RESULTS)}</span>
               <span className="ml-auto font-mono-data text-lg text-emerald-400">
-                +{RESULTS.reduce((a, r) => a + r.units, 0).toFixed(2)}
+                +{summarise(RESULTS).total.toFixed(2)}
               </span>
               <span className="text-xs text-muted-foreground w-8">pts</span>
             </div>

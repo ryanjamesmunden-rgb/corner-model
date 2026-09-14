@@ -63,8 +63,170 @@ MEMBER_SOURCE_LEGACY = "legacy"
 
 
 def configured() -> bool:
-    """Whether checkout can run at all. Missing config is a 503, not a crash."""
+    """Whether checkout can run at all. Missing config is a 503, not a crash.
+
+    PRESENT IS NOT VALID, and the distance between the two is the whole reason `check()`
+    below exists. This answers one question — are the two variables filled in — because it
+    is on the hot path of every page load via /api/config and must not call Stripe. It
+    cannot tell a working key from eight characters of one.
+    """
     return bool(STRIPE_SECRET_KEY and STRIPE_PRICE_ID)
+
+
+# THE SHAPE OF A SECRET KEY, which is checkable without asking Stripe anything.
+#
+# FOUND LIVE, and it is worth being precise about the failure because the whole diagnostic
+# had reported this setup as fine. The key in the environment was `sk_live_` and nothing
+# else — a copy that took the visible prefix and left the secret behind, which is easy to
+# do because the dashboard shows exactly that prefix next to a Reveal button. Every check
+# that existed said "Stripe checkout: live", because every check that existed asked whether
+# the variable was non-empty. It was non-empty. It was also eight characters long.
+#
+# A length test costs nothing, needs no network, and separates the two failures that want
+# completely different fixes: "you have pasted the wrong thing" and "Stripe has rejected
+# the right thing". Real keys are around a hundred characters; the floor is set far below
+# that so it can only ever fire on something that is obviously not a key.
+KEY_PREFIXES = ("sk_live_", "sk_test_", "rk_live_", "rk_test_")
+MIN_KEY_LENGTH = 32
+
+
+def key_shape() -> dict:
+    """What the configured key LOOKS like. Never the key itself.
+
+    Returns the prefix, the length and the two ways a paste goes wrong. Length is safe to
+    report — every Stripe key of a given kind is much the same length, so it identifies
+    nothing — and it is the single most useful number when a key does not work.
+    """
+    key = STRIPE_SECRET_KEY
+    prefix = next((p for p in KEY_PREFIXES if key.startswith(p)), "")
+    return {
+        "set": bool(key),
+        # A key with no recognised prefix is reported by its first few characters so the
+        # answer to "is that even a Stripe key" is visible without printing the value.
+        "prefix": prefix or (key[:8] + "…" if key else ""),
+        "mode": "live" if "_live_" in prefix else ("test" if "_test_" in prefix else ""),
+        "restricted": prefix.startswith("rk_"),
+        "length": len(key),
+        # The one this session actually hit.
+        "truncated": bool(key) and len(key) < MIN_KEY_LENGTH,
+        # A value that picked up a line break on the way into the dashboard. Leading and
+        # trailing space is already stripped at import, so anything left is in the middle,
+        # where stripping cannot help and the key is simply wrong.
+        "whitespace": any(c.isspace() for c in key),
+    }
+
+
+def _money(amount, currency: str) -> str:
+    """`2000`, `gbp` → `£20.00`. For a human reading a checklist, not for arithmetic."""
+    if amount is None:
+        return ""
+    symbol = {"gbp": "£", "usd": "$", "eur": "€"}.get((currency or "").lower())
+    return (f"{symbol}{amount / 100:.2f}" if symbol
+            else f"{amount / 100:.2f} {(currency or '').upper()}")
+
+
+def check() -> dict:
+    """Ask Stripe whether this configuration actually works. For the diagnostic only.
+
+    NOT ON /api/config. This makes two live API calls, and /api/config is fetched by every
+    visitor on every page load; wiring a Stripe round trip into that would put an outage at
+    Stripe in the path of the whole site to answer a question that changes when somebody
+    edits an environment variable. It is gated behind the tools token instead, where it is
+    run deliberately.
+    """
+    out = {
+        "key": key_shape(),
+        "price_id_set": bool(STRIPE_PRICE_ID),
+        "webhook_secret_set": bool(STRIPE_WEBHOOK_SECRET),
+        "site_url": SITE_URL,
+        "trial_days": TRIAL_DAYS,
+        "ok": False,
+    }
+    if not configured():
+        missing = [n for n, v in (("STRIPE_SECRET_KEY", STRIPE_SECRET_KEY),
+                                  ("STRIPE_PRICE_ID", STRIPE_PRICE_ID)) if not v]
+        out["error"] = f"not set: {', '.join(missing)}"
+        return out
+    # SAID BEFORE ANY NETWORK CALL, because a key that is eight characters long will come
+    # back from Stripe as "Invalid API Key" — which reads as "wrong key, get another one"
+    # and sends somebody to roll a perfectly good key instead of pasting all of it.
+    if out["key"]["truncated"]:
+        out["error"] = (f"the key is only {out['key']['length']} characters — it has been "
+                        "cut off in the paste. Reveal the full key in Stripe and copy all "
+                        "of it.")
+        return out
+    if out["key"]["whitespace"]:
+        out["error"] = "the key has a space or line break inside it — re-copy it in one piece"
+        return out
+    try:
+        stripe = _stripe()
+    except Exception as e:  # the library is optional; the rest of the site runs without it
+        out["error"] = f"the stripe library is not installed on this backend: {e}"
+        return out
+
+    try:
+        # The cheapest call that proves the key works, and it names the account — which
+        # answers the question after "is it valid": is it the RIGHT Stripe account.
+        account = stripe.Account.retrieve()
+        out["account"] = {
+            "id": account.get("id"),
+            "name": ((account.get("settings") or {}).get("dashboard") or {}).get("display_name")
+                    or account.get("business_profile", {}).get("name") or "",
+        }
+    except Exception as e:
+        out["key_valid"] = False
+        out["error"] = f"Stripe rejected the key: {e}"
+        return out
+    out["key_valid"] = True
+
+    try:
+        price = stripe.Price.retrieve(STRIPE_PRICE_ID)
+    except Exception as e:
+        out["price_valid"] = False
+        out["error"] = f"Stripe does not have that price: {e}"
+        return out
+    out["price_valid"] = True
+    recurring = price.get("recurring") or {}
+    out["price"] = {
+        "amount": _money(price.get("unit_amount"), price.get("currency")),
+        "interval": recurring.get("interval") or "one-off",
+        "active": bool(price.get("active", True)),
+        "livemode": bool(price.get("livemode")),
+    }
+    # A LIVE KEY WITH A TEST PRICE, which Stripe refuses at checkout with a message about
+    # the price not existing — sending you to look at the price, which is fine, rather than
+    # at the pair of them. Caught here because both halves are visible in one place.
+    if out["key"]["mode"] and out["price"]["livemode"] != (out["key"]["mode"] == "live"):
+        out["error"] = (f"the key is in {out['key']['mode']} mode but the price is a "
+                        f"{'live' if out['price']['livemode'] else 'test'} price — they "
+                        "must match")
+        return out
+    if not out["price"]["active"]:
+        out["error"] = "that price is archived in Stripe — checkout cannot use it"
+        return out
+    # A ONE-OFF PRICE ON A SUBSCRIPTION, which fails at checkout rather than charging once.
+    if not recurring.get("interval"):
+        out["error"] = "that price is not recurring — a subscription needs a recurring price"
+        return out
+    out["ok"] = True
+    return out
+
+
+def checkout_error_message(exc: Exception) -> str:
+    """What a VISITOR is told when checkout will not start.
+
+    Stripe's own message went straight into a toast on the join page, so the failure the
+    owner saw was `Invalid API Key provided: sk_live_`. For him that was the whole
+    diagnosis. For everybody else it is a stranger's backend internals in front of a
+    payment they were trying to make, and it reads like the site has been compromised.
+
+    So the detail goes to the log and to `check()`, which says it better anyway, and the
+    person gets the two facts that concern them: it is not their fault, and they have not
+    been charged.
+    """
+    logger.error("stripe: checkout refused — %s", exc)
+    return ("Subscriptions are temporarily unavailable — nothing has been charged. "
+            "Please try again in a few minutes.")
 
 
 def trial_days_for(user: dict) -> int:

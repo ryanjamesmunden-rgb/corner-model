@@ -1805,3 +1805,131 @@ export const renderRecordCard = (canvas, {
   ctx.fillText(card.legal, pad, H - 96);
   return true;
 };
+
+/**
+ * One day's card: the day everyone wants to post, with the month they would rather not.
+ *
+ * WHY THE MONTH IS ON IT. A month card is whatever the month was. A day card is CHOSEN,
+ * and the day that gets chosen is the good one — so on its own it is a true number
+ * arranged into a false impression. The running record sat beside it is what makes it
+ * honest, and it is also the only version of this graphic a rival account cannot copy,
+ * because copying it means publishing their month.
+ *
+ * Units appear only when lib/recordCard could compute them over EVERY settled pick that
+ * day. Where it could not, the card says why rather than leaving a gap — an absent number
+ * on a results graphic reads as a bad day.
+ */
+export const renderDayCard = (canvas, {
+  card = null, shape = "feed", site = "thecornermodel.com", brand = "CORNER MODEL",
+} = {}) => {
+  if (!card) return false;
+  const W = FEED_W;
+  const H = shape === "story" ? STORY_H : FEED_H;
+  canvas.width = W;
+  canvas.height = H;
+  const ctx = canvas.getContext("2d");
+  const tone = card.clean ? C.solid : C.primary;
+
+  ctx.fillStyle = C.bg;
+  ctx.fillRect(0, 0, W, H);
+  const glow = ctx.createRadialGradient(W / 2, 200, 60, W / 2, 200, 820);
+  glow.addColorStop(0, `${tone}26`);
+  glow.addColorStop(1, `${tone}00`);
+  ctx.fillStyle = glow;
+  ctx.fillRect(0, 0, W, Math.min(900, H));
+
+  ctx.textBaseline = "middle";
+  const pad = 72;
+  let y = shape === "story" ? 230 : 145;
+
+  ctx.fillStyle = C.primary;
+  ctx.font = `700 30px ${FONT_HEAD}`;
+  ctx.letterSpacing = "6px";
+  ctx.fillText(brand, pad, y);
+  ctx.letterSpacing = "0px";
+
+  y += shape === "story" ? 120 : 100;
+  ctx.fillStyle = C.muted;
+  ctx.font = `600 34px ${FONT_BODY}`;
+  ctx.fillText(dayCardDate(card.date), pad, y);
+
+  y += 118;
+  ctx.fillStyle = C.text;
+  ctx.font = fitFont(ctx, card.big, { size: 150, max: W - pad * 2, family: FONT_HEAD });
+  ctx.fillText(card.big, pad, y);
+
+  // The units line, or the reason there is not one.
+  y += 100;
+  if (card.units != null) {
+    const sign = card.units >= 0 ? "+" : "";
+    ctx.fillStyle = card.units >= 0 ? C.solid : "#F2557E";
+    ctx.font = `700 62px ${FONT_DATA}`;
+    ctx.fillText(`${sign}${card.units.toFixed(2)}u`, pad, y);
+  } else if (card.unitsNote) {
+    ctx.fillStyle = C.muted;
+    ctx.font = `500 30px ${FONT_BODY}`;
+    ctx.fillText(card.unitsNote, pad, y);
+  }
+
+  // EVERY PICK NAMED. A results card that reports only a score is asking to be taken on
+  // trust; one that lists the calls can be checked against the games that were played.
+  const footerTop = H - 150;
+  const closingTop = footerTop - 130;
+  y += 80;
+  // CENTRED IN WHAT IS LEFT, for the same reason the month card's strip is: four picks
+  // drawn from the top left ~300px of empty card above the closing line, which reads as a
+  // graphic that stopped early rather than one that was laid out.
+  const rowH = shape === "story" ? 62 : 54;
+  const space = closingTop - y - 30;
+  const room = Math.max(0, Math.floor(space / rowH));
+  const shownPicks = card.picks.slice(0, room);
+  y += Math.max(0, (space - shownPicks.length * rowH) / 2);
+  shownPicks.forEach((p) => {
+    ctx.fillStyle = TONE[p.result] || TONE.void;
+    roundRect(ctx, pad, y - 13, 26, 26, 6);
+    ctx.fill();
+    ctx.fillStyle = C.text;
+    ctx.font = `600 34px ${FONT_BODY}`;
+    const label = `${p.name} ${p.line}`.trim();
+    ctx.fillText(label, pad + 46, y);
+    if (p.price) {
+      ctx.fillStyle = C.muted;
+      ctx.font = `500 30px ${FONT_DATA}`;
+      ctx.fillText(p.price.toFixed(2), pad + 46 + ctx.measureText("").width
+        + Math.max(360, ctx.measureText(label).width + 40), y);
+    }
+    y += rowH;
+  });
+
+  // THE MONTH, beside the day. See the note above — this is the honesty mechanism, not a
+  // stat, so it gets the accent rather than the muted grey.
+  let cy = closingTop;
+  if (card.context) {
+    ctx.fillStyle = C.primary;
+    ctx.font = `600 36px ${FONT_BODY}`;
+    ctx.fillText(card.context, pad, cy);
+    cy += 48;
+  }
+  ctx.fillStyle = C.muted;
+  ctx.font = `500 28px ${FONT_BODY}`;
+  ctx.fillText("Posted before kick-off. Every row checkable on the site.", pad, cy);
+
+  ctx.fillStyle = C.text;
+  ctx.font = `700 40px ${FONT_HEAD}`;
+  ctx.fillText(site, pad, footerTop);
+  ctx.fillStyle = C.muted;
+  ctx.font = `500 24px ${FONT_BODY}`;
+  ctx.fillText(card.legal, pad, H - 96);
+  return true;
+};
+
+/** "Saturday 13 September" — spelled out, for the same reason periodOf is. */
+const DAY_NAMES = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+const MONTH_NAMES = ["January", "February", "March", "April", "May", "June", "July",
+                     "August", "September", "October", "November", "December"];
+export const dayCardDate = (key = "") => {
+  const [y, m, d] = String(key).split("-").map(Number);
+  if (!y || !m || !d) return "";
+  const dt = new Date(Date.UTC(y, m - 1, d));
+  return `${DAY_NAMES[dt.getUTCDay()]} ${d} ${MONTH_NAMES[m - 1]}`;
+};

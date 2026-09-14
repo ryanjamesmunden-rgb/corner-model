@@ -3373,11 +3373,57 @@ MIN_STREAK_LEN = 2
 # TRIMMED ON THE SERVER, never in the browser. Hiding rows client-side ships the whole
 # board to anyone who opens devtools; that is not a preview, it is the product with a
 # blindfold laid over it.
-PREVIEW_ROWS = 3
+# THREE TIERS, NOT TWO. A signed-out visitor and someone who has made an account are not
+# the same person: the first has given nothing and the second has given you an identity and
+# a way to reach them. Rewarding that costs little and is the whole reason anyone bothers.
+PREVIEW_ROWS = 3          # signed out
+FREE_ROWS = 6             # signed in, not subscribed
+                          # a member gets the lot
+
+# What gets taken OFF a row that is shown but not readable. These are the model's own
+# numbers, which are the product — see the note on gameShare for why a probability and a
+# fair price are the same fact written twice.
+BLURRED_FIELDS = ("prob", "fair_odds", "ev", "tier", "lambda", "lambda_total",
+                  "lambda_home", "lambda_away", "book_odds", "chase_score")
 
 
-def _preview(rows, user: dict, response, limit: int = PREVIEW_ROWS):
+def _row_limit(user: dict) -> Optional[int]:
+    """How many rows this reader may read in full. None means all of them."""
+    if user.get("member"):
+        return None
+    return PREVIEW_ROWS if user.get("user_id") == PUBLIC_USER_ID else FREE_ROWS
+
+
+def _blur(row):
+    """A row with the model's numbers taken out, kept so the reader can see it exists.
+
+    THE REDACTION IS SERVER-SIDE AND THAT IS THE POINT. The screen blurs these rows, which
+    is a presentation choice and not a gate — a CSS filter leaves the real values sitting in
+    the network tab for anyone who presses F12. So the values do not leave the machine at
+    all, and `blurred: true` tells the UI to draw the lock over a row it could not read even
+    if it wanted to.
+    """
+    if not isinstance(row, dict):
+        return row
+    out = {k: v for k, v in row.items() if k not in BLURRED_FIELDS}
+    # Nested model numbers hide in the same places on every board.
+    for nest in ("projection", "best"):
+        if isinstance(row.get(nest), dict):
+            out[nest] = {k: v for k, v in row[nest].items() if k not in BLURRED_FIELDS}
+    if isinstance(row.get("angles"), list):
+        out["angles"] = [{k: v for k, v in a.items() if k not in BLURRED_FIELDS}
+                         if isinstance(a, dict) else a for a in row["angles"]]
+    out["blurred"] = True
+    return out
+
+
+def _preview(rows, user: dict, response, limit: Optional[int] = None):
     """Trim a members-only board to a taste, and describe the trim in the headers.
+
+    WHAT A NON-MEMBER GETS is now two different things. The first few rows come back whole
+    and readable — three signed out, six signed in. Everything AFTER that still comes back,
+    with the model's numbers stripped out, so the screen can show how much more is there
+    rather than asserting it. Rows sell; a sentence about rows does not.
 
     `response is None` means this was called INTERNALLY by another endpoint rather than
     served over HTTP — perfect_games builds on streaks, best_bets on both — and an
@@ -3389,11 +3435,14 @@ def _preview(rows, user: dict, response, limit: int = PREVIEW_ROWS):
         return rows
     total = len(rows)
     response.headers["X-Total-Rows"] = str(total)
-    if user.get("member"):
+    keep = _row_limit(user) if limit is None else limit
+    if keep is None:
         response.headers["X-Preview"] = "false"
         return rows
+    keep = max(0, keep)
     response.headers["X-Preview"] = "true"
-    return rows[:max(0, limit)]
+    response.headers["X-Readable-Rows"] = str(min(keep, total))
+    return list(rows[:keep]) + [_blur(r) for r in rows[keep:]]
 # Default ceiling for under streaks: above these a line is true so often it says nothing.
 UNDER_LINE_CAP = {"team": 8, "match": 12}
 # The mirror of the cap: below these, an OVER is not a claim worth making. Every side
@@ -4830,6 +4879,11 @@ async def projections(days: int = 7, league_id: Optional[str] = None,
     `min_games` is off by default so the list is complete. Raising it drops fixtures whose
     sides have thin records — the projection for a side with four games on file is mostly
     the league prior wearing a team's name."""
+    # SIGNED OUT SEES NOTHING HERE. This board is one of the new ones, and the whole point
+    # of it is the model's projection for a game that has not been played — which is the
+    # product rather than an advert for it. A free account is the price of looking.
+    if user.get("user_id") == PUBLIC_USER_ID:
+        raise HTTPException(status_code=401, detail="Sign in to see projected corners")
     if sort not in PROJECTION_SORTS:
         raise HTTPException(status_code=400,
                             detail=f"sort must be one of: {', '.join(PROJECTION_SORTS)}")
@@ -4862,7 +4916,9 @@ async def projections(days: int = 7, league_id: Optional[str] = None,
         response.headers["X-Total-Rows"] = str(len(keep))
     return {"sort": sort, "within_days": days, "scanned": len(rows),
             "returned": len(out), "total": len(keep),
-            "rows": _preview(out, user, response, limit=PREVIEW_ROWS)}
+            # No explicit limit: the tier decides — 3 signed out, 6 signed in, all for a
+            # member. Pinning PREVIEW_ROWS here would have capped a member at three.
+            "rows": _preview(out, user, response)}
 
 
 @api_router.get("/top-corner-teams")
@@ -5192,14 +5248,26 @@ async def log_posted_angle(body: PostedAngleBody, token: Optional[str] = None,
 
 
 @api_router.get("/results")
-async def public_results(weeks: int = RESULTS_WEEKS):
-    """THE PUBLIC RECORD: every streak that went out, and how it landed.
+async def public_results(weeks: int = RESULTS_WEEKS, token: Optional[str] = None,
+                         user: dict = Depends(get_current_user)):
+    """THE RECORD: every streak that went out, and how it landed.
 
-    OPEN ON PURPOSE, and the only thing on this site that is. Everything else is either
-    the product or a tease for it; this is the evidence that the product is worth
-    anything, and evidence behind a login persuades nobody. A visitor who has never
-    heard of the site can read it, check any row against the actual result, and decide.
-    Which is also why it must never be tidied.
+    NO LONGER OPEN TO A SIGNED-OUT VISITOR. It was, and the reasoning was that evidence
+    behind a login persuades nobody — a stranger could read it, check any row against the
+    actual result, and decide. That is still true, and it is now an accepted cost: the
+    record is a list of the picks this site made, and the owner's call is that the picks
+    are the product rather than the advertisement for it.
+
+    Signing in is free, so this is a door rather than a wall. What it stops is the record
+    being readable by someone who has given nothing at all.
+
+    THE TOOLS TOKEN STILL READS IT, and that is not a loophole — it is the reason the
+    gate did not break the Monday post. tools/social_draft.mjs builds the weekly picks
+    review from this endpoint and holds no session, so gating on a user alone would have
+    made Monday silently fall down its fallback chain to results, then streaks, with
+    nothing in the log to say why.
+
+    IT CANNOT FLATTER ITSELF, and that part is unchanged — see below.
 
     IT CANNOT FLATTER ITSELF, and that is the entire design. Every row is read from a
     snapshot frozen BEFORE kick-off (see snapshot_streaks), so the list being graded is
@@ -5215,6 +5283,8 @@ async def public_results(weeks: int = RESULTS_WEEKS):
     report is how often a run continued — not what it paid. Inventing odds after the
     fact to produce a P/L is the exact thing the picks ledger already refuses to do.
     """
+    if not _has_tools_token(token) and user.get("user_id") == PUBLIC_USER_ID:
+        raise HTTPException(status_code=401, detail="Sign in to see the record")
     weeks = max(1, min(weeks, 52))
     snaps = await db.streak_snapshots.find({}, {"_id": 0}).sort("tag", -1).to_list(weeks)
     all_entries = [e for s in snaps for e in (s.get("entries") or [])]

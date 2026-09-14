@@ -6,6 +6,8 @@ import { api } from "@/lib/api";
 import PreviewWall from "@/components/PreviewWall";
 import { flagBullet } from "@/lib/countryFlag";
 import { kickoffLabel } from "@/lib/kickoff";
+import SignedInOnly from "@/components/SignedInOnly";
+import { lockClass, lockCounts } from "@/lib/locked";
 
 // EVERY GAME, RANKED BY PROJECTED CORNERS — BOTH ENDS OF THE LIST.
 //
@@ -29,7 +31,23 @@ const SORTS = [
 
 const DAYS = [3, 7, 14];
 
+// A FREE ACCOUNT IS THE PRICE OF LOOKING. This board is the model's projection for games
+// that have not been played, which is the product rather than an advert for it — so a
+// signed-out visitor gets nothing, and /api/projections answers them 401. Signed in, the
+// first six rows are readable and the rest arrive with the numbers already stripped off.
 export default function Projections() {
+  return (
+    <SignedInOnly
+      title="Projected corners is for account holders"
+      blurb="Every upcoming game ranked by how many corners the model expects — both ends
+             of the list, so you can see where a game is projected quiet as easily as
+             where it is projected busy.">
+      <ProjectionsBoard />
+    </SignedInOnly>
+  );
+}
+
+function ProjectionsBoard() {
   const navigate = useNavigate();
   const [sort, setSort] = useState("total");
   const [days, setDays] = useState(7);
@@ -158,8 +176,8 @@ export default function Projections() {
                   return (
                     <tr key={r.fixture_id}
                       onClick={() => navigate(`/fixture/${r.fixture_id}`)}
-                      className="border-b border-border/50 last:border-0 hover:bg-secondary/40
-                                 cursor-pointer">
+                      className={lockClass(r, `border-b border-border/50 last:border-0
+                                 hover:bg-secondary/40 cursor-pointer`)}>
                       <td className="px-3 py-2 text-[11px] text-muted-foreground font-mono-data
                                      tabular-nums">{r.rank}</td>
                       <td className="px-3 py-2">
@@ -208,7 +226,8 @@ export default function Projections() {
           </div>
         )}
         {data?.preview && (
-          <PreviewWall total={data.total} shown={rows.length} noun="games" />
+          <PreviewWall total={data.total} shown={rows.length}
+            locked={lockCounts(rows).locked} noun="games" />
         )}
       </div>
 

@@ -19,7 +19,7 @@ export default function Layout({ children }) {
   // Whether to show the join CTA. `ready` matters: until the session has resolved,
   // everyone looks signed out, and flashing "Join" at an existing member for half a
   // second is a worse first impression than showing it a beat late.
-  const { member, ready: authReady } = useAuth();
+  const { user, member, ready: authReady } = useAuth();
   const [leagues, setLeagues] = useState([]);
   const [leagueId, setLeagueId] = useState(localStorage.getItem("leagueId") || "ned-ed");
   const [now, setNow] = useState(Date.now());
@@ -49,14 +49,17 @@ export default function Layout({ children }) {
     { to: "/quick-scan", label: "Quick Scan", icon: Zap },
     { to: "/dashboard", label: "Leagues", icon: LayoutDashboard },
     { to: "/streaks", label: "Streaks", icon: Flame },
-    // Next to Streaks because it answers the neighbouring question: Streaks is what a
-    // team keeps doing, this is what the model expects THIS game to produce.
-    { to: "/projections", label: "Projected", icon: TrendingUp },
+    // ACCOUNT HOLDERS ONLY, link and all. It is the model's projection for games that
+    // have not been played, which is the product rather than an advert for it — and a nav
+    // item that always leads to a wall teaches people the nav is lying.
+    ...(user ? [{ to: "/projections", label: "Projected", icon: TrendingUp }] : []),
     { to: "/saved", label: "Saved", icon: Star },
     { to: "/bets", label: "Bets", icon: Receipt },
-    // Last, but present for signed-out visitors too — it is the one page that argues
-    // for the others, and it cannot do that from behind a login.
-    { to: "/results", label: "Results", icon: Trophy },
+    // WAS the one page shown to signed-out visitors, on the reasoning that it argues for
+    // all the others and cannot do that from behind a login. That reasoning still holds;
+    // the trade was made anyway, because the record is a list of the picks this site made
+    // and the picks are the product. Signing in is free, so the ask is small.
+    ...(user ? [{ to: "/results", label: "Results", icon: Trophy }] : []),
     // MEMBERS ONLY, and not because the page is precious — because it WRITES. Every other
     // entry here reads. Putting a data-entry page in front of every visitor invites
     // strangers to type prices into the board the site's own posts are chosen from.

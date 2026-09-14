@@ -10,6 +10,7 @@ import { streakShare } from "@/lib/shareText";
 import { COMFORT, comfortFilter, tightestWin, lastMargin } from "@/lib/cushion";
 import TierBadge from "@/components/TierBadge";
 import PreviewWall from "@/components/PreviewWall";
+import { lockClass, lockCounts } from "@/lib/locked";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 
@@ -276,7 +277,7 @@ export default function StreakFinder({ leagueId }) {
                 key={r.team_id}
                 data-testid="streak-row"
                 onClick={() => r.next_fixture && navigate(`/fixture/${r.next_fixture.fixture_id}`)}
-                className={`border-b border-border/50 transition-colors duration-150 ${r.next_fixture ? "hover:bg-white/5 cursor-pointer" : ""}`}
+                className={lockClass(r, `border-b border-border/50 transition-colors duration-150 ${r.next_fixture ? "hover:bg-white/5 cursor-pointer" : ""}`)}
                 style={{ borderLeft: `2px solid ${isSolid(r) ? "#10B981" : "#3F3F46"}` }}
               >
                 <td className="px-2 py-1.5 sm:px-4 sm:py-2.5 sticky left-0 bg-card z-10">
@@ -418,7 +419,8 @@ export default function StreakFinder({ leagueId }) {
 
       {/* The board was trimmed by the server, not hidden here — see _preview in
           server.py. This only says so. */}
-      {preview && <PreviewWall total={preview.total} shown={shown.length} noun="teams" />}
+      {preview && <PreviewWall total={preview.total} shown={shown.length}
+        locked={lockCounts(shown).locked} noun="teams" />}
     </section>
   );
 }

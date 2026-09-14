@@ -93,12 +93,22 @@ def test_everything_missing_reads_as_zero_and_not_as_nothing():
 
 
 # --- what the public endpoint publishes, and what it must not ---
-def test_the_record_is_public_with_no_token_and_no_account():
-    """Evidence behind a login persuades nobody, and this is the only open endpoint that
-    reaches settled results."""
+def test_a_signed_out_visitor_is_asked_to_sign_in():
+    """This endpoint WAS open, and the reasoning was that evidence behind a login persuades
+    nobody. That is still true and is now an accepted cost — the picks are the product, and
+    signing in is free, so it is a door rather than a wall."""
+    src = inspect.getsource(server.public_results)
+    assert "PUBLIC_USER_ID" in src and "401" in src
+
+
+def test_but_the_tools_token_still_reads_it():
+    """NOT a loophole — the reason the gate did not break the Monday post. social_draft.mjs
+    builds the weekly picks review from here and holds no session, so gating on a user alone
+    would have made Monday fall silently down its fallback chain with nothing in the log."""
     sig = inspect.signature(server.public_results)
-    assert "token" not in sig.parameters
-    assert "user" not in sig.parameters
+    assert "token" in sig.parameters
+    src = inspect.getsource(server.public_results)
+    assert "_has_tools_token(token)" in src
 
 
 def test_it_reads_snapshots_rather_than_rescanning_the_board():
@@ -108,11 +118,34 @@ def test_it_reads_snapshots_rather_than_rescanning_the_board():
     assert "await streaks(" not in src
 
 
-def test_it_publishes_no_profit_figure():
-    """Snapshots record a line, never a price. A P/L would have to invent the odds."""
+def test_it_publishes_a_price_only_where_one_was_actually_recorded():
+    """It used to publish no profit figure at all, because a snapshot stored the line and
+    never the odds. Replying to the angle menu with "3 @ 1.80 1.5u" now captures the price
+    as the angle is claimed, so the rows carrying one can be counted in units.
+
+    What must NOT happen is the endpoint inventing the rest. It passes price and stake
+    straight through — absent stays absent — rather than defaulting either to a number."""
     src = inspect.getsource(server.public_results)
-    for word in ("profit", "roi", "units", "stake", "book_odds"):
-        assert word not in src.lower().replace("no profit figure", ""), word
+    assert '"price": r.get("price")' in src
+    assert '"stake": r.get("stake")' in src
+    # A default here is the whole failure: `r.get("price", 2.0)` or `or 0` would turn "we
+    # never wrote the odds down" into a units figure on a public graphic.
+    for invention in ('r.get("price",', 'r.get("stake",',
+                      'r.get("price") or', 'r.get("stake") or'):
+        assert invention not in src, invention
+
+
+def test_an_unpriced_row_is_counted_as_unpriced_rather_than_as_zero():
+    """The guard that keeps the units figure honest. pick_profit answers None for a win at
+    an unknown price rather than 0, and the tally has to publish how many rows it could not
+    price — otherwise a week of unpriced winners reads as a week that made nothing."""
+    t = _tally([{"result": WIN, "price": 1.8, "stake": 1.0},
+                {"result": WIN},                                  # logged before capture
+                {"result": LOSS, "price": 2.0, "stake": 1.0}])
+    assert t["priced"] == 2 and t["unpriced"] == 1
+    # 0.8 back on the winner, 1.0 down on the loser. The unpriced win contributes nothing
+    # in either direction — it is not a 0 and it is not a guess.
+    assert t["units"] == pytest.approx(-0.2)
 
 
 def test_the_under_label_comes_from_the_backend_not_the_browser():

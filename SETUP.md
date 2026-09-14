@@ -103,6 +103,91 @@ This build authenticates via **Emergent-managed Google OAuth** (`EMERGENT_SESSIO
 ## 7. Data model (MongoDB collections)
 `leagues`, `teams` (with `real_matches`), `fixtures`, `odds`, `users`, `user_sessions`, `picks`, `bets`, `sync_runs`, `fixture_stats` (permanent finished-match cache), `explanations` (LLM cache), `meta` (sync lock).
 
+## 8. Payments, the free trial, and the Telegram bot
+
+Everything in this section is set on the BACKEND host (Render). None of it is compiled into
+the frontend — the page reads it from `/api/config` at runtime, which is deliberate: a page
+advertising an offer the checkout cannot grant is the failure this whole area is designed
+against, and build-time values drift from the server that enforces them.
+
+### 8.1 Stripe (required for subscriptions)
+
+| Key | Required | What it is |
+|---|---|---|
+| `STRIPE_SECRET_KEY` | ✅ | Secret key, `sk_live_…`. From [dashboard.stripe.com/apikeys](https://dashboard.stripe.com/apikeys). |
+| `STRIPE_PRICE_ID` | ✅ | The recurring PRICE, `price_…` — not the product, which is `prod_…`. From the product's page. |
+| `STRIPE_WEBHOOK_SECRET` | ✅ | Signing secret, `whsec_…`, created with the endpoint below. |
+| `JOIN_URL` | fallback | A bare Stripe Payment Link, used ONLY while the three above are unset. |
+
+**Until all three are set, `/api/config` reports `stripe_ready: false`** and the join page
+falls back to `JOIN_URL`. That link is configured in the Stripe dashboard, so it carries no
+trial and cannot be tied to an account — which means the trial, the signup window and the
+account-linked channel invite are all unreachable, because every one of them hangs off the
+Checkout Session the Payment Link bypasses. The page is honest about this and stops
+advertising the trial (see `lib/trialOffer`), but the fix is to set the keys.
+
+**The webhook endpoint.** In Stripe → Developers → Webhooks, add
+`https://<your-backend>/api/billing/webhook` and subscribe to exactly:
+
+- `checkout.session.completed`
+- `customer.subscription.created`
+- `customer.subscription.updated`
+- `customer.subscription.deleted`
+
+The signature check is not optional and has no unsigned fallback — this endpoint grants and
+revokes paid access and is open to the internet by necessity, so without `STRIPE_WEBHOOK_SECRET`
+it refuses everything.
+
+### 8.2 The trial and the signup window
+
+| Key | Default | What it is |
+|---|---|---|
+| `TRIAL_DAYS` | `7` | Free days on a first subscription. `0` turns the trial off. |
+| `SIGNUP_DAY` | `1` (Monday) | ISO weekday the door is open, so trials start as a weekly cohort. `0` = always open. |
+| `SIGNUP_SCOPE` | `trial` | `trial` gates only checkouts that would start one; `all` gates everybody. |
+
+**Leave all three unset.** Each defaults to the intended policy, and an explicit value only
+creates something that can drift out of step later. They exist to be changed deliberately,
+not to be set on day one.
+
+One trial per account, keyed on whether a Stripe customer has ever existed for it —
+cancelling and resubscribing does not earn another. A different Google account does; that is
+a known and accepted gap (see `billing.trial_days_for`).
+
+### 8.3 Telegram
+
+| Key | Required for | What it is |
+|---|---|---|
+| `TELEGRAM_BOT_TOKEN` | everything | From @BotFather. |
+| `TELEGRAM_WEBHOOK_SECRET` | inbound | Any long random string. NOT the bot token — it is handed to Telegram to echo back. |
+| `TELEGRAM_CHAT_ID` | the daily posts | Where drafts and the angle menu are sent. |
+| `TELEGRAM_VIP_CHAT_ID` | channel invites | The paid channel, `-100…`. The bot must be an ADMIN of it with "invite users via link". |
+| `TELEGRAM_SLIP_CHAT_ID` | optional | A separate channel for the morning board. Falls back to `TELEGRAM_CHAT_ID`. |
+
+After setting these, register once:
+
+```
+POST https://<your-backend>/api/telegram/register?token=<TOOLS_TOKEN>
+```
+
+That one call does three things: points Telegram at the webhook, asks for `chat_member`
+updates, and publishes the bot's menu. `chat_member` has to be requested by name and its
+absence is silent — without it nothing records which Telegram account joined on which
+invite, and a lapsed member cannot be removed because nobody knows which member they are.
+
+### 8.4 Checking it
+
+```
+GET https://<your-backend>/api/config                      # public
+GET https://<your-backend>/api/telegram/status?token=…     # tools token
+```
+
+`/api/config` should report `stripe_ready: true` and `trial_days: 7`.
+`/api/telegram/status` should report `vip_channel.can_invite: true` and
+`member_updates: true`. The channel check asks Telegram rather than guessing, and reports
+"in the channel but not an admin" separately from "an admin without the invite permission",
+because those fail identically and have different fixes.
+
 ---
 
 ### TL;DR of what you must supply on the new host

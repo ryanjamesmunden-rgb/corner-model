@@ -94,18 +94,34 @@ export const isBookPrice = (r = {}) =>
   r?.projection?.odds_source === "manual" && num(r?.projection?.book_odds) !== null;
 
 /**
- * Today, in the same YYYY-MM-DD shape the fixture dates arrive in.
+ * Which day a moment falls on, ON THE SAME CLOCK THE CARD STATES ITS TIMES IN.
  *
- * LOCAL, not UTC. The post goes out at breakfast in London and is about the games being
- * played that day there. A UTC day boundary would put a 00:30 kick-off on the wrong card
- * for half the year, which is exactly the sort of thing nobody notices until it happens.
+ * THE TWO HAVE TO AGREE, and the obvious implementation has them disagree. Fixture dates
+ * arrive as UTC, so slicing the first ten characters off the ISO string answers "which UTC
+ * day" — while every time printed beside it is converted to London. A 00:30 London kick-off
+ * is 23:30 UTC the day before: sliced, it lands on yesterday's card, printed, it reads
+ * 00:30. The card would then claim Monday, show a time that is Tuesday, and be internally
+ * inconsistent about a fixture that is itself perfectly correct.
+ *
+ * en-CA because its short date format IS YYYY-MM-DD, which is the shape everything else
+ * here compares on.
  */
-export const dayKey = (d = new Date()) =>
-  `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-`
-  + `${String(d.getDate()).padStart(2, "0")}`;
+export const dayKeyOf = (when, tz = SLIP_TZ) => {
+  const d = when ? new Date(when) : new Date();
+  if (Number.isNaN(d.getTime())) return "";
+  const opts = { year: "numeric", month: "2-digit", day: "2-digit" };
+  try {
+    return new Intl.DateTimeFormat("en-CA", { ...opts, timeZone: tz }).format(d);
+  } catch {
+    return new Intl.DateTimeFormat("en-CA", opts).format(d);
+  }
+};
 
-/** Does this row's fixture kick off on the given day? */
-const onDay = (r, key) => String(r?.next_fixture?.date || "").slice(0, 10) === key;
+/** Today, in London — the day the morning post is about. */
+export const dayKey = (d = new Date()) => dayKeyOf(d);
+
+/** Does this row's fixture kick off on the given day, on that same clock? */
+const onDay = (r, key) => dayKeyOf(r?.next_fixture?.date) === key;
 
 /**
  * One row of the slate.

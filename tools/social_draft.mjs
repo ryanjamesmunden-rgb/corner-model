@@ -252,11 +252,15 @@ if (data.data_age_hours != null && data.data_age_hours > MAX_DATA_AGE_HOURS) {
 // number the row was built from. It is also the only part of the post that can bring
 // somebody back to the site.
 if (BOARD === "slip") {
-  const slip = slipFrom({ rows: data.streaks || [], day: TAG || dayKey(),
-                          max: Number(arg("rows", "3")) });
-  // Not a failure. A morning with two playable angles on it is a quiet morning, and the
-  // card for one is the same card the good days use, advertising that today is not one.
-  if (!slip) skip("fewer than two angles kick off today — nothing worth a slate");
+  const day = TAG || dayKey();
+  const slip = slipFrom({ rows: data.streaks || [], day, max: Number(arg("rows", "3")) });
+  // Not a failure. A morning with one playable angle on it is a quiet morning, and the card
+  // for one is the same card the good days use, advertising that today is not one of them.
+  //
+  // The DAY is named rather than called "today", because --tag previews another one and a
+  // skip line reading "today" while answering about tomorrow sends you looking for a bug in
+  // the wrong place.
+  if (!slip) skip(`fewer than two angles kick off on ${day} — nothing worth a slate`);
   const post = slipPost({ slip, site: SITE });
   emit(`Today's slate — ${slip.n} ${slip.label.toLowerCase()}, with a link under each.
 

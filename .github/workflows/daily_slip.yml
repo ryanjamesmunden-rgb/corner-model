@@ -35,6 +35,11 @@ on:
         required: false
         default: "3"
         type: string
+      day:
+        description: "Which day, YYYY-MM-DD (blank = today). For previewing tomorrow."
+        required: false
+        default: ""
+        type: string
 
 concurrency:
   group: corner-morning-slate
@@ -73,8 +78,13 @@ jobs:
           SITE_URL: ${{ vars.SITE_URL || 'https://thecornermodel.com' }}
           TOOLS_TOKEN: ${{ secrets.TOOLS_TOKEN }}
         run: |
-          node tools/social_draft.mjs --board slip --rows "${{ inputs.rows || '3' }}" \
-            --out slate.md --json-out slate.json
+          # --days 2 rather than the default 3: the slate only ever draws on today, and a
+          # preview run asks for tomorrow. Fetching a third day is work the backend does for
+          # rows nothing will read, on a free instance where that is the difference between
+          # a post and a timeout.
+          set -- --board slip --days 2 --rows "${{ inputs.rows || '3' }}"
+          [ -n "${{ inputs.day }}" ] && set -- "$@" --tag "${{ inputs.day }}"
+          node tools/social_draft.mjs "$@" --out slate.md --json-out slate.json
           # An empty file is how social_draft says "quiet day" — fewer than two angles kick
           # off today. Not a failure, and not something to post a thin card about.
           if [ ! -s slate.md ]; then

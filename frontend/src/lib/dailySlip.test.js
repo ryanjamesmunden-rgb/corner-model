@@ -6,7 +6,8 @@
 // figure on the graphic anybody was going to act on. Most of what follows guards that.
 
 import {
-  slipFrom, slipRow, slipPost, isBookPrice, dayKey, MIN_SLIP_ROWS, MAX_SLIP_ROWS,
+  slipFrom, slipRow, slipPost, isBookPrice, dayKey, dayKeyOf, slipTime,
+  MIN_SLIP_ROWS, MAX_SLIP_ROWS,
 } from "./dailySlip.js";
 
 const TODAY = "2026-09-14";
@@ -187,13 +188,33 @@ describe("the post around the card", () => {
 });
 
 describe("which day it thinks it is", () => {
-  test("local, not UTC", () => {
-    // A UTC boundary puts a 00:30 kick-off on the wrong card for half the year.
-    const d = new Date(2026, 8, 14, 0, 30);
-    expect(dayKey(d)).toBe("2026-09-14");
+  test("months and days are padded", () => {
+    expect(dayKey(new Date("2026-01-05T12:00:00Z"))).toBe("2026-01-05");
   });
 
-  test("months and days are padded", () => {
-    expect(dayKey(new Date(2026, 0, 5, 12, 0))).toBe("2026-01-05");
+  test("the day is decided on the same clock the times are printed on", () => {
+    // 23:30 UTC on the 14th is 00:30 London on the 15th, in BST. Slicing the ISO string —
+    // the obvious implementation — would file this under the 14th while printing "00:30"
+    // beside it, so the card would claim a day its own times contradict.
+    expect(dayKeyOf("2026-09-14T23:30:00Z")).toBe("2026-09-15");
+    expect(slipTime("2026-09-14T23:30:00Z")).toBe("00:30");
+  });
+
+  test("and in winter, when London is UTC, it does not shift", () => {
+    expect(dayKeyOf("2026-01-14T23:30:00Z")).toBe("2026-01-14");
+    expect(slipTime("2026-01-14T23:30:00Z")).toBe("23:30");
+  });
+
+  test("a late kick-off is picked up by the day it is actually played on", () => {
+    // The same fixture, seen from the slate: it belongs to the 15th, not the 14th.
+    const late = row({ fixtureId: "late", date: "2026-09-14T23:30:00Z" });
+    const other = row({ fixtureId: "other", date: "2026-09-15T14:00:00Z" });
+    const slip = slipFrom({ rows: [late, other], day: "2026-09-15" });
+    expect(slip.rows.map((r) => r.fixtureId).sort()).toEqual(["late", "other"]);
+  });
+
+  test("rubbish in does not become a date", () => {
+    expect(dayKeyOf("not a date")).toBe("");
+    expect(dayKeyOf(null)).toBe(dayKey());
   });
 });

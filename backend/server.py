@@ -5115,11 +5115,35 @@ def _tally(rows: List[dict]) -> dict:
     landed = sum(1 for r in rows if r["result"] == WIN)
     missed = sum(1 for r in rows if r["result"] == LOSS)
     settled = landed + missed
+
+    # UNITS, AND ONLY OVER THE ROWS THAT CAN CARRY THEM.
+    #
+    # A win at an unknown price has no computable return, so settlement.pick_profit answers
+    # None rather than 0 — counting it as zero would quietly understate a winning record,
+    # and inventing a price would inflate it. Either way the number stops meaning anything.
+    #
+    # So `priced` and `unpriced` ride along beside `units`. A caller can then say "+6.7u
+    # from 4 of 4" only when all four were priced, and otherwise say nothing about units
+    # rather than publishing a total computed over some unstated subset. That distinction
+    # is the entire reason this is safe to put on a graphic.
+    units, priced, unpriced = 0.0, 0, 0
+    for r in rows:
+        if r["result"] not in (WIN, LOSS):
+            continue
+        p = settlement.pick_profit(
+            settlement.WON if r["result"] == WIN else settlement.LOST, r.get("price"))
+        if p is None:
+            unpriced += 1
+            continue
+        units += p * float(r.get("stake") or 1.0)
+        priced += 1
     return {
         "landed": landed, "missed": missed, "settled": settled,
         "voided": sum(1 for r in rows if r["result"] == VOID),
         "pending": sum(1 for r in rows if r["result"] == "pending"),
         "hit_rate": round(landed / settled * 100, 1) if settled else None,
+        "units": round(units, 2) if priced else None,
+        "priced": priced, "unpriced": unpriced,
     }
 
 
@@ -5182,6 +5206,13 @@ class PostedAngleBody(BaseModel):
     # a different percentage from the one people saw, which is the one thing a results
     # post must not do.
     prob: Optional[float] = None
+    # WHAT IT WAS BACKED AT, and this is the field that decides whether a units figure can
+    # ever be published. Without a price, a win has no computable return — settlement
+    # .pick_profit answers None rather than 0 for exactly that reason — so a record stored
+    # without prices can report a hit rate and nothing else. Optional, because an angle
+    # posted without a price is still a claim worth grading; it just cannot carry a P/L.
+    price: Optional[float] = None
+    stake: Optional[float] = None      # units, flat 1u if not given
 
 
 @api_router.post("/angles/posted")
@@ -5235,6 +5266,10 @@ async def log_posted_angle(body: PostedAngleBody, token: Optional[str] = None,
         "opponent": body.opponent.strip(), "is_home": body.is_home,
         "kickoff": ko.isoformat(), "posted_to": body.posted_to, "note": body.note,
         "prob": body.prob,
+        # Refused rather than stored when it is not a real price. 1.0 is how a blank field
+        # submits and below evens is not a bet — either would compute a return.
+        "price": body.price if (body.price or 0) > 1 else None,
+        "stake": body.stake if (body.stake or 0) > 0 else None,
         "posted_at": now.isoformat(),
         # THE FLAG THAT CANNOT BE SET BY HAND.
         "before_kickoff": now < ko,
@@ -5306,6 +5341,7 @@ async def public_results(weeks: int = RESULTS_WEEKS, token: Optional[str] = None
                 "subject": r["subject"], "opponent": r.get("opponent"),
                 "is_home": r.get("is_home"), "kickoff": r.get("kickoff"),
                 "result": r["result"], "value": r.get("value"),
+                "price": r.get("price"), "stake": r.get("stake"),
             } for r in rows],
         })
 
@@ -5328,6 +5364,10 @@ async def public_results(weeks: int = RESULTS_WEEKS, token: Optional[str] = None
             "result": r["result"], "value": r.get("value"),
             "posted_to": r.get("posted_to"), "posted_at": r.get("posted_at"),
             "prob": r.get("prob"),
+            # What it was backed at, so a day card can report units rather than only a
+            # hit rate. Absent on every angle logged before this was captured — which is
+            # why _tally counts the unpriced rows instead of assuming a stake of zero.
+            "price": r.get("price"), "stake": r.get("stake"),
             "before_kickoff": bool(r.get("before_kickoff")),
         }
 

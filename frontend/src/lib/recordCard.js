@@ -110,3 +110,89 @@ export const cardFrom = (results = {}, { shape = "feed" } = {}) => {
     legal: "18+ · begambleaware.org · Past results do not predict future ones",
   };
 };
+
+// ----------------------------- One day -----------------------------
+//
+// "Yesterday: 4 from 4" is a different graphic from the monthly record, and a more
+// dangerous one. A month card is whatever the month was; a DAY card is chosen, and the day
+// that gets chosen is the good one. Nobody posts their 1-from-5.
+//
+// SO THE RUNNING RECORD IS NOT OPTIONAL ON IT. Every day card carries the month beside the
+// day — "4 from 4 yesterday · 34 of 45 this month" — and that single addition is what turns
+// a cherry-picked graphic into an honest one. It is also the only version of this post
+// anyone else in the space cannot copy, because copying it means showing their month.
+
+/** Local YYYY-MM-DD for an ISO timestamp, so "yesterday" means the day the game kicked off. */
+const dayKey = (iso) => {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "";
+  return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}-${String(d.getUTCDate()).padStart(2, "0")}`;
+};
+
+/** The days that have at least one settled pick, newest first. Used to offer a choice. */
+export const settledDays = (results = {}) => {
+  const rows = results?.posted?.claimed?.rows || [];
+  const days = new Set();
+  rows.forEach((r) => {
+    if (r?.result === WIN || r?.result === LOSS) days.add(dayKey(r.kickoff));
+  });
+  return [...days].filter(Boolean).sort().reverse();
+};
+
+/**
+ * Units for a set of rows, or null — and the null is the point.
+ *
+ * A win at an unknown price has no computable return. Totalling only the rows that HAVE a
+ * price would publish a figure over an unstated subset, which is worse than publishing
+ * none: the number looks complete and is not. So this answers null unless every settled
+ * row on the day carries a price, and reports how many did not.
+ */
+export const unitsFor = (rows = []) => {
+  const settled = rows.filter((r) => r?.result === WIN || r?.result === LOSS);
+  if (!settled.length) return { units: null, unpriced: 0, whole: false };
+  const unpriced = settled.filter((r) => !(Number(r.price) > 1)).length;
+  if (unpriced) return { units: null, unpriced, whole: false };
+  const units = settled.reduce((n, r) => {
+    const stake = Number(r.stake) > 0 ? Number(r.stake) : 1;
+    return n + (r.result === WIN ? (Number(r.price) - 1) * stake : -stake);
+  }, 0);
+  return { units: Math.round(units * 100) / 100, unpriced: 0, whole: true };
+};
+
+/**
+ * One day's card. `date` is a YYYY-MM-DD key from settledDays.
+ *
+ * Returns null when that day settled nothing — the same refusal the month card makes, for
+ * the same reason.
+ */
+export const dayCardFrom = (results = {}, { date, shape = "feed" } = {}) => {
+  const all = results?.posted?.claimed?.rows || [];
+  const rows = all.filter((r) => dayKey(r.kickoff) === date);
+  const settled = rows.filter((r) => r?.result === WIN || r?.result === LOSS);
+  if (!settled.length) return null;
+
+  const landed = settled.filter((r) => r.result === WIN).length;
+  const { units, unpriced } = unitsFor(rows);
+  const month = headlineOf(results?.posted?.claimed || {});
+
+  return {
+    big: `${landed} from ${settled.length}`,
+    clean: landed === settled.length,
+    strip: stripOf(rows, STRIP_MAX[shape] ?? STRIP_MAX.feed),
+    picks: rows.filter((r) => r.result !== "pending").map((r) => ({
+      name: r.name, line: r.line_label || "", result: r.result,
+      price: Number(r.price) > 1 ? Number(r.price) : null,
+    })),
+    units,
+    // Said outright when a units figure cannot be published, rather than the line simply
+    // being absent — an absent number reads as a bad day.
+    unitsNote: units == null && unpriced
+      ? `${unpriced} of ${settled.length} logged without a price`
+      : "",
+    date,
+    // THE HONESTY MECHANISM. Not decoration and not optional — see the note above.
+    context: month ? `${month.big} this month` : "",
+    voided: rows.filter((r) => r.result === VOID).length,
+    legal: "18+ · begambleaware.org · Past results do not predict future ones",
+  };
+};

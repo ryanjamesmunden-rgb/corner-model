@@ -1,4 +1,5 @@
-import { stripOf, headlineOf, periodOf, cardFrom, STRIP_MAX } from "./recordCard";
+import { stripOf, headlineOf, periodOf, cardFrom, STRIP_MAX,
+         dayCardFrom, unitsFor, settledDays } from "./recordCard";
 
 const R = (result, day = 1) =>
   ({ result, kickoff: `2026-09-${String(day).padStart(2, "0")}T15:00:00Z` });
@@ -105,5 +106,72 @@ describe("building a card from a results payload", () => {
   test("nothing settled means no card at all", () => {
     expect(cardFrom(payload({ landed: 0, settled: 0, rows: [] }))).toBeNull();
     expect(cardFrom({})).toBeNull();
+  });
+});
+
+describe("a single day", () => {
+  const D = (result, price = null, stake = null, day = 13, name = "Viking") =>
+    ({ name, line_label: "5+", result, price, stake,
+       kickoff: `2026-09-${String(day).padStart(2, "0")}T15:00:00Z` });
+  const payload = (rows) => ({ posted: { claimed: {
+    landed: rows.filter((r) => r.result === "win").length,
+    settled: rows.filter((r) => r.result !== "void" && r.result !== "pending").length,
+    voided: 0, pending: 0, rows } } });
+
+  test("the day everyone wants to post", () => {
+    const rows = [D("win", 1.80, 1.5), D("win", 1.44, 2), D("win", 2.10), D("win", 1.65)];
+    const c = dayCardFrom(payload(rows), { date: "2026-09-13" });
+    expect(c.big).toBe("4 from 4");
+    expect(c.clean).toBe(true);
+    expect(c.units).toBeCloseTo(1.2 + 0.88 + 1.1 + 0.65, 2);
+  });
+
+  test("a day card ALWAYS carries the running month", () => {
+    // The whole reason this is safe to publish. A month card is whatever the month was; a
+    // day card is chosen, and the chosen day is the good one. The month beside it is what
+    // stops that being a lie — and it is the version nobody else will copy.
+    const rows = [D("win", 1.8), D("win", 1.8), D("loss", 2.0, null, 12)];
+    const c = dayCardFrom(payload(rows), { date: "2026-09-13" });
+    expect(c.context).toBe("2 of 3 this month");
+  });
+
+  test("no units unless EVERY settled pick that day carries a price", () => {
+    // Totalling only the priced rows publishes a figure over an unstated subset — a number
+    // that looks complete and is not, which is worse than publishing none.
+    const rows = [D("win", 1.80), D("win"), D("win", 2.10), D("win")];
+    const c = dayCardFrom(payload(rows), { date: "2026-09-13" });
+    expect(c.units).toBeNull();
+    expect(c.unitsNote).toBe("2 of 4 logged without a price");
+  });
+
+  test("a losing day renders as readily as a winning one", () => {
+    const rows = [D("loss", 1.8), D("loss", 2.0), D("win", 3.0)];
+    const c = dayCardFrom(payload(rows), { date: "2026-09-13" });
+    expect(c.big).toBe("1 from 3");
+    expect(c.clean).toBe(false);
+    expect(c.units).toBeCloseTo(-1 - 1 + 2, 2);
+  });
+
+  test("stakes are honoured, and default to a flat unit", () => {
+    expect(unitsFor([D("win", 3.0, 2)]).units).toBe(4);
+    expect(unitsFor([D("win", 3.0)]).units).toBe(2);
+    expect(unitsFor([D("loss", 3.0, 2)]).units).toBe(-2);
+  });
+
+  test("a price at or below evens is not a price", () => {
+    // 1.0 is how a blank field submits, and below evens is not a bet. Either would
+    // compute a return.
+    expect(unitsFor([D("win", 1.0)]).units).toBeNull();
+    expect(unitsFor([D("win", 0.9)]).units).toBeNull();
+  });
+
+  test("a day that settled nothing gets no card", () => {
+    expect(dayCardFrom(payload([D("win", 1.8)]), { date: "2026-09-01" })).toBeNull();
+    expect(dayCardFrom({}, { date: "2026-09-13" })).toBeNull();
+  });
+
+  test("the days on offer are the ones with a settled pick, newest first", () => {
+    const rows = [D("win", 1.8, null, 11), D("loss", 2, null, 13), D("void", null, null, 12)];
+    expect(settledDays(payload(rows))).toEqual(["2026-09-13", "2026-09-11"]);
   });
 });

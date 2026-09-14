@@ -7,8 +7,8 @@ import { renderResultStory } from "@/lib/storyImage";
 import { canRecord, extFor, recordStoryVideo } from "@/lib/storyVideo";
 import { kickoffLabel } from "@/lib/kickoff";
 import SignedInOnly from "@/components/SignedInOnly";
-import { renderRecordCard } from "@/lib/storyImage";
-import { cardFrom } from "@/lib/recordCard";
+import { renderRecordCard, renderDayCard } from "@/lib/storyImage";
+import { cardFrom, dayCardFrom, settledDays } from "@/lib/recordCard";
 
 // THE RECORD, behind a free account.
 //
@@ -132,6 +132,10 @@ function RecordCardButtons({ data }) {
     { key: "story", label: "Story card", shape: "story",
       title: "1080x1920 — the record as a Story" },
   ];
+  // THE LAST DAY THAT SETTLED ANYTHING, which is almost always the one worth posting and
+  // is never a day you have to go looking for.
+  const lastDay = settledDays(data)[0];
+  const day = lastDay ? dayCardFrom(data, { date: lastDay, shape: "feed" }) : null;
   return (
     <span className="flex gap-2 flex-wrap">
       {shapes.map((s) => (
@@ -139,6 +143,16 @@ function RecordCardButtons({ data }) {
           testId={`record-card-${s.key}`} label={s.label} title={s.title}
           render={(canvas) => renderRecordCard(canvas, {
             card: cardFrom(data, { shape: s.shape }), shape: s.shape })} />
+      ))}
+      {/* ONE DAY, WITH THE MONTH ON IT. A day card is chosen and the chosen day is the
+          good one, so on its own it is a true number arranged into a false impression —
+          see dayCardFrom for why the running record is not optional on it. */}
+      {day && shapes.map((s) => (
+        <StoryButton key={`day-${s.key}`} days={[{ key: `day-${s.key}` }]}
+          testId={`day-card-${s.key}`} label={`${s.label.split(" ")[0]} · ${day.big}`}
+          title={`${s.title.split(" — ")[0]} — the last day that settled, with the month on it`}
+          render={(canvas) => renderDayCard(canvas, {
+            card: dayCardFrom(data, { date: lastDay, shape: s.shape }), shape: s.shape })} />
       ))}
     </span>
   );

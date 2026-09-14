@@ -268,3 +268,93 @@ class TestRemovalIsKeyedOnAccessNotStatus:
         import server
         src = inspect.getsource(server._revoke_channel_access)
         assert "except Exception" in src
+
+
+class TestVipPreflight:
+    """The setup check. Three parts, two of them invisible from the dashboard."""
+
+    def _resp(self, ok=True, result=None, desc=None, status=200):
+        class _R:
+            status_code = status
+            text = desc or ""
+            @staticmethod
+            def json():
+                return {"ok": ok, **({"result": result} if result is not None else {}),
+                        **({"description": desc} if desc else {})}
+        return _R()
+
+    def _wire(self, monkeypatch, b, responses):
+        class _Client:
+            def __init__(self, **kw): pass
+            async def __aenter__(self): return self
+            async def __aexit__(self, *a): return False
+            async def get(self, url, params=None):
+                return responses[url.rsplit("/", 1)[-1]]
+        monkeypatch.setattr(b.httpx, "AsyncClient", _Client)
+
+    def run(self, b):
+        import asyncio
+        return asyncio.get_event_loop().run_until_complete(b.vip_check())
+
+    def test_a_fully_wired_channel_reports_clean(self, monkeypatch):
+        b = _bot()
+        self._wire(monkeypatch, b, {
+            "getChat": self._resp(result={"title": "Corner Model VIP"}),
+            "getMe": self._resp(result={"id": 99}),
+            "getChatMember": self._resp(result={"status": "administrator",
+                                                "can_invite_users": True}),
+        })
+        assert self.run(b) == {"chat_id_set": True, "reachable": True,
+                               "title": "Corner Model VIP", "bot_is_admin": True,
+                               "can_invite": True, "error": None}
+
+    def test_an_admin_without_the_invite_right_is_reported_separately(self, monkeypatch):
+        # It fails in exactly the same way as not being an admin, and the fix is different,
+        # so "it doesn't work" is not a diagnosis.
+        b = _bot()
+        self._wire(monkeypatch, b, {
+            "getChat": self._resp(result={"title": "VIP"}),
+            "getMe": self._resp(result={"id": 99}),
+            "getChatMember": self._resp(result={"status": "administrator",
+                                                "can_invite_users": False}),
+        })
+        out = self.run(b)
+        assert out["bot_is_admin"] is True and out["can_invite"] is False
+        assert "invite-users permission" in out["error"]
+
+    def test_in_the_channel_but_not_an_admin(self, monkeypatch):
+        b = _bot()
+        self._wire(monkeypatch, b, {
+            "getChat": self._resp(result={"title": "VIP"}),
+            "getMe": self._resp(result={"id": 99}),
+            "getChatMember": self._resp(result={"status": "member"}),
+        })
+        out = self.run(b)
+        assert out["bot_is_admin"] is False
+        assert "not an admin" in out["error"]
+
+    def test_a_wrong_id_says_what_telegram_said(self, monkeypatch):
+        # "chat not found" almost always means the id is wrong or the bot was never added,
+        # and relaying it beats inventing a friendlier message that hides the cause.
+        b = _bot()
+        self._wire(monkeypatch, b, {"getChat": self._resp(ok=False, desc="chat not found")})
+        out = self.run(b)
+        assert out["reachable"] is False and out["error"] == "chat not found"
+
+    def test_an_unset_channel_says_which_variable(self, monkeypatch):
+        b = _bot(vip="")
+        out = self.run(b)
+        assert out["chat_id_set"] is False
+        assert "TELEGRAM_VIP_CHAT_ID" in out["error"]
+
+    def test_the_creator_counts_as_able_to_invite(self, monkeypatch):
+        # The channel owner has every right without them being listed individually.
+        b = _bot()
+        self._wire(monkeypatch, b, {
+            "getChat": self._resp(result={"title": "VIP"}),
+            "getMe": self._resp(result={"id": 99}),
+            "getChatMember": self._resp(result={"status": "creator"}),
+        })
+        out = self.run(b)
+        assert out["bot_is_admin"] is True and out["can_invite"] is True
+        assert out["error"] is None

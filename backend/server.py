@@ -819,7 +819,11 @@ async def billing_checkout(user: dict = Depends(require_user)):
         return {"url": billing.create_checkout_session(user)}
     except Exception as e:
         logger.exception("stripe: checkout failed for %s", user["user_id"])
-        raise HTTPException(status_code=502, detail=f"Stripe could not start checkout: {e}")
+        # NOT STRIPE'S OWN WORDS. `detail` is rendered verbatim in a toast on the join
+        # page, so a misconfigured key showed a visitor "Invalid API Key provided:
+        # sk_live_" over a payment form. The detail is in the log above and in
+        # /api/billing/status, which explains it better than Stripe does.
+        raise HTTPException(status_code=502, detail=billing.checkout_error_message(e))
 
 
 @api_router.post("/billing/portal")
@@ -5879,6 +5883,24 @@ async def telegram_commands(token: Optional[str] = None):
     sent = await telegram_bot.set_my_commands()
     live = await telegram_bot.my_commands()
     return {"set": sent.get("ok", False), "live": live.get("result")}
+
+
+@api_router.get("/billing/status")
+async def billing_status(token: Optional[str] = None):
+    """Whether Stripe will actually take a payment, asked of Stripe rather than assumed.
+
+    WHY THIS IS NOT /api/config's `stripe_ready`. That flag means "both variables are
+    filled in", which is all a public endpoint on every page load can afford to mean, and
+    it reported a healthy setup over a key that had been pasted with the secret missing.
+    The first thing to tell anybody was a red toast on the join page, seen by the one
+    visitor who happened to be the owner.
+
+    Runs in a thread because the Stripe library is synchronous and this makes two round
+    trips; blocking the event loop on someone else's API for a diagnostic would make a
+    slow Stripe look like a dead site.
+    """
+    _check_tools_token(token)
+    return await asyncio.to_thread(billing.check)
 
 
 @api_router.get("/telegram/status")

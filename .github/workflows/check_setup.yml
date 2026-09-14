@@ -99,10 +99,17 @@ jobs:
             "$BACKEND/api/config" || echo 000)
           tg_code=$(curl -s -o tg.json -w '%{http_code}' --max-time 60 \
             "$BACKEND/api/telegram/status?token=$TOOLS_TOKEN" || echo 000)
-          echo "config: HTTP $cfg_code | telegram status: HTTP $tg_code"
-          printf '%s %s' "$cfg_code" "$tg_code" > codes.txt
+          # ASKS STRIPE, rather than asking whether the variables are filled in. /api/config's
+          # stripe_ready is the latter and reported this setup as live over a key that had
+          # been pasted without its secret; the first thing to say otherwise was a red toast
+          # on the join page. This endpoint makes the call Stripe would make at checkout.
+          sk_code=$(curl -s -o stripe.json -w '%{http_code}' --max-time 90 \
+            "$BACKEND/api/billing/status?token=$TOOLS_TOKEN" || echo 000)
+          echo "config: HTTP $cfg_code | telegram: HTTP $tg_code | stripe: HTTP $sk_code"
+          printf '%s %s %s' "$cfg_code" "$tg_code" "$sk_code" > codes.txt
           [ "$cfg_code" = "200" ] || echo '{}' > config.json
           [ "$tg_code" = "200" ] || echo '{}' > tg.json
+          [ "$sk_code" = "200" ] || echo '{}' > stripe.json
 
       - name: Lay it out
         run: |
@@ -120,11 +127,11 @@ jobs:
               except Exception:
                   return {}
 
-          cfg, tg = load("config.json"), load("tg.json")
+          cfg, tg, sk = load("config.json"), load("tg.json"), load("stripe.json")
           try:
-              cfg_code, tg_code = open("codes.txt").read().split()
+              cfg_code, tg_code, sk_code = open("codes.txt").read().split()
           except Exception:
-              cfg_code = tg_code = "000"
+              cfg_code = tg_code = sk_code = "000"
           vip = tg.get("vip_channel") or {}
           sign = cfg.get("signup") or {}
 
@@ -155,9 +162,29 @@ jobs:
           # join page falls back to a Payment Link that carries no trial and cannot be tied
           # to an account, so the trial, the signup window and the channel invite are all
           # unreachable however well they are configured.
+          # TWO ROWS, NOT ONE, because "the variables are filled in" and "Stripe accepts
+          # them" are different facts and this checklist used to print only the first while
+          # sounding like the second. The second one is the one that decides whether anybody
+          # can join.
           ready = bool(cfg.get("stripe_ready"))
-          row(ready, "Stripe checkout",
-              "live" if ready else "NOT configured — the join page is on the old payment link")
+          row(ready, "Stripe keys set",
+              "" if ready else "NOT configured — the join page is on the old payment link")
+          if sk_code == "200":
+              works = bool(sk.get("ok"))
+              detail = sk.get("error") or ""
+              if works:
+                  p = sk.get("price") or {}
+                  acct = (sk.get("account") or {}).get("name") or ""
+                  detail = f"{p.get('amount','?')} / {p.get('interval','?')}"
+                  if acct:
+                      detail += f" — {acct}"
+              row(works, "Stripe accepts them", detail)
+          elif ready:
+              # Older backend, or a token mismatch. Say which rather than printing a cross
+              # that reads as "Stripe is broken".
+              row(False, "Stripe accepts them",
+                  f"could not check (HTTP {sk_code}) — deploy the backend, or check TOOLS_TOKEN",
+                  mark="⚠️")
           days = cfg.get("trial_days")
           row(bool(days), "Free trial", f"{days} days" if days else "off")
           row(bool(sign.get("enabled")), "Signup window",
@@ -202,6 +229,21 @@ jobs:
                     "and `STRIPE_WEBHOOK_SECRET` are all set, the join page uses the old "
                     "payment link — which grants no trial and links to no account, so nothing "
                     "downstream of checkout can work.")
+          elif sk_code == "200" and not sk.get("ok"):
+              # The keys are set and Stripe will not take them, which is the state the join
+              # page reports as ready. Whatever is above, this is what stops people joining.
+              print(f"> **Nobody can join.** Stripe refuses this configuration: "
+                    f"{sk.get('error') or 'unknown'}")
+              key = sk.get("key") or {}
+              if key.get("truncated"):
+                  print(f">\n> The key in `STRIPE_SECRET_KEY` is {key.get('length')} "
+                        "characters long. A real one is around a hundred — reveal it in "
+                        "Stripe → Developers → API keys and copy the whole thing.")
+          if not sk.get("webhook_secret_set") and sk_code == "200":
+              # Checkout succeeds and membership never arrives: the money is taken, the
+              # webhook that grants access is not trusted, and the person is left outside.
+              print("\n> ⚠️ `STRIPE_WEBHOOK_SECRET` is not set — payments would go through "
+                    "without anybody being granted membership.")
           last = (tg.get("telegram") or {}).get("last_error_message")
           if last:
               print(f"\n> Telegram's last delivery error: `{last}`")

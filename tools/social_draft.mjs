@@ -36,6 +36,7 @@ const { kickoffLabel } = await import(resolve(LIB, "kickoff.js"));
 const { fitToPost, weightedLength, URL_WEIGHT, X_SHARE_ROWS } = await import(resolve(LIB, "xLimit.js"));
 const { boardForDay } = await import(resolve(LIB, "postPlan.js"));
 const { slipFrom, slipPost, dayKey } = await import(resolve(LIB, "dailySlip.js"));
+const { slateFrom, slatePost } = await import(resolve(LIB, "chaseSlate.js"));
 
 const arg = (name, fallback = null) => {
   const i = process.argv.indexOf(`--${name}`);
@@ -223,7 +224,9 @@ ${full}
 // The menu is the only board that reads all four. The other three boards walk every team
 // in the database, so asking for them on a Tuesday game post would make it pay for work it
 // never reads — on a free-tier backend that is the difference between a post and a timeout.
-const BOARDS = BOARD === "menu" ? "streaks,mismatches,chase,value" : "streaks,fixtures";
+const BOARDS = BOARD === "menu" ? "streaks,mismatches,chase,value"
+  : BOARD === "chase" ? "chase"
+  : "streaks,fixtures";
 const data = await get(`/api/share/rows?days=${DAYS}&limit=60&boards=${BOARDS}`
   + `&token=${encodeURIComponent(TOKEN)}`, "backend");
 if (!data) fail("backend has no /api/share/rows — it is running an older build");
@@ -238,6 +241,49 @@ if (BOARD === "menu" && !data.boards) {
 
 if (data.data_age_hours != null && data.data_age_hours > MAX_DATA_AGE_HOURS) {
   skip(`data is ${data.data_age_hours}h old (limit ${MAX_DATA_AGE_HOURS}h) — not drafting from stale numbers`);
+}
+
+// ---- the chase board for a day: ten spots, each with the reason it is on the card.
+//
+// THIS REPLACED THE STREAK SLATE BELOW as the morning post, and the reason was a fair
+// complaint: a streak row gives no context. "Kiel 5+ corners, eight in a row" is a fact
+// about eight games already played and no argument at all about the next one. A chase row
+// carries the argument — the team's corner average at this venue, what the opponent
+// concedes at theirs, and how often this team has actually cleared the line there.
+//
+// IT IS ALSO THE ONLY SECTION WITH A MEASURED RECORD. Chase spots are auto-logged daily and
+// graded; mismatches, value and the projections are not logged at all, so nothing says
+// whether they pick winners. The ledger goes on the card's header, which is what lets the
+// rest of it be checked rather than taken on trust.
+if (BOARD === "chase") {
+  // SOFT, because the record is worth having and the board is worth posting without it.
+  // A 500 on the ledger must not cost the morning post that was already built and correct.
+  const ledger = await getSoft("/api/ledger");
+  const day = TAG || dayKey();
+  const slate = slateFrom({ rows: data.chase || [], ledger, day,
+                            max: Number(arg("rows", "10")) });
+  if (!slate) skip(`fewer than three spots clear the bar on ${day} — no board worth posting`);
+  const post = slatePost({ slate, site: SITE });
+  const rec = slate.record;
+  emit(`Today's chase board — ${slate.n} spots, each with its reason and a link.
+
+\`\`\`
+${post}
+\`\`\`
+
+${rec ? `Section record: ${rec.won} of ${rec.settled} settled${rec.rate === null ? "" : ` (${rec.rate}%)`}${
+  rec.roi === null ? ", no prices logged so no units" : `, ${rec.profit > 0 ? "+" : ""}${rec.profit}u from ${rec.staked} priced`}.`
+  : "No graded record yet — nothing has settled, so the card carries no claim."}
+${slate.priced} of ${slate.n} rows carry a real price; the rest show the model's fair odds.
+`, { empty: false, board: "chase", post, intent: "", weight: post.length, full: post,
+     // The card is drawn from the SAME object the post was built from, so the graphic and
+     // the text cannot disagree about what today's board is.
+     slate,
+     note: `${slate.n} chase spots on ${day}`
+       + (slate.priced ? `, ${slate.priced} priced` : ", none priced")
+       + (rec ? ` · section ${rec.won}/${rec.settled}` : "")
+       + (data.data_age_hours != null ? ` · data ${data.data_age_hours}h old` : "") });
+  process.exit(0);
 }
 
 // ---- the morning slate: today's games, as a card and a post with a link under each row.

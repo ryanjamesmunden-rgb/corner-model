@@ -11,6 +11,11 @@ import importlib
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+# server.py reads these at import time. Set before anything imports it, the same way
+# every other suite here does.
+os.environ.setdefault("MONGO_URL", "mongodb://localhost:27017")
+os.environ.setdefault("DB_NAME", "test_corner_model")
+
 
 def _bot(vip="-1001234567890", token="123:abc"):
     os.environ["TELEGRAM_BOT_TOKEN"] = token
@@ -158,3 +163,108 @@ class TestWebhookAsksForMemberUpdates:
         b = _bot()
         src = inspect.getsource(b.set_webhook)
         assert '"chat_member"' in src
+
+
+class TestRemoveMember:
+    """Taking a lapsed subscriber back out of the channel."""
+
+    def _client(self, monkeypatch, b, calls, ban_ok=True, unban_status=200):
+        class _Resp:
+            def __init__(self, path):
+                self.path = path
+                self.status_code = 200 if ("ban" not in path or ban_ok) else 400
+                if "unbanChatMember" in path:
+                    self.status_code = unban_status
+                self.text = ""
+
+            def json(self):
+                return {"ok": self.status_code == 200}
+
+        class _Client:
+            def __init__(self, **kw): pass
+            async def __aenter__(self): return self
+            async def __aexit__(self, *a): return False
+            async def post(self, url, json=None):
+                calls.append((url.rsplit("/", 1)[-1], json))
+                return _Resp(url)
+
+        monkeypatch.setattr(b.httpx, "AsyncClient", _Client)
+
+    def test_the_ban_is_followed_by_an_unban(self, monkeypatch):
+        # THE UNBAN IS NOT OPTIONAL. banChatMember alone removes them AND blocks them
+        # forever, so someone who cancels in March and resubscribes in June could never
+        # get back in — and it would look like a broken invite rather than a ban.
+        import asyncio
+        b = _bot()
+        calls = []
+        self._client(monkeypatch, b, calls)
+        assert asyncio.get_event_loop().run_until_complete(b.remove_member(555)) is True
+        assert [c[0] for c in calls] == ["banChatMember", "unbanChatMember"]
+        assert calls[0][1]["user_id"] == 555
+        # only_if_banned so the unban cannot touch anybody the ban did not catch.
+        assert calls[1][1]["only_if_banned"] is True
+
+    def test_a_failed_unban_still_reports_them_removed(self, monkeypatch):
+        # They are out, which was the point. Reporting failure would have the caller retry
+        # the whole removal for something already done.
+        import asyncio
+        b = _bot()
+        calls = []
+        self._client(monkeypatch, b, calls, unban_status=400)
+        assert asyncio.get_event_loop().run_until_complete(b.remove_member(555)) is True
+
+    def test_a_failed_ban_reports_failure_and_does_not_unban(self, monkeypatch):
+        # Unbanning somebody who was never banned would be a no-op at best; the point is
+        # that the caller has to hear that the removal did not happen.
+        import asyncio
+        b = _bot()
+        calls = []
+        self._client(monkeypatch, b, calls, ban_ok=False)
+        assert asyncio.get_event_loop().run_until_complete(b.remove_member(555)) is False
+        assert [c[0] for c in calls] == ["banChatMember"]
+
+    def test_nothing_is_called_without_a_telegram_id_or_a_channel(self, monkeypatch):
+        import asyncio
+        calls = []
+        b = _bot()
+        self._client(monkeypatch, b, calls)
+        loop = asyncio.get_event_loop()
+        assert loop.run_until_complete(b.remove_member(None)) is False
+        assert loop.run_until_complete(b.remove_member(0)) is False
+        b2 = _bot(vip="")
+        self._client(monkeypatch, b2, calls)
+        assert loop.run_until_complete(b2.remove_member(555)) is False
+        assert calls == []
+
+
+class TestRemovalIsKeyedOnAccessNotStatus:
+    """The webhook must remove people only when access actually ended."""
+
+    def test_it_keys_on_the_membership_apply_subscription_settled_on(self):
+        # A grandfathered account keeps access when a later subscription lapses, and so
+        # does a comp with a lapsed one. `past_due` is still a member — a failed renewal is
+        # a retry window, and kicking somebody out over a card blip turns a payment problem
+        # into a cancellation. Keying on sub.status would remove all of them.
+        import inspect
+        import server
+        src = inspect.getsource(server.billing_webhook)
+        assert 'result.get("member") is False' in src
+        assert 'result.get("matched")' in src
+        # ...and specifically NOT on the Stripe status.
+        assert 'status") == "canceled"' not in src
+
+    def test_the_stored_invite_is_cleared_so_a_resubscribe_gets_a_fresh_one(self):
+        # The endpoint returns the stored link when there is one, so leaving a spent or
+        # revoked link behind would hand a returning customer a dead button.
+        import inspect
+        import server
+        src = inspect.getsource(server._revoke_channel_access)
+        assert '"$unset"' in src and "vip_invite_link" in src
+
+    def test_a_telegram_failure_cannot_fail_the_webhook(self):
+        # Stripe retries a non-2xx, and the retry would re-run apply_subscription to reach
+        # the same failure — marking the endpoint unhealthy over a Telegram outage.
+        import inspect
+        import server
+        src = inspect.getsource(server._revoke_channel_access)
+        assert "except Exception" in src

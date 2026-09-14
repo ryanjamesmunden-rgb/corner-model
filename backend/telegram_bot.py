@@ -373,3 +373,48 @@ def joined_via(update: dict) -> tuple[Optional[str], Optional[dict]]:
         return None, None
     link = (cm.get("invite_link") or {}).get("invite_link")
     return link, (new.get("user") or None)
+
+
+async def remove_member(tg_user_id) -> bool:
+    """Take a lapsed subscriber out of the paid channel.
+
+    BAN THEN IMMEDIATELY UNBAN, and the unban is not optional. `banChatMember` on its own
+    removes them AND blocks them forever — so somebody who cancels in March and resubscribes
+    in June could never get back in, and the failure would look like a broken invite link
+    rather than a ban nobody remembers setting. Unbanning straight afterwards leaves them
+    removed but free to rejoin, which is the actual intent: they stopped paying, they did
+    not do anything wrong.
+
+    Their old invite cannot let them back in regardless — it was single-use and spent the
+    moment they joined.
+
+    THE BAN IS THE PART THAT MATTERS, so its result is what is returned. `only_if_banned`
+    keeps the unban from touching anybody the ban did not catch.
+    """
+    if not vip_configured() or not tg_user_id:
+        return False
+    try:
+        async with httpx.AsyncClient(timeout=20) as hc:
+            banned = await hc.post(
+                f"https://api.telegram.org/bot{BOT_TOKEN}/banChatMember",
+                json={"chat_id": VIP_CHAT_ID, "user_id": tg_user_id})
+            ok = banned.status_code == 200 and (banned.json() or {}).get("ok") is True
+            if not ok:
+                logger.warning("telegram banChatMember %s: %s",
+                               banned.status_code, banned.text[:300])
+                return False
+            # Best effort, and deliberately not allowed to change the answer: they are out,
+            # which was the point. A failed unban leaves them unable to rejoin later, which
+            # is worth the warning it writes but is not worth reporting the removal as
+            # failed and having the caller retry the whole thing.
+            un = await hc.post(
+                f"https://api.telegram.org/bot{BOT_TOKEN}/unbanChatMember",
+                json={"chat_id": VIP_CHAT_ID, "user_id": tg_user_id, "only_if_banned": True})
+            if un.status_code != 200:
+                logger.warning("telegram unbanChatMember %s: %s — %s is removed but cannot "
+                               "rejoin until this is undone by hand",
+                               un.status_code, un.text[:300], tg_user_id)
+        return True
+    except Exception:
+        logger.exception("telegram remove_member failed")
+        return False

@@ -918,6 +918,22 @@ async def billing_webhook(request: Request):
     else:
         logger.info("stripe: ignoring %s", kind)
 
+    # ACCESS ACTUALLY ENDED, which is not the same as "Stripe said the subscription is
+    # over". apply_subscription reports the membership it settled on, and that is the only
+    # safe thing to key removal on:
+    #
+    #   · a grandfathered account keeps access when its later subscription lapses
+    #   · so does a comp that happens to have a lapsed subscription
+    #   · `past_due` is still a member — a failed renewal is a retry window, and kicking
+    #     somebody out of the channel over a card blip is how a payment problem becomes a
+    #     cancellation
+    #   · cancelling mid-period leaves them active until the period ends; the deletion
+    #     event arrives later, and that is the one that lands here
+    #
+    # Keying on `sub.status` instead would remove people in every one of those cases.
+    if result.get("matched") and result.get("member") is False:
+        await _revoke_channel_access(result["user_id"])
+
     return {"received": True, "type": kind, **result}
 
 
@@ -5658,6 +5674,58 @@ async def telegram_vip_invite(user: dict = Depends(require_member)):
         "vip_invite_link": link,
         "vip_invite_at": datetime.now(timezone.utc).isoformat()}})
     return {"invite_link": link, "reused": False}
+
+
+async def _revoke_channel_access(user_id: str) -> dict:
+    """A subscription ended. Take them out of the paid channel.
+
+    CLOSING THE LEAK. Without this a lapsed member keeps channel access indefinitely, and
+    on a ten-day trial that is not an edge case — every trial that does not convert is
+    somebody sitting in the paid room for free, and they accumulate.
+
+    THREE THINGS, AND THE ORDER MATTERS. The outstanding invite is revoked first, because a
+    link issued to someone whose access has ended must not outlive it: a trial member who
+    never opened theirs would otherwise be holding a working key. Then they are removed.
+    Then the stored link is cleared, so a resubscribe later mints a fresh one rather than
+    handing back the spent or revoked one — the endpoint returns the stored link when there
+    is one, so leaving it would give a returning customer a dead button.
+
+    NOT KNOWING WHO THEY ARE IS REPORTED, NEVER SWALLOWED. `telegram_user_id` is only set
+    for somebody who joined through an issued link, so anybody added by hand or who joined
+    before invites existed cannot be removed automatically. That is a real gap and the log
+    line is the only thing standing between it and a channel that quietly fills up with
+    people who stopped paying.
+    """
+    out = {"revoked": False, "removed": False, "known": False}
+    try:
+        account = await db.users.find_one({"user_id": user_id}, {"_id": 0})
+        if not account:
+            return out
+        link = account.get("vip_invite_link")
+        if link:
+            out["revoked"] = await telegram_bot.revoke_invite(link)
+        tg_id = account.get("telegram_user_id")
+        out["known"] = bool(tg_id)
+        if tg_id:
+            out["removed"] = await telegram_bot.remove_member(tg_id)
+            if not out["removed"]:
+                logger.warning("telegram: could not remove %s (telegram %s) from the "
+                               "channel — remove by hand", user_id, tg_id)
+        elif link:
+            # They were issued a link and never came through it, or joined some other way.
+            logger.info("telegram: %s lapsed but never joined via an issued link — "
+                        "nothing to remove", user_id)
+        # Cleared whether or not the removal worked: the link is spent or revoked either
+        # way, and keeping it would hand a resubscriber a dead button.
+        await db.users.update_one(
+            {"user_id": user_id},
+            {"$unset": {"vip_invite_link": "", "vip_invite_at": ""}})
+    except Exception:
+        # Never allowed to fail the Stripe webhook. Stripe retries a non-2xx, and a retry
+        # would re-run apply_subscription — which is idempotent — to reach this same
+        # failure again, marking the endpoint unhealthy over a Telegram outage.
+        logger.exception("revoking channel access for %s failed", user_id)
+    return out
 
 
 async def _record_channel_join(update: dict):

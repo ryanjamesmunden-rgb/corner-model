@@ -6,6 +6,7 @@ import { api } from "@/lib/api";
 import Faq from "@/components/Faq";
 import { supportPhrase } from "@/lib/support";
 import { trialOffer } from "@/lib/trialOffer";
+import { closedNotice } from "@/lib/signupWindow";
 import { summarise, totalLabel, periodNote } from "@/lib/resultsSummary";
 import { useAuth } from "@/context/AuthContext";
 
@@ -72,6 +73,8 @@ export default function Join() {
   // trial off there silences this page in the same moment rather than leaving it
   // advertising an offer Stripe no longer honours.
   const [trialDays, setTrialDays] = useState(0);
+  // The weekly window, whole, from the backend — see lib/signupWindow.
+  const [signupWin, setSignupWin] = useState(null);
   // Named in the guarantee below and in the FAQ, so "just ask" says who to ask.
   const [support, setSupport] = useState("");
   const [busy, setBusy] = useState(false);
@@ -85,6 +88,11 @@ export default function Join() {
   // Derived rather than stored: it depends on the config, the account and membership,
   // and any of the three can arrive after the first render.
   const offer = trialOffer({ trialDays, user, member });
+  // Null unless THIS visitor is shut out — a member is never blocked from a
+  // page they are already past, and under a trial-only scope somebody paying
+  // full price gets through on any day.
+  const closed = member ? null
+    : closedNotice({ signup: signupWin, trialEligible: offer.eligible });
 
   useEffect(() => {
     // Runtime config wins over anything compiled into this bundle.
@@ -94,6 +102,7 @@ export default function Join() {
         if (c?.join_url) setJoinUrl(c.join_url);
         setStripeReady(!!c?.stripe_ready);
         setTrialDays(Number(c?.trial_days) || 0);
+        setSignupWin(c?.signup || null);
         setSupport(supportPhrase(c || {}));
       })
       .catch(() => setConfigReached(false));
@@ -226,11 +235,37 @@ export default function Join() {
               card only once someone is already on the payment page is how a service
               collects chargebacks and a reputation — the person who felt tricked is the
               one who tells everybody. */}
-          {offer.eligible && (
+          {offer.eligible && !closed && (
             <p className="mt-2 text-sm text-muted-foreground" data-testid="join-trial-note">
               {offer.note}
             </p>
           )}
+          {/* A DOOR THAT SAYS WHEN IT OPENS, not one that is simply locked. Most of whether
+              somebody comes back on the right day is whether this block gave them a reason
+              and a date rather than a refusal — and the reason is served by the backend, so
+              what it says here and what checkout says when it refuses cannot drift apart.
+
+              It replaces the buttons entirely. Leaving a Subscribe button under a "closed"
+              notice sends whoever presses it through sign-in to a 409, which is the worst
+              order to learn this in. */}
+          {closed ? (
+            <div className="mt-4 rounded-md border border-border bg-secondary/40 p-4"
+                 data-testid="join-closed">
+              <p className="font-head font-semibold">{closed.headline}</p>
+              {closed.reason && (
+                <p className="mt-1 text-sm text-muted-foreground leading-relaxed">
+                  {closed.reason}
+                </p>
+              )}
+              <p className="mt-3 text-sm text-muted-foreground">
+                The free channel runs all week —{" "}
+                <a href={joinUrl} target="_blank" rel="noreferrer"
+                   className="text-primary hover:underline">join that now</a>{" "}
+                and you'll see the board before you decide.
+              </p>
+            </div>
+          ) : (
+          <>
           {/* SIGN IN FIRST, then pay — checkout has to carry the account id, which is what
               makes a cancel button possible later. But it is presented as ONE action:
               press Subscribe, sign in, arrive at payment. The account is a step in
@@ -310,6 +345,8 @@ export default function Join() {
               ? "Access unlocks as soon as payment goes through. Manage or cancel any time from your account."
               : "Checkout asks for your Telegram username — that's how you get added. Access is manual, so allow a few hours."}
           </p>
+          </>
+          )}
         </section>
 
         {/* The objections, answered on the page where they occur. A buyer who has to

@@ -60,7 +60,11 @@ jobs:
 
       - name: Lay it out
         run: |
-          python3 - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          # tee, NOT a plain redirect. The summary renders beautifully in the browser and
+          # is invisible everywhere else — it is not in the job log, so anyone reading the
+          # run through the API or the CLI sees a job that says "summary written" and
+          # nothing about what it found. The same text goes to both.
+          python3 - <<'PY' | tee -a "$GITHUB_STEP_SUMMARY"
           import json
 
           def load(p):
@@ -139,4 +143,3 @@ jobs:
           if last:
               print(f"\n> Telegram's last delivery error: `{last}`")
           PY
-          echo "summary written"

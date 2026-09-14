@@ -24,7 +24,7 @@
  *                a disputing customer screenshots.
  */
 export const faqSections = ({ price = "£20", instant = true, hasTutorial = false,
-                              support = "" } = {}) => [
+                              support = "", trialDays = 0 } = {}) => [
   {
     title: "Getting started",
     items: [
@@ -34,6 +34,13 @@ export const faqSections = ({ price = "£20", instant = true, hasTutorial = fals
             how you manage or cancel your subscription afterwards. Without an account there'd
             be nowhere for you to do that.`,
       },
+      ...(trialDays ? [{
+        q: "Is there a free trial?",
+        a: `Yes — ${trialDays} days. You enter a card to start, nothing is charged for
+            ${trialDays} days, and you get the full channel and the members-only screens for
+            all of it. Cancel before day ${trialDays + 1} and you pay nothing at all. One
+            trial per account.`,
+      }] : []),
       {
         q: "How soon do I get access after paying?",
         a: instant
@@ -62,6 +69,13 @@ export const faqSections = ({ price = "£20", instant = true, hasTutorial = fals
   {
     title: "Cancelling and billing",
     items: [
+      ...(trialDays ? [{
+        q: "When exactly am I charged?",
+        a: `On day ${trialDays + 1}, and not before. The card is taken at signup so the
+            subscription can start by itself, but the first ${trialDays} days cost nothing.
+            Your account page shows the date the trial ends, and cancelling any time before
+            it means no payment is ever taken.`,
+      }] : []),
       {
         q: "How do I cancel?",
         a: `On your account page — "Cancel subscription", then confirm. Two clicks, no email

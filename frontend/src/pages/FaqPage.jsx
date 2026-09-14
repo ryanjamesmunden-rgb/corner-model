@@ -15,6 +15,8 @@ const PRICE = "£20";
 // have paid yet, and a league switcher above a "how do I cancel" answer is noise.
 export default function FaqPage() {
   const [instant, setInstant] = useState(true);
+  // From the backend, so the trial answers appear and vanish with the offer itself.
+  const [trialDays, setTrialDays] = useState(0);
   const [hasTutorial, setHasTutorial] = useState(false);
   // How to reach a person, named in the refund answer rather than left as "on request".
   const [support, setSupport] = useState("");
@@ -25,6 +27,7 @@ export default function FaqPage() {
     // get, and the alternative reads as "expect a delay" to someone who won't have one.
     api.config().then((c) => {
       setInstant(!!c?.stripe_ready);
+      setTrialDays(Number(c?.trial_days) || 0);
       setHasTutorial(!!c?.tutorial_url);
       setSupport(supportPhrase(c || {}));
     }).catch(() => {});
@@ -47,7 +50,8 @@ export default function FaqPage() {
           </p>
         </div>
 
-        <Faq price={PRICE} instant={instant} hasTutorial={hasTutorial} support={support} />
+        <Faq price={PRICE} instant={instant} hasTutorial={hasTutorial} support={support}
+             trialDays={trialDays} />
 
         <div className="flex flex-wrap gap-3 pt-2">
           <Link to="/join"

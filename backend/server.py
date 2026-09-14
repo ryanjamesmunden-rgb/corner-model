@@ -1142,7 +1142,13 @@ async def public_config():
             "support_email": SUPPORT_EMAIL, "support_telegram": SUPPORT_TELEGRAM,
             # Whether checkout can run. The page falls back to the old payment link when
             # this is false, so the switchover needs no coordinated deploy.
-            "stripe_ready": billing.configured()}
+            "stripe_ready": billing.configured(),
+            # THE OFFER, from the backend rather than hardcoded in the bundle, so changing
+            # TRIAL_DAYS on Render changes what the page PROMISES at the same moment it
+            # changes what checkout DOES. A page advertising ten free days against a
+            # checkout that grants none is the one version of this worth designing against.
+            # 0 means no trial is running and the page says nothing about one.
+            "trial_days": billing.TRIAL_DAYS}
 
 
 @api_router.get("/health")

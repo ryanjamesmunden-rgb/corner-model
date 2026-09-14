@@ -42,6 +42,18 @@ SITE_URL = os.environ.get("SITE_URL", "").strip().rstrip("/")
 # and those are the ones that end access.
 ACTIVE_STATUSES = ("active", "trialing", "past_due")
 
+# THE FREE TRIAL. `trialing` was already in ACTIVE_STATUSES above, so a trial has always
+# granted access correctly — nothing downstream needed changing to add one. What was
+# missing was anything that starts one.
+#
+# CARD UP FRONT, WHICH IS WHY THIS IS A TRIAL AND NOT A GIVEAWAY. Stripe collects the card
+# at checkout, charges nothing for TRIAL_DAYS, then bills automatically unless the person
+# cancels. A trial with no card is a mailing list: almost nobody comes back to enter one,
+# and you cannot tell the people who decided to stay from the ones who simply forgot.
+#
+# Set TRIAL_DAYS=0 to turn it off without a deploy.
+TRIAL_DAYS = max(0, int(os.environ.get("TRIAL_DAYS", "10") or 0))
+
 MEMBER_SOURCE_STRIPE = "stripe"
 MEMBER_SOURCE_CODE = "code"
 MEMBER_SOURCE_LEGACY = "legacy"
@@ -50,6 +62,20 @@ MEMBER_SOURCE_LEGACY = "legacy"
 def configured() -> bool:
     """Whether checkout can run at all. Missing config is a 503, not a crash."""
     return bool(STRIPE_SECRET_KEY and STRIPE_PRICE_ID)
+
+
+def trial_days_for(user: dict) -> int:
+    """How many free days THIS account gets. Zero once they have subscribed before.
+
+    ONE TRIAL PER CUSTOMER, and the check is "have we ever created a Stripe customer for
+    them" rather than anything about their current status. Without it the trial is an
+    unlimited free subscription with a ten-day chore attached: subscribe, cancel on day
+    nine, subscribe again. Stripe does not dedupe this for us — `trial_period_days` is
+    honoured on every session it is passed on, however many the same customer has had.
+    """
+    if not TRIAL_DAYS:
+        return 0
+    return 0 if (user or {}).get("stripe_customer_id") else TRIAL_DAYS
 
 
 def _stripe():
@@ -89,7 +115,12 @@ def create_checkout_session(user: dict) -> str:
         allow_promotion_codes=True,
         # So a cancellation made in the portal reaches us even if the customer never
         # returns to the site.
-        subscription_data={"metadata": {"user_id": user["user_id"]}},
+        subscription_data={
+            "metadata": {"user_id": user["user_id"]},
+            # Only on a first subscription — see trial_days_for. Omitted entirely rather
+            # than sent as 0, because Stripe rejects trial_period_days=0.
+            **({"trial_period_days": trial} if (trial := trial_days_for(user)) else {}),
+        },
         metadata={"user_id": user["user_id"]},
     )
     return session.url

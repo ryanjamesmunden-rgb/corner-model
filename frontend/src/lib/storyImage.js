@@ -28,6 +28,12 @@
 
 import { flagFor, countryCodeFor } from "./countryFlag.js";
 import { kickoffLabel, kickoffTime, kickoffDay } from "./kickoff.js";
+// Imported rather than reimplemented. recordLine holds the rule that an ROI is refused
+// unless something was actually priced — server._record answers 0.0 with no prices, and
+// "0%" on a graphic reads as "broke even" rather than "nobody wrote the odds down". A
+// second copy of that here would eventually disagree with the first, and the
+// disagreement would be about what the site publicly claims its record is.
+import { recordLine, reasonFor } from "./chaseSlate.js";
 
 export const STORY_W = 1080;
 export const STORY_H = 1920;
@@ -118,6 +124,50 @@ const ellipsize = (ctx, text, max) => {
   let cut = s.length;
   while (cut > 1 && ctx.measureText(`${s.slice(0, cut)}…`).width > max) cut -= 1;
   return `${s.slice(0, cut)}…`;
+};
+
+/**
+ * The price, drawn as what it actually is.
+ *
+ * TWO BOXES, AND THE DIFFERENCE IS THE POINT. A slip puts a big number on the right of every
+ * row and a reader takes it for a bookmaker's price. Only a price somebody typed in is one;
+ * the model's fair odds are a break-even figure nobody is offering. Solid box for a price
+ * you can take, outlined and labelled FAIR for the model's — so the card cannot publish a
+ * number that is unobtainable in the slot that says it is not.
+ *
+ * Shared by both cards rather than written twice: two copies of this would eventually
+ * disagree, and the disagreement would be about which numbers the site claims are bettable.
+ */
+const drawPriceBox = (ctx, { x, y, w, h = 60, price, kind }) => {
+  const book = kind === "book";
+  const text = price === null || price === undefined ? "—" : String(price);
+  if (book) {
+    ctx.fillStyle = C.primary;
+    roundRect(ctx, x, y, w, h, 10);
+    ctx.fill();
+  } else {
+    ctx.strokeStyle = C.border;
+    ctx.lineWidth = 2;
+    roundRect(ctx, x, y, w, h, 10);
+    ctx.stroke();
+  }
+  const prev = ctx.textAlign;
+  ctx.textAlign = "center";
+  if (book) {
+    ctx.fillStyle = C.bg;
+    ctx.font = `800 ${Math.round(h * 0.57)}px ${FONT_DATA}`;
+    ctx.fillText(text, x + w / 2, y + h / 2 + 1);
+  } else {
+    ctx.fillStyle = C.muted;
+    ctx.font = `600 15px ${FONT_BODY}`;
+    ctx.letterSpacing = "2px";
+    ctx.fillText("FAIR", x + w / 2, y + 15);
+    ctx.letterSpacing = "0px";
+    ctx.fillStyle = C.text;
+    ctx.font = `700 ${Math.round(h * 0.5)}px ${FONT_DATA}`;
+    ctx.fillText(text, x + w / 2, y + h * 0.67);
+  }
+  ctx.textAlign = prev;
 };
 
 const roundRect = (ctx, x, y, w, h, r) => {
@@ -1688,6 +1738,8 @@ export const renderResultWide = (canvas, {
 
 export const FEED_W = 1080;
 export const FEED_H = 1350;
+/** The most board rows the 4:5 feed shape holds before it needs the taller 9:16 one. */
+export const FEED_ROWS = 5;
 
 const TONE = { win: "#39D0A3", loss: "#F2557E", void: "#3B4654" };
 
@@ -2174,35 +2226,8 @@ export const renderDailySlip = (canvas, {
       ctx.textAlign = "left";
     }
 
-    // THE TWO BOXES. Solid for a price you can take, outlined and labelled for the model's.
-    const book = r.priceKind === "book";
-    const boxY = mid - 30;
-    if (book) {
-      ctx.fillStyle = C.primary;
-      roundRect(ctx, priceX, boxY, priceW, 60, 10);
-      ctx.fill();
-    } else {
-      ctx.strokeStyle = C.border;
-      ctx.lineWidth = 2;
-      roundRect(ctx, priceX, boxY, priceW, 60, 10);
-      ctx.stroke();
-    }
-    ctx.textAlign = "center";
-    if (book) {
-      ctx.fillStyle = C.bg;
-      ctx.font = `800 34px ${FONT_DATA}`;
-      ctx.fillText(String(r.price ?? "—"), priceX + priceW / 2, mid + 1);
-    } else {
-      ctx.fillStyle = C.muted;
-      ctx.font = `600 15px ${FONT_BODY}`;
-      ctx.letterSpacing = "2px";
-      ctx.fillText("FAIR", priceX + priceW / 2, boxY + 15);
-      ctx.letterSpacing = "0px";
-      ctx.fillStyle = C.text;
-      ctx.font = `700 30px ${FONT_DATA}`;
-      ctx.fillText(String(r.price ?? "—"), priceX + priceW / 2, boxY + 40);
-    }
-    ctx.textAlign = "left";
+    drawPriceBox(ctx, { x: priceX, y: mid - 30, w: priceW, price: r.price,
+                        kind: r.priceKind });
   });
 
   // ---- the caveat, once, where somebody who read the rows will meet it
@@ -2221,6 +2246,219 @@ export const renderDailySlip = (canvas, {
   ctx.textAlign = "right";
   ctx.fillStyle = C.muted;
   ctx.font = `500 23px ${FONT_BODY}`;
+  ctx.fillText("18+ · gambleaware.org", W - pad, footerY);
+  ctx.textAlign = "left";
+  return true;
+};
+
+/**
+ * The morning board: ten chase spots for a day, each with the reason it is on the card.
+ *
+ * WHY A TALLER CARD. Ten rows will not fit the 4:5 feed shape and stay readable — at
+ * 1080x1350 they come out around 80px each, which is one line of text and no room for the
+ * argument. The argument is the entire reason this board replaced the streak slate, so the
+ * card grew to 1080x1920 rather than the rows losing what made them worth reading.
+ *
+ * THREE LINES PER ROW, not columns. The slip card puts everything on one line across fixed
+ * columns, which works for three rows of four short fields. A chase row carries the fixture,
+ * the market, the model's number and a reason built from three venue splits — laid out as
+ * columns at this row height it would be a wall of tiny type. Stacked, each row reads as a
+ * short paragraph: what the game is, what the bet is, and why.
+ *
+ * THE SECTION'S RECORD SITS IN THE HEADER because that is what makes the rest of the card
+ * mean anything. These are the only angles on the site whose performance is written down —
+ * auto-logged and graded daily — and a board that shows its own hit rate is making a claim
+ * a reader can check rather than one they have to take.
+ *
+ * `slate` is whatever lib/chaseSlate.slateFrom returned. Null draws nothing and returns
+ * false: below three spots there is no board, and chaseSlate decides that, not this.
+ */
+export const renderChaseSlate = (canvas, {
+  slate = null, site = "thecornermodel.com", brand = "CORNER MODEL",
+  tagline = "DATA. DISCIPLINE. EXECUTION.",
+} = {}) => {
+  if (!slate || !slate.rows?.length) return false;
+  const W = FEED_W;
+  // THE SHAPE FOLLOWS THE CONTENT, between the two ratios worth posting. Ten rows need the
+  // 9:16 story; four drawn into it left roughly 700px of empty card under the last one,
+  // which reads as a graphic that failed to finish rendering rather than a short board.
+  // Both are shapes Instagram accepts, so choosing between them costs nothing.
+  const H = slate.n > FEED_ROWS ? STORY_H : FEED_H;
+  canvas.width = W;
+  canvas.height = H;
+  const ctx = canvas.getContext("2d");
+  const pad = 48;
+  const inner = W - pad * 2;
+
+  ctx.fillStyle = C.bg;
+  ctx.fillRect(0, 0, W, H);
+  const glow = ctx.createRadialGradient(W / 2, 300, 80, W / 2, 300, 820);
+  glow.addColorStop(0, `${C.primary}26`);
+  glow.addColorStop(1, `${C.primary}00`);
+  ctx.fillStyle = glow;
+  ctx.fillRect(0, 0, W, 760);
+
+  ctx.textBaseline = "middle";
+
+  ctx.fillStyle = C.text;
+  ctx.font = `800 32px ${FONT_HEAD}`;
+  ctx.letterSpacing = "2px";
+  ctx.fillText(brand, pad, 72);
+  ctx.letterSpacing = "0px";
+
+  ctx.textAlign = "right";
+  ctx.fillStyle = C.muted;
+  ctx.font = `700 18px ${FONT_BODY}`;
+  ctx.letterSpacing = "3px";
+  tagline.split(" ").forEach((word, i) => ctx.fillText(word, W - pad, 56 + i * 25));
+  ctx.letterSpacing = "0px";
+  ctx.textAlign = "left";
+
+  ctx.strokeStyle = C.border;
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(pad, 136);
+  ctx.lineTo(W - pad, 136);
+  ctx.stroke();
+
+  // ---- the headline
+  ctx.textAlign = "center";
+  const count = String(slate.n);
+  ctx.font = `800 150px ${FONT_HEAD}`;
+  const countW = ctx.measureText(count).width;
+  ctx.font = `800 72px ${FONT_HEAD}`;
+  const wordW = ctx.measureText("TODAY").width;
+  const headLeft = (W - (countW + 22 + wordW)) / 2;
+
+  ctx.textAlign = "left";
+  ctx.fillStyle = C.primary;
+  ctx.font = `800 150px ${FONT_HEAD}`;
+  ctx.fillText(count, headLeft, 248);
+  ctx.fillStyle = C.text;
+  ctx.font = `800 72px ${FONT_HEAD}`;
+  ctx.fillText("TODAY", headLeft + countW + 22, 248);
+
+  ctx.textAlign = "center";
+  ctx.fillStyle = C.muted;
+  ctx.font = `600 28px ${FONT_BODY}`;
+  ctx.letterSpacing = "4px";
+  ctx.fillText("THE CHASE BOARD", W / 2, 330);
+  ctx.letterSpacing = "0px";
+
+  // THE RECORD, where a reader meets it before the rows rather than after. Omitted
+  // entirely when nothing has settled — see chaseSlate.recordFrom. A board advertising
+  // "0 of 0" is making a claim about a record that has not been made yet.
+  let headBottom = 384;
+  if (slate.record) {
+    ctx.fillStyle = C.solid;
+    ctx.font = `700 30px ${FONT_BODY}`;
+    ctx.fillText(recordLine(slate.record), W / 2, 378);
+    headBottom = 424;
+  }
+  ctx.fillStyle = C.muted;
+  ctx.font = `500 25px ${FONT_BODY}`;
+  const dayLabel = [dayCardDate(slate.day), slate.zone ? `times ${slate.zone}` : ""]
+    .filter(Boolean).join("  ·  ");
+  if (dayLabel) ctx.fillText(dayLabel, W / 2, headBottom);
+  ctx.textAlign = "left";
+
+  // ---- the rows, filling what is left between the header and the footer
+  const footerY = H - 86;
+  const caveatY = footerY - 66;
+  const tableBottom = caveatY - (slate.priced === slate.n ? 24 : 42);
+  const tableTop = headBottom + 44;
+  const gap = 11;
+  const rowH = Math.max(72, Math.min(150,
+    (tableBottom - tableTop - (slate.n - 1) * gap) / slate.n));
+
+  const priceW = 128;
+  const priceX = W - pad - priceW - 14;
+  const chipX = pad + 16;
+  const chipW = 56;
+  const textX = chipX + chipW + 16;
+  const textW = priceX - textX - 18;
+
+  slate.rows.forEach((r, i) => {
+    const y = tableTop + i * (rowH + gap);
+    const mid = y + rowH / 2;
+
+    ctx.fillStyle = C.card;
+    roundRect(ctx, pad, y, inner, rowH, 12);
+    ctx.fill();
+    ctx.strokeStyle = C.border;
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+
+    const code = countryCodeFor(r.leagueId);
+    if (code) {
+      ctx.fillStyle = C.secondary;
+      roundRect(ctx, chipX, mid - 18, chipW, 36, 8);
+      ctx.fill();
+      ctx.fillStyle = C.muted;
+      ctx.font = `700 19px ${FONT_DATA}`;
+      ctx.textAlign = "center";
+      ctx.fillText(code, chipX + chipW / 2, mid + 1);
+      ctx.textAlign = "left";
+    }
+
+    // Line one: the fixture, with the kick-off pinned to the right of the text block so
+    // the times form a column however long the club names are.
+    ctx.fillStyle = C.text;
+    ctx.font = `600 27px ${FONT_BODY}`;
+    const timeW = r.time ? ctx.measureText(r.time).width + 18 : 0;
+    ctx.fillText(ellipsize(ctx, `${r.home} v ${r.away}`, textW - timeW), textX, mid - 34);
+    if (r.time) {
+      ctx.fillStyle = C.muted;
+      ctx.font = `500 23px ${FONT_DATA}`;
+      ctx.textAlign = "right";
+      ctx.fillText(r.time, textX + textW, mid - 34);
+      ctx.textAlign = "left";
+    }
+
+    // Line two: the bet, and the model's number for it.
+    //
+    // THE PERCENTAGE IS MEASURED FIRST, in its own font, and the market is then fitted to
+    // what is left. Measuring the market AFTER switching to the mono font — which is what
+    // this did — measures one string in the metrics of another, and the percentage landed
+    // on top of the last word of every long market label.
+    const probText = r.prob === null || r.prob === undefined ? "" : `${r.prob}%`;
+    ctx.font = `600 23px ${FONT_DATA}`;
+    const probW = probText ? ctx.measureText(probText).width + 18 : 0;
+    ctx.fillStyle = C.primary;
+    ctx.font = `600 25px ${FONT_BODY}`;
+    const market = ellipsize(ctx, r.market, textW - probW);
+    const marketW = ctx.measureText(market).width;
+    ctx.fillText(market, textX, mid + 2);
+    if (probText) {
+      ctx.fillStyle = C.muted;
+      ctx.font = `600 23px ${FONT_DATA}`;
+      ctx.fillText(probText, textX + marketW + 18, mid + 2);
+    }
+
+    // Line three: why it is on the card at all.
+    ctx.fillStyle = C.muted;
+    ctx.font = `500 21px ${FONT_BODY}`;
+    ctx.fillText(ellipsize(ctx, reasonFor(r), textW), textX, mid + 36);
+
+    drawPriceBox(ctx, { x: priceX, y: mid - 27, w: priceW, h: 54,
+                        price: r.price, kind: r.priceKind });
+  });
+
+  if (slate.priced !== slate.n) {
+    ctx.fillStyle = C.muted;
+    ctx.font = `500 22px ${FONT_BODY}`;
+    ctx.textAlign = "center";
+    ctx.fillText("Fair = the model's break-even price, not an offer. Shop your own.",
+                 W / 2, caveatY);
+    ctx.textAlign = "left";
+  }
+
+  ctx.fillStyle = C.text;
+  ctx.font = `700 32px ${FONT_HEAD}`;
+  ctx.fillText(site, pad, footerY);
+  ctx.textAlign = "right";
+  ctx.fillStyle = C.muted;
+  ctx.font = `500 22px ${FONT_BODY}`;
   ctx.fillText("18+ · gambleaware.org", W - pad, footerY);
   ctx.textAlign = "left";
   return true;

@@ -31,9 +31,9 @@ on:
   workflow_dispatch:
     inputs:
       rows:
-        description: "How many games (2-5)"
+        description: "How many spots (3-10)"
         required: false
-        default: "3"
+        default: "10"
         type: string
       day:
         description: "Which day, YYYY-MM-DD (blank = today). For previewing tomorrow."
@@ -82,13 +82,13 @@ jobs:
           # preview run asks for tomorrow. Fetching a third day is work the backend does for
           # rows nothing will read, on a free instance where that is the difference between
           # a post and a timeout.
-          set -- --board slip --days 2 --rows "${{ inputs.rows || '3' }}"
+          set -- --board chase --days 2 --rows "${{ inputs.rows || '10' }}"
           [ -n "${{ inputs.day }}" ] && set -- "$@" --tag "${{ inputs.day }}"
           node tools/social_draft.mjs "$@" --out slate.md --json-out slate.json
           # An empty file is how social_draft says "quiet day" — fewer than two angles kick
           # off today. Not a failure, and not something to post a thin card about.
           if [ ! -s slate.md ]; then
-            echo "::notice::fewer than two angles kick off today — no slate"
+            echo "::notice::fewer than three spots clear the bar today — no board"
             echo "empty=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
@@ -113,12 +113,12 @@ jobs:
         # the links on its own; a job that dies rendering a picture costs the morning for
         # the sake of a graphic.
         run: |
-          python3 -c "import json; d=json.load(open('slate.json')); json.dump({'slip': d['slip']}, open('card_args.json','w'))"
+          python3 -c "import json; d=json.load(open('slate.json')); json.dump({'slate': d['slate']}, open('card_args.json','w'))"
           npm i --no-save playwright@1.49.1 >/dev/null 2>&1 || {
             echo "::warning::could not install playwright — sending text only"; exit 0; }
           npx playwright install chromium >/dev/null 2>&1 || {
             echo "::warning::could not install chromium — sending text only"; exit 0; }
-          if node tools/render_story.mjs --kind slip --args card_args.json --out slate.png \
+          if node tools/render_story.mjs --kind chase --args card_args.json --out slate.png \
              && [ -s slate.png ]; then
             echo "file=slate.png" >> "$GITHUB_OUTPUT"
           else

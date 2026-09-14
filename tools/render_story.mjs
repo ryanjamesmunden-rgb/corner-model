@@ -35,6 +35,18 @@ const arg = (n, d = null) => {
 };
 const ARGS = arg("args");
 const OUT = arg("out", "story.png");
+// WHICH PICTURE. This drew exactly one thing — the fixture story — and the daily slate is
+// a second, so the render function is now chosen rather than assumed. Named kinds rather
+// than an arbitrary export name from the args file: the harness runs whatever it is handed
+// inside a browser, and "call the function this JSON names" is a wider door than this needs.
+const KIND = arg("kind", "fixture");
+const KINDS = {
+  fixture: "renderFixtureStory",
+  slip: "renderDailySlip",
+};
+// Only the fixture story animates: it draws a curve that can grow. The slate is a table,
+// and a table that assembles itself is motion for its own sake.
+const ANIMATES = KIND === "fixture";
 // With --video, the same drawing is rendered frame by frame and encoded instead of
 // snapshotted. Timings match recordStoryVideo's defaults so the automated clip and the one
 // the Share button makes are the same length and the same pace.
@@ -44,6 +56,10 @@ const HOLD_MS = Number(arg("hold", "1100"));
 const FPS = Number(arg("fps", "30"));
 const fail = (m) => { console.error(`render_story: ${m}`); process.exit(1); };
 if (!ARGS) fail("--args <file.json> is required");
+// Checked HERE rather than beside KINDS, where `fail` is not yet initialised — a const is
+// hoisted without a value, so calling it earlier throws a ReferenceError about `fail`
+// instead of printing the list of kinds it was trying to tell you about.
+if (!KINDS[KIND]) fail(`--kind must be one of ${Object.keys(KINDS).join(", ")}`);
 
 const storyArgs = JSON.parse(readFileSync(ARGS, "utf8"));
 
@@ -66,10 +82,14 @@ const HARNESS = `<!doctype html><meta charset="utf-8">
 <style>html,body{margin:0;background:#000}</style>
 <canvas id="c"></canvas>
 <script type="module">
-  import { renderFixtureStory } from "/lib/storyImage.js";
+  import * as story from "/lib/storyImage.js";
+  const draw = story[${JSON.stringify(KINDS[KIND])}];
   window.__render = (a) => {
     const c = document.getElementById("c");
-    renderFixtureStory(c, a);
+    // FALSE IS A REAL ANSWER, not a failure to draw. renderDailySlip returns it when the
+    // slate is too thin to publish, and reporting that as "the canvas produced no PNG"
+    // would send whoever is reading the log looking for a rendering bug that is not there.
+    if (draw(c, a) === false) return "empty";
     // toDataURL rather than an element screenshot: the canvas is 1080x1920 and the page
     // is not, so screenshotting would capture it scaled to the viewport.
     return c.toDataURL("image/png");
@@ -79,7 +99,7 @@ const HARNESS = `<!doctype html><meta charset="utf-8">
   // being two different pictures.
   window.__renderFrame = (a, progress) => {
     const c = document.getElementById("c");
-    renderFixtureStory(c, { ...a, progress });
+    draw(c, { ...a, progress });
     return c.toDataURL("image/jpeg", 0.95);
   };
   window.__ready = true;
@@ -120,7 +140,7 @@ try {
   await page.waitForFunction(() => window.__ready === true, { timeout: 15000 })
     .catch(() => fail(`the harness never loaded${errors.length ? ` — ${errors[0]}` : ""}`));
 
-  if (VIDEO) {
+  if (VIDEO && ANIMATES) {
     // FRAMES AND FFMPEG, NOT MediaRecorder.
     //
     // The site records with MediaRecorder because it is running in the user's own Chrome,
@@ -169,6 +189,12 @@ try {
       + `${n} frames, ${(n / FPS).toFixed(1)}s)`);
   } else {
     const dataUrl = await page.evaluate((a) => window.__render(a), storyArgs);
+    // The renderer declined: nothing here is wrong, there was just nothing worth drawing.
+    // Exit 0 with no file, so the caller posts text instead of failing the run.
+    if (dataUrl === "empty") {
+      console.log(`render_story: ${KIND} had nothing worth drawing — no image written`);
+      process.exit(0);
+    }
     if (!dataUrl || !dataUrl.startsWith("data:image/png;base64,")) {
       fail("the canvas produced no PNG");
     }

@@ -21,6 +21,7 @@ back as a header on every delivery, and compared here. Without that check a stra
 forge updates and make the bot answer as though a real person had typed.
 """
 import os
+import re
 import asyncio
 import logging
 import secrets
@@ -148,17 +149,21 @@ def is_private(update: dict) -> bool:
 HELP = (
     "🎯 The Corner Model\n"
     "\n"
-    "Corner stats and streaks across 28 leagues.\n"
+    "Reply to the daily angle menu with its number:\n"
     "\n"
-    "What I can do right now:\n"
+    "  3              the game, and a link to write it up\n"
+    "  3 @ 1.80       logs it at that price\n"
+    "  3 @ 1.80 1.5u  price and stake\n"
+    "\n"
+    "A stake needs the u — a bare second number is read as the price.\n"
+    "\n"
+    "Logging the price is what lets the results cards report units. Without one they can "
+    "only ever report a hit rate.\n"
+    "\n"
     "/help — this message\n"
-    "/start — the same thing, by another name\n"
     "\n"
-    "That is genuinely all, for now. Stats commands are being built and I would rather "
-    "list two that work than ten that do not.\n"
-    "\n"
-    "Daily posts and the weekend card already go out on the channel — this is just the "
-    "part that can hear you."
+    "Stats commands are still being built. I would rather list what works than what is "
+    "planned."
 )
 
 
@@ -180,8 +185,70 @@ def reply_for(update: dict) -> Optional[str]:
     if name:
         return (f"I don't know /{name} yet. /help lists what I can do."
                 if is_private(update) else None)
-    return "Try /help — it lists everything I can do so far." if is_private(update) else None
+    return PICK_HELP if is_private(update) else None
 
 
 def chat_id_of(update: dict):
     return ((update.get("message") or {}).get("chat") or {}).get("id")
+
+
+# ----------------------------- Picking from the menu -----------------------------
+#
+# The daily angle menu ends "Reply with a number and I'll write that one up", and until now
+# that was addressed to a bot that could not hear. This is the half that listens for it.
+#
+# IT ALSO CAPTURES THE PRICE, which is the part worth more than the convenience. A posted
+# angle with no price can be graded for a hit rate and nothing else — settlement.pick_profit
+# answers None for a win at an unknown price rather than 0 — so every results card was stuck
+# reporting "4 of 4" with no units behind it. Sending "3 @ 1.80 1.5u" logs the angle, the
+# price and the stake in the one message that was going to be sent anyway, and the day card
+# fills its own units in.
+
+PICK_HELP = ("Reply with the number from the menu.\n"
+             "\n"
+             "  3              just the write-up\n"
+             "  3 @ 1.80       logs it at that price\n"
+             "  3 @ 1.80 1.5u  price and stake\n"
+             "\n"
+             "A stake needs the u — a bare second number is read as the price.\n"
+             "\n"
+             "/help for everything else.")
+
+
+def parse_pick_reply(text: str):
+    """"3 @ 1.80 1.5u" -> {"n": 3, "price": 1.8, "stake": 1.5}, or None.
+
+    FORGIVING ABOUT SHAPE, STRICT ABOUT MEANING. The @ and the u are optional decoration
+    and the order is fixed: index, then price, then stake. What it will not do is guess —
+    a stake has to carry its `u`, because "3 2" is genuinely ambiguous between "pick 3 at
+    2.0" and "pick 3, two units", and a wrong reading there writes a wrong price into the
+    record that later becomes a units figure on a graphic.
+
+    A price at or below evens is refused rather than stored. 1.0 is how an empty field
+    arrives and below evens is not a bet; either would compute a return.
+    """
+    t = (text or "").strip().lstrip("/")
+    if t.lower().startswith("pick"):
+        t = t[4:].strip()
+    m = re.match(r"^(\d{1,2})\b(.*)$", t)
+    if not m:
+        return None
+    n = int(m.group(1))
+    if n < 1:
+        return None
+    rest = m.group(2)
+
+    stake = None
+    # The stake is claimed FIRST, by its unit marker, so it cannot be mistaken for a price
+    # further down.
+    su = re.search(r"(\d+(?:\.\d+)?)\s*u\b", rest, re.I)
+    if su:
+        stake = float(su.group(1))
+        rest = rest[:su.start()] + rest[su.end():]
+
+    price = None
+    pm = re.search(r"(\d+(?:\.\d+)?)", rest)
+    if pm:
+        p = float(pm.group(1))
+        price = p if p > 1 else None
+    return {"n": n, "price": price, "stake": stake if (stake or 0) > 0 else None}

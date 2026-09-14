@@ -126,12 +126,16 @@ if (!TOKEN) fail("TOOLS_TOKEN is not set — add it as a repo secret");
 
 // ---- picks: the angles actually posted to the channel, and how they went.
 //
-// /api/results is the one OPEN endpoint on the site — no token — because it is the
-// evidence the product works, and evidence behind a login persuades nobody. Same reason
-// this reads it rather than the members-only bets board: that board is other people's
+// /api/results USED to be the one open endpoint here. It went behind a free account, and
+// this job holds no session — so it reads it with the tools token, which is exactly why
+// that token path exists on the endpoint. Without it Monday would 401, fall silently down
+// its fallback chain to results and then streaks, and nothing in the log would say why the
+// picks review stopped happening.
+//
+// Still this rather than the members-only bets board: that board is other people's
 // betting; this is the record of what was claimed here, in advance.
 if (BOARD === "picks") {
-  const r = await getSoft("/api/results");
+  const r = await getSoft(`/api/results?token=${encodeURIComponent(TOKEN)}`);
   if (!r) skip("could not read the public record — nothing to review");
   // CLAIMED ONLY. The backend splits posted angles by a server-clock stamp taken at the
   // moment they were logged; `recalled` is the ones added after kick-off. Both are
@@ -248,6 +252,46 @@ if (BOARD === "menu") {
     generatedAt: data.generated_at, site: SITE,
   });
   if (!items.length) skip("nothing on any of the four boards — no menu to send");
+
+  // HAND THE NUMBERED ROWS TO THE BACKEND, or a reply of "3" resolves to nothing.
+  //
+  // The menu is built here, in Node, because the share format has exactly one definition
+  // and it lives in shareText.js. The bot that answers a reply is Python. So the rows are
+  // handed over rather than recomputed — and recomputing would be wrong anyway: the board
+  // moves, and "3" has to mean the row numbered 3 in the message that was actually sent.
+  const num = (r) => {
+    const n = Number(r);
+    return Number.isFinite(n) ? n : null;
+  };
+  const menuItems = items.map((i) => {
+    const r = i.row || {};
+    const nf = r.next_fixture || {};
+    // The three board shapes name their line differently. A streak carries `line` and
+    // `direction`; a mismatch and a chase spot carry a bare `line` that is always an over;
+    // a value row is about a market rather than a team and cannot be logged as an angle,
+    // so it goes over with no line and the backend refuses it rather than guessing.
+    return {
+      n: i.n, kind: i.kind, team: r.name || "", headline: i.headline || "",
+      line: num(r.line), direction: r.direction || "over",
+      subject: r.subject || "team",
+      opponent: nf.opponent || "", is_home: nf.is_home ?? null,
+      kickoff: nf.date || r.date || null,
+      fixture_id: i.fixtureId || null, league_id: r.league_id || null,
+      prob: num(r.prob ?? r.projection?.prob),
+    };
+  });
+  const stored = await fetch(
+    `${BACKEND}/api/telegram/menu?token=${encodeURIComponent(TOKEN)}`,
+    { method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ chat_id: String(process.env.TG_CHAT || ""), items: menuItems }),
+      signal: AbortSignal.timeout(30000) }).catch(() => null);
+  // NOT FATAL. The menu is worth sending even when the reply handler cannot be armed —
+  // it is a list to read as well as a list to answer. But it is worth saying in the log,
+  // because "I replied 3 and nothing happened" is otherwise unexplainable.
+  if (!stored || !stored.ok) {
+    console.log(`::warning::could not store the menu (${stored ? stored.status : "unreachable"})`
+      + " — replying with a number will not resolve");
+  }
   const counts = ["streak", "mismatch", "chase", "value"]
     .map((k) => `${items.filter((i) => i.kind === k).length} ${k}`).join(", ");
   emit(`Angle menu — for you, not for posting.

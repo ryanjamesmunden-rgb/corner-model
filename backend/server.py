@@ -5399,13 +5399,98 @@ _tg_calls = defaultdict(deque)    # per-chat throttle, same shape as _explain_ca
 TELEGRAM_PER_MINUTE = 20
 
 
+SITE_URL = os.environ.get("SITE_URL", "https://thecornermodel.com").rstrip("/")
+
+
+async def _telegram_pick(chat, pick: dict) -> str:
+    """Answer a reply of "3", or "3 @ 1.80 1.5u", against the menu last sent to this chat.
+
+    WHAT IT SENDS BACK IS A LINK, NOT THE POST. The VIP format lives in shareText.js and is
+    the reason the draft job is Node in a Python repo; writing it again here would be the
+    second copy that file exists to prevent, and the two would drift. The fixture page has
+    the composer that renders it properly, so this hands over the numbers worth knowing and
+    a tap to the thing that writes it.
+
+    THE PRICE IS THE REAL POINT. Logging the angle with what it was backed at is what lets
+    a results card report units at all — see _tally. Doing it from the message that was
+    being sent anyway means the record fills itself in rather than depending on a second
+    trip to a form that nobody makes.
+    """
+    doc = await db.telegram_menus.find_one({"_id": str(chat)}, {"_id": 0})
+    if not doc or not doc.get("items"):
+        return "I haven't sent you a menu yet — nothing to pick from."
+    try:
+        age = (datetime.now(timezone.utc)
+               - datetime.fromisoformat(doc["sent_at"])).total_seconds() / 3600
+    except Exception:
+        age = 0
+    if age > MENU_GOOD_FOR_HOURS:
+        # Refused rather than answered, because the numbers belong to a board that has
+        # moved on and acting on one would post about the wrong game.
+        return (f"That menu is {round(age)}h old and the board has moved on. "
+                "The next one is on its way — reply to that.")
+
+    item = next((i for i in doc["items"] if i.get("n") == pick["n"]), None)
+    if not item:
+        return f"There's no {pick['n']} on that menu — it had {len(doc['items'])}."
+
+    lines = [item.get("headline") or f"{item.get('team','')} {item.get('line','')}".strip()]
+    if item.get("fixture_id"):
+        lines.append(f"{SITE_URL}/fixture/{item['fixture_id']}")
+        lines.append("Open it and use Post this pick — that writes the VIP format.")
+
+    if pick.get("price"):
+        logged = await _log_menu_pick(item, pick)
+        lines.append("")
+        lines.append(logged)
+    else:
+        lines.append("")
+        lines.append("No price on that, so it is not logged yet. Send "
+                     f"\"{pick['n']} @ 1.80 1.5u\" to record what you backed it at — "
+                     "without a price the record can only ever report a hit rate.")
+    return "\n".join(lines)
+
+
+async def _log_menu_pick(item: dict, pick: dict) -> str:
+    """Write the angle into db.posted_angles with its price, reusing the same endpoint the
+    tools panel uses so `before_kickoff` is stamped by the same clock and the same rules."""
+    if not item.get("kickoff") or not item.get("team"):
+        return "Couldn't log it — that row arrived without a team or a kick-off."
+    try:
+        body = PostedAngleBody(
+            team=item["team"], line=int(item.get("line") or 0),
+            direction=item.get("direction") or "over",
+            subject=item.get("subject") or "team",
+            opponent=item.get("opponent") or "", kickoff=item["kickoff"],
+            league_id=item.get("league_id"), is_home=item.get("is_home"),
+            posted_to="telegram", prob=item.get("prob"),
+            price=pick.get("price"), stake=pick.get("stake"))
+        res = await log_posted_angle(body, token=TOOLS_TOKEN, user={})
+    except HTTPException as e:
+        return f"Couldn't log it — {e.detail}"
+    except Exception:
+        logger.exception("logging a menu pick failed")
+        return "Couldn't log it — something went wrong writing it down."
+    stake = pick.get("stake") or 1
+    when = "before kick-off ✅" if res.get("before_kickoff") else "AFTER kick-off — it won't count towards the rate"
+    if res.get("status") == "exists":
+        return f"Already logged — left as it was."
+    return (f"Logged at {pick['price']:.2f}, {stake}u, {when}")
+
+
 async def _telegram_reply(update: dict):
     """Work out the answer and send it. Runs AFTER the webhook has already returned 200 —
     see the endpoint below for why that ordering is not optional."""
     try:
-        text = telegram_bot.reply_for(update)
         chat = telegram_bot.chat_id_of(update)
-        if text and chat is not None:
+        if chat is None:
+            return
+        msg = (update.get("message") or {}).get("text") or ""
+        # A NUMBER IS ONLY A PICK IN A DIRECT CHAT. In a group "3" is somebody talking, and
+        # a bot that answers it is a bot that gets muted.
+        pick = telegram_bot.parse_pick_reply(msg) if telegram_bot.is_private(update) else None
+        text = await _telegram_pick(chat, pick) if pick else telegram_bot.reply_for(update)
+        if text:
             await telegram_bot.send(chat, text)
     except Exception:
         # A thrown task here is invisible: the webhook has already answered, so nothing
@@ -5480,6 +5565,56 @@ async def telegram_webhook(request: Request):
 
     asyncio.create_task(_telegram_reply(update))
     return {"ok": True}
+
+
+class MenuItem(BaseModel):
+    """One numbered row of the angle menu, flattened enough to be acted on later.
+
+    The menu is BUILT IN NODE (frontend/src/lib/shareText.js, so the share format has one
+    definition) and ACTED ON IN PYTHON, so the rows have to be handed over rather than
+    recomputed. Recomputing would also be wrong: the board moves, and "3" has to mean the
+    row that was numbered 3 in the message actually sent, not whatever is third now.
+    """
+    n: int
+    kind: str = "streak"
+    team: str = ""
+    line: Optional[int] = None
+    direction: str = "over"
+    subject: str = "team"
+    opponent: str = ""
+    is_home: Optional[bool] = None
+    kickoff: Optional[str] = None
+    fixture_id: Optional[str] = None
+    league_id: Optional[str] = None
+    prob: Optional[float] = None
+    headline: str = ""
+
+
+class MenuBody(BaseModel):
+    chat_id: str
+    items: List[MenuItem]
+
+
+@api_router.post("/telegram/menu")
+async def telegram_menu(body: MenuBody, token: Optional[str] = None):
+    """Remember the menu that was just sent, so a reply of "3" can resolve to a game.
+
+    ONE MENU PER CHAT, replaced each time. A reply is always about the most recent message
+    — nobody scrolls back two days to answer an old menu — and keeping a history would mean
+    guessing which one "3" referred to. The stamp rides along so a stale reply can be
+    refused rather than silently acted on.
+    """
+    _check_tools_token(token)
+    await db.telegram_menus.update_one(
+        {"_id": str(body.chat_id)},
+        {"$set": {"items": [i.model_dump() for i in body.items],
+                  "sent_at": datetime.now(timezone.utc).isoformat()}},
+        upsert=True)
+    return {"stored": len(body.items)}
+
+
+# A reply this long after the menu is answering a board that has moved on.
+MENU_GOOD_FOR_HOURS = 36
 
 
 @api_router.post("/telegram/register")

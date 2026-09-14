@@ -135,3 +135,57 @@ class TestReplies:
         # the weekend card twice.
         b = _bot()
         assert len(b.HELP) <= b.MAX_MESSAGE
+
+
+class TestPickReply:
+    """Reading "3 @ 1.80 1.5u".
+
+    The dangerous failure is not a rejected message — it is a MISREAD one. A number read
+    as a price when it was meant as a stake writes a wrong price into the record, and that
+    record later becomes a units figure on a results graphic.
+    """
+
+    def parse(self, t):
+        return _bot().parse_pick_reply(t)
+
+    def test_just_a_number(self):
+        assert self.parse("3") == {"n": 3, "price": None, "stake": None}
+
+    def test_price_with_and_without_the_at(self):
+        assert self.parse("3 @ 1.80")["price"] == 1.8
+        assert self.parse("3 1.80")["price"] == 1.8
+
+    def test_price_and_stake(self):
+        got = self.parse("3 @ 1.80 1.5u")
+        assert got == {"n": 3, "price": 1.8, "stake": 1.5}
+
+    def test_a_stake_must_carry_its_u(self):
+        # "3 2" is genuinely ambiguous between "pick 3 at 2.0" and "pick 3, two units".
+        # It resolves to a price, and the help text says so — guessing the other way
+        # writes a wrong price that later becomes units on a graphic.
+        assert self.parse("3 2") == {"n": 3, "price": 2.0, "stake": None}
+        assert self.parse("3 2u") == {"n": 3, "price": None, "stake": 2.0}
+
+    def test_the_stake_is_claimed_before_the_price_is_looked_for(self):
+        # Otherwise "3 1.5u" reads 1.5 as a price and the stake vanishes.
+        assert self.parse("3 1.5u") == {"n": 3, "price": None, "stake": 1.5}
+
+    def test_a_price_at_or_below_evens_is_not_a_price(self):
+        assert self.parse("3 @ 1.00")["price"] is None
+        assert self.parse("3 @ 0.90")["price"] is None
+
+    def test_slash_and_the_word_pick_are_both_accepted(self):
+        assert self.parse("/pick 3 @ 1.8")["n"] == 3
+        assert self.parse("pick 3")["n"] == 3
+
+    def test_things_that_are_not_a_pick(self):
+        assert self.parse("/help") is None
+        assert self.parse("hello") is None
+        assert self.parse("") is None
+        assert self.parse(None) is None
+        assert self.parse("0") is None          # menus are 1-indexed
+
+    def test_the_help_names_the_ambiguity_it_refuses_to_resolve(self):
+        b = _bot()
+        assert "u" in b.PICK_HELP
+        assert "price" in b.PICK_HELP.lower()

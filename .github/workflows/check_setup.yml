@@ -1,0 +1,142 @@
+# Is the live deployment actually wired up? One dispatch, one checklist.
+#
+# WHY THIS EXISTS. Answering "did that setting take effect" meant opening /api/config on a
+# phone and reading a wall of unformatted JSON, twice, and the thing that mattered — one
+# false among thirty fields — was the easiest part to miss. A runner can reach the backend
+# and can lay the answer out, so it does.
+#
+# IT REPORTS, IT DOES NOT GATE. A half-configured backend is the normal state WHILE somebody
+# is configuring it, and a red X on a run that was never meant to be green trains people to
+# ignore red. Every check prints its own tick or cross and the job ends green regardless.
+#
+# NO SECRETS ARE PRINTED. Every value here is reduced to a yes or no before it reaches the
+# summary, and the two endpoints are chosen for that: /api/config is public by design, and
+# /api/telegram/status returns booleans and a webhook URL rather than tokens. The tools
+# token rides in a query string to a backend that expects it and is never echoed.
+name: Check the live setup
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: corner-check-setup
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Ask the backend
+        env:
+          BACKEND: ${{ vars.BACKEND_URL || 'https://corner-model.onrender.com' }}
+          TOOLS_TOKEN: ${{ secrets.TOOLS_TOKEN }}
+        run: |
+          # Render sleeps the free instance; the first call after a quiet spell can take
+          # most of a minute or fail outright, which is not a configuration problem.
+          for i in 1 2 3 4 5 6; do
+            code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 60 "$BACKEND/api/" || true)
+            echo "wake attempt $i: HTTP $code"
+            [ "$code" = "200" ] && break
+            sleep 15
+          done
+          # THE STATUS CODES ARE RECORDED, not just the bodies. Without them a backend that
+          # never answered renders identically to one that answered "nothing is configured" —
+          # every row a cross either way — and those need completely different action. Same
+          # distinction the join page's own diagnostic draws between "reached, value empty"
+          # and "UNREACHABLE".
+          cfg_code=$(curl -s -o config.json -w '%{http_code}' --max-time 60 \
+            "$BACKEND/api/config" || echo 000)
+          tg_code=$(curl -s -o tg.json -w '%{http_code}' --max-time 60 \
+            "$BACKEND/api/telegram/status?token=$TOOLS_TOKEN" || echo 000)
+          echo "config: HTTP $cfg_code | telegram status: HTTP $tg_code"
+          printf '%s %s' "$cfg_code" "$tg_code" > codes.txt
+          [ "$cfg_code" = "200" ] || echo '{}' > config.json
+          [ "$tg_code" = "200" ] || echo '{}' > tg.json
+
+      - name: Lay it out
+        run: |
+          python3 - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import json
+
+          def load(p):
+              try:
+                  with open(p) as f:
+                      return json.load(f)
+              except Exception:
+                  return {}
+
+          cfg, tg = load("config.json"), load("tg.json")
+          try:
+              cfg_code, tg_code = open("codes.txt").read().split()
+          except Exception:
+              cfg_code = tg_code = "000"
+          vip = tg.get("vip_channel") or {}
+          sign = cfg.get("signup") or {}
+
+          def row(ok, label, detail=""):
+              mark = "✅" if ok else "❌"
+              print(f"| {mark} | {label} | {detail} |")
+
+          print("## Live setup\n")
+          # SAID BEFORE THE TABLE, because if the backend never answered then every cross
+          # below means "unknown" rather than "off", and reading them as settings to fix
+          # sends somebody to the Render dashboard over what is actually a cold instance.
+          if cfg_code != "200":
+              print(f"> ⚠️ **The backend did not answer** (`/api/config` returned "
+                    f"`{cfg_code}`). Every cross below is unknown, not off. Render sleeps the "
+                    "free instance — try again in a minute.\n")
+          elif tg_code != "200":
+              print(f"> ⚠️ `/api/telegram/status` returned `{tg_code}` — the Telegram rows "
+                    "below are unknown. A 403 there means the TOOLS_TOKEN secret does not "
+                    "match the backend's.\n")
+          print("| | Check | |")
+          print("|---|---|---|")
+
+          # PAYMENTS FIRST, because everything else hangs off them: with no Stripe keys the
+          # join page falls back to a Payment Link that carries no trial and cannot be tied
+          # to an account, so the trial, the signup window and the channel invite are all
+          # unreachable however well they are configured.
+          ready = bool(cfg.get("stripe_ready"))
+          row(ready, "Stripe checkout",
+              "live" if ready else "NOT configured — the join page is on the old payment link")
+          days = cfg.get("trial_days")
+          row(bool(days), "Free trial", f"{days} days" if days else "off")
+          row(bool(sign.get("enabled")), "Signup window",
+              f"{sign.get('day_name','?')}s, scope {sign.get('scope','?')}"
+              + (", OPEN today" if sign.get("open") else ", shut today")
+              if sign.get("enabled") else "always open")
+
+          print("| | | |")
+          row(bool(tg.get("bot_token_set")), "Telegram bot token", "")
+          # Named explicitly because the variable is easy to mistype, and the bot fails
+          # CLOSED without it: every delivery gets a 403 and the bot simply never answers.
+          row(bool(tg.get("webhook_secret_set")), "TELEGRAM_WEBHOOK_SECRET",
+              "" if tg.get("webhook_secret_set") else "check the name is exactly this")
+          hook = (tg.get("telegram") or {}).get("url") or ""
+          row(bool(hook), "Webhook registered", hook.split("/api")[0] if hook else "run /api/telegram/register")
+          mu = tg.get("member_updates")
+          row(mu is True, "Channel join tracking",
+              "" if mu is True else "re-register — chat_member updates are not being sent")
+
+          print("| | | |")
+          row(bool(vip.get("chat_id_set")), "TELEGRAM_VIP_CHAT_ID", "")
+          row(bool(vip.get("reachable")), "Bot can see the channel", vip.get("title") or "")
+          row(bool(vip.get("can_invite")), "Bot can create invites",
+              vip.get("error") or "")
+
+          print()
+          if not ready:
+              print("> **Stripe is the blocker.** Until `STRIPE_SECRET_KEY`, `STRIPE_PRICE_ID` "
+                    "and `STRIPE_WEBHOOK_SECRET` are all set, the join page uses the old "
+                    "payment link — which grants no trial and links to no account, so nothing "
+                    "downstream of checkout can work.")
+          last = (tg.get("telegram") or {}).get("last_error_message")
+          if last:
+              print(f"\n> Telegram's last delivery error: `{last}`")
+          PY
+          echo "summary written"

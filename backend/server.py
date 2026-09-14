@@ -5302,8 +5302,6 @@ async def public_results(weeks: int = RESULTS_WEEKS, token: Optional[str] = None
     made Monday silently fall down its fallback chain to results, then streaks, with
     nothing in the log to say why.
 
-    IT CANNOT FLATTER ITSELF, and that part is unchanged — see below.
-
     IT CANNOT FLATTER ITSELF, and that is the entire design. Every row is read from a
     snapshot frozen BEFORE kick-off (see snapshot_streaks), so the list being graded is
     the list that was claimed. Grading the board as it looks afterwards would count only
@@ -5314,9 +5312,16 @@ async def public_results(weeks: int = RESULTS_WEEKS, token: Optional[str] = None
     published. A record that shows only the settled winners is an advert with a
     percentage on it.
 
-    NO PROFIT FIGURE. Snapshots record the line, not a price, so what this can honestly
-    report is how often a run continued — not what it paid. Inventing odds after the
-    fact to produce a P/L is the exact thing the picks ledger already refuses to do.
+    A PROFIT FIGURE ONLY WHERE A PRICE WAS RECORDED. This used to publish none at all,
+    because a snapshot stored the line and never the odds, and a P/L would have had to
+    invent them. Replying to the angle menu with "3 @ 1.80 1.5u" now captures the price at
+    the moment the angle is claimed, so the rows that carry one can be counted in units.
+
+    The rows that DO NOT carry one are not quietly treated as zero. settlement.pick_profit
+    answers None for a win at an unknown price rather than 0, and _tally publishes `priced`
+    and `unpriced` alongside the units so the figure can be read for what it covers. A
+    units number spanning rows whose odds nobody wrote down is the same invention in a
+    different shape — every angle logged before the capture existed is one of those.
     """
     if not _has_tools_token(token) and user.get("user_id") == PUBLIC_USER_ID:
         raise HTTPException(status_code=401, detail="Sign in to see the record")
@@ -5605,8 +5610,16 @@ async def telegram_menu(body: MenuBody, token: Optional[str] = None):
     refused rather than silently acted on.
     """
     _check_tools_token(token)
+    # A BLANK CHAT IS REFUSED RATHER THAN STORED. Keyed to "", the row is one no reply can
+    # ever match — chat_id_of always returns a real number — so it is written, accepted, and
+    # answered with "I haven't sent you a menu yet". Failing here turns a silent dead end
+    # into a warning in the job log that names the caller's missing configuration.
+    chat = str(body.chat_id).strip()
+    if not chat:
+        raise HTTPException(400, "chat_id is required — a menu stored against no chat "
+                                 "can never be replied to")
     await db.telegram_menus.update_one(
-        {"_id": str(body.chat_id)},
+        {"_id": chat},
         {"$set": {"items": [i.model_dump() for i in body.items],
                   "sent_at": datetime.now(timezone.utc).isoformat()}},
         upsert=True)

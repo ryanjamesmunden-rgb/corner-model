@@ -5895,6 +5895,22 @@ async def telegram_status(token: Optional[str] = None):
         out["telegram"] = (await telegram_bot.webhook_info()).get("result")
     except Exception as e:
         out["error"] = str(e)
+    # THE PAID CHANNEL, CHECKED RATHER THAN ASSUMED. Its setup has three parts and two are
+    # invisible: the id is something you can see in the dashboard, but whether the bot is
+    # actually IN the channel and whether it holds the invite-users right are not. If
+    # either is missing the only symptom is an invite button that fails — for a paying
+    # member, at the worst possible moment. Asking Telegram here turns that into a check
+    # that can be run once, before anybody depends on it.
+    out["vip_channel"] = await telegram_bot.vip_check()
+    # Whether `chat_member` is actually being delivered. Telegram only sends it when asked
+    # for by name, and a webhook registered before that was requested keeps working in
+    # every other respect while silently never reporting a join — which is what records who
+    # in the channel paid.
+    allowed = (out.get("telegram") or {}).get("allowed_updates")
+    out["member_updates"] = (
+        "chat_member" in allowed if isinstance(allowed, list)
+        else "unknown — re-register to be sure")
+    out["menu"] = [c["command"] for c in telegram_bot.COMMANDS]
     return out
 
 

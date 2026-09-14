@@ -498,3 +498,57 @@ async def my_commands() -> dict:
         return r.json()
     except Exception:
         return {"ok": False, "status": r.status_code, "body": r.text[:300]}
+
+
+async def vip_check() -> dict:
+    """Is the paid channel actually wired up? Answered by asking Telegram, not by guessing.
+
+    THE SETUP HAS THREE PARTS AND TWO OF THEM ARE INVISIBLE. Setting TELEGRAM_VIP_CHAT_ID is
+    the part you can see; whether the bot is IN the channel, and whether it holds the
+    invite-users permission, are not — and if either is missing the only symptom is an
+    invite button that fails for a paying member at the worst possible moment.
+
+    So this asks: can I see the chat, am I an admin of it, and may I create invite links.
+    Each answer is reported separately because each has a different fix, and "it doesn't
+    work" is not a diagnosis.
+    """
+    out = {"chat_id_set": bool(VIP_CHAT_ID), "reachable": False,
+           "title": None, "bot_is_admin": False, "can_invite": False, "error": None}
+    if not BOT_TOKEN:
+        out["error"] = "TELEGRAM_BOT_TOKEN is not set"
+        return out
+    if not VIP_CHAT_ID:
+        out["error"] = "TELEGRAM_VIP_CHAT_ID is not set"
+        return out
+    try:
+        async with httpx.AsyncClient(timeout=20) as hc:
+            chat = await hc.get(f"https://api.telegram.org/bot{BOT_TOKEN}/getChat",
+                                params={"chat_id": VIP_CHAT_ID})
+            data = chat.json() if chat.status_code == 200 else {}
+            if not data.get("ok"):
+                # "chat not found" here almost always means the id is wrong or the bot was
+                # never added — not that Telegram is down.
+                out["error"] = (chat.json() or {}).get("description") or chat.text[:200]
+                return out
+            out["reachable"] = True
+            out["title"] = (data.get("result") or {}).get("title")
+
+            me = await hc.get(f"https://api.telegram.org/bot{BOT_TOKEN}/getMe")
+            bot_id = ((me.json() or {}).get("result") or {}).get("id")
+            if not bot_id:
+                out["error"] = "could not read the bot's own id"
+                return out
+            mem = await hc.get(f"https://api.telegram.org/bot{BOT_TOKEN}/getChatMember",
+                               params={"chat_id": VIP_CHAT_ID, "user_id": bot_id})
+            m = (mem.json() or {}).get("result") or {}
+            out["bot_is_admin"] = m.get("status") in ("administrator", "creator")
+            # The specific right createChatInviteLink needs. An admin WITHOUT it fails in
+            # exactly the same way as a non-admin, which is why they are reported apart.
+            out["can_invite"] = bool(m.get("can_invite_users")) or m.get("status") == "creator"
+            if not out["bot_is_admin"]:
+                out["error"] = "the bot is in the channel but is not an admin of it"
+            elif not out["can_invite"]:
+                out["error"] = "the bot is an admin but lacks the invite-users permission"
+    except Exception as e:
+        out["error"] = f"{type(e).__name__}: {e}"
+    return out

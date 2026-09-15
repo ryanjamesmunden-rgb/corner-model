@@ -32,6 +32,15 @@ on:
         required: false
         default: ""
         type: string
+      # THE UNBLOCK BUTTON. Membership is granted by a webhook, and this backend sleeps —
+      # a cold start can outlast Stripe's delivery timeout, so a missed event is ordinary
+      # here. When somebody has paid and the site does not know it, this asks Stripe
+      # directly and fixes it, rather than leaving them locked out until the next sweep.
+      reconcile:
+        description: "Also re-check every subscription against Stripe and grant/revoke membership"
+        required: false
+        default: false
+        type: boolean
 
 concurrency:
   group: corner-check-setup
@@ -72,6 +81,30 @@ jobs:
             2>/dev/null || head -c 400 reg.json
           if [ "$code" != "200" ]; then
             echo "::warning::registration failed (HTTP $code) — the checks below will say what is still missing"
+          fi
+
+      # BEFORE THE CHECKS, so one dispatch both fixes and reports rather than describing a
+      # state it is about to change — the same ordering the bot registration uses.
+      - name: Reconcile membership against Stripe
+        if: inputs.reconcile
+        env:
+          BACKEND: ${{ vars.BACKEND_URL || 'https://corner-model.onrender.com' }}
+          TOOLS_TOKEN: ${{ secrets.TOOLS_TOKEN }}
+        run: |
+          for i in 1 2 3 4 5 6; do
+            code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 60 "$BACKEND/api/" || true)
+            echo "wake attempt $i: HTTP $code"
+            [ "$code" = "200" ] && break
+            sleep 15
+          done
+          code=$(curl -s -o rec.json -w '%{http_code}' --max-time 120 -X POST \
+            "$BACKEND/api/billing/reconcile?token=$TOOLS_TOKEN" || echo 000)
+          echo "reconcile: HTTP $code"
+          # The body names user ids and statuses, no card data and no keys.
+          python3 -c "import json;d=json.load(open('rec.json'));print(json.dumps(d,indent=2))" \
+            2>/dev/null || head -c 400 rec.json
+          if [ "$code" != "200" ]; then
+            echo "::warning::reconcile did not run (HTTP $code) — the rows below still report the live state"
           fi
 
       - name: Ask the backend
@@ -230,6 +263,18 @@ jobs:
                           if not lw.get("error") else f"FAILED: {lw['error'][:80]}"
                       row(not lw.get("error"), "Stripe webhook",
                           f"last {lw.get('type')} at {when} UTC — {fate}")
+                      # A REJECTED DELIVERY IS A DIFFERENT FAULT FROM A MISSING ONE and
+                      # wants the opposite fix: the signing secret on Render, not the
+                      # endpoint in Stripe. Named, because the two used to print the same.
+                      if lw.get("type") == "rejected":
+                          print("| | | Stripe IS calling and every delivery is being "
+                                "refused — STRIPE_WEBHOOK_SECRET does not match the "
+                                "signing secret shown on that endpoint in Stripe. |")
+              # MEMBERSHIP DOES NOT DEPEND ON THAT ROW ANY MORE. Said here because the
+              # webhook row is alarming on its own, and the sweep is what makes a missed
+              # delivery a delay rather than somebody locked out of what they paid for.
+              row(True, "Membership backstop",
+                  "reconciled against Stripe every 15 min — a missed webhook self-heals")
           elif ready:
               # Older backend, or a token mismatch. Say which rather than printing a cross
               # that reads as "Stripe is broken".

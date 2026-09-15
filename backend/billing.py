@@ -309,6 +309,35 @@ def check() -> dict:
     return out
 
 
+def list_subscriptions(limit: int = 2000) -> list:
+    """Every subscription on the account, newest first, as plain dicts.
+
+    THE OTHER DIRECTION. Reconciliation cannot start from our own users, because the
+    accounts that need it most are exactly the ones no webhook ever reached: they have no
+    stripe_customer_id, no subscription id, nothing pointing at Stripe. Stripe is the side
+    that knows, so the sweep starts there and matches back — every subscription created
+    through create_checkout_session carries `metadata.user_id`, which is the thread.
+
+    `limit` IS A RUNAWAY GUARD, NOT A PAGE SIZE, and it was written as 100 first — which
+    stopped the loop at exactly one page and would have left every subscriber past the
+    hundredth unreconciled, with nothing anywhere to say so. It is set far above any
+    plausible subscriber count, so reaching it means something is wrong rather than that
+    the list is long.
+    """
+    stripe = _stripe()
+    out, starting_after = [], None
+    while len(out) < limit:
+        page = _as_dict(stripe.Subscription.list(
+            limit=min(100, limit - len(out)), status="all",
+            **({"starting_after": starting_after} if starting_after else {})))
+        data = [_as_dict(s) for s in (page.get("data") or [])]
+        out.extend(data)
+        if not page.get("has_more") or not data:
+            break
+        starting_after = data[-1].get("id")
+    return out
+
+
 def checkout_error_message(exc: Exception) -> str:
     """What a VISITOR is told when checkout will not start.
 

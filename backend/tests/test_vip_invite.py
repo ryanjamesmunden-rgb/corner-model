@@ -299,21 +299,50 @@ class TestVipPreflight:
     def test_a_fully_wired_channel_reports_clean(self, monkeypatch):
         b = _bot()
         self._wire(monkeypatch, b, {
-            "getChat": self._resp(result={"title": "Corner Model VIP"}),
+            "getChat": self._resp(result={"title": "Corner Model VIP", "type": "channel"}),
             "getMe": self._resp(result={"id": 99}),
             "getChatMember": self._resp(result={"status": "administrator",
                                                 "can_invite_users": True}),
         })
         assert self.run(b) == {"chat_id_set": True, "reachable": True,
-                               "title": "Corner Model VIP", "bot_is_admin": True,
-                               "can_invite": True, "error": None}
+                               "title": "Corner Model VIP", "type": "channel",
+                               "bot_is_admin": True, "can_invite": True, "error": None}
+
+    def test_an_id_that_is_not_the_channel_says_so(self, monkeypatch):
+        # FOUND LIVE, and it had survived two rounds of somebody checking the admin list.
+        # TELEGRAM_VIP_CHAT_ID held a personal Telegram id rather than the channel's.
+        # getChat succeeds for any chat the bot can see, so "reachable" was true; a private
+        # chat has no title, so that row rendered blank and looked merely cosmetic; and
+        # getChatMember reported no admin status, so the check said "in the channel but not
+        # an admin" — about a chat that was not the channel. Every symptom pointed at the
+        # permission, and the permission was fine.
+        b = _bot()
+        self._wire(monkeypatch, b, {
+            "getChat": self._resp(result={"type": "private", "first_name": "Ryan"}),
+            "getMe": self._resp(result={"id": 99}),
+            "getChatMember": self._resp(result={"status": "member"}),
+        })
+        out = self.run(b)
+        assert out["type"] == "private"
+        assert "private chat" in out["error"] and "-100" in out["error"]
+
+    def test_the_not_an_admin_message_names_what_it_looked_at(self, monkeypatch):
+        # "the bot is in the channel but is not an admin of it" asserted the thing that was
+        # actually wrong. It now reports what getChat said it was.
+        b = _bot()
+        self._wire(monkeypatch, b, {
+            "getChat": self._resp(result={"title": "Corner chat", "type": "group"}),
+            "getMe": self._resp(result={"id": 99}),
+            "getChatMember": self._resp(result={"status": "member"}),
+        })
+        assert "group" in self.run(b)["error"]
 
     def test_an_admin_without_the_invite_right_is_reported_separately(self, monkeypatch):
         # It fails in exactly the same way as not being an admin, and the fix is different,
         # so "it doesn't work" is not a diagnosis.
         b = _bot()
         self._wire(monkeypatch, b, {
-            "getChat": self._resp(result={"title": "VIP"}),
+            "getChat": self._resp(result={"title": "VIP", "type": "channel"}),
             "getMe": self._resp(result={"id": 99}),
             "getChatMember": self._resp(result={"status": "administrator",
                                                 "can_invite_users": False}),
@@ -325,7 +354,7 @@ class TestVipPreflight:
     def test_in_the_channel_but_not_an_admin(self, monkeypatch):
         b = _bot()
         self._wire(monkeypatch, b, {
-            "getChat": self._resp(result={"title": "VIP"}),
+            "getChat": self._resp(result={"title": "VIP", "type": "channel"}),
             "getMe": self._resp(result={"id": 99}),
             "getChatMember": self._resp(result={"status": "member"}),
         })
@@ -351,7 +380,7 @@ class TestVipPreflight:
         # The channel owner has every right without them being listed individually.
         b = _bot()
         self._wire(monkeypatch, b, {
-            "getChat": self._resp(result={"title": "VIP"}),
+            "getChat": self._resp(result={"title": "VIP", "type": "channel"}),
             "getMe": self._resp(result={"id": 99}),
             "getChatMember": self._resp(result={"status": "creator"}),
         })

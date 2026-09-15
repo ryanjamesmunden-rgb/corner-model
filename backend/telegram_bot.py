@@ -512,8 +512,8 @@ async def vip_check() -> dict:
     Each answer is reported separately because each has a different fix, and "it doesn't
     work" is not a diagnosis.
     """
-    out = {"chat_id_set": bool(VIP_CHAT_ID), "reachable": False,
-           "title": None, "bot_is_admin": False, "can_invite": False, "error": None}
+    out = {"chat_id_set": bool(VIP_CHAT_ID), "reachable": False, "title": None,
+           "type": None, "bot_is_admin": False, "can_invite": False, "error": None}
     if not BOT_TOKEN:
         out["error"] = "TELEGRAM_BOT_TOKEN is not set"
         return out
@@ -531,7 +531,26 @@ async def vip_check() -> dict:
                 out["error"] = (chat.json() or {}).get("description") or chat.text[:200]
                 return out
             out["reachable"] = True
-            out["title"] = (data.get("result") or {}).get("title")
+            result = data.get("result") or {}
+            out["title"] = result.get("title")
+            # WHAT KIND OF CHAT THE ID ACTUALLY POINTS AT.
+            #
+            # FOUND LIVE. The channel plainly had the bot as an admin, and this check
+            # insisted it was not one — because TELEGRAM_VIP_CHAT_ID was not the channel.
+            # getChat succeeds for any chat the bot can see, including a private one, so
+            # "reachable" was true; a private chat has no title, so the row rendered blank;
+            # and getChatMember on it reports no administrator status, so the answer was
+            # "in the channel but not an admin" about a chat that is not a channel.
+            #
+            # Every one of those symptoms points at the permission rather than the id, which
+            # is why it survived two rounds of somebody checking the admin list. The type is
+            # the fact that settles it.
+            out["type"] = result.get("type")
+            if out["type"] == "private":
+                out["error"] = ("TELEGRAM_VIP_CHAT_ID points at a private chat, not the "
+                                "channel — most likely a personal Telegram id. A channel's "
+                                "id is a negative number beginning -100")
+                return out
 
             me = await hc.get(f"https://api.telegram.org/bot{BOT_TOKEN}/getMe")
             bot_id = ((me.json() or {}).get("result") or {}).get("id")
@@ -546,7 +565,8 @@ async def vip_check() -> dict:
             # exactly the same way as a non-admin, which is why they are reported apart.
             out["can_invite"] = bool(m.get("can_invite_users")) or m.get("status") == "creator"
             if not out["bot_is_admin"]:
-                out["error"] = "the bot is in the channel but is not an admin of it"
+                out["error"] = (f"the bot can see this {out.get('type') or 'chat'} but is "
+                                "not an admin of it")
             elif not out["can_invite"]:
                 out["error"] = "the bot is an admin but lacks the invite-users permission"
     except Exception as e:

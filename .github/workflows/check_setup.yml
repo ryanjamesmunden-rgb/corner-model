@@ -149,6 +149,12 @@ jobs:
                   return {}
 
           cfg, tg, sk = load("config.json"), load("tg.json"), load("stripe.json")
+          # RENDERED WITH THE TABLE, not left in the step that fetched it. The runner echoes
+          # every line of this script into the log before running it, which pushes an earlier
+          # step's output beyond what the logs API will return — so a probe printed up there
+          # is readable in the browser and nowhere else. Same failure as writing only to the
+          # step summary: output nobody can reach is not output.
+          probe = load("probe.json")
           try:
               cfg_code, tg_code, sk_code = open("codes.txt").read().split()
           except Exception:
@@ -250,6 +256,19 @@ jobs:
           # Nothing is ever posted to the VIP channel: TELEGRAM_VIP_CHAT_ID is used only to
           # mint, revoke and enforce invites, never as a send target. The one setting that
           # could route a post anywhere else is TELEGRAM_SLIP_CHAT_ID.
+          # A CANDIDATE ID, CHECKED WITHOUT BEING SAVED. Printed next to the live rows so
+          # the two can be compared at a glance — which is the whole question being asked:
+          # is the one I am about to paste better than the one that is in there.
+          if probe:
+            print("| | | |")
+            pid = probe.get("probed") or "?"
+            ptype = probe.get("type") or "unreachable"
+            row(probe.get("type") in ("channel", "supergroup"),
+                f"Candidate {pid}",
+                (probe.get("title") or "") + f" ({ptype})")
+            row(bool(probe.get("can_invite")), "…can mint invites there",
+                probe.get("error") or "")
+
           print("| | | |")
           row(True, "Daily posts, menu, best game", "your own chat — never the VIP channel")
           if slip_target == "same":

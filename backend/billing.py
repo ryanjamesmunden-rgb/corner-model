@@ -160,13 +160,23 @@ def _as_dict(obj) -> dict:
     """
     if isinstance(obj, dict):  # older stripe-python subclasses dict
         return obj
-    to_dict = getattr(obj, "to_dict", None)
-    if callable(to_dict):
-        try:
-            return to_dict()
-        except Exception:
-            pass
+    # RECURSIVE FIRST. to_dict() converts the top level and leaves nested resources as
+    # objects — so an Event converted with it hands back event["data"]["object"] as the
+    # very thing that raises on .get, one level down from where anybody looked. That is
+    # precisely how the webhook handler was still crashing: the outer layer was a dict.
+    for name in ("to_dict_recursive", "to_dict"):
+        fn = getattr(obj, name, None)
+        if callable(fn):
+            try:
+                return fn()
+            except Exception:
+                continue
     return {}
+
+
+def fetch_subscription(subscription_id: str) -> dict:
+    """One subscription, as a plain dict. The only way server.py should read one."""
+    return _as_dict(_stripe().Subscription.retrieve(subscription_id))
 
 
 def _money(amount, currency: str) -> str:
@@ -404,7 +414,11 @@ def set_cancel_at_period_end(subscription_id: str, cancelling: bool) -> dict:
     that cannot be undone without contacting you is the same trap as a cancellation that
     cannot be done without contacting you, only pointed the other way.
     """
-    return _stripe().Subscription.modify(subscription_id, cancel_at_period_end=cancelling)
+    # Returned as a dict, because the caller hands it straight to apply_subscription and
+    # reads .get("cancel_at_period_end") off it — both of which raise on a Stripe object.
+    # Cancelling from the account page was broken by the same bug as the webhook.
+    return _as_dict(_stripe().Subscription.modify(subscription_id,
+                                                  cancel_at_period_end=cancelling))
 
 
 def verify_event(payload: bytes, signature: Optional[str]) -> dict:
@@ -418,7 +432,15 @@ def verify_event(payload: bytes, signature: Optional[str]) -> dict:
     if not STRIPE_WEBHOOK_SECRET:
         raise RuntimeError("STRIPE_WEBHOOK_SECRET is not set — refusing to trust a webhook")
     stripe = _stripe()
-    return stripe.Webhook.construct_event(payload, signature, STRIPE_WEBHOOK_SECRET)
+    # A PLAIN DICT, ALL THE WAY DOWN. construct_event returns a stripe.Event, and on
+    # stripe-python 8+ its nested objects raise TypeError on .get — so the handler's very
+    # first read, obj.get("client_reference_id"), was a 500. Every webhook Stripe sent was
+    # failing, Stripe was retrying them, and the first person to start a trial sat on a
+    # "setting up your membership…" spinner over an account that never became one.
+    #
+    # Converted HERE, at the one place events enter, rather than defensively at each read:
+    # a handler written against dicts is then correct by construction.
+    return _as_dict(stripe.Webhook.construct_event(payload, signature, STRIPE_WEBHOOK_SECRET))
 
 
 def _sub_fields(sub: dict) -> dict:

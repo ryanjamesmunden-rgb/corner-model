@@ -5888,6 +5888,26 @@ async def telegram_commands(token: Optional[str] = None):
     return {"set": sent.get("ok", False), "live": live.get("result")}
 
 
+@api_router.get("/telegram/chat")
+async def telegram_chat_probe(chat_id: str, token: Optional[str] = None):
+    """What the bot sees at a chat id it has NOT been configured with.
+
+    TURNS SETTING TELEGRAM_VIP_CHAT_ID INTO A CONFIRMATION RATHER THAN A GUESS. Every
+    attempt at it so far has run the same way round: paste a value, wait out a redeploy,
+    read the result, discover it was wrong, repeat. Telegram will state in one call whether
+    an id is the channel and whether the bot can mint invites there, and there is no reason
+    that answer should cost a deploy.
+
+    READ-ONLY, and the probe reaches getChat and getChatMember only. Creating, revoking and
+    enforcing invites all stay pinned to the configured VIP_CHAT_ID, so nothing a probe says
+    can route a real invite at a chat that was never set up.
+    """
+    _check_tools_token(token)
+    if not telegram_bot.BOT_TOKEN:
+        raise HTTPException(status_code=503, detail="TELEGRAM_BOT_TOKEN is not set")
+    return await telegram_bot.vip_check(chat_id=chat_id)
+
+
 @api_router.get("/billing/status")
 async def billing_status(token: Optional[str] = None):
     """Whether Stripe will actually take a payment, asked of Stripe rather than assumed.

@@ -179,6 +179,13 @@ jobs:
                   if acct:
                       detail += f" — {acct}"
               row(works, "Stripe accepts them", detail)
+              # Has no default and is not optional: create_checkout_session builds the
+              # return address from it, and Stripe refuses a relative one. Its own row
+              # because it fails for a reason that has nothing to do with the key.
+              site = sk.get("site_url_ok")
+              if site is not None:
+                  row(bool(site), "SITE_URL",
+                      sk.get("site_url") or "not set — Stripe needs a full https:// address")
           elif ready:
               # Older backend, or a token mismatch. Say which rather than printing a cross
               # that reads as "Stripe is broken".
@@ -206,7 +213,14 @@ jobs:
 
           print("| | | |")
           row(bool(vip.get("chat_id_set")), "TELEGRAM_VIP_CHAT_ID", "")
-          row(bool(vip.get("reachable")), "Bot can see the channel", vip.get("title") or "")
+          # NAMES WHAT THE ID POINTS AT, not just that something answered. A blank title
+          # here meant a private chat and read as a cosmetic gap, while every row below it
+          # blamed the bot's permissions for an id that was never the channel.
+          kind = vip.get("type")
+          reach = bool(vip.get("reachable"))
+          row(reach and kind != "private", "Bot can see the channel",
+              (vip.get("title") or "") + (f" ({kind})" if kind else "")
+              if reach else "")
           row(bool(vip.get("can_invite")), "Bot can create invites",
               vip.get("error") or "")
 

@@ -179,6 +179,23 @@ def check() -> dict:
     if out["key"]["whitespace"]:
         out["error"] = "the key has a space or line break inside it — re-copy it in one piece"
         return out
+    # WHERE STRIPE SENDS PEOPLE BACK TO, which has no default and is not optional.
+    #
+    # create_checkout_session builds `success_url` as f"{SITE_URL}/account?checkout=success".
+    # With SITE_URL unset that is "/account?checkout=success" — a relative path, which Stripe
+    # rejects outright. Checkout then fails for a reason that has nothing to do with the key
+    # or the price, which is precisely the kind of thing that only gets discovered by the
+    # next person to try and pay.
+    #
+    # CHECKED HERE RATHER THAN AFTER THE KEY IS FIXED, because finding one blocker at a time
+    # is how a ten-minute job takes three days.
+    out["site_url_ok"] = SITE_URL.startswith(("http://", "https://"))
+    if not out["site_url_ok"]:
+        out["error"] = ("SITE_URL is " + (f"'{SITE_URL}'" if SITE_URL else "not set")
+                        + " — it must be the full site address, like "
+                        "https://thecornermodel.com. Stripe refuses a checkout whose return "
+                        "address is not an absolute URL.")
+        return out
     try:
         stripe = _stripe()
     except Exception as e:  # the library is optional; the rest of the site runs without it

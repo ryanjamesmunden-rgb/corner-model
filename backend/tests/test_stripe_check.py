@@ -20,11 +20,13 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 FULL_KEY = "sk_live_" + "51NqRvW" * 14
 
 
-def _billing(key=FULL_KEY, price="price_123", webhook="whsec_1", **env):
+def _billing(key=FULL_KEY, price="price_123", webhook="whsec_1",
+             site="https://thecornermodel.com", **env):
     """Freshly imported, so the module-level environment reads happen again."""
     os.environ["STRIPE_SECRET_KEY"] = key
     os.environ["STRIPE_PRICE_ID"] = price
     os.environ["STRIPE_WEBHOOK_SECRET"] = webhook
+    os.environ["SITE_URL"] = site
     for k, v in env.items():
         os.environ[k] = v
     import billing
@@ -127,6 +129,38 @@ class TestTheKeyIsKeyShaped:
         out = _billing(key="", price="").check()
         assert out["ok"] is False
         assert "STRIPE_SECRET_KEY" in out["error"] and "STRIPE_PRICE_ID" in out["error"]
+
+
+class TestWhereStripeSendsPeopleBack:
+    """SITE_URL has no default, and checkout cannot work without it."""
+
+    def test_unset_is_caught_before_anybody_tries_to_pay(self, monkeypatch):
+        # create_checkout_session builds "{SITE_URL}/account?checkout=success". Unset, that
+        # is a relative path, and Stripe refuses it — for a reason that has nothing to do
+        # with the key or the price, so nothing else here would have pointed at it.
+        b = _billing(site="")
+        out = b.check()
+        assert out["ok"] is False
+        assert "SITE_URL" in out["error"]
+
+    def test_a_bare_domain_is_not_enough(self):
+        # "thecornermodel.com" reads as correct and is not a URL.
+        assert "SITE_URL" in _billing(site="thecornermodel.com").check()["error"]
+
+    def test_checked_alongside_the_key_rather_than_after_it(self, monkeypatch):
+        # Finding one blocker at a time is how a ten-minute job takes three days. This runs
+        # before the Stripe calls, so a broken SITE_URL surfaces on the same run as a good
+        # key rather than on the next one.
+        b = _billing(site="")
+        stripe = MagicMock()
+        monkeypatch.setattr(b, "_stripe", stripe)
+        b.check()
+        stripe.assert_not_called()
+
+    def test_a_proper_url_passes(self, monkeypatch):
+        b = _billing(site="https://thecornermodel.com/")
+        monkeypatch.setattr(b, "_stripe", lambda: _stripe())
+        assert b.check()["ok"] is True
 
 
 class TestWhatStripeSays:

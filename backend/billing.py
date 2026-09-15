@@ -157,6 +157,12 @@ def check() -> dict:
         "price_id_set": bool(STRIPE_PRICE_ID),
         "webhook_secret_set": bool(STRIPE_WEBHOOK_SECRET),
         "site_url": SITE_URL,
+        # SET BEFORE ANY EARLY RETURN, and this needed fixing the day it was written. The
+        # SITE_URL test lived below the key checks, so while the key was broken the field
+        # was never populated and the checklist could not print the row at all — meaning
+        # the exact sequential discovery it was added to prevent: fix the key, redeploy,
+        # find out about SITE_URL, redeploy again.
+        "site_url_ok": SITE_URL.startswith(("http://", "https://")),
         "trial_days": TRIAL_DAYS,
         "ok": False,
     }
@@ -189,7 +195,6 @@ def check() -> dict:
     #
     # CHECKED HERE RATHER THAN AFTER THE KEY IS FIXED, because finding one blocker at a time
     # is how a ten-minute job takes three days.
-    out["site_url_ok"] = SITE_URL.startswith(("http://", "https://"))
     if not out["site_url_ok"]:
         out["error"] = ("SITE_URL is " + (f"'{SITE_URL}'" if SITE_URL else "not set")
                         + " — it must be the full site address, like "

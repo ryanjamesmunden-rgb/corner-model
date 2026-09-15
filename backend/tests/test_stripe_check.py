@@ -157,6 +157,16 @@ class TestWhereStripeSendsPeopleBack:
         b.check()
         stripe.assert_not_called()
 
+    def test_it_is_reported_even_when_the_key_is_the_blocking_problem(self):
+        # The flaw in the first version of this check, and the exact thing it existed to
+        # prevent. The SITE_URL test sat below the key checks, so while the key was broken
+        # the field was never set and the checklist could not print the row — fix the key,
+        # redeploy, only then find out about SITE_URL, redeploy again.
+        out = _billing(key="sk_live_", site="").check()
+        assert out["site_url_ok"] is False        # reported, not skipped
+        assert "cut off" in out["error"]          # while the key is still the headline
+        assert _billing(key="sk_live_").check()["site_url_ok"] is True
+
     def test_a_proper_url_passes(self, monkeypatch):
         b = _billing(site="https://thecornermodel.com/")
         monkeypatch.setattr(b, "_stripe", lambda: _stripe())

@@ -20,7 +20,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 FULL_KEY = "sk_live_" + "51NqRvW" * 14
 
 
-def _billing(key=FULL_KEY, price="price_123", webhook="whsec_1",
+def _billing(key=FULL_KEY, price="price_1ABCdef2GHIjkl3MNOpqr4ST", webhook="whsec_1",
              site="https://thecornermodel.com", **env):
     """Freshly imported, so the module-level environment reads happen again."""
     os.environ["STRIPE_SECRET_KEY"] = key
@@ -124,6 +124,32 @@ class TestTheKeyIsKeyShaped:
         # rk_ keys work until they hit a permission they were not given, which happens at
         # checkout rather than at boot.
         assert _billing(key="rk_live_" + "x" * 40).key_shape()["restricted"] is True
+
+    def test_the_price_id_is_checked_the_same_way(self):
+        # FOUND LIVE, AND IT WAS THE SAME MISTAKE TWICE. STRIPE_PRICE_ID was `price_` —
+        # prefix kept, identifier lost. The truncation check had been written for the
+        # secret key and only for the secret key, so this sailed past every local test and
+        # had to be found by Stripe answering "No such price: 'price_'" — a whole deploy
+        # cycle to learn a fact sitting in the variable all along.
+        #
+        # A check written against one instance of a mistake does not catch its twin in the
+        # next field along.
+        out = _billing(price="price_").check()
+        assert out["ok"] is False
+        assert out["price_id_truncated"] is True
+        assert "STRIPE_PRICE_ID" in out["error"]
+
+    def test_and_it_says_so_before_asking_stripe(self, monkeypatch):
+        b = _billing(price="price_")
+        stripe = MagicMock()
+        monkeypatch.setattr(b, "_stripe", stripe)
+        b.check()
+        stripe.assert_not_called()
+
+    def test_a_real_price_id_passes(self, monkeypatch):
+        b = _billing(price="price_1ABCdef2GHIjkl3MNOpqr4ST")
+        monkeypatch.setattr(b, "_stripe", lambda: _stripe())
+        assert b.check()["ok"] is True
 
     def test_nothing_set_at_all_names_the_variables(self):
         out = _billing(key="", price="").check()

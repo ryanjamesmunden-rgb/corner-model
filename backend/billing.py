@@ -107,6 +107,18 @@ def configured() -> bool:
 KEY_PREFIXES = ("sk_live_", "sk_test_", "rk_live_", "rk_test_")
 MIN_KEY_LENGTH = 32
 
+# AND THE SAME TEST FOR THE PRICE ID, because the same paste went wrong twice.
+#
+# The truncation check was written for the secret key and only for the secret key. So when
+# STRIPE_PRICE_ID turned out to be `price_` — prefix kept, identifier lost, exactly the
+# failure already diagnosed once — it sailed past every local check and had to be found by
+# Stripe answering "No such price: 'price_'". A whole deploy cycle to learn a fact that was
+# sitting in the variable all along.
+#
+# The lesson generalises: a check written against ONE instance of a mistake will not catch
+# its twin in the next field along. Real price ids are around thirty characters.
+MIN_PRICE_ID_LENGTH = 12
+
 
 def key_shape() -> dict:
     """What the configured key LOOKS like. Never the key itself.
@@ -207,6 +219,15 @@ def check() -> dict:
         return out
     if out["key"]["whitespace"]:
         out["error"] = "the key has a space or line break inside it — re-copy it in one piece"
+        return out
+    # The price id, tested the same way and for the same reason. Unlike the key this one is
+    # not secret and is always visible in the dashboard, so it can be named in full here.
+    out["price_id_truncated"] = len(STRIPE_PRICE_ID) < MIN_PRICE_ID_LENGTH
+    if out["price_id_truncated"]:
+        out["error"] = (f"STRIPE_PRICE_ID is '{STRIPE_PRICE_ID}' — that is the prefix "
+                        "without the id. Copy the whole thing from Stripe → Product "
+                        "catalogue → your product → the price; it looks like "
+                        "price_1ABCdef2GHIjkl3MNOpqr4ST")
         return out
     # WHERE STRIPE SENDS PEOPLE BACK TO, which has no default and is not optional.
     #

@@ -9,6 +9,8 @@ import { kickoffLabel } from "@/lib/kickoff";
 import SignedInOnly from "@/components/SignedInOnly";
 import { renderRecordCard, renderDayCard } from "@/lib/storyImage";
 import { cardFrom, dayCardFrom, settledDays } from "@/lib/recordCard";
+import TopAngle from "@/components/TopAngle";
+import ErrorBoundary from "@/components/ErrorBoundary";
 
 // THE RECORD, behind a free account.
 //
@@ -196,6 +198,19 @@ function ResultsBoard() {
           kick-off, so what you see graded here is exactly what was claimed — misses and all.
         </p>
       </header>
+
+      {/* TODAY'S CALL, DIRECTLY ABOVE THE GRADED HISTORY OF THE RULE THAT MADE IT.
+          That arrangement is the argument: every other panel on this page is what the site
+          said and how it landed, and the one thing missing was what it is saying now. Put
+          anywhere else it would be a tip; put here it is a tip with its own record under
+          it, and a reader can decide how much that record is worth.
+
+          WRAPPED, because this panel calls a different endpoint from the rest of the page
+          and a failure in it must not take the record down with it — the record is the
+          thing this page is for. */}
+      <ErrorBoundary label="Today's angle">
+        <TopAngle />
+      </ErrorBoundary>
 
       {/* THE HEADLINE. Deliberately not a lone big number: the rate is meaningless
           without the count it came from, and a reader who cannot see the denominator

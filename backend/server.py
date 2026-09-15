@@ -20,9 +20,11 @@ from pathlib import Path
 from pydantic import BaseModel
 from typing import List, Optional, Dict
 from datetime import datetime, timezone, timedelta
+from zoneinfo import ZoneInfo
 from collections import defaultdict, deque
 
 import settlement
+import angle_of_day
 import projection_record
 from settlement import settle_pending
 
@@ -1756,6 +1758,20 @@ async def _screen_streaks():
                          min_line=3, direction="over", subject="team", user={})
 
 
+async def _screen_angle_board():
+    """The scan behind the angle panel — the snapshot's own call, two days wide.
+
+    TWO DAYS, THEN FILTERED TO TODAY, rather than asking for one. `within_days` counts from
+    now, so a one-day window drops a game kicking off at 20:00 whenever the scan happens
+    to run after 20:00 the day before, and keeps one at 00:30 tomorrow. The day boundary
+    the reader means is a London calendar date, so the window is taken wide and the date is
+    applied exactly.
+    """
+    return await streaks(league_id="all", side="overall", window=5, min_hits=5,
+                         threshold=None, min_line=3, within_days=2,
+                         direction="over", subject="team", user={})
+
+
 async def _screen_top_teams():
     return await top_corner_teams(side="overall", window=0, limit=TOP_TEAMS_LIMIT,
                                   league_id="all", user={})
@@ -1777,6 +1793,7 @@ SCREENS = {
     "chase": _screen_chase,
     "mismatches": _screen_mismatches,
     "streaks": _screen_streaks,
+    "angle_board": _screen_angle_board,
     "top_teams": _screen_top_teams,
 }
 
@@ -5722,6 +5739,115 @@ async def public_results(weeks: int = RESULTS_WEEKS, token: Optional[str] = None
             "claimed": {**_tally(claimed), "rows": [public_row(r) for r in claimed]},
             "recalled": {**_tally(recalled), "rows": [public_row(r) for r in recalled]},
         },
+    }
+
+
+# ----------------------------- The angle of the day -----------------------------
+#
+# ONE PANEL THAT EITHER MAKES A CALL OR SAYS THERE ISN'T ONE. The site had four boards and
+# no answer to "what do you actually like today" — a reader had to form their own view from
+# three screens, which is work, and work most people will not do before they decide the
+# site is not for them.
+#
+# It publishes the streak board's own top rows among today's fixtures, because that is the
+# technique with a graded record behind it. See angle_of_day for the full argument and for
+# why the record is never allowed to choose the rule.
+#
+# AND IT IS ALLOWED TO PUBLISH NOTHING. A panel that always has five rows on it teaches its
+# readers that five rows mean nothing. See the DEAD_ reasons — a quiet calendar and a bar
+# nobody cleared are different facts and are reported as different facts.
+
+
+async def _angle_record(count: int) -> dict:
+    """What this rule has actually done, read back off the frozen snapshots.
+
+    Each snapshot is the same board this panel publishes from, written down before kick-off.
+    So the record of the panel is the record of the top `count` entries of each snapshot —
+    graded with the one settlement implementation, like everything else here.
+
+    THE SLICE MATTERS. A snapshot holds up to 25 rows and the panel shows five; grading all
+    25 and printing that beside a list of five would be quoting one thing's record next to
+    another thing. Rank 1 is reported separately for the same reason: "the top angle of the
+    day" is its own claim and deserves its own number rather than borrowing the group's.
+    """
+    snaps = await db.streak_snapshots.find({}, {"_id": 0}).sort("tag", -1).to_list(RESULTS_WEEKS)
+    seen = set()
+    picked, top = [], []
+    for s in snaps:
+        # Deduplicated across days for the same reason public_results is: the snapshot runs
+        # daily over an overlapping window, so one fixture is frozen on consecutive days
+        # and would otherwise be counted once per day it sat in the window.
+        rows = []
+        for e in (s.get("entries") or []):
+            key = (e.get("fixture_id"), e.get("team_id"), e.get("line"),
+                   e.get("direction"), e.get("subject"))
+            if key in seen:
+                continue
+            seen.add(key)
+            rows.append(e)
+        shown = angle_of_day.published(rows, count)
+        picked.extend(shown)
+        top.extend(angle_of_day.published(rows, 1))
+    teams = await _teams_for(picked)
+    graded = _grade_entries(picked, teams)
+    graded_top = _grade_entries(top, teams)
+    return {
+        "shortlist": angle_of_day.gate(_tally(graded)),
+        "top": angle_of_day.gate(_tally(graded_top)),
+        "days": len(snaps),
+        "count": count,
+    }
+
+
+@api_router.get("/angles/today")
+async def angles_today(count: int = angle_of_day.COUNT, token: Optional[str] = None,
+                       user: dict = Depends(get_current_user)):
+    """Today's angles, the record behind the rule, or an honest nothing.
+
+    GATED LIKE THE RECORD IT SITS ON. /api/results answers 401 to a guest because the picks
+    are the product; this is the same picks, one day fresher, and leaving it open would be
+    a side door into the thing the other endpoint gates.
+
+    REFUSES ON STALE DATA rather than publishing off old form, on the same reasoning as the
+    snapshot: a call read by someone who cannot see how fresh it was does not merely go
+    unused — it becomes something they acted on.
+    """
+    if not _has_tools_token(token) and user.get("user_id") == PUBLIC_USER_ID:
+        raise HTTPException(status_code=401, detail="Sign in to see today's angles")
+    count = max(1, min(count, 10))
+    now = datetime.now(timezone.utc)
+    day = now.astimezone(ZoneInfo(angle_of_day.TZ)).date().isoformat()
+
+    newest = await db.leagues.find({"data_source": "real"}, {"_id": 0, "synced_at": 1}) \
+        .sort("synced_at", -1).limit(1).to_list(1)
+    age_h = None
+    if newest and newest[0].get("synced_at"):
+        try:
+            age_h = round((now - datetime.fromisoformat(newest[0]["synced_at"])).total_seconds() / 3600, 1)
+        except Exception:
+            age_h = None
+    stale = age_h is None or age_h > SNAPSHOT_MAX_AGE_HOURS
+
+    # THE BOARD IS STILL READ WHEN THE DATA IS STALE, and then not published. Knowing that
+    # four teams would have qualified is what makes a stale day distinguishable from a dead
+    # one in the logs, and the panel says "not publishing" either way.
+    rows = await _screen("angle_board") if _cache_ok() else await _screen_angle_board()
+    live = angle_of_day.upcoming(rows, now.isoformat())
+    angles = [] if stale else angle_of_day.shortlist(live, day, count)
+
+    fixtures = await db.fixtures.find({}, {"_id": 0, "date": 1}).to_list(5000)
+    fixtures_today = sum(1 for f in fixtures
+                         if angle_of_day.london_day(f.get("date")) == day)
+
+    return {
+        "day": day, "rule": angle_of_day.RULE, "count": count,
+        "data_age_hours": age_h,
+        **angle_of_day.state(angles, fixtures_today, stale),
+        "top": angles[0] if angles else None,
+        "angles": angles,
+        "fixtures_today": fixtures_today,
+        "qualified": len(angle_of_day.shortlist(live, day, 99)),
+        "record": await _angle_record(count),
     }
 
 

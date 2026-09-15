@@ -23,6 +23,15 @@ on:
         required: false
         default: false
         type: boolean
+      # SO A CHAT ID CAN BE CHECKED BEFORE IT IS SAVED. The backend can answer this, but
+      # only under the tools token — which lives here as a secret and nowhere a person is
+      # holding. An endpoint that cannot be called from anywhere it is needed is not a
+      # tool, it is a note about one.
+      chat_id:
+        description: "Also check a Telegram chat id (e.g. -1004417868848) without setting it"
+        required: false
+        default: ""
+        type: string
 
 concurrency:
   group: corner-check-setup
@@ -76,6 +85,7 @@ jobs:
           # if they also have the token.
           TG_CHAT: ${{ secrets.TELEGRAM_CHAT_ID }}
           TG_SLIP: ${{ secrets.TELEGRAM_SLIP_CHAT_ID }}
+          CHAT_ID: ${{ inputs.chat_id }}
         run: |
           if [ -z "$TG_SLIP" ] || [ "$TG_SLIP" = "$TG_CHAT" ]; then
             echo "same" > slip_target.txt
@@ -107,6 +117,17 @@ jobs:
             "$BACKEND/api/billing/status?token=$TOOLS_TOKEN" || echo 000)
           echo "config: HTTP $cfg_code | telegram: HTTP $tg_code | stripe: HTTP $sk_code"
           printf '%s %s %s' "$cfg_code" "$tg_code" "$sk_code" > codes.txt
+          # Checking a candidate id costs one Telegram call and saves a redeploy cycle. The
+          # id is not secret — it is in the web.telegram.org URL of the channel — and it is
+          # typed into the dispatch form by the person asking, so echoing it back is how
+          # they confirm the runner read what they meant.
+          if [ -n "${CHAT_ID:-}" ]; then
+            probe_code=$(curl -s -o probe.json -w '%{http_code}' --max-time 60 \
+              "$BACKEND/api/telegram/chat?token=$TOOLS_TOKEN&chat_id=$CHAT_ID" || echo 000)
+            echo "probe $CHAT_ID: HTTP $probe_code"
+            python3 -c "import json;print(json.dumps(json.load(open('probe.json')),indent=2))" \
+              2>/dev/null || head -c 400 probe.json
+          fi
           [ "$cfg_code" = "200" ] || echo '{}' > config.json
           [ "$tg_code" = "200" ] || echo '{}' > tg.json
           [ "$sk_code" = "200" ] || echo '{}' > stripe.json

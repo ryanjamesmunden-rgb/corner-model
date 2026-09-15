@@ -213,6 +213,23 @@ jobs:
               if site is not None:
                   row(bool(site), "SITE_URL",
                       sk.get("site_url") or "not set — Stripe needs a full https:// address")
+              # WHETHER STRIPE'S EVENTS ARRIVE, which a valid key says nothing about. A
+              # working key and price let people pay; only the webhook makes them members.
+              # For a day every event was crashing with a 500, Stripe's dashboard knew,
+              # and this checklist printed the webhook secret as set and stopped there.
+              if "last_webhook" in sk:
+                  lw = sk.get("last_webhook")
+                  if not lw:
+                      row(False, "Stripe webhook",
+                          "no event ever received — check Developers → Webhooks in "
+                          "Stripe points at /api/billing/webhook and shows 200s",
+                          mark="⚠️")
+                  else:
+                      when = lw.get("received_at", "")[:16].replace("T", " ")
+                      fate = ("matched" if lw.get("matched") else "matched nobody") \
+                          if not lw.get("error") else f"FAILED: {lw['error'][:80]}"
+                      row(not lw.get("error"), "Stripe webhook",
+                          f"last {lw.get('type')} at {when} UTC — {fate}")
           elif ready:
               # Older backend, or a token mismatch. Say which rather than printing a cross
               # that reads as "Stripe is broken".

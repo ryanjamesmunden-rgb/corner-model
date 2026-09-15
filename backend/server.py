@@ -885,6 +885,30 @@ async def billing_cancel(body: CancelBody, user: dict = Depends(require_user)):
             "user": _public_user(fresh or user)}
 
 
+async def _record_webhook(kind: str, result: dict, error: Optional[str] = None) -> None:
+    """One line in the ledger per Stripe event received. Never raises — a failure to
+    write the audit row must not turn a handled event into a retry."""
+    try:
+        await db.billing_events.insert_one({
+            "type": kind, "received_at": datetime.now(timezone.utc).isoformat(),
+            "matched": bool(result.get("matched")), "user_id": result.get("user_id"),
+            "status": result.get("status"), "member": result.get("member"),
+            "error": error,
+        })
+    except Exception:
+        logger.exception("stripe: could not record webhook %s", kind)
+
+
+async def _last_webhook() -> Optional[dict]:
+    """The most recent Stripe event this backend received, for the diagnostic."""
+    try:
+        rows = await db.billing_events.find({}, {"_id": 0}) \
+            .sort("received_at", -1).limit(1).to_list(1)
+        return rows[0] if rows else None
+    except Exception:
+        return None
+
+
 @api_router.post("/billing/webhook")
 async def billing_webhook(request: Request):
     """Stripe telling us a subscription started, renewed, lapsed or was cancelled.
@@ -930,7 +954,9 @@ async def billing_webhook(request: Request):
         if uid and name:
             await db.users.update_one({"user_id": uid}, {"$set": {"billing_name": name}})
         if sub_id:
-            sub = billing._stripe().Subscription.retrieve(sub_id)
+            # fetch_subscription, not Subscription.retrieve: the raw object raises on
+            # .get, and apply_subscription reads it like a dict from its first line.
+            sub = billing.fetch_subscription(sub_id)
             result = await billing.apply_subscription(db, sub, user_id=uid)
     elif kind in ("customer.subscription.created", "customer.subscription.updated",
                   "customer.subscription.deleted"):
@@ -954,6 +980,12 @@ async def billing_webhook(request: Request):
     if result.get("matched") and result.get("member") is False:
         await _revoke_channel_access(result["user_id"])
 
+    # WRITTEN DOWN, because "did the webhook arrive" had no answer anywhere on this side.
+    # The events that decide who is a member were crashing for a day, Stripe's dashboard
+    # knew, and nothing here did — the setup checklist reported the webhook secret as set
+    # and stopped there. One row per event turns that into a fact the checklist can print:
+    # when the last one landed, what it was, and whether it matched an account.
+    await _record_webhook(kind, result)
     return {"received": True, "type": kind, **result}
 
 
@@ -6076,7 +6108,12 @@ async def billing_status(token: Optional[str] = None):
     slow Stripe look like a dead site.
     """
     _check_tools_token(token)
-    return await asyncio.to_thread(billing.check)
+    out = await asyncio.to_thread(billing.check)
+    # Whether Stripe's events are actually reaching this backend — the half of "does
+    # billing work" that a valid key and price say nothing about. None means no event has
+    # ever been recorded, which after a real checkout is the loudest possible answer.
+    out["last_webhook"] = await _last_webhook()
+    return out
 
 
 @api_router.get("/telegram/status")

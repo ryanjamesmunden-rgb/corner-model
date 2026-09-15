@@ -1,32 +1,40 @@
-# This week's picks, as a list you can read. One dispatch.
+# This week's board, in the three sections the EV sheet is built from. One dispatch.
 #
 # WHY THIS EXISTS. The results page grades what the streak board claimed before kick-off,
-# and the question "so what is it claiming for THIS week" had no answer that did not
-# involve signing in and reading a screen. The rows behind that page come from one
-# tools-token endpoint, /api/share/rows, and the runner holds the token — so it can print
-# the list the way the results page will later grade it.
+# and the question "so what is it claiming for the NEXT few days" had no answer that did
+# not involve signing in and reading three screens. The rows behind all of them come from
+# one tools-token endpoint, /api/share/rows, and the runner holds the token.
 #
-# THE SAME QUERY THE FRIDAY SNAPSHOT FREEZES. share/rows builds its streaks board with the
-# exact parameters snapshot_streaks uses, so what is printed here is what would be written
-# down and graded, not a looser or stricter cousin of it. If this list and the results page
-# ever disagree about what was claimed, one of them is wrong and it is not this one.
+# THREE SECTIONS, BECAUSE THEY ANSWER DIFFERENT QUESTIONS and the hand-built sheet this
+# replaces kept them apart for good reason:
 #
-# NO SECRETS ARE PRINTED. The token rides in a query string to a backend that expects it and
-# is never echoed. Team names, lines and kick-off times are the product's public face.
-name: This week's picks
+#   streaks     this team keeps clearing this line — a run, and nothing about the opponent
+#   mismatches  this attack against THIS defence — about the fixture, not the form
+#   chase       this team is behind early and chases — about game state, not the season
+#
+# Collapsing them into one ranked list would hide which kind of reason each row rests on,
+# and they fail in different weather: a streak is a coin that has landed five heads, a
+# mismatch is an opponent who might have signed a defender, a chase needs the game to go
+# the way it usually does.
+#
+# NO BOOK ODDS AND THEREFORE NO EV. The model's fair price is here; a bookmaker's is not,
+# except on the few fixtures where a price has been entered by hand on /prices. That half
+# of the sheet stays manual, and the table says so rather than printing a blank column
+# that reads as "no edge".
+name: This week's board
 
 on:
   workflow_dispatch:
     inputs:
       days:
-        description: "How many days ahead to list"
+        description: "How many days ahead to cover"
         required: false
-        default: "7"
+        default: "6"
         type: string
       limit:
-        description: "Most rows to print"
+        description: "Most rows per section"
         required: false
-        default: "25"
+        default: "15"
         type: string
 
 concurrency:
@@ -38,7 +46,7 @@ permissions:
 jobs:
   list:
     runs-on: ubuntu-latest
-    timeout-minutes: 6
+    timeout-minutes: 8
     steps:
       - name: Ask the backend
         env:
@@ -55,17 +63,20 @@ jobs:
             [ "$code" = "200" ] && break
             sleep 15
           done
-          code=$(curl -s -o rows.json -w '%{http_code}' --max-time 120 \
-            "$BACKEND/api/share/rows?token=$TOOLS_TOKEN&days=${DAYS:-7}&limit=${LIMIT:-25}&boards=streaks" || echo 000)
+          # All three boards in ONE call. Each is a full pass over every team, so three
+          # requests would be three of the same expensive scan on a free instance.
+          code=$(curl -s -o rows.json -w '%{http_code}' --max-time 180 \
+            "$BACKEND/api/share/rows?token=$TOOLS_TOKEN&days=${DAYS:-6}&limit=${LIMIT:-15}&boards=streaks,mismatches,chase" \
+            || echo 000)
           echo "share/rows: HTTP $code"
           printf '%s' "$code" > code.txt
           [ "$code" = "200" ] || echo '{}' > rows.json
 
       # LAST, AND TO BOTH PLACES. The runner echoes every line of this script into the log
       # before running it, so anything printed by an earlier step is pushed beyond what the
-      # logs API returns. The list has to be the final thing the job prints, and it goes to
-      # the step summary and the log together — output nobody can reach is not output.
-      - name: The list
+      # logs API returns. The tables have to be the final thing the job prints, and they go
+      # to the step summary and the log together — output nobody can reach is not output.
+      - name: The board
         run: |
           python3 - <<'PY' | tee -a "$GITHUB_STEP_SUMMARY"
           import json
@@ -81,58 +92,107 @@ jobs:
           except Exception:
               code = "000"
 
-          rows = data.get("streaks") or []
+          LON = ZoneInfo("Europe/London")
+
+          def when(iso):
+              try:
+                  dt = datetime.fromisoformat((iso or "").replace("Z", "+00:00"))
+                  if dt.tzinfo is None:
+                      dt = dt.replace(tzinfo=timezone.utc)
+                  return dt.astimezone(LON).strftime("%a %d %b %H:%M")
+              except Exception:
+                  return (iso or "")[:10]
+
+          def fixture(row):
+              """Home v Away, and which side the angle is on — the sheet's Venue column."""
+              nf = row.get("next_fixture") or {}
+              home = row["name"] if nf.get("is_home") else nf.get("opponent", "?")
+              away = nf.get("opponent", "?") if nf.get("is_home") else row["name"]
+              return when(nf.get("date")), f"{home} v {away}", \
+                  ("Home" if nf.get("is_home") else "Away")
+
+          def num(v, dp=2):
+              return "—" if v is None else (f"{v:.{dp}f}" if isinstance(v, float) else str(v))
+
           age = data.get("data_age_hours")
           days = data.get("within_days")
 
-          print("## This week's picks\n")
+          print("## The next %s days\n" % (days if days is not None else "?"))
           if code != "200":
-              print(f"> ⚠️ **The backend did not answer** (`/api/share/rows` returned `{code}`). "
-                    "A 403 means the TOOLS_TOKEN secret does not match the backend's; anything "
-                    "else is usually Render asleep — try again in a minute.\n")
+              print(f"> ⚠️ **The backend did not answer** (`/api/share/rows` returned "
+                    f"`{code}`). A 403 means the TOOLS_TOKEN secret does not match the "
+                    "backend's; anything else is usually Render asleep — try again.\n")
           # THE AGE IS SAID FIRST. The Friday snapshot refuses to freeze data older than
-          # fourteen hours, and a list read off stale numbers is the same mistake with
-          # nothing to stop it — the picks here are only as current as the last sync.
+          # fourteen hours, and a board read off stale numbers is the same mistake with
+          # nothing to stop it.
           elif age is None or age > 14:
-              print(f"> ⚠️ **Data is {age if age is not None else 'of unknown age'} hours old.** "
-                    "The snapshot would refuse this; read it as last sync's picks, not today's.\n")
+              print(f"> ⚠️ **Data is {age if age is not None else 'of unknown age'} hours "
+                    "old.** The snapshot would refuse this — read it as last sync's board.\n")
           else:
-              print(f"> Next {days} days · data {age}h old · {len(rows)} picks\n")
+              print(f"> Data {age}h old · kick-offs in London time\n")
 
+          # ---------------- streaks ----------------
+          rows = data.get("streaks") or []
+          print("### Streaks — this team keeps clearing this line\n")
           if not rows:
-              if code == "200":
-                  # Nothing qualified, which is a real answer and a different one from
-                  # "nothing came back". The bar is absolute; a thin week stays thin.
-                  print("_No streak clears the bar for this window._")
+              print("_Nothing clears the bar in this window._\n")
           else:
-              print("| Kick-off | League | Pick | Game | Run |")
-              print("|---|---|---|---|---|")
-              lon = ZoneInfo("Europe/London")
+              print("| Kick-off | League | Team | V | Fixture | Line | Run | Hit% | Avg |")
+              print("|---|---|---|---|---|---|---|---|---|")
               for r in rows:
-                  nf = r.get("next_fixture") or {}
-                  when = ""
-                  try:
-                      dt = datetime.fromisoformat((nf.get("date") or "").replace("Z", "+00:00"))
-                      if dt.tzinfo is None:
-                          dt = dt.replace(tzinfo=timezone.utc)
-                      when = dt.astimezone(lon).strftime("%a %d %b %H:%M")
-                  except Exception:
-                      when = (nf.get("date") or "")[:10]
-                  home = r["name"] if nf.get("is_home") else nf.get("opponent", "?")
-                  away = nf.get("opponent", "?") if nf.get("is_home") else r["name"]
-                  what = "team corners" if r.get("subject") == "team" else "match corners"
-                  pick = f"**{r['name']}** {r.get('line_label', '')} {what}"
-                  # The run is hits over settled legs, voids aside — the same fraction the
-                  # results page will print next to this row once it has been played.
-                  run = f"{r.get('hits', 0)}/{r.get('settled', r.get('window', 0))}"
+                  ko, fx, venue = fixture(r)
+                  run = f"{r.get('hits',0)}/{r.get('settled', r.get('window',0))}"
                   if r.get("voids"):
-                      run += f" +{r['voids']}v"
+                      run += f"+{r['voids']}v"
                   cur = (r.get("streak") or {}).get("length")
                   if cur:
-                      run += f" · {cur} in a row"
-                  print(f"| {when} | {r.get('league_name', '')} | {pick} | {home} v {away} | {run} |")
+                      run += f" ({cur} in a row)"
+                  print(f"| {ko} | {r.get('league_name','')} | **{r['name']}** | {venue} "
+                        f"| {fx} | {r.get('line_label','')} | {run} "
+                        f"| {num(r.get('hit_rate'), 1)} | {num(r.get('avg'))} |")
               print()
-              print("_Same query the Friday snapshot freezes — this is what the results page "
-                    "will grade. Lines are the model's, not a bookmaker's; check a price "
-                    "before you back one._")
+
+          # ---------------- mismatches ----------------
+          rows = data.get("mismatches") or []
+          print("### Mismatches — this attack against THIS defence\n")
+          if not rows:
+              print("_No fixture clears the mismatch bar in this window._\n")
+          else:
+              print("| Kick-off | League | Team | V | Fixture | Line | Wins/g | Opp concedes/g | Prob | Fair |")
+              print("|---|---|---|---|---|---|---|---|---|---|")
+              for r in rows:
+                  ko, fx, venue = fixture(r)
+                  print(f"| {ko} | {r.get('league_name','')} | **{r.get('name') or r.get('team','')}** "
+                        f"| {venue} | {fx} | {r.get('line','')}+ "
+                        f"| {num(r.get('team_for'))} | {num(r.get('opp_conceded'))} "
+                        f"| {num(r.get('prob'), 1)}% | {num(r.get('fair_odds'))} |")
+              print()
+
+          # ---------------- chase ----------------
+          rows = data.get("chase") or []
+          print("### Chase — this team goes behind early and chases\n")
+          if not rows:
+              print("_No chase spot clears the bar in this window._\n")
+          else:
+              print("| Kick-off | League | Team | V | Fixture | Line | λ | L5 | Opp 1H | Prob | Fair | Book | EV |")
+              print("|---|---|---|---|---|---|---|---|---|---|---|---|---|")
+              for r in rows:
+                  ko, fx, venue = fixture(r)
+                  l5 = f"{r.get('consistency','?')}/{r.get('consistency_of','?')}"
+                  ev = r.get("ev")
+                  print(f"| {ko} | {r.get('league_name','')} | **{r['name']}** | {venue} "
+                        f"| {fx} | {r.get('line','')}+ | {num(r.get('lambda'))} | {l5} "
+                        f"| {num(r.get('opp_fh_rate'), 0)}% | {num(r.get('prob'), 1)}% "
+                        f"| {num(r.get('fair_odds'))} | {num(r.get('book_odds'))} "
+                        f"| {'—' if ev is None else f'{ev:+.1f}%'} |")
+              print()
+
+          # SAID EVERY TIME, because the sheet this replaces had EV columns and these
+          # mostly do not. A fair price with no book price beside it is a lead to check,
+          # not an edge — and the gap is where the hand-work still is.
+          print("---")
+          print("_λ is the model's expected corner count. **Fair** is the model's price; "
+                "**Book** and **EV** appear only where a price has been entered on "
+                "/prices, so most rows carry none — those are leads to price up, not "
+                "bets. Lines are the model's, not a bookmaker's._")
           PY

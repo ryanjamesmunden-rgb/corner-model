@@ -1,9 +1,24 @@
-# This week's board, in the three sections the EV sheet is built from. One dispatch.
+# Today's board, in the three sections the EV sheet is built from. Markdown to read, and
+# the spreadsheet to fill in, from one call.
 #
 # WHY THIS EXISTS. The results page grades what the streak board claimed before kick-off,
 # and the question "so what is it claiming for the NEXT few days" had no answer that did
 # not involve signing in and reading three screens. The rows behind all of them come from
 # one tools-token endpoint, /api/share/rows, and the runner holds the token.
+#
+# DAILY, NOT WEEKLY, AND THE HORIZON SHRANK WITH IT. This was a Monday-ish dispatch
+# covering six days, which matched a sheet built by hand once a week. Six days of rows
+# refreshed every morning would mostly be the same fixtures re-listed, with the prices
+# typed into yesterday's copy stranded in yesterday's download — the sheet is only worth
+# opening if what is in it can still be backed today.
+#
+# So the schedule covers THREE days: today, tomorrow, and the day after. Three rather than
+# two because a price typed on the morning of a game is often already gone — the market
+# finds the same fixture — and the weekend card exists precisely to get ahead of that. The
+# streak snapshot freezes two days, so the third day's rows are not on record yet; they
+# will be when tomorrow's run freezes them. Nothing is lost by showing them early.
+#
+# A six-day view is still one dispatch away: run it by hand with days: 6.
 #
 # THREE SECTIONS, BECAUSE THEY ANSWER DIFFERENT QUESTIONS and the hand-built sheet this
 # replaces kept them apart for good reason:
@@ -21,15 +36,20 @@
 # except on the few fixtures where a price has been entered by hand on /prices. That half
 # of the sheet stays manual, and the table says so rather than printing a blank column
 # that reads as "no edge".
-name: This week's board
+name: Today's board
 
 on:
+  schedule:
+    # 07:00 UTC — before the day's first kick-offs, and before the 11:00 draft, so the
+    # spreadsheet is waiting by the time there is anything to price up. GitHub delays
+    # scheduled runs routinely; nothing here cares what hour it lands on.
+    - cron: "0 7 * * *"
   workflow_dispatch:
     inputs:
       days:
-        description: "How many days ahead to cover"
+        description: "How many days ahead to cover (blank = 3)"
         required: false
-        default: "6"
+        default: "3"
         type: string
       limit:
         description: "Most rows per section"
@@ -48,6 +68,15 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 8
     steps:
+      # Needed for tools/board_xlsx.py. The markdown half never needed the repo.
+      - uses: actions/checkout@v4
+
+      - name: What day is it
+        id: when
+        run: |
+          echo "tag=$(TZ=Europe/London date +%F)" >> "$GITHUB_OUTPUT"
+          echo "pretty=$(TZ=Europe/London date '+%a %d %b')" >> "$GITHUB_OUTPUT"
+
       - name: Ask the backend
         env:
           BACKEND: ${{ vars.BACKEND_URL || 'https://corner-model.onrender.com' }}
@@ -66,20 +95,70 @@ jobs:
           # All three boards in ONE call. Each is a full pass over every team, so three
           # requests would be three of the same expensive scan on a free instance.
           code=$(curl -s -o rows.json -w '%{http_code}' --max-time 180 \
-            "$BACKEND/api/share/rows?token=$TOOLS_TOKEN&days=${DAYS:-6}&limit=${LIMIT:-15}&boards=streaks,mismatches,chase" \
+            "$BACKEND/api/share/rows?token=$TOOLS_TOKEN&days=${DAYS:-3}&limit=${LIMIT:-15}&boards=streaks,mismatches,chase" \
             || echo 000)
           echo "share/rows: HTTP $code"
           printf '%s' "$code" > code.txt
           [ "$code" = "200" ] || echo '{}' > rows.json
+
+      # THE FILL-IN SHEET, built from the same rows the tables below are drawn from.
+      #
+      # WHY A SPREADSHEET AND NOT JUST THE TABLES. The model produces a fair price. A
+      # bookmaker's price is the one number it cannot know, and without it there is no EV
+      # and no bet — so the last step of this is always a person typing what the market is
+      # offering. That was being done in a workbook rebuilt from scratch each week. This
+      # writes the same workbook straight off the board, with the EV and the verdict as
+      # live formulas, so the only manual work left is the part that actually needs a human.
+      #
+      # NEVER FATAL. The tables below are the thing this workflow promises; a failure to
+      # build the attachment must not cost them. Every exit here is a warning.
+      - name: Build the fill-in spreadsheet
+        id: sheet
+        run: |
+          rows=$(python3 -c "
+          import json
+          try: d = json.load(open('rows.json'))
+          except Exception: d = {}
+          print(sum(len(d.get(k) or []) for k in ('streaks','mismatches','chase')))
+          ")
+          # An empty workbook is worse than no workbook: it downloads, opens, and looks
+          # like the model found nothing, when what happened was the backend was asleep.
+          if [ "${rows:-0}" -lt 1 ]; then
+            echo "::notice::no rows on any board — no spreadsheet to build"
+            exit 0
+          fi
+          python3 -m pip install --quiet openpyxl || {
+            echo "::warning::could not install openpyxl — no spreadsheet this run"; exit 0; }
+          out="corner-board-${{ steps.when.outputs.tag }}.xlsx"
+          python3 tools/board_xlsx.py rows.json "$out" || {
+            echo "::warning::the spreadsheet build failed — the tables below are unaffected"
+            exit 0; }
+          echo "file=$out" >> "$GITHUB_OUTPUT"
+          echo "rows=$rows" >> "$GITHUB_OUTPUT"
+
+      - name: Attach it to the run
+        if: steps.sheet.outputs.file != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: corner-board-${{ steps.when.outputs.tag }}
+          path: ${{ steps.sheet.outputs.file }}
+          # A board is about fixtures in the next three days. A download from a fortnight
+          # ago is a list of games that have already been played, and keeping it for the
+          # default ninety is ninety copies of a sheet nobody can act on.
+          retention-days: 14
+          if-no-files-found: error
 
       # LAST, AND TO BOTH PLACES. The runner echoes every line of this script into the log
       # before running it, so anything printed by an earlier step is pushed beyond what the
       # logs API returns. The tables have to be the final thing the job prints, and they go
       # to the step summary and the log together — output nobody can reach is not output.
       - name: The board
+        env:
+          SHEET: ${{ steps.sheet.outputs.file }}
         run: |
           python3 - <<'PY' | tee -a "$GITHUB_STEP_SUMMARY"
           import json
+          import os
           from datetime import datetime, timezone
           from zoneinfo import ZoneInfo
 
@@ -191,6 +270,15 @@ jobs:
           # mostly do not. A fair price with no book price beside it is a lead to check,
           # not an edge — and the gap is where the hand-work still is.
           print("---")
+          # WHERE THE SHEET IS, said in the summary rather than only in a step log. An
+          # artifact nobody knows is there is an artifact nobody downloads.
+          sheet = os.environ.get("SHEET") or ""
+          if sheet:
+              print(f"📄 **`{sheet}`** is attached to this run — scroll to the bottom of "
+                    "the run page for it. Type the bookmaker's odds into the yellow "
+                    "**Book** column and the EV and verdict fill themselves in.\n")
+          else:
+              print("_No spreadsheet this run — see the build step above for why._\n")
           print("_λ is the model's expected corner count. **Fair** is the model's price; "
                 "**Book** and **EV** appear only where a price has been entered on "
                 "/prices, so most rows carry none — those are leads to price up, not "

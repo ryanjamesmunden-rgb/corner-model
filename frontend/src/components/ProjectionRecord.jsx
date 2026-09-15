@@ -1,6 +1,8 @@
+import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Loader2 } from "lucide-react";
 import { api } from "@/lib/api";
+import { kickoffLabel } from "@/lib/kickoff";
 
 // HOW THE BOARD ABOVE HAS ACTUALLY DONE.
 //
@@ -160,8 +162,80 @@ export default function ProjectionRecord({ days = 30 }) {
               can find a game in before kick-off is the only one worth reading.
             </p>
           </div>
+
+          <GameRows rows={data.rows || []} />
         </>
       )}
     </section>
+  );
+}
+
+// THE GAMES THEMSELVES, so every line of the summary above can be checked against a match
+// somebody remembers rather than taken on trust. A percentage with nothing under it is an
+// assertion; a percentage with the rows under it is a record.
+//
+// BIGGEST MISSES FIRST. Newest-first is the natural order for "did last night land", but
+// the summary already answers that in aggregate. What the rows add is the outliers — the
+// game the model called 11 that finished on 5 — because those are the ones worth opening
+// to find out why, and worth remembering next time the same sides project busy.
+const SHOW = 25;
+
+function GameRows({ rows }) {
+  const [all, setAll] = useState(false);
+  if (!rows.length) return null;
+  const sorted = [...rows].sort((a, b) => Math.abs(b.error ?? 0) - Math.abs(a.error ?? 0));
+  const shown = all ? sorted : sorted.slice(0, SHOW);
+
+  return (
+    <div className="overflow-x-auto" data-testid="projection-rows">
+      <table className="w-full text-xs border-collapse">
+        <thead>
+          <tr className="text-muted-foreground text-left">
+            <th className="py-1.5 pr-3 font-normal">Kick-off</th>
+            <th className="py-1.5 pr-3 font-normal">Game</th>
+            <th className="py-1.5 pr-3 font-normal text-right">Projected</th>
+            <th className="py-1.5 pr-3 font-normal text-right">Actual</th>
+            <th className="py-1.5 font-normal text-right">Diff</th>
+          </tr>
+        </thead>
+        <tbody className="font-mono-data">
+          {shown.map((r) => {
+            const big = Math.abs(r.error ?? 0) >= 3;
+            return (
+              <tr key={r.fixture_id} className="border-t border-border">
+                <td className="py-1.5 pr-3 whitespace-nowrap text-muted-foreground">
+                  {kickoffLabel(r.kickoff)}
+                </td>
+                <td className="py-1.5 pr-3 font-sans">
+                  <a href={`/fixture/${r.fixture_id}`} className="hover:underline">
+                    {r.home} v {r.away}
+                  </a>
+                  <span className="text-muted-foreground"> · {r.league_name}</span>
+                </td>
+                <td className="py-1.5 pr-3 text-right tabular-nums">{num(r.projected)}</td>
+                <td className="py-1.5 pr-3 text-right tabular-nums">{r.actual}</td>
+                {/* SIGNED, ACTUAL MINUS PROJECTED, same convention as the bias figure above:
+                    positive means the game ran busier than the model said. Weight rather
+                    than colour carries the size of the miss — the site's tones are too
+                    close under colour blindness to trust one on its own. */}
+                <td className={`py-1.5 text-right tabular-nums ${big ? "font-semibold" : "text-muted-foreground"}`}>
+                  {r.error == null ? "—" : `${r.error > 0 ? "+" : ""}${num(r.error)}`}
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+      {rows.length > SHOW && (
+        <button onClick={() => setAll((v) => !v)}
+          className="text-[10px] text-muted-foreground hover:text-foreground mt-1.5 underline">
+          {all ? `Show the ${SHOW} biggest misses` : `Show all ${rows.length} settled games`}
+        </button>
+      )}
+      <p className="text-[10px] text-muted-foreground mt-1">
+        Biggest misses first. Diff is actual minus projected, so + means more corners than
+        the model expected.
+      </p>
+    </div>
   );
 }

@@ -109,9 +109,16 @@ export const api = {
   // than typed figures — see the note at the top of Join.jsx.
   picks: () => axios.get(`${API}/picks`).then((r) => r.data),
   settlePicks: () => axios.post(`${API}/picks/settle`).then((r) => r.data),
-  // OPEN. No token, no account — see public_results. The record is the argument for
-  // paying, and an argument nobody can read persuades nobody.
+  // BEHIND A FREE ACCOUNT. This was open, on the reasoning that the record is the argument
+  // for paying and an argument nobody can read persuades nobody. That reasoning still
+  // holds; the trade was made anyway, because the record IS the list of picks and the
+  // picks are the product — see public_results, which answers 401 to a guest. Signing in
+  // costs nothing, so it is a door and not a wall, and the share card carries the number
+  // to people who have not come through it.
   results: (weeks) => axios.get(`${API}/results`, { params: { weeks } }).then((r) => r.data),
+  // Today's angles, and the record of the rule that picked them. Gated the same way and
+  // for the same reason: this is the same board one day fresher.
+  anglesToday: (count) => axios.get(`${API}/angles/today`, { params: { count } }).then((r) => r.data),
   // Token-gated write. The backend stamps before_kickoff from its own clock — the caller
   // cannot send it, which is what keeps the public rate honest.
   logPostedAngle: (token, body) => axios.post(`${API}/angles/posted`, body, { params: { token } }).then((r) => r.data),

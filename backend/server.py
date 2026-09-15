@@ -5479,7 +5479,16 @@ async def snapshot_results(tag: str, token: Optional[str] = None,
 
 # How many weeks of record the public page carries. Long enough to be a record rather
 # than a highlight, short enough that one query stays one query.
-RESULTS_WEEKS = 12
+# HOW MANY SNAPSHOTS THE RECORD READS BACK, and the unit changed under it.
+#
+# It was 12 when snapshots were weekly, so it meant twelve weeks. They are taken daily
+# now, so twelve would have meant twelve DAYS — the record silently shortening from a
+# season to a fortnight, with the page still captioned in weeks and nothing failing.
+#
+# Raised to cover the same real period: a snapshot a day, a year of them. The parameter
+# keeps its name because the frontend and the Monday draft both pass it, and renaming an
+# API field to fix a comment is how a working page breaks.
+RESULTS_WEEKS = 400
 
 
 class PostedAngleBody(BaseModel):
@@ -5623,14 +5632,44 @@ async def public_results(weeks: int = RESULTS_WEEKS, token: Optional[str] = None
     """
     if not _has_tools_token(token) and user.get("user_id") == PUBLIC_USER_ID:
         raise HTTPException(status_code=401, detail="Sign in to see the record")
-    weeks = max(1, min(weeks, 52))
+    # The ceiling moved with the unit. At 52 a daily snapshot gave seven weeks of record
+    # while the default asked for a year, and the request would have been quietly cut to a
+    # seventh of itself with the page still captioned in weeks.
+    weeks = max(1, min(weeks, 400))
     snaps = await db.streak_snapshots.find({}, {"_id": 0}).sort("tag", -1).to_list(weeks)
     all_entries = [e for s in snaps for e in (s.get("entries") or [])]
     teams = await _teams_for(all_entries)     # one lookup for every week, not one per week
 
+    # ONE CLAIM PER FIXTURE, NEWEST SNAPSHOT WINS.
+    #
+    # The snapshot used to run once a week, so no entry could appear twice and nothing
+    # needed saying. It runs daily now, with a two-day horizon deliberately overlapping so
+    # that one failed run does not lose a day — which means the same team, line and
+    # fixture is frozen on consecutive days. Counted once per snapshot, as this did, a
+    # Sunday game frozen on Friday and Saturday would land TWICE in the headline rate.
+    #
+    # That is not a cosmetic double count: it silently weights whichever fixtures sat
+    # longest in the window, and nothing in the output would reveal it. The projections
+    # record deduplicates for exactly the same reason — see /projections/record.
+    #
+    # Newest wins because snaps is sorted by tag descending, so what is graded is the
+    # claim as it last stood before kick-off.
+    seen = set()
+
+    def _fresh(entries):
+        out = []
+        for e in entries:
+            key = (e.get("fixture_id"), e.get("team_id"), e.get("line"),
+                   e.get("direction"), e.get("subject"))
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(e)
+        return out
+
     weeks_out, everything = [], []
     for s in snaps:
-        rows = _grade_entries(s.get("entries") or [], teams)
+        rows = _grade_entries(_fresh(s.get("entries") or []), teams)
         everything.extend(rows)
         weeks_out.append({
             "tag": s.get("tag"), "created_at": s.get("created_at"), "days": s.get("days"),

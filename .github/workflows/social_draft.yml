@@ -587,15 +587,25 @@ jobs:
           TG_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TG_CHAT: ${{ secrets.TELEGRAM_CHAT_ID }}
 
-      - name: Freeze the weekend's streaks
-        # Friday only, and last: see the note at the top of this file for why this exists
-        # and why it runs after the draft is delivered rather than before.
-        if: steps.when.outputs.weekday == '5'
+      - name: Freeze today's streaks
+        # EVERY DAY, NOT FRIDAY ONLY. It was Friday-only, three days ahead, eight rows —
+        # which was right when the weekend was the product. It means the results page can
+        # only ever show eight weekend streaks: every midweek game was unrecorded and
+        # therefore ungradeable, for ever, and a board of 25 qualifying rows was published
+        # with under a third of it on record.
+        #
+        # Nothing here can be backfilled. A streak recomputed after the game is a claim
+        # made with the benefit of the result — the survivors, which is precisely the
+        # survivorship bias snapshotting exists to prevent — so a day nobody freezes is a
+        # day that can never be graded. That is the whole argument for running it daily.
+        #
+        # Still LAST in the job, and still after the draft is delivered: a snapshot
+        # failure must not cost the post.
         run: |
           code=$(curl -s -o snap.json -w '%{http_code}' --max-time 120 -X POST \
             "$BACKEND/api/streaks/snapshot?token=$TOOLS_TOKEN" \
             -H 'content-type: application/json' \
-            -d "{\"tag\":\"${{ steps.when.outputs.tag }}\",\"days\":3,\"limit\":8}" || true)
+            -d "{\"tag\":\"${{ steps.when.outputs.tag }}\",\"days\":2,\"limit\":25}" || true)
           # The token is in the URL, so the BODY is safe to print but the request is not.
           echo "HTTP $code"
           case "$code" in

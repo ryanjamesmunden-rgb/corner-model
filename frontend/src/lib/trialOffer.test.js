@@ -16,19 +16,28 @@ describe("who gets offered a trial", () => {
   });
 
   test("a signed-in account that has never been billed", () => {
-    expect(trialOffer({ trialDays: 10, user: { has_billing: false }, stripeReady: true }).eligible).toBe(true);
+    expect(trialOffer({ trialDays: 10, user: { had_subscription: false }, stripeReady: true }).eligible).toBe(true);
   });
 
   test("but not one that has subscribed before", () => {
     // The same rule billing.trial_days_for applies. Without it the trial is an unlimited
     // free subscription with a ten-day chore attached.
-    expect(trialOffer({ trialDays: 10, user: { has_billing: true }, stripeReady: true }).eligible).toBe(false);
+    expect(trialOffer({ trialDays: 10, user: { had_subscription: true }, stripeReady: true }).eligible).toBe(false);
+  });
+
+  test("and someone who opened checkout and changed their mind still gets one", () => {
+    // `has_billing` USED TO BE THE FIELD HERE, and it stopped meaning what this needs the
+    // moment the Stripe customer started being created at checkout instead of at payment.
+    // Reading it now would refuse a free week to everybody who reached the payment page
+    // and thought better of it — which is a large share of the people who ever see it.
+    expect(trialOffer({ trialDays: 10, stripeReady: true,
+      user: { has_billing: true, had_subscription: false } }).eligible).toBe(true);
   });
 
   test("and not a current member", () => {
     // "Start your free trial" on a page someone is already paying for reads as a mistake
     // about who they are.
-    expect(trialOffer({ trialDays: 10, user: { has_billing: false }, member: true,
+    expect(trialOffer({ trialDays: 10, user: { had_subscription: false }, member: true,
       stripeReady: true })
       .eligible).toBe(false);
   });

@@ -355,18 +355,95 @@ def checkout_error_message(exc: Exception) -> str:
             "Please try again in a few minutes.")
 
 
-def trial_days_for(user: dict) -> int:
+def trial_days_for(user: dict, prior_subscription: Optional[bool] = None) -> int:
     """How many free days THIS account gets. Zero once they have subscribed before.
 
-    ONE TRIAL PER CUSTOMER, and the check is "have we ever created a Stripe customer for
-    them" rather than anything about their current status. Without it the trial is an
-    unlimited free subscription with a weekly chore attached: subscribe, cancel on day
-    six, subscribe again. Stripe does not dedupe this for us — `trial_period_days` is
-    honoured on every session it is passed on, however many the same customer has had.
+    ONE TRIAL PER CUSTOMER, and the thing that changed is what proves it.
+
+    It used to key on `stripe_customer_id`, which worked only while that field meant "has
+    subscribed before" — it was written by the webhook, after a subscription existed. The
+    customer is now created at checkout, BEFORE anyone subscribes, so that field now means
+    "has opened checkout at least once" and keying a trial on it would deny a free week to
+    everybody who started a checkout and thought better of it.
+
+    So the question is asked of Stripe — `prior_subscription`, from has_prior_subscription
+    — because Stripe is the side that knows, and its answer cannot be wrong because an
+    event went missing. The stored fallback is for the callers that cannot make an API
+    call, and errs towards refusing: `had_subscription` is written by apply_subscription
+    on every webhook AND every reconcile sweep, and a legacy `stripe_customer_id` on an
+    account that predates all of this still means what it used to.
     """
     if not TRIAL_DAYS:
         return 0
-    return 0 if (user or {}).get("stripe_customer_id") else TRIAL_DAYS
+    if prior_subscription is None:
+        prior_subscription = bool((user or {}).get("had_subscription")
+                                  or (user or {}).get("stripe_customer_id"))
+    return 0 if prior_subscription else TRIAL_DAYS
+
+
+def has_prior_subscription(customer_id: Optional[str]) -> bool:
+    """Has this Stripe customer ever had a subscription, in any state?
+
+    THE AUTHORITATIVE ANSWER to "is this account owed a free week", asked of the only
+    party that cannot be out of date about it. A cancelled subscription counts: the whole
+    point is that subscribe-cancel-subscribe must not yield a second trial.
+
+    FAILS CLOSED-ISH. A customer with no id has plainly never subscribed, so that is False
+    without a call. If Stripe cannot be reached the exception propagates to the caller,
+    which falls back to the stored flag rather than guessing in either direction — a blip
+    at Stripe must not hand out free weeks, nor deny one to a genuinely new visitor.
+    """
+    if not customer_id:
+        return False
+    page = _as_dict(_stripe().Subscription.list(
+        customer=customer_id, status="all", limit=1))
+    return bool(page.get("data"))
+
+
+def create_customer(user: dict) -> str:
+    """Create the Stripe customer for an account that has none, and return its id.
+
+    CREATED BY US, BEFORE CHECKOUT, and that is the fix. Stripe used to mint the customer
+    itself from `customer_email` when the session was paid, and we learned its id only
+    from the webhook — so an account whose webhook never arrived had no customer id, and
+    the next checkout made a SECOND Stripe customer with the same email and a fresh free
+    trial attached. Three accounts sat in exactly that state this morning.
+
+    Doing it here means the id exists before the person ever reaches Stripe's page, so it
+    can be written down first and the one-trial rule stops depending on a delivery.
+    """
+    cust = _as_dict(_stripe().Customer.create(
+        email=(user or {}).get("email") or None,
+        name=(user or {}).get("name") or None,
+        # So a customer found in the Stripe dashboard can be traced back to an account
+        # here without going through a subscription.
+        metadata={"user_id": user["user_id"]},
+    ))
+    return cust["id"]
+
+
+async def backfill_had_subscription(db) -> int:
+    """Stamp `had_subscription` on everyone who already has a Stripe customer.
+
+    RUNS AT BOOT, ONCE, AND CLOSES A WINDOW THAT WOULD OTHERWISE OPEN AT DEPLOY. Trial
+    eligibility on the join page moves from `has_billing` to `had_subscription`, and until
+    a reconcile sweep has written that flag, every existing ex-subscriber would be offered
+    a free week the backend would then refuse — the page promising what checkout will not
+    grant, which is the one failure trialOffer.js exists to prevent.
+
+    Before this change `stripe_customer_id` could only have been written by the webhook,
+    i.e. only for an account that really did subscribe, so it is a safe source here. It is
+    NOT a safe source afterwards, which is why this is a one-time backfill and not the
+    rule.
+    """
+    res = await db.users.update_many(
+        {"stripe_customer_id": {"$exists": True, "$ne": None},
+         "had_subscription": {"$exists": False}},
+        {"$set": {"had_subscription": True}})
+    if res.modified_count:
+        logger.info("billing: marked %d existing customer(s) as having subscribed before",
+                    res.modified_count)
+    return res.modified_count
 
 
 def _stripe():
@@ -383,24 +460,25 @@ def is_active(status: Optional[str]) -> bool:
     return status in ACTIVE_STATUSES
 
 
-def create_checkout_session(user: dict) -> str:
+def create_checkout_session(user: dict, customer_id: str, trial_days: int = 0) -> str:
     """A Checkout Session tied to THIS account, and the reason sign-in comes first.
 
     `client_reference_id` carries our user id through Stripe and back on the webhook,
     which is what the old Payment Link could never do: it took the money and told us
-    nothing about who had paid. `customer_email` prefills the form but is never used to
-    match accounts — the address on the card is routinely not the one someone signs in
-    with, and matching on it is how a paying member ends up locked out.
+    nothing about who had paid.
+
+    THE CUSTOMER AND THE TRIAL ARE BOTH DECIDED BY THE CALLER, and passed in rather than
+    worked out here. The caller is the one that can write the customer id down before the
+    person is redirected, and the one that has to give the signup window the same answer
+    about whether this is a trial — two decisions that must not be made twice and risk
+    disagreeing. `customer_email` is gone with them: it was how Stripe minted a second
+    customer for an account whose webhook never landed.
     """
-    stripe = _stripe()
-    existing = user.get("stripe_customer_id")
-    session = stripe.checkout.Session.create(
+    session = _stripe().checkout.Session.create(
         mode="subscription",
         line_items=[{"price": STRIPE_PRICE_ID, "quantity": 1}],
         client_reference_id=user["user_id"],
-        # Reuse the customer when we already have one, so a resubscribe lands on the
-        # same Stripe customer rather than creating a second one with the same email.
-        **({"customer": existing} if existing else {"customer_email": user.get("email")}),
+        customer=customer_id,
         success_url=f"{SITE_URL}/account?checkout=success",
         cancel_url=f"{SITE_URL}/join?checkout=cancelled",
         allow_promotion_codes=True,
@@ -408,13 +486,17 @@ def create_checkout_session(user: dict) -> str:
         # returns to the site.
         subscription_data={
             "metadata": {"user_id": user["user_id"]},
-            # Only on a first subscription — see trial_days_for. Omitted entirely rather
-            # than sent as 0, because Stripe rejects trial_period_days=0.
-            **({"trial_period_days": trial} if (trial := trial_days_for(user)) else {}),
+            # Omitted entirely rather than sent as 0, because Stripe rejects
+            # trial_period_days=0.
+            **({"trial_period_days": trial_days} if trial_days else {}),
         },
         metadata={"user_id": user["user_id"]},
     )
-    return session.url
+    # Through the boundary like everything else. `session.url` happens to work on a Stripe
+    # object, which is exactly why it survived the sweep that fixed the webhook — attribute
+    # access looks fine until the library changes what it returns, and this one value is
+    # the redirect that the entire signup depends on.
+    return _as_dict(session)["url"]
 
 
 def create_portal_session(customer_id: str) -> str:
@@ -553,7 +635,12 @@ async def apply_subscription(db, sub: dict, user_id: Optional[str] = None) -> di
                        sub.get("id"), customer_id)
         return {"matched": False}
 
-    fields = {**_sub_fields(sub), "stripe_customer_id": customer_id}
+    # `had_subscription` IS SET WHATEVER THE STATUS, INCLUDING A CANCELLED ONE. It is what
+    # trial eligibility now reads, and the case it exists for is subscribe, cancel,
+    # subscribe again — so a lapsed subscription has to leave the mark that stops a second
+    # free week. Never unset, for the same reason.
+    fields = {**_sub_fields(sub), "stripe_customer_id": customer_id,
+              "had_subscription": True}
     active = is_active(sub.get("status"))
 
     if active:

@@ -58,36 +58,45 @@ class TestEligibility:
 
 
 class TestCheckout:
-    def test_the_trial_reaches_stripe_on_a_first_subscription(self, monkeypatch):
-        b = _billing()
-        captured = {}
+    """WHO DECIDES THE TRIAL MOVED, and these moved with it.
 
+    The length used to be worked out inside create_checkout_session from the user's
+    `stripe_customer_id`. That field now means "has opened checkout" rather than "has
+    subscribed", because the customer is created before the redirect — so the caller works
+    the trial out once, from Stripe, and hands it in. The endpoint needs the same answer
+    anyway for the signup-window check, and deciding it twice is how the two come to
+    disagree. Which account is owed a free week is pinned in test_trial_eligibility.py;
+    what reaches Stripe is pinned here.
+    """
+
+    def _session(self, monkeypatch, b, captured):
         class _Session:
             @staticmethod
             def create(**kw):
                 captured.update(kw)
-                return type("S", (), {"url": "https://stripe.test/session"})()
+                # A dict, because that is what the boundary converts every Stripe
+                # resource into before anything reads a field off it.
+                return {"url": "https://stripe.test/session"}
 
         monkeypatch.setattr(b, "_stripe", lambda: type(
             "S", (), {"checkout": type("C", (), {"Session": _Session})})())
-        b.create_checkout_session({"user_id": "u1", "email": "a@b.c"})
-        assert captured["subscription_data"]["trial_period_days"] == 7
 
-    def test_and_is_omitted_entirely_for_a_returning_customer(self, monkeypatch):
+    def test_the_trial_reaches_stripe_when_the_caller_grants_one(self, monkeypatch):
+        b = _billing()
+        captured = {}
+        self._session(monkeypatch, b, captured)
+        url = b.create_checkout_session({"user_id": "u1", "email": "a@b.c"}, "cus_1", 7)
+        assert captured["subscription_data"]["trial_period_days"] == 7
+        assert url == "https://stripe.test/session"
+
+    def test_and_is_omitted_entirely_when_the_caller_grants_none(self, monkeypatch):
         # Omitted rather than sent as 0 — Stripe rejects trial_period_days=0, so a returning
         # customer would hit an error at checkout instead of simply paying.
         b = _billing()
         captured = {}
-
-        class _Session:
-            @staticmethod
-            def create(**kw):
-                captured.update(kw)
-                return type("S", (), {"url": "https://stripe.test/session"})()
-
-        monkeypatch.setattr(b, "_stripe", lambda: type(
-            "S", (), {"checkout": type("C", (), {"Session": _Session})})())
-        b.create_checkout_session({"user_id": "u1", "stripe_customer_id": "cus_9"})
+        self._session(monkeypatch, b, captured)
+        b.create_checkout_session({"user_id": "u1", "stripe_customer_id": "cus_9"},
+                                  "cus_9", 0)
         assert "trial_period_days" not in captured["subscription_data"]
         # ...and the account id still rides along, which is what links the payment back.
         assert captured["subscription_data"]["metadata"]["user_id"] == "u1"

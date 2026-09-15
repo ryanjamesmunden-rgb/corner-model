@@ -781,8 +781,14 @@ def _public_user(u: dict) -> dict:
             "subscription_ends_at": u.get("subscription_ends_at"),
             "cancel_at_period_end": bool(u.get("cancel_at_period_end")),
             # Drives the "Manage subscription" button. The id itself never leaves the
-            # backend — only whether there is one.
-            "has_billing": bool(u.get("stripe_customer_id"))}
+            # backend — only whether there is one. NOTE this now becomes true as soon as
+            # somebody OPENS checkout, because that is when the customer is created; it
+            # means "has a Stripe customer", not "has ever subscribed".
+            "has_billing": bool(u.get("stripe_customer_id")),
+            # WHICH IS WHY TRIAL ELIGIBILITY READS THIS INSTEAD. The two used to be the
+            # same field, and splitting them is what stops somebody who opened checkout
+            # and thought better of it being refused the free week they never used.
+            "had_subscription": bool(u.get("had_subscription"))}
 
 
 # ----------------------------- Billing -----------------------------
@@ -817,10 +823,50 @@ async def billing_checkout(user: dict = Depends(require_user)):
     # willing to pay full price on a Wednesday is let through, because turning them away
     # buys no measurement and costs £20 a month. signup.blocks owns that decision so the
     # page and the endpoint cannot disagree about it.
-    if signup.blocks(is_trial=billing.trial_days_for(user) > 0):
+    #
+    # THE TRIAL IS DECIDED ONCE, HERE, and the same answer goes to the window check and to
+    # Stripe. Working it out twice is how the page and the checkout come to disagree about
+    # what somebody is starting.
+    #
+    # ASKED OF STRIPE WHEN THERE IS A CUSTOMER TO ASK ABOUT. Stripe cannot be out of date
+    # about whether this customer has subscribed before, and a missing webhook cannot make
+    # it wrong — which is exactly how three accounts ended up with no customer id at all
+    # this morning. An account with no customer has plainly never subscribed, so that case
+    # needs no call.
+    existing = user.get("stripe_customer_id")
+    prior = None
+    if existing:
+        try:
+            prior = await asyncio.to_thread(billing.has_prior_subscription, existing)
+        except Exception:
+            # A blip at Stripe must not hand out a free week, nor deny one to somebody
+            # genuinely new. Falling through to None leaves trial_days_for on its stored
+            # flag, which is right far more often than either guess.
+            logger.exception("stripe: could not check prior subscriptions for %s",
+                             user["user_id"])
+    trial = billing.trial_days_for(user, prior_subscription=prior)
+    if signup.blocks(is_trial=trial > 0):
         raise HTTPException(status_code=409, detail=signup.closed_message())
     try:
-        return {"url": billing.create_checkout_session(user)}
+        # THE CUSTOMER IS CREATED AND WRITTEN DOWN BEFORE THE REDIRECT, which is the whole
+        # point of this path. Stripe used to mint it from `customer_email` at payment and
+        # we learned the id from the webhook — so an account whose webhook never arrived
+        # had none, and its next checkout created a SECOND customer with the same email
+        # and another free trial attached.
+        #
+        # Deliberately after the window check: a visitor turned away on a closed day
+        # should not leave an unused customer behind in Stripe.
+        customer_id = existing
+        if not customer_id:
+            customer_id = await asyncio.to_thread(billing.create_customer, user)
+            # Persisted BEFORE the session is created. If session creation then fails, the
+            # retry reuses this customer instead of making another — the duplicate being
+            # the thing this is here to prevent.
+            await db.users.update_one({"user_id": user["user_id"]},
+                                      {"$set": {"stripe_customer_id": customer_id}})
+        url = await asyncio.to_thread(billing.create_checkout_session,
+                                      user, customer_id, trial)
+        return {"url": url}
     except Exception as e:
         logger.exception("stripe: checkout failed for %s", user["user_id"])
         # NOT STRIPE'S OWN WORDS. `detail` is rendered verbatim in a toast on the join
@@ -6952,6 +6998,15 @@ async def on_startup():
         # until it succeeds a cancellation event could revoke a pre-existing member.
         logger.exception("billing: grandfathering failed — DO NOT enable the Stripe "
                          "webhook until this succeeds")
+    # Trial eligibility moved off `stripe_customer_id` when that field started being
+    # written at checkout rather than at payment. This stamps the accounts that earned it
+    # under the old meaning, once, so no returning ex-subscriber is offered a free week
+    # the checkout will refuse. See billing.backfill_had_subscription.
+    try:
+        await billing.backfill_had_subscription(db)
+    except Exception:
+        logger.exception("billing: had_subscription backfill failed — returning "
+                         "customers may briefly be offered a trial checkout will refuse")
     # remove any legacy / non-managed leagues (e.g. old mock leagues from an earlier deploy)
     stale = await db.leagues.find({"league_id": {"$nin": list(MANAGED_LEAGUE_IDS)}}, {"_id": 0, "league_id": 1}).to_list(100)
     stale_ids = [l["league_id"] for l in stale]

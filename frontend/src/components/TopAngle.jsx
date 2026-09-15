@@ -5,7 +5,7 @@ import { api } from "@/lib/api";
 import { withFlag } from "@/lib/countryFlag";
 import { kickoffLabel } from "@/lib/kickoff";
 import {
-  angleLabel, deadMessage, hasPanel, runLabel, splitAngles, statedRecord,
+  angleLabel, deadMessage, hasPanel, runLabel, splitAngles, statedRecord, whyLabel,
 } from "@/lib/angleOfDay";
 
 // THE ANGLE OF THE DAY — the site's answer to "what do you actually like today".
@@ -120,6 +120,12 @@ function TopRow({ angle }) {
           {runLabel(angle)}
         </span>
       </div>
+      {/* WHY IT IS HERE AND NOT JUST THAT IT IS. The streak is one half; the opponent and
+          the model's read of the fixture are the half that stops a quiet Tuesday filling
+          up, so they are shown rather than applied silently. */}
+      <p className="text-[11px] text-muted-foreground font-mono-data mt-1.5">
+        {whyLabel(angle)}
+      </p>
       {/* Guarded on the id the URL actually needs. A row can carry a team and no fixture
           id, and the link would then point at /fixture/undefined — a dead end offered as
           the evidence for the pick. */}
@@ -151,35 +157,64 @@ function Row({ angle }) {
   );
 }
 
-// HOW THE RULE HAS DONE — the same slice of the board this panel publishes, graded off
-// snapshots frozen before kick-off. Shown on a dead day too: the record of a rule is not
-// suspended because the rule declined to fire today.
+// HOW IT HAS DONE — two records, because the rule changed and one number cannot describe
+// both. Shown on a dead day too: the record of a rule is not suspended because the rule
+// declined to fire today.
+//
+// THE ORDER OF THESE IS THE HONEST PART. The rule's own record goes first even while it is
+// empty, and the longer-running board record is labelled as the thing this filters rather
+// than borrowed as though it belonged to the picks above. The tempting arrangement — lead
+// with the bigger, better-looking sample — would be quoting one rule's history under
+// another rule's list.
 function Record({ record, dead }) {
-  const shortlist = statedRecord(record?.shortlist);
-  const top = statedRecord(record?.top);
-  if (!shortlist) return null;
+  const rule = statedRecord(record?.rule?.shortlist);
+  const ruleTop = statedRecord(record?.rule?.top);
+  const board = statedRecord(record?.board?.shortlist);
+  if (!rule && !board) return null;
+  const started = (record?.rule_days || 0) > 0;
   return (
     <div className="px-4 py-3 border-t border-border bg-secondary/40 space-y-2"
       data-testid="angle-record">
-      <div className="flex items-baseline gap-4 flex-wrap">
-        <Line label={`Top ${record.count} each day`} stated={shortlist} />
-        <Line label="The lead angle only" stated={top} />
-      </div>
-      {shortlist.caveat && (
-        <p className="text-[11px] text-muted-foreground">{shortlist.caveat}</p>
+      {started ? (
+        <div className="flex items-baseline gap-4 flex-wrap">
+          <Line label="This rule" stated={rule} />
+          <Line label="Its lead angle" stated={ruleTop} />
+        </div>
+      ) : (
+        // NOT A ZERO. The tightened rule has no record because it is new, which is a
+        // different fact from having a bad one, and the bar cannot be applied backwards:
+        // it depends on how leaky each opponent was on the day, and that has moved every
+        // time those leagues have played since.
+        <p className="text-xs text-foreground" data-testid="angle-record-new">
+          This rule starts its record today. It cannot be graded backwards — the bar
+          depends on how leaky the opponent was at the time, and that number has moved
+          since.
+        </p>
+      )}
+      {started && rule?.caveat && (
+        <p className="text-[11px] text-muted-foreground">{rule.caveat}</p>
+      )}
+      {board && (
+        <div className="pt-1 border-t border-border/60">
+          <Line label={`The streak board it filters (top ${record.count}/day)`} stated={board} />
+          <p className="text-[11px] text-muted-foreground mt-1 leading-relaxed max-w-2xl">
+            The longer record, and a broader rule than the one above — every streak that
+            was frozen, whether or not the fixture backed it up.
+          </p>
+        </div>
       )}
       <p className="text-[11px] text-muted-foreground leading-relaxed max-w-2xl">
         {/* WHAT THE NUMBER IS AND IS NOT, next to the number. It is a strike rate off
             frozen lists, not a return — the snapshots record the line that was posted and
             never the odds anyone got. */}
-        Graded from lists frozen before kick-off{dead ? "" : ", by the same rule that picked the angles above"}.
-        A strike rate, not a profit — the snapshots record the line, never the price.
+        Graded from lists frozen before kick-off. A strike rate, not a profit — the
+        snapshots record the line, never the price.
       </p>
     </div>
   );
 }
 
-const Line = ({ label, stated }) => (
+const Line = ({ label, stated }) => (stated ? (
   <span className="text-xs">
     <span className="text-muted-foreground">{label}: </span>
     {stated.strong && (
@@ -187,4 +222,4 @@ const Line = ({ label, stated }) => (
     )}
     <span className="text-foreground">{stated.text}</span>
   </span>
-);
+) : null);

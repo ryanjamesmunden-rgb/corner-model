@@ -1758,6 +1758,43 @@ async def _screen_streaks():
                          min_line=3, direction="over", subject="team", user={})
 
 
+async def _angle_rows(within_days: int = 2):
+    """The streak board, with each row's FIXTURE evidence attached.
+
+    ONE FUNCTION FOR THE PANEL AND THE SNAPSHOT. The panel filters on this evidence and the
+    snapshot freezes it, so if they computed it separately the record would eventually be
+    grading rows against a bar the page no longer applies — and nothing would say so.
+
+    The two numbers added are the ones the streak itself cannot supply: how leaky this
+    particular opponent is, measured against the league's own average, and how often that
+    opponent scores first. The first is a bar. The second is context and nothing else —
+    see angle_of_day, and test_chase_score for the five measurements behind that.
+    """
+    rows = await streaks(league_id="all", side="overall", window=5, min_hits=5,
+                         threshold=None, min_line=3, within_days=within_days,
+                         direction="over", subject="team", user={})
+    if not rows:
+        return rows
+    teams = await db.teams.find({}, {"_id": 0}).to_list(2000)
+    by_id = {t["team_id"]: t for t in teams}
+    # Corners won per game, by league. In aggregate a league's corners won and corners
+    # conceded are the same pool, so this is the right yardstick for "concedes more than
+    # most" — and it is the yardstick _all_mismatches already uses, deliberately.
+    league_vals = {}
+    for t in teams:
+        league_vals.setdefault(t["league_id"], []).extend(m["corners_for"] for m in _src(t))
+    league_avgs = {k: (sum(v) / len(v) if v else 5.0) for k, v in league_vals.items()}
+    for r in rows:
+        nf = r.get("next_fixture") or {}
+        opp = by_id.get(nf.get("opponent_team_id"))
+        opp_venue = "away" if nf.get("is_home") else "home"
+        fh = fh_rate(opp, opp_venue) if opp else {"games": 0, "hits": 0}
+        r["opp_fh_rate"] = (round(fh["hits"] / fh["games"] * 100)
+                            if fh.get("games") else None)
+        r["support"] = angle_of_day.support_for(r, league_avgs.get(r["league_id"]))
+    return rows
+
+
 async def _screen_angle_board():
     """The scan behind the angle panel — the snapshot's own call, two days wide.
 
@@ -1767,9 +1804,7 @@ async def _screen_angle_board():
     the reader means is a London calendar date, so the window is taken wide and the date is
     applied exactly.
     """
-    return await streaks(league_id="all", side="overall", window=5, min_hits=5,
-                         threshold=None, min_line=3, within_days=2,
-                         direction="over", subject="team", user={})
+    return await _angle_rows(within_days=2)
 
 
 async def _screen_top_teams():
@@ -5369,20 +5404,36 @@ async def snapshot_streaks(body: StreakSnapshotBody, token: Optional[str] = None
         return {"status": "stale", "tag": tag, "data_age_hours": age_h,
                 "max_age_hours": SNAPSHOT_MAX_AGE_HOURS, "entries": []}
 
-    rows = await streaks(league_id="all", side="overall", window=5, min_hits=5,
-                         threshold=None, min_line=3, within_days=body.days,
-                         direction="over", subject="team", user={})
+    # THE WHOLE BOARD IS STILL FROZEN, and each row now records whether the angle panel
+    # would have published it. Two reasons it is done this way round rather than freezing
+    # only the qualifiers:
+    #
+    #   The broad record does not break. It is the longest-running thing this site has and
+    #   narrowing what gets written down would end it and start another.
+    #
+    #   The tightened rule becomes gradeable AT ALL. Its bar depends on how leaky the
+    #   opponent was on the day, and that number moves every time the league plays — so it
+    #   cannot be reconstructed afterwards without quietly using games that had not been
+    #   played yet. Written down now or never knowable.
+    rows = await _angle_rows(within_days=body.days)
     entries = []
     for r in rows[:max(1, min(body.limit, 25))]:
         nf = r.get("next_fixture") or {}
         if not nf.get("fixture_id"):
             continue        # nothing to grade it against later
+        support = r.get("support") or {}
         entries.append({
             "team_id": r["team_id"], "name": r["name"], "league_id": r["league_id"],
             "line": r["line"], "direction": r["direction"], "subject": r["subject"],
             "hits": r["hits"], "window": r["window"],
             "fixture_id": nf["fixture_id"], "kickoff": nf.get("date"),
             "opponent": nf.get("opponent"), "is_home": nf.get("is_home"),
+            # The evidence as it stood BEFORE kick-off, and the verdict that followed from
+            # it. `qualified` is stored rather than recomputed for the same reason the rest
+            # of the snapshot is: a bar re-applied later is a bar applied to different data.
+            "support": support,
+            "prob": support.get("prob"),
+            "qualified": angle_of_day.qualifies(r),
         })
     doc = {"tag": tag, "created_at": datetime.now(timezone.utc).isoformat(),
            "days": body.days, "entries": entries}
@@ -5759,20 +5810,29 @@ async def public_results(weeks: int = RESULTS_WEEKS, token: Optional[str] = None
 
 
 async def _angle_record(count: int) -> dict:
-    """What this rule has actually done, read back off the frozen snapshots.
+    """What has actually happened, read back off the frozen snapshots — TWO records.
 
-    Each snapshot is the same board this panel publishes from, written down before kick-off.
-    So the record of the panel is the record of the top `count` entries of each snapshot —
-    graded with the one settlement implementation, like everything else here.
+    THEY ARE TWO BECAUSE THE RULE CHANGED, and quoting one number for both would be the
+    dishonest way to introduce that change.
 
-    THE SLICE MATTERS. A snapshot holds up to 25 rows and the panel shows five; grading all
-    25 and printing that beside a list of five would be quoting one thing's record next to
-    another thing. Rank 1 is reported separately for the same reason: "the top angle of the
-    day" is its own claim and deserves its own number rather than borrowing the group's.
+      `rule`   only the rows that recorded clearing the corroboration bar. This is the
+               record of what the panel publishes today. It necessarily starts EMPTY:
+               `qualified` is written at freeze time, older snapshots do not carry it, and
+               it cannot be backfilled because the bar depends on how leaky the opponent
+               was on the day — a number that has moved every time the league has played
+               since. Backfilling it would be scoring the new rule with games that had not
+               been played when the call was made.
+
+      `board`  the whole streak board, the long-running record the tightened rule filters.
+               It is the larger sample and it is NOT this panel's record; the page labels
+               it as what it is.
+
+    Rank 1 gets its own number in both, because "the top angle of the day" is its own claim
+    and should not borrow the group's.
     """
     snaps = await db.streak_snapshots.find({}, {"_id": 0}).sort("tag", -1).to_list(RESULTS_WEEKS)
     seen = set()
-    picked, top = [], []
+    board, board_top, rule, rule_top = [], [], [], []
     for s in snaps:
         # Deduplicated across days for the same reason public_results is: the snapshot runs
         # daily over an overlapping window, so one fixture is frozen on consecutive days
@@ -5785,17 +5845,31 @@ async def _angle_record(count: int) -> dict:
                 continue
             seen.add(key)
             rows.append(e)
-        shown = angle_of_day.published(rows, count)
-        picked.extend(shown)
-        top.extend(angle_of_day.published(rows, 1))
-    teams = await _teams_for(picked)
-    graded = _grade_entries(picked, teams)
-    graded_top = _grade_entries(top, teams)
+        board.extend(angle_of_day.published(rows, count))
+        board_top.extend(angle_of_day.published(rows, 1))
+        # The panel's own order, reconstructed from what was frozen: qualifying rows only,
+        # most probable first. `qualified` is READ, never recomputed — see the snapshot.
+        kept = sorted([e for e in rows if e.get("qualified")],
+                      key=angle_of_day.snapshot_order, reverse=True)
+        rule.extend(kept[:count])
+        rule_top.extend(kept[:1])
+
+    everything = board + board_top + rule + rule_top
+    teams = await _teams_for(everything)
+
+    def tally(entries):
+        return angle_of_day.gate(_tally(_grade_entries(entries, teams))) if entries \
+            else angle_of_day.gate(None)
+
     return {
-        "shortlist": angle_of_day.gate(_tally(graded)),
-        "top": angle_of_day.gate(_tally(graded_top)),
+        "rule": {"shortlist": tally(rule), "top": tally(rule_top)},
+        "board": {"shortlist": tally(board), "top": tally(board_top)},
         "days": len(snaps),
         "count": count,
+        # So the page can say "the tightened rule has no record yet" in those words rather
+        # than showing a confident-looking zero.
+        "rule_days": sum(1 for s in snaps
+                         if any(e.get("qualified") for e in (s.get("entries") or []))),
     }
 
 

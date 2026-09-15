@@ -62,21 +62,30 @@ class FakeDB:
         self.streak_snapshots = FakeCollection(snapshots)
 
 
-def board_row(name, hours=6, line=6, fixture_id=None):
-    """A streaks-board row, as the board hands one over."""
+def board_row(name, hours=6, line=6, fixture_id=None, prob=70.0, weak=True):
+    """A streaks-board row, enriched as _angle_rows hands one over.
+
+    Qualifying by default: the tests that care about the bar say so explicitly, and the
+    ones that care about the day filter should not have to restate the bar to do it.
+    """
     return {"team_id": f"t-{name}", "name": name, "league_id": "eng-ch", "line": line,
             "line_label": f"{line}+", "direction": "over", "subject": "team",
             "hits": 5, "settled": 5, "window": 5, "voids": 0,
-            "streak": {"length": 5},
+            "streak": {"length": 5}, "opp_fh_rate": 62,
+            "support": {"prob": prob, "weak_opponent": weak, "opp_conceded": 7.1,
+                        "league_avg": 5.4, "opp_bar": 5.94, "opp_fh_rate": 62},
             "next_fixture": {"fixture_id": fixture_id or f"fx-{name}", "date": iso(hours),
                              "opponent": "Stoke", "is_home": True}}
 
 
-def snap_entry(name, fixture_id=None, line=6):
+def snap_entry(name, fixture_id=None, line=6, qualified=False, prob=70.0):
+    """A frozen entry. `qualified` defaults FALSE — that is what every snapshot taken
+    before the corroboration bar existed looks like, and the record must handle it."""
     return {"team_id": f"t-{name}", "name": name, "league_id": "eng-ch", "line": line,
             "direction": "over", "subject": "team", "hits": 5, "window": 5,
             "fixture_id": fixture_id or f"fx-{name}", "kickoff": iso(-48),
-            "opponent": "Stoke", "is_home": True}
+            "opponent": "Stoke", "is_home": True,
+            "qualified": qualified, "prob": prob}
 
 
 def install(monkeypatch, *, rows=(), snapshots=(), fixtures=None, age_hours=2.0,
@@ -126,12 +135,13 @@ def call(**kw):
 
 
 class TestALiveDay:
-    def test_the_top_angle_is_the_boards_first_row(self, monkeypatch):
-        install(monkeypatch, rows=[board_row("A"), board_row("B"), board_row("C")])
+    def test_the_top_angle_is_the_one_the_model_rates_highest(self, monkeypatch):
+        install(monkeypatch, rows=[board_row("A", prob=64.0), board_row("B", prob=81.0),
+                                   board_row("C", prob=72.0)])
         out = call()
         assert out["dead"] is False
-        assert out["top"]["name"] == "A"
-        assert [a["name"] for a in out["angles"]] == ["A", "B", "C"]
+        assert out["top"]["name"] == "B"
+        assert [a["name"] for a in out["angles"]] == ["B", "C", "A"]
 
     def test_the_count_caps_the_list_and_the_overflow_is_reported(self, monkeypatch):
         install(monkeypatch, rows=[board_row(str(i)) for i in range(9)])
@@ -181,7 +191,7 @@ class TestADeadDayPublishesNothing:
                                                   "entries": [snap_entry("X")]}])
         out = call()
         assert out["dead"] is True
-        assert out["record"]["shortlist"]["settled"] == 1
+        assert out["record"]["board"]["shortlist"]["settled"] == 1
 
 
 class TestTheRecordMatchesWhatIsPublished:
@@ -191,14 +201,14 @@ class TestTheRecordMatchesWhatIsPublished:
         entries = [snap_entry(f"e{i}") for i in range(25)]
         install(monkeypatch, snapshots=[{"tag": "2026-09-10", "entries": entries}])
         out = call(count=5)
-        assert out["record"]["shortlist"]["settled"] == 5
+        assert out["record"]["board"]["shortlist"]["settled"] == 5
 
     def test_the_lead_angle_carries_its_own_number(self, monkeypatch):
         entries = [snap_entry(f"e{i}") for i in range(5)]
         install(monkeypatch, snapshots=[{"tag": "2026-09-10", "entries": entries}])
         out = call(count=5)
-        assert out["record"]["top"]["settled"] == 1
-        assert out["record"]["shortlist"]["settled"] == 5
+        assert out["record"]["board"]["top"]["settled"] == 1
+        assert out["record"]["board"]["shortlist"]["settled"] == 5
 
     def test_a_fixture_frozen_on_two_days_is_counted_once(self, monkeypatch):
         # The snapshot runs daily over an overlapping window, so the same game is frozen on
@@ -210,27 +220,91 @@ class TestTheRecordMatchesWhatIsPublished:
             {"tag": "2026-09-10", "entries": [dict(entry)]},
         ])
         out = call()
-        assert out["record"]["shortlist"]["settled"] == 1
+        assert out["record"]["board"]["shortlist"]["settled"] == 1
 
     def test_misses_are_counted(self, monkeypatch):
         install(monkeypatch, snapshots=[{"tag": "2026-09-10", "entries": [
             snap_entry("win1"), snap_entry("win2"), snap_entry("lost")]}],
             results={"lost": server.LOSS})
-        rec = (call())["record"]["shortlist"]
+        rec = (call())["record"]["board"]["shortlist"]
         assert (rec["landed"], rec["missed"], rec["settled"]) == (2, 1, 3)
 
     def test_a_small_sample_is_not_allowed_a_percentage(self, monkeypatch):
         install(monkeypatch, snapshots=[{"tag": "2026-09-10",
                                          "entries": [snap_entry(f"e{i}") for i in range(3)]}])
-        rec = (call())["record"]["shortlist"]
+        rec = (call())["record"]["board"]["shortlist"]
         assert rec["settled"] == 3 and rec["show_rate"] is False
 
     def test_a_sample_past_the_floor_is(self, monkeypatch):
         snaps = [{"tag": f"2026-09-{d:02d}", "entries": [snap_entry(f"d{d}d{i}") for i in range(5)]}
                  for d in range(10, 15)]
         install(monkeypatch, snapshots=snaps)
-        rec = (call(count=5))["record"]["shortlist"]
+        rec = (call(count=5))["record"]["board"]["shortlist"]
         assert rec["settled"] == 25 and rec["show_rate"] is True
+
+
+class TestTheFixtureHasToBackTheStreakUp:
+    """The change that stops a Tuesday filling up with whatever was left on the board."""
+
+    def test_an_uncorroborated_streak_is_not_published(self, monkeypatch):
+        install(monkeypatch, rows=[board_row("strong-run", weak=False)],
+                fixtures=[{"date": iso(4)} for _ in range(20)])
+        out = call()
+        assert out["angles"] == []
+        # And it reads as a decision rather than an empty calendar.
+        assert out["reason"] == aod.DEAD_NO_QUALIFIER
+
+    def test_a_quiet_day_yields_what_it_yields(self, monkeypatch):
+        # Two corroborated among eight on the board is two published, not eight.
+        rows = [board_row("good1"), board_row("good2")] + \
+               [board_row(f"filler{i}", weak=False) for i in range(6)]
+        install(monkeypatch, rows=rows)
+        out = call()
+        assert len(out["angles"]) == 2
+        assert out["qualified"] == 2
+
+    def test_a_busy_day_can_still_fill_the_ceiling(self, monkeypatch):
+        install(monkeypatch, rows=[board_row(str(i)) for i in range(12)])
+        assert len(call()["angles"]) == aod.COUNT == 8
+
+
+class TestTheTightenedRuleStartsItsOwnRecord:
+    """The rule changed, so one number cannot describe both. See _angle_record."""
+
+    def test_snapshots_from_before_the_bar_do_not_count_towards_it(self, monkeypatch):
+        # They carry no `qualified`, and it cannot be backfilled: the bar depends on how
+        # leaky the opponent was on the day, which has moved every time the league played.
+        install(monkeypatch, snapshots=[{"tag": "2026-09-10", "entries": [
+            snap_entry("old1"), snap_entry("old2")]}])
+        rec = call()["record"]
+        assert rec["rule"]["shortlist"]["settled"] == 0
+        assert rec["board"]["shortlist"]["settled"] == 2
+        assert rec["rule_days"] == 0
+
+    def test_a_qualifying_row_counts_towards_both(self, monkeypatch):
+        install(monkeypatch, snapshots=[{"tag": "2026-09-10", "entries": [
+            snap_entry("kept", qualified=True), snap_entry("dropped")]}])
+        rec = call()["record"]
+        assert rec["rule"]["shortlist"]["settled"] == 1
+        assert rec["board"]["shortlist"]["settled"] == 2
+        assert rec["rule_days"] == 1
+
+    def test_the_rules_lead_angle_is_its_most_probable_not_the_boards_first(self, monkeypatch):
+        # The panel reorders by probability, so the record has to reconstruct that order or
+        # "the top angle that day" grades a row that was never top.
+        install(monkeypatch, snapshots=[{"tag": "2026-09-10", "entries": [
+            snap_entry("boardfirst", qualified=True, prob=62.0),
+            snap_entry("mostlikely", qualified=True, prob=88.0)]}],
+            results={"boardfirst": server.LOSS, "mostlikely": server.WIN})
+        rec = call()["record"]
+        assert rec["rule"]["top"]["landed"] == 1 and rec["rule"]["top"]["missed"] == 0
+        # The broad board still grades its own first row, which lost.
+        assert rec["board"]["top"]["missed"] == 1
+
+    def test_an_empty_rule_record_is_not_zero_per_cent(self, monkeypatch):
+        install(monkeypatch, snapshots=[{"tag": "2026-09-10", "entries": [snap_entry("a")]}])
+        rule = call()["record"]["rule"]["shortlist"]
+        assert rule["hit_rate"] is None and rule["show_rate"] is False
 
 
 class TestTheDoor:

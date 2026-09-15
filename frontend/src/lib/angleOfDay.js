@@ -103,6 +103,25 @@ export function angleLabel(angle) {
   return [angle.name, line].filter(Boolean).join(" ");
 }
 
+/**
+ * Why this fixture backs the streak up — the second half of the reason, in numbers.
+ *
+ * SHOWN BECAUSE IT IS THE BAR. A streak alone was what used to put eight rows on a quiet
+ * Tuesday; what makes these different is the opponent and the model's read of the fixture,
+ * and a panel that applies a bar without showing it is asking to be taken on trust.
+ *
+ * The opponent's first-half scoring is deliberately NOT in here. It rides on the row as
+ * context and it decides nothing — see the note in angle_of_day.py and the five
+ * measurements behind it. Putting it in this list would make it read as a reason.
+ */
+export function whyLabel(angle) {
+  const s = angle?.support || {};
+  const bits = [];
+  if (s.prob != null) bits.push(`model ${s.prob}%`);
+  if (s.opp_conceded != null) bits.push(`opp concedes ${s.opp_conceded}/game`);
+  return bits.join(" · ");
+}
+
 /** "5 of 5 · 4 in a row" — the run behind it, which is the entire reason it is here. */
 export function runLabel(angle) {
   if (!angle) return "";

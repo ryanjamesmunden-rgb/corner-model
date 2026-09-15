@@ -33,6 +33,25 @@ class FakeUsers:
                 return
         raise AssertionError(f"update_one matched nothing: {query}")
 
+    async def update_many(self, query, update):
+        """Enough of Mongo's matcher for the backfill: equality plus $exists and $ne."""
+        def matches(row, key, cond):
+            if not isinstance(cond, dict):
+                return row.get(key) == cond
+            ok = True
+            if "$exists" in cond:
+                ok = ok and ((key in row) == cond["$exists"])
+            if "$ne" in cond:
+                ok = ok and row.get(key) != cond["$ne"]
+            return ok
+
+        n = 0
+        for r in self.rows:
+            if all(matches(r, k, v) for k, v in query.items()):
+                r.update(update["$set"])
+                n += 1
+        return type("Res", (), {"modified_count": n})()
+
 
 class FakeDb:
     def __init__(self, rows):

@@ -40,7 +40,13 @@ export const trialOffer = ({ trialDays = 0, user = null, member = false,
   if (days < 1 || member) return none;
   // The same rule as billing.trial_days_for. Without it the trial is an unlimited free
   // subscription with a weekly chore attached — subscribe, cancel on day six, repeat.
-  if (user?.has_billing) return none;
+  //
+  // `had_subscription`, NOT `has_billing`, and the difference now matters. The Stripe
+  // customer is created when somebody OPENS checkout, so has_billing became true for
+  // anyone who reached the payment page and changed their mind — and reading it here
+  // would refuse them a free week they had never used. This field is written only when a
+  // subscription has actually existed.
+  if (user?.had_subscription) return none;
   return {
     eligible: true,
     days,

@@ -134,6 +134,29 @@ def key_shape() -> dict:
     }
 
 
+def _as_dict(obj) -> dict:
+    """A Stripe resource as a plain dict.
+
+    FOUND LIVE, AND IT ACCUSED THE WRONG THING. `account.get("id")` raises on recent
+    stripe-python — its resources are objects, not dicts — and the except around it reported
+    "Stripe rejected the key". The key was fine. A newly rotated, correctly pasted key was
+    reported as refused by Stripe, which is the worst possible direction for this particular
+    check to be wrong in: it sends somebody back to roll a key that already works.
+
+    The tests missed it because they stand in plain dicts for Stripe's objects, and dicts
+    have .get. So there is now a test using an object that has to_dict and NOT get.
+    """
+    if isinstance(obj, dict):  # older stripe-python subclasses dict
+        return obj
+    to_dict = getattr(obj, "to_dict", None)
+    if callable(to_dict):
+        try:
+            return to_dict()
+        except Exception:
+            pass
+    return {}
+
+
 def _money(amount, currency: str) -> str:
     """`2000`, `gbp` → `£20.00`. For a human reading a checklist, not for arithmetic."""
     if amount is None:
@@ -210,7 +233,7 @@ def check() -> dict:
     try:
         # The cheapest call that proves the key works, and it names the account — which
         # answers the question after "is it valid": is it the RIGHT Stripe account.
-        account = stripe.Account.retrieve()
+        account = _as_dict(stripe.Account.retrieve())
         out["account"] = {
             "id": account.get("id"),
             "name": ((account.get("settings") or {}).get("dashboard") or {}).get("display_name")
@@ -223,7 +246,7 @@ def check() -> dict:
     out["key_valid"] = True
 
     try:
-        price = stripe.Price.retrieve(STRIPE_PRICE_ID)
+        price = _as_dict(stripe.Price.retrieve(STRIPE_PRICE_ID))
     except Exception as e:
         out["price_valid"] = False
         out["error"] = f"Stripe does not have that price: {e}"

@@ -221,10 +221,15 @@ jobs:
                   mark="⚠️")
           days = cfg.get("trial_days")
           row(bool(days), "Free trial", f"{days} days" if days else "off")
-          row(bool(sign.get("enabled")), "Signup window",
+          # ALWAYS A TICK, because both states are correct and only one of them was being
+          # shown as one. SIGNUP_DAY=0 is how the window is deliberately turned off, and
+          # printing a red cross over "always open" reports a setting somebody had just
+          # chosen on purpose as a fault to go and fix. This row says what the policy IS;
+          # the failure it used to imply does not exist.
+          row(True, "Signup window",
               f"{sign.get('day_name','?')}s, scope {sign.get('scope','?')}"
-              + (", OPEN today" if sign.get("open") else ", shut today")
-              if sign.get("enabled") else "always open")
+              + (", OPEN today" if sign.get("open") else ", SHUT today")
+              if sign.get("enabled") else "always open — no day restriction")
 
           print("| | | |")
           row(bool(tg.get("bot_token_set")), "Telegram bot token", "")

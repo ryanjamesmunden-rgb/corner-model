@@ -187,6 +187,31 @@ class TestWhatStripeSays:
         # Which Stripe account, for when there are two and the keys came from the old one.
         assert out["account"]["name"] == "Corner Model"
 
+    def test_stripes_objects_are_not_dicts(self, monkeypatch):
+        # FOUND LIVE, and it blamed the wrong thing. Recent stripe-python returns resource
+        # OBJECTS, so account.get("id") raises — and the except around it reported "Stripe
+        # rejected the key" about a key that had just been rotated and pasted correctly.
+        # Being wrong in that direction sends somebody back to roll a working key.
+        #
+        # Every other test here stands in plain dicts, which have .get, so none of them
+        # could catch it. This one has to_dict and deliberately no get.
+        class Resource:
+            def __init__(self, data): self._data = data
+            def to_dict(self): return self._data
+
+        b = _billing()
+        mod = MagicMock()
+        mod.Account.retrieve.return_value = Resource(
+            {"id": "acct_1", "settings": {"dashboard": {"display_name": "Corner Model"}}})
+        mod.Price.retrieve.return_value = Resource(
+            {"unit_amount": 2000, "currency": "gbp", "active": True, "livemode": True,
+             "recurring": {"interval": "month"}})
+        monkeypatch.setattr(b, "_stripe", lambda: mod)
+        out = b.check()
+        assert out["ok"] is True
+        assert out["price"]["amount"] == "£20.00"
+        assert out["account"]["name"] == "Corner Model"
+
     def test_a_key_stripe_rejects(self, monkeypatch):
         b = _billing()
         monkeypatch.setattr(b, "_stripe", lambda: _stripe(key_error=Exception("Invalid API Key")))

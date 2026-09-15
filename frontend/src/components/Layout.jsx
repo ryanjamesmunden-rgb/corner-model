@@ -1,5 +1,6 @@
 import { useState, useEffect } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
+import MobileNav from "@/components/MobileNav";
 import { CornerDownRight, LayoutDashboard, Radar, Flame, Zap, Star, Sparkles, Receipt, Trophy,
          TrendingUp, ClipboardPaste } from "lucide-react";
 import { LeagueContext } from "@/context/LeagueContext";
@@ -23,6 +24,7 @@ export default function Layout({ children }) {
   const [leagues, setLeagues] = useState([]);
   const [leagueId, setLeagueId] = useState(localStorage.getItem("leagueId") || "ned-ed");
   const [now, setNow] = useState(Date.now());
+  const [moreOpen, setMoreOpen] = useState(false);
 
   useEffect(() => {
     api.leagues().then(setLeagues).catch(() => {});
@@ -66,12 +68,24 @@ export default function Layout({ children }) {
     ...(member ? [{ to: "/prices", label: "Prices", icon: ClipboardPaste }] : []),
   ];
 
+  // WHICH SCREENS THE LEAGUE ACTUALLY FILTERS. It drove four of them and sat on all
+  // eleven, in the widest slot of the header, where on a phone it truncated to
+  // "Premier Le…" and pushed everything else together. It is a page filter, so it now
+  // renders with the page — in one strip under the header rather than inside each of the
+  // four, which keeps it a single definition and leaves those pages untouched.
+  const LEAGUE_ROUTES = ["/scanner", "/dashboard", "/streaks"];
+  const showLeague = LEAGUE_ROUTES.includes(location.pathname)
+    || location.pathname.startsWith("/fixture/");
+
   return (
     <LeagueContext.Provider value={{ leagueId, changeLeague, leagues }}>
       <div className="min-h-screen bg-background">
         <header className="sticky top-0 z-40 bg-[#0a0a0a]/80 backdrop-blur-xl border-b border-white/10">
           <div className="max-w-[1600px] mx-auto px-3 sm:px-6 min-h-12 sm:min-h-16 py-1.5 sm:py-2 flex items-center gap-1.5 sm:gap-4 flex-wrap">
-            <Link to="/scanner" className="hidden sm:flex items-center gap-2 shrink-0">
+            {/* SHOWN ON THE PHONE NOW, because the nav no longer is: without it the
+                header opened on an anonymous row of controls with nothing saying where
+                you were. */}
+            <Link to="/scanner" className="flex items-center gap-2 shrink-0">
               <div className="h-8 w-8 rounded-md bg-primary flex items-center justify-center">
                 <CornerDownRight className="h-4 w-4 text-black" strokeWidth={2.5} />
               </div>
@@ -81,7 +95,9 @@ export default function Layout({ children }) {
               </div>
             </Link>
 
-            <nav className="flex items-center gap-0.5 sm:gap-1 sm:ml-2">
+            {/* THE NAV LEAVES THE HEADER ON A PHONE. It moves to a bottom bar, where a
+                thumb reaches it and a label fits beside the icon — see MobileNav. */}
+            <nav className="hidden sm:flex items-center gap-0.5 sm:gap-1 sm:ml-2">
               {nav.map((n) => {
                 const active = location.pathname === n.to;
                 return (
@@ -141,25 +157,61 @@ export default function Layout({ children }) {
                   </span>
                 </div>
               )}
-              <Select value={leagueId} onValueChange={changeLeague}>
-                <SelectTrigger data-testid="league-switcher" className="w-[104px] sm:w-[180px] bg-[#121212] border-border font-mono-data text-xs h-8 sm:h-9">
-                  <SelectValue placeholder="Select league" />
-                </SelectTrigger>
-                <SelectContent className="bg-[#121212] border-border">
-                  {leagues.map((l) => (
-                    <SelectItem key={l.league_id} value={l.league_id} data-testid={`league-opt-${l.league_id}`} className="font-mono-data text-xs">
-                      {l.name} · {l.country}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-
-              <ExportMenu />
+              <div className="hidden sm:block">
+                <ExportMenu />
+              </div>
             </div>
           </div>
+
+          {/* THE LEAGUE, WITH THE PAGE IT FILTERS. A full-width 44px control on a phone
+              instead of a 104px chip reading "Premier Le…", and only on the screens it
+              changes anything on — on the other seven it was furniture. */}
+          {showLeague && (
+            <div className="border-t border-white/5 bg-[#0a0a0a]/60">
+              <div className="max-w-[1600px] mx-auto px-3 sm:px-6 py-2">
+                <Select value={leagueId} onValueChange={changeLeague}>
+                  <SelectTrigger data-testid="league-switcher"
+                    className="w-full sm:w-[220px] bg-[#121212] border-border font-mono-data
+                               text-xs h-11 sm:h-9">
+                    <SelectValue placeholder="Select league" />
+                  </SelectTrigger>
+                  <SelectContent className="bg-[#121212] border-border">
+                    {leagues.map((l) => (
+                      <SelectItem key={l.league_id} value={l.league_id} data-testid={`league-opt-${l.league_id}`} className="font-mono-data text-xs">
+                        {l.name} · {l.country}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+          )}
         </header>
-        <main className="max-w-[1600px] mx-auto px-3 sm:px-6 py-3 sm:py-6 fade-in">{children}</main>
-        <SiteFooter />
+
+        {/* Bottom padding clears the tab bar. Without it the last row of every board sits
+            underneath it, which reads as the page having been cut off. */}
+        <main className="max-w-[1600px] mx-auto px-3 sm:px-6 py-3 sm:py-6 pb-24 sm:pb-6 fade-in">
+          {children}
+        </main>
+
+        {/* THE FRESHNESS BADGE, ON A PHONE, IN THE FOOTER. In the header it was competing
+            with navigation for the narrowest row on the site to say something nobody
+            needs on a healthy day — and it already hid itself when green. Down here it is
+            readable when someone goes looking, and the header still shows it at any width
+            when the data has actually gone stale. */}
+        {freshness && health && health.key === "live" && (
+          <div className="sm:hidden max-w-[1600px] mx-auto px-3 pt-4 flex items-center gap-2"
+            data-testid="data-freshness-footer">
+            <span className={`relative inline-flex rounded-full h-2 w-2 ${health.dot}`} />
+            <span className={`font-mono-data text-[10px] ${health.text} tracking-wide`}>
+              {health.label} · {freshness}
+            </span>
+          </div>
+        )}
+        <SiteFooter className="mb-20 sm:mb-0" />
+        {/* Export goes in the sheet rather than the header: it is a thing you do once in
+            a while, and it was taking permanent space beside the things you do daily. */}
+        <MobileNav nav={nav} open={moreOpen} setOpen={setMoreOpen} extra={<ExportMenu />} />
       </div>
     </LeagueContext.Provider>
   );

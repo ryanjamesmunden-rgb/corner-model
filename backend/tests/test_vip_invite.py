@@ -308,6 +308,47 @@ class TestVipPreflight:
                                "title": "Corner Model VIP", "type": "channel",
                                "bot_is_admin": True, "can_invite": True, "error": None}
 
+    def test_an_id_can_be_checked_before_it_is_configured(self, monkeypatch):
+        # Setting the variable had been a guess with a redeploy attached: paste, wait, read,
+        # find out it was wrong, repeat. Telegram will answer in one call.
+        import asyncio
+        b = _bot(vip="-100000000000")
+        seen = {}
+
+        class _Client:
+            def __init__(self, **kw): pass
+            async def __aenter__(self): return self
+            async def __aexit__(self, *a): return False
+            async def get(self, url, params=None):
+                name = url.rsplit("/", 1)[-1]
+                seen[name] = (params or {}).get("chat_id")
+                return {
+                    "getChat": TestVipPreflight._resp(self, result={
+                        "title": "[VIP] TheCornerMODEL2.0", "type": "channel"}),
+                    "getMe": TestVipPreflight._resp(self, result={"id": 99}),
+                    "getChatMember": TestVipPreflight._resp(self, result={
+                        "status": "administrator", "can_invite_users": True}),
+                }[name]
+
+        monkeypatch.setattr(b.httpx, "AsyncClient", _Client)
+        out = asyncio.get_event_loop().run_until_complete(
+            b.vip_check(chat_id="-1004417868848"))
+        # The probed id is what Telegram was asked about, not the configured one.
+        assert seen["getChat"] == "-1004417868848"
+        assert out["can_invite"] is True and out["title"] == "[VIP] TheCornerMODEL2.0"
+        # And the answer can never be mistaken for the live configuration's.
+        assert out["probed"] == "-1004417868848"
+
+    def test_a_plain_check_still_reads_the_configured_channel(self, monkeypatch):
+        b = _bot()
+        self._wire(monkeypatch, b, {
+            "getChat": self._resp(result={"title": "VIP", "type": "channel"}),
+            "getMe": self._resp(result={"id": 99}),
+            "getChatMember": self._resp(result={"status": "administrator",
+                                                "can_invite_users": True}),
+        })
+        assert "probed" not in self.run(b)
+
     def test_an_id_that_is_not_the_channel_says_so(self, monkeypatch):
         # FOUND LIVE, and it had survived two rounds of somebody checking the admin list.
         # TELEGRAM_VIP_CHAT_ID held a personal Telegram id rather than the channel's.

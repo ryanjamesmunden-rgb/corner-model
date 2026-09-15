@@ -500,7 +500,7 @@ async def my_commands() -> dict:
         return {"ok": False, "status": r.status_code, "body": r.text[:300]}
 
 
-async def vip_check() -> dict:
+async def vip_check(chat_id: Optional[str] = None) -> dict:
     """Is the paid channel actually wired up? Answered by asking Telegram, not by guessing.
 
     THE SETUP HAS THREE PARTS AND TWO OF THEM ARE INVISIBLE. Setting TELEGRAM_VIP_CHAT_ID is
@@ -511,19 +511,29 @@ async def vip_check() -> dict:
     So this asks: can I see the chat, am I an admin of it, and may I create invite links.
     Each answer is reported separately because each has a different fix, and "it doesn't
     work" is not a diagnosis.
+
+    `chat_id` CHECKS AN ID THAT IS NOT CONFIGURED YET, which turns setting this variable
+    from a guess into a confirmation. Every previous attempt ran the same way round: paste
+    a value, wait for a redeploy, read the result, find out it was wrong, repeat — three
+    or four minutes a cycle for a fact Telegram will state in one call. With this, the id
+    is checked FIRST and saved once.
     """
+    target = (chat_id or VIP_CHAT_ID or "").strip()
     out = {"chat_id_set": bool(VIP_CHAT_ID), "reachable": False, "title": None,
            "type": None, "bot_is_admin": False, "can_invite": False, "error": None}
+    # So a probe's answer can never be mistaken for the live configuration's.
+    if chat_id:
+        out["probed"] = target
     if not BOT_TOKEN:
         out["error"] = "TELEGRAM_BOT_TOKEN is not set"
         return out
-    if not VIP_CHAT_ID:
+    if not target:
         out["error"] = "TELEGRAM_VIP_CHAT_ID is not set"
         return out
     try:
         async with httpx.AsyncClient(timeout=20) as hc:
             chat = await hc.get(f"https://api.telegram.org/bot{BOT_TOKEN}/getChat",
-                                params={"chat_id": VIP_CHAT_ID})
+                                params={"chat_id": target})
             data = chat.json() if chat.status_code == 200 else {}
             if not data.get("ok"):
                 # "chat not found" here almost always means the id is wrong or the bot was
@@ -558,7 +568,7 @@ async def vip_check() -> dict:
                 out["error"] = "could not read the bot's own id"
                 return out
             mem = await hc.get(f"https://api.telegram.org/bot{BOT_TOKEN}/getChatMember",
-                               params={"chat_id": VIP_CHAT_ID, "user_id": bot_id})
+                               params={"chat_id": target, "user_id": bot_id})
             m = (mem.json() or {}).get("result") or {}
             out["bot_is_admin"] = m.get("status") in ("administrator", "creator")
             # The specific right createChatInviteLink needs. An admin WITHOUT it fails in

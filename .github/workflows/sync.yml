@@ -85,6 +85,39 @@ jobs:
             *) echo "::error::unexpected response from if-stale (backend down or erroring)"; exit 1 ;;
           esac
 
+      # FREEZE THE PROJECTIONS, AFTER THE SYNC AND BEFORE THE GAMES.
+      #
+      # A projection is a number about a fixture that has not happened. Once it has, the
+      # fixture leaves the upcoming window and the number is gone — and recomputing it
+      # later produces a projection made with the benefit of the result, because every
+      # game the two sides have played since is now in the sample. So a record built
+      # afterwards would grade the model against a version of itself that knew more.
+      #
+      # Which means every day this does not run is a day that can never be graded. It sits
+      # here, on the back of the sync, because the snapshot is only worth having when the
+      # data behind it is fresh — and the endpoint refuses on stale data rather than
+      # freezing numbers nobody should later be held to.
+      #
+      # NEVER FAILS THE JOB. The sync is the important half and it has already happened by
+      # this point; a snapshot that could not be taken is a gap in a record, which is worth
+      # a warning in the log and is not worth a red run that trains people to ignore red.
+      - name: Freeze today's projections
+        env:
+          TOOLS_TOKEN: ${{ secrets.TOOLS_TOKEN }}
+        run: |
+          code=$(curl -s -o snap.json -w '%{http_code}' --max-time 120 -X POST \
+            -H 'Content-Type: application/json' -d '{"days":3}' \
+            "$BACKEND/api/projections/snapshot?token=$TOOLS_TOKEN" || echo 000)
+          status=$(python3 -c "import json;print(json.load(open('snap.json')).get('status',''))" 2>/dev/null || echo "")
+          count=$(python3 -c "import json;print(json.load(open('snap.json')).get('entries',0))" 2>/dev/null || echo 0)
+          echo "projections snapshot: HTTP $code status=$status entries=$count"
+          case "$status" in
+            created) echo "::notice::froze $count projections — gradeable once played" ;;
+            exists)  echo "::notice::already snapshotted today — left untouched" ;;
+            stale)   echo "::warning::data too old to snapshot — today cannot be graded" ;;
+            *)       echo "::warning::projection snapshot did not run (HTTP $code)" ;;
+          esac
+
       - name: Report what happened
         # A boot sync is a detached subprocess, so this is a progress check, not a
         # completion check. It exists so a dead sync shows up in the log instead of

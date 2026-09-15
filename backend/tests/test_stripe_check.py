@@ -50,15 +50,39 @@ class TestTheKeyIsKeyShaped:
     """No network involved. These are the ones that catch a bad paste."""
 
     def test_the_live_failure_a_key_that_is_only_its_prefix(self):
-        # Exactly what was in the environment. It is non-empty, so `configured()` — which
-        # is what /api/config reports — says yes, and the person is sent to a checkout
-        # that cannot start.
+        # Exactly what was in the environment.
         b = _billing(key="sk_live_")
-        assert b.configured() is True
         out = b.check()
         assert out["ok"] is False
         assert out["key"]["truncated"] is True
         assert "cut off" in out["error"]
+
+    def test_and_such_a_key_does_not_count_as_configured(self):
+        # WHAT THIS CHANGES ON THE PAGE. `configured()` is /api/config's `stripe_ready`,
+        # and the join page falls back to the old payment link when it is false. While it
+        # answered "yes" to a key that cannot work, that fallback was never reached: the
+        # page advertised a trial, sent people into a checkout that could not start, and
+        # left them at a red error over a payment form with nowhere to go.
+        assert _billing(key="sk_live_").configured() is False
+        assert _billing(key=FULL_KEY[:20] + "\n" + FULL_KEY[20:]).configured() is False
+
+    def test_a_real_key_still_counts_as_configured(self):
+        # And it switches back on by itself the moment the right key is pasted in — no
+        # deploy, no second setting to remember.
+        assert _billing().configured() is True
+
+    def test_the_shape_test_makes_no_network_call(self, monkeypatch):
+        # Runs on every page load. A deterministic local test cannot flap — a blip at
+        # Stripe must never quietly reshape the join page.
+        b = _billing()
+        stripe = MagicMock()
+        monkeypatch.setattr(b, "_stripe", stripe)
+        b.configured()
+        stripe.assert_not_called()
+
+    def test_nothing_set_is_still_not_configured(self):
+        assert _billing(key="", price="").configured() is False
+        assert _billing(key=FULL_KEY, price="").configured() is False
 
     def test_and_it_says_so_without_asking_stripe(self, monkeypatch):
         # Stripe answers a truncated key with "Invalid API Key", which reads as "this key

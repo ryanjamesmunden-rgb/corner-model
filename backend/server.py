@@ -6663,25 +6663,53 @@ def bet_outcome(bet: dict, home_corners: Optional[int], away_corners: Optional[i
     return {WIN: "won", LOSS: "lost", VOID: "void"}[settled]
 
 
+def _api_fixture_id(bet: dict) -> Optional[str]:
+    """The provider's fixture id for a bet, from the bet itself.
+
+    NEW BETS CARRY IT. Older ones do not, and they are recoverable because `fixture_id` is
+    built as f"{league_id}-{api_id}" — so stripping the league prefix gives it back. Doing
+    that here rather than in a migration keeps every slip gradeable without a one-off
+    script that has to be remembered and run.
+
+    Returns None rather than guessing when the shape does not match, and a synthesized
+    fallback fixture's string id settles nothing, which is correct: those are invented
+    pairings, not real matches.
+    """
+    if bet.get("api_fixture_id"):
+        return bet["api_fixture_id"]
+    fid, lid = str(bet.get("fixture_id") or ""), str(bet.get("league_id") or "")
+    if lid and fid.startswith(lid + "-"):
+        return fid[len(lid) + 1:] or None
+    return None
+
+
 async def settle_pending_bets(user_id: Optional[str] = None) -> dict:
-    """Grade every pending bet whose fixture now has a result. Cheap and idempotent."""
+    """Grade every pending bet whose fixture now has a result. Cheap and idempotent.
+
+    IT NO LONGER READS db.fixtures, and that was the whole bug. The sync deletes every
+    fixture in a league and re-inserts only the UPCOMING ones, so a match left that
+    collection the moment it kicked off — before its corners were ever synced. Settlement
+    joined through it, found nothing, returned None for the outcome, and skipped. Every
+    slip stayed "pending" indefinitely, which made the Bets page a list of things nobody
+    could tell you the result of.
+
+    So the only thing it needs now is the provider's fixture id, which rides on the bet.
+    """
     q = {"status": "pending"}
     if user_id:
         q["user_id"] = user_id
     pending = await db.bets.find(q, {"_id": 0}).to_list(2000)
     if not pending:
         return {"checked": 0, "settled": 0}
-    fids = list({b["fixture_id"] for b in pending})
-    fixtures = {f["fixture_id"]: f for f in
-                await db.fixtures.find({"fixture_id": {"$in": fids}}, {"_id": 0}).to_list(4000)}
-    # Results live on fixture_stats, keyed by the provider's fixture id rather than ours.
-    api_ids = {fx.get("api_fixture_id") for fx in fixtures.values() if fx.get("api_fixture_id")}
+    # Results live on fixture_stats, keyed by the provider's fixture id. Straight from the
+    # bets, so a fixture the sync has since removed settles exactly as well as a live one.
+    by_bet = {b["bet_id"]: _api_fixture_id(b) for b in pending}
+    api_ids = [i for i in set(by_bet.values()) if i]
     stats = {c["_id"]: c for c in
-             await db.fixture_stats.find({"_id": {"$in": list(api_ids)}}, {}).to_list(4000)} if api_ids else {}
+             await db.fixture_stats.find({"_id": {"$in": api_ids}}, {}).to_list(4000)} if api_ids else {}
     settled = 0
     for b in pending:
-        fx = fixtures.get(b["fixture_id"]) or {}
-        st = stats.get(fx.get("api_fixture_id")) or {}
+        st = stats.get(by_bet.get(b["bet_id"])) or {}
         out = bet_outcome(b, st.get("home_corners"), st.get("away_corners"))
         if out is None:
             continue
@@ -6752,6 +6780,16 @@ async def create_bet(body: BetBody, user: dict = Depends(require_user)):
     bet = {
         "bet_id": f"bet_{uuid.uuid4().hex[:12]}", "user_id": user["user_id"],
         "fixture_id": fx["fixture_id"], "league_id": fx["league_id"],
+        # THE PROVIDER'S ID, COPIED ONTO THE BET, and this is what makes a bet settleable
+        # at all. Settlement used to read it off db.fixtures — and the sync DELETES every
+        # fixture in a league and re-inserts only the UPCOMING ones, so a match vanished
+        # from that collection the moment it kicked off. By the time its corners were
+        # synced there was nothing left to join through, the outcome came back None, and
+        # every slip sat at "pending" for ever.
+        #
+        # Denormalised deliberately: a bet has to outlive the fixture row it was placed
+        # against, the same way it already carries the team names and the kickoff.
+        "api_fixture_id": fx.get("api_fixture_id"),
         "home_name": fx["home_name"], "away_name": fx["away_name"],
         "market_key": market["key"], "market_label": f"{market['group_label']} {market['label']}",
         "book_odds": market["book_odds"], "fair_odds": market["fair_odds"], "prob": market["prob"],

@@ -1,0 +1,138 @@
+# This week's picks, as a list you can read. One dispatch.
+#
+# WHY THIS EXISTS. The results page grades what the streak board claimed before kick-off,
+# and the question "so what is it claiming for THIS week" had no answer that did not
+# involve signing in and reading a screen. The rows behind that page come from one
+# tools-token endpoint, /api/share/rows, and the runner holds the token — so it can print
+# the list the way the results page will later grade it.
+#
+# THE SAME QUERY THE FRIDAY SNAPSHOT FREEZES. share/rows builds its streaks board with the
+# exact parameters snapshot_streaks uses, so what is printed here is what would be written
+# down and graded, not a looser or stricter cousin of it. If this list and the results page
+# ever disagree about what was claimed, one of them is wrong and it is not this one.
+#
+# NO SECRETS ARE PRINTED. The token rides in a query string to a backend that expects it and
+# is never echoed. Team names, lines and kick-off times are the product's public face.
+name: This week's picks
+
+on:
+  workflow_dispatch:
+    inputs:
+      days:
+        description: "How many days ahead to list"
+        required: false
+        default: "7"
+        type: string
+      limit:
+        description: "Most rows to print"
+        required: false
+        default: "25"
+        type: string
+
+concurrency:
+  group: corner-this-week
+
+permissions:
+  contents: read
+
+jobs:
+  list:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    steps:
+      - name: Ask the backend
+        env:
+          BACKEND: ${{ vars.BACKEND_URL || 'https://corner-model.onrender.com' }}
+          TOOLS_TOKEN: ${{ secrets.TOOLS_TOKEN }}
+          DAYS: ${{ inputs.days }}
+          LIMIT: ${{ inputs.limit }}
+        run: |
+          # Render sleeps the free instance; the first call after a quiet spell can take
+          # most of a minute or fail outright, which is not a data problem.
+          for i in 1 2 3 4 5 6; do
+            code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 60 "$BACKEND/api/" || true)
+            echo "wake attempt $i: HTTP $code"
+            [ "$code" = "200" ] && break
+            sleep 15
+          done
+          code=$(curl -s -o rows.json -w '%{http_code}' --max-time 120 \
+            "$BACKEND/api/share/rows?token=$TOOLS_TOKEN&days=${DAYS:-7}&limit=${LIMIT:-25}&boards=streaks" || echo 000)
+          echo "share/rows: HTTP $code"
+          printf '%s' "$code" > code.txt
+          [ "$code" = "200" ] || echo '{}' > rows.json
+
+      # LAST, AND TO BOTH PLACES. The runner echoes every line of this script into the log
+      # before running it, so anything printed by an earlier step is pushed beyond what the
+      # logs API returns. The list has to be the final thing the job prints, and it goes to
+      # the step summary and the log together — output nobody can reach is not output.
+      - name: The list
+        run: |
+          python3 - <<'PY' | tee -a "$GITHUB_STEP_SUMMARY"
+          import json
+          from datetime import datetime, timezone
+          from zoneinfo import ZoneInfo
+
+          try:
+              data = json.load(open("rows.json"))
+          except Exception:
+              data = {}
+          try:
+              code = open("code.txt").read().strip()
+          except Exception:
+              code = "000"
+
+          rows = data.get("streaks") or []
+          age = data.get("data_age_hours")
+          days = data.get("within_days")
+
+          print("## This week's picks\n")
+          if code != "200":
+              print(f"> ⚠️ **The backend did not answer** (`/api/share/rows` returned `{code}`). "
+                    "A 403 means the TOOLS_TOKEN secret does not match the backend's; anything "
+                    "else is usually Render asleep — try again in a minute.\n")
+          # THE AGE IS SAID FIRST. The Friday snapshot refuses to freeze data older than
+          # fourteen hours, and a list read off stale numbers is the same mistake with
+          # nothing to stop it — the picks here are only as current as the last sync.
+          elif age is None or age > 14:
+              print(f"> ⚠️ **Data is {age if age is not None else 'of unknown age'} hours old.** "
+                    "The snapshot would refuse this; read it as last sync's picks, not today's.\n")
+          else:
+              print(f"> Next {days} days · data {age}h old · {len(rows)} picks\n")
+
+          if not rows:
+              if code == "200":
+                  # Nothing qualified, which is a real answer and a different one from
+                  # "nothing came back". The bar is absolute; a thin week stays thin.
+                  print("_No streak clears the bar for this window._")
+          else:
+              print("| Kick-off | League | Pick | Game | Run |")
+              print("|---|---|---|---|---|")
+              lon = ZoneInfo("Europe/London")
+              for r in rows:
+                  nf = r.get("next_fixture") or {}
+                  when = ""
+                  try:
+                      dt = datetime.fromisoformat((nf.get("date") or "").replace("Z", "+00:00"))
+                      if dt.tzinfo is None:
+                          dt = dt.replace(tzinfo=timezone.utc)
+                      when = dt.astimezone(lon).strftime("%a %d %b %H:%M")
+                  except Exception:
+                      when = (nf.get("date") or "")[:10]
+                  home = r["name"] if nf.get("is_home") else nf.get("opponent", "?")
+                  away = nf.get("opponent", "?") if nf.get("is_home") else r["name"]
+                  what = "team corners" if r.get("subject") == "team" else "match corners"
+                  pick = f"**{r['name']}** {r.get('line_label', '')} {what}"
+                  # The run is hits over settled legs, voids aside — the same fraction the
+                  # results page will print next to this row once it has been played.
+                  run = f"{r.get('hits', 0)}/{r.get('settled', r.get('window', 0))}"
+                  if r.get("voids"):
+                      run += f" +{r['voids']}v"
+                  cur = (r.get("streak") or {}).get("length")
+                  if cur:
+                      run += f" · {cur} in a row"
+                  print(f"| {when} | {r.get('league_name', '')} | {pick} | {home} v {away} | {run} |")
+              print()
+              print("_Same query the Friday snapshot freezes — this is what the results page "
+                    "will grade. Lines are the model's, not a bookmaker's; check a price "
+                    "before you back one._")
+          PY

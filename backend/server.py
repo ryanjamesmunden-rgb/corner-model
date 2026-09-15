@@ -927,9 +927,21 @@ async def billing_webhook(request: Request):
     try:
         event = billing.verify_event(payload, request.headers.get("stripe-signature"))
     except RuntimeError as e:
+        # No signing secret configured. Recorded, because otherwise the diagnostic reports
+        # this identically to Stripe never having called at all — and those need opposite
+        # fixes: one is a variable on Render, the other is an endpoint in Stripe.
+        await _record_webhook("unverified", {}, error="STRIPE_WEBHOOK_SECRET is not set")
         raise HTTPException(status_code=503, detail=str(e))
-    except Exception:
-        # Deliberately terse: a bad signature should not describe why it was bad.
+    except Exception as e:
+        # A REJECTED DELIVERY IS STILL A DELIVERY, and the ledger has to say so. It only
+        # recorded events that got past this point, so "no event ever received" covered
+        # both "Stripe has never called" and "Stripe calls constantly and every one is
+        # turned away at the door" — the second being what a mismatched signing secret
+        # looks like, and indistinguishable from the first in the checklist.
+        #
+        # The reply stays terse; the LEDGER is where the reason goes. A forged request
+        # learns nothing from being refused, and the operator learns everything.
+        await _record_webhook("rejected", {}, error=f"signature rejected: {type(e).__name__}")
         raise HTTPException(status_code=400, detail="Bad signature")
 
     kind = event["type"]
@@ -6093,6 +6105,81 @@ async def telegram_chat_probe(chat_id: str, token: Optional[str] = None):
     return await telegram_bot.vip_check(chat_id=chat_id)
 
 
+async def _reconcile_billing() -> dict:
+    """Bring every account's membership into line with Stripe, webhook or no webhook.
+
+    WHY THIS HAS TO EXIST. Membership was granted by exactly one mechanism — an inbound
+    webhook — with nothing behind it. That is a single point of failure on a path that
+    decides whether somebody who has paid can use what they paid for, and it has now
+    failed twice for different reasons: first every event 500'd on a library change, then
+    none arrived at all. Meanwhile this backend runs on an instance that SLEEPS, so a cold
+    start can outlast Stripe's delivery timeout — which makes missed webhooks a normal
+    operating condition here rather than an incident.
+
+    So Stripe is asked directly, on a schedule. A missed event stops being a person locked
+    out of a channel they are paying for and becomes a few minutes' delay.
+
+    IT STARTS FROM STRIPE, NOT FROM OUR USERS. The accounts needing it most are the ones
+    no webhook ever reached: no stripe_customer_id, no subscription id, nothing pointing
+    outward. Every subscription created through checkout carries `metadata.user_id`, so
+    the sweep reads Stripe's list and matches back along that thread.
+
+    APPLIES THE SAME FUNCTION THE WEBHOOK DOES. apply_subscription owns the revocation
+    rule — comps and grandfathered accounts are never revoked by a Stripe event, `past_due`
+    keeps access, and so on. Reimplementing any of that here would eventually disagree with
+    the webhook about who is a member, and the disagreement would be silent.
+    """
+    if not billing.configured():
+        return {"status": "not_configured", "checked": 0, "changed": 0}
+    try:
+        subs = await asyncio.to_thread(billing.list_subscriptions)
+    except Exception as e:
+        logger.exception("stripe: reconcile could not list subscriptions")
+        return {"status": "error", "error": str(e), "checked": 0, "changed": 0}
+
+    changed, granted, revoked = [], 0, 0
+    for sub in subs:
+        uid = (sub.get("metadata") or {}).get("user_id")
+        before = None
+        if uid:
+            row = await db.users.find_one({"user_id": uid}, {"_id": 0, "member": 1})
+            before = bool((row or {}).get("member"))
+        try:
+            result = await billing.apply_subscription(db, sub, user_id=uid)
+        except Exception:
+            logger.exception("stripe: reconcile failed on subscription %s", sub.get("id"))
+            continue
+        if not result.get("matched"):
+            continue
+        after = bool(result.get("member"))
+        if before is not None and after != before:
+            changed.append({"user_id": result["user_id"], "member": after,
+                            "status": result.get("status")})
+            granted += 1 if after else 0
+            revoked += 0 if after else 1
+        # A LAPSED MEMBER LEAVES THE CHANNEL HERE TOO, on the same rule the webhook uses.
+        # Reconciling access on the site while leaving somebody in the paid channel would
+        # fix half the problem and hide the other half.
+        if after is False and before is True:
+            await _revoke_channel_access(result["user_id"])
+    out = {"status": "ok", "checked": len(subs), "changed": len(changed),
+           "granted": granted, "revoked": revoked, "users": changed[:50]}
+    if changed:
+        logger.info("stripe: reconcile changed %d membership(s): %s", len(changed), changed)
+    return out
+
+
+@api_router.post("/billing/reconcile")
+async def billing_reconcile(token: Optional[str] = None):
+    """Ask Stripe who is actually subscribed, and make the site agree.
+
+    Safe to run repeatedly: it is the same idempotent apply_subscription the webhook calls,
+    so a run that finds nothing wrong changes nothing.
+    """
+    _check_tools_token(token)
+    return await _reconcile_billing()
+
+
 @api_router.get("/billing/status")
 async def billing_status(token: Optional[str] = None):
     """Whether Stripe will actually take a payment, asked of Stripe rather than assumed.
@@ -6896,6 +6983,16 @@ async def on_startup():
     # actually sent, with the price taken, which is what a real record needs.
     # settle hourly — most fixtures finish well after the twice-daily sync
     scheduler.add_job(_run_settlement, CronTrigger(minute=20), id="settle", replace_existing=True)
+    # MEMBERSHIP, RECONCILED AGAINST STRIPE EVERY 15 MINUTES. The webhook is the fast path
+    # and this is the one that has to be right: this backend sleeps, so a cold start can
+    # outlast Stripe's delivery timeout and a missed event is ordinary here, not an
+    # incident. Without this, one missed delivery is somebody who has paid sitting in
+    # front of a locked page with no way to tell you — which is exactly what happened.
+    #
+    # In-process, so it also runs on the instance that just woke, and cheap: one Stripe
+    # list call, and apply_subscription changes nothing when nothing has changed.
+    scheduler.add_job(_reconcile_billing, CronTrigger(minute="0,15,30,45"),
+                      id="reconcile_billing", replace_existing=True)
     # warm the screen cache after each sync has had time to finish. This is only a
     # warm-up: a screen also rebuilds on read once its data_version no longer matches,
     # so a sync that overruns self-heals on the next request rather than serving stale.

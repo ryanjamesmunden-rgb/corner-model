@@ -62,15 +62,33 @@ MEMBER_SOURCE_CODE = "code"
 MEMBER_SOURCE_LEGACY = "legacy"
 
 
-def configured() -> bool:
-    """Whether checkout can run at all. Missing config is a 503, not a crash.
-
-    PRESENT IS NOT VALID, and the distance between the two is the whole reason `check()`
-    below exists. This answers one question — are the two variables filled in — because it
-    is on the hot path of every page load via /api/config and must not call Stripe. It
-    cannot tell a working key from eight characters of one.
-    """
+def _present() -> bool:
+    """Both variables filled in. Says nothing about whether the values are any good."""
     return bool(STRIPE_SECRET_KEY and STRIPE_PRICE_ID)
+
+
+def configured() -> bool:
+    """Whether checkout can run. Missing or malformed config is a 503, not a crash.
+
+    THIS DECIDES WHAT THE JOIN PAGE OFFERS, via /api/config's `stripe_ready`, and that is
+    why it is stricter than "the variable is non-empty". With a key of `sk_live_` and
+    nothing after it, non-empty was true: the page advertised a free trial, sent people
+    into a checkout that could not start, and gave them a red error over a payment form
+    with no way forward. The fallback to the old payment link — which is right there, and
+    works — was never reached, because the flag said everything was fine.
+    So a key that cannot possibly work counts as not configured, and the page falls back on
+    its own. When the real key is pasted in, it switches back on its own too.
+
+    NO NETWORK CALL, DELIBERATELY. This runs on every page load, and a deterministic local
+    test cannot flap: a blip at Stripe must never silently reshape the join page. It is a
+    test of SHAPE, not of validity — a well-formed key that Stripe has since revoked passes
+    here and fails at `check()`, which is the endpoint that asks Stripe and is run
+    deliberately rather than by every visitor.
+    """
+    if not _present():
+        return False
+    shape = key_shape()
+    return not (shape["truncated"] or shape["whitespace"])
 
 
 # THE SHAPE OF A SECRET KEY, which is checkable without asking Stripe anything.
@@ -142,7 +160,10 @@ def check() -> dict:
         "trial_days": TRIAL_DAYS,
         "ok": False,
     }
-    if not configured():
+    # `_present`, not `configured`, because configured() now also rejects a malformed key —
+    # and "not set" is the wrong thing to tell somebody whose key IS set and is eight
+    # characters long. The shape checks below say that properly.
+    if not _present():
         missing = [n for n, v in (("STRIPE_SECRET_KEY", STRIPE_SECRET_KEY),
                                   ("STRIPE_PRICE_ID", STRIPE_PRICE_ID)) if not v]
         out["error"] = f"not set: {', '.join(missing)}"

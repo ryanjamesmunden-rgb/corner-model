@@ -799,9 +799,12 @@ async def billing_checkout(user: dict = Depends(require_user)):
     cancel button possible later.
     """
     if not billing.configured():
-        raise HTTPException(status_code=503,
-                            detail="Subscriptions are not set up yet — set STRIPE_SECRET_KEY "
-                                   "and STRIPE_PRICE_ID in the backend environment")
+        # The join page falls back to the payment link when `stripe_ready` is false, so
+        # reaching this means somebody called the endpoint directly. They get the same
+        # calm sentence as any other checkout failure rather than a list of the backend's
+        # environment variables — see billing.checkout_error_message.
+        raise HTTPException(status_code=503, detail=billing.checkout_error_message(
+            RuntimeError("STRIPE_SECRET_KEY/STRIPE_PRICE_ID missing or malformed")))
     if user.get("member") and user.get("member_source") == billing.MEMBER_SOURCE_STRIPE:
         raise HTTPException(status_code=409, detail="You already have an active subscription")
     # THE WINDOW IS ENFORCED HERE, and this is the only place it counts. The join page

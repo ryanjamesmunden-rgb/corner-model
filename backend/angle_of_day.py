@@ -34,10 +34,45 @@ from zoneinfo import ZoneInfo
 
 # What the rule IS, named after what it does rather than what anyone hopes it does. Same
 # discipline as DAILY_PICK_RULE: a name like "value_finder" would be a claim.
-RULE = "streak_board_order_over_todays_fixtures"
+RULE = "corroborated_streaks_by_model_probability"
 
-# How many angles the page publishes. A cap, not a target — see `shortlist`.
-COUNT = 5
+# How many angles the page publishes. A CEILING, NOT A TARGET, and the difference is the
+# whole point of the corroboration bar below: a big Saturday can fill it, a Tuesday should
+# not be able to. Eight because eight on a weekend read about right; nothing tops a Tuesday
+# up to eight, and nothing here ever will.
+COUNT = 8
+
+# THE SECOND BAR, AND WHY THERE HAD TO BE ONE.
+#
+# A streak on its own says a team keeps clearing a line. It says nothing about who they
+# play next, which is the half that decides whether the run continues. Ordered only by the
+# board's own sort — highest line, then most hits — a quiet midweek simply served whatever
+# was left, and eight rows on a Tuesday is the board reporting that it found eight things
+# worth backing when what it found was eight rows.
+#
+# So a streak now has to be corroborated by the FIXTURE:
+#
+#   1. The opponent is actually weak at this. `opp_conceded` against the league's own
+#      average, at the mismatch board's own margin — one number, one source, so the two
+#      boards cannot drift into separate opinions about what "weak" means.
+#   2. The model makes it likely. `projection.prob` is the model's probability for THIS
+#      team clearing THIS line against THIS opponent, which is the direct answer to "is it
+#      more likely to land" and was already being computed and thrown away.
+#
+# Only the OPPONENT half of the mismatch test is applied. The mismatch board also requires
+# the team to be above average at winning corners; a team that has cleared its line in five
+# straight has demonstrated that far better than an average can, and testing it twice would
+# just be the streak bar wearing a second hat.
+#
+# WHAT IS DELIBERATELY NOT IN HERE: how often the opponent scores first. It is the obvious
+# chase mechanism and it has been measured five times in this repo, most recently by
+# measure_chase_board.py replaying the board walk-forward, and no effect has ever been
+# found — `no_opp_fh` scored +0.03 against a RANDOM control that came out flat, which is
+# the same number. test_chase_score.py exists to stop it creeping back into an ordering.
+# It is carried on every row as CONTEXT and it gates nothing, because a number displayed
+# beside a pick reads as a reason for the pick, and this one has been shown not to be.
+MISMATCH_EDGE = 1.1     # the mismatch board's own margin over the league average
+MIN_PROB = 60.0         # the model's probability for the streak continuing, in percent
 
 # The audience is in the UK, and "today" is a local idea. A kick-off at 00:30 BST is
 # tomorrow's game to a reader even though UTC has already turned over.
@@ -119,14 +154,70 @@ def upcoming(rows: List[dict], now_iso: str) -> List[dict]:
     return out
 
 
-def shortlist(rows: List[dict], day: str, count: int = COUNT, tz: str = TZ) -> List[dict]:
-    """What the page publishes for `day` — at most `count`, and often fewer.
+def support_for(row: dict, league_avg: Optional[float],
+                edge: float = MISMATCH_EDGE) -> dict:
+    """What this fixture contributes to the streak, as numbers a reader can check.
 
-    A THIN DAY YIELDS FEWER RATHER THAN TOPPING UP. Same principle as the daily shortlist
-    and the fixture board: the bar is a property of the angle, not a quota to fill. If two
-    teams clear it, two is the honest answer and the page says two.
+    Built where the data is (see _angle_rows) and carried on the row, so that the decision
+    below is a comparison rather than a second calculation — and so a frozen snapshot
+    records WHY a row qualified, which is the only way the tightened rule can ever be
+    graded on its own record.
     """
-    return todays(rows, day, tz)[:max(0, count)]
+    proj = row.get("projection") or {}
+    opp_conceded = proj.get("opp_conceded")
+    bar = round(league_avg * edge, 2) if league_avg else None
+    return {
+        "prob": proj.get("prob"),
+        "lambda": proj.get("lambda"),
+        "opp_conceded": opp_conceded,
+        "league_avg": round(league_avg, 2) if league_avg else None,
+        "opp_bar": bar,
+        "weak_opponent": bool(bar is not None and opp_conceded is not None
+                              and opp_conceded >= bar),
+        # CONTEXT, NEVER A GATE. See the note beside MIN_PROB — five measurements, no
+        # effect, and a test elsewhere stops it re-entering an ordering.
+        "opp_fh_rate": row.get("opp_fh_rate"),
+    }
+
+
+def qualifies(row: dict, min_prob: float = MIN_PROB) -> bool:
+    """Both bars, and a row missing the numbers to prove either does not pass.
+
+    A row whose projection could not be built — no opponent history, a fixture the model
+    cannot price — fails rather than passing on the strength of its streak alone. That is
+    the whole change: the streak was never the part in doubt.
+    """
+    s = row.get("support") or {}
+    prob = s.get("prob")
+    return bool(s.get("weak_opponent") and prob is not None and prob >= min_prob)
+
+
+def order(row: dict) -> float:
+    """Among qualifying angles: the model's own confidence, nothing cleverer.
+
+    Same choice as daily_pick_order and for the same reason — it is readable, and it makes
+    the record measure something meaningful (how the model's most confident calls land)
+    rather than a ranking nobody has been able to demonstrate.
+
+    WHAT THIS DELIBERATELY DOES NOT DO: chase long odds. Most probable means lowest lines,
+    so this leads with 5+ ahead of 8+ even when the 8+ run is longer. That is the honest
+    consequence of sorting by "most likely to land" and not a bug to sort around.
+    """
+    return (row.get("support") or {}).get("prob") or 0.0
+
+
+def shortlist(rows: List[dict], day: str, count: int = COUNT, tz: str = TZ,
+              min_prob: float = MIN_PROB) -> List[dict]:
+    """What the page publishes for `day` — at most `count`, and usually fewer.
+
+    A THIN DAY YIELDS FEWER RATHER THAN TOPPING UP, and now it actually will. The bar is a
+    property of the angle and its fixture, not a quota: nothing here relaxes `min_prob`,
+    drops the opponent test, or reaches past `day` because the list came back short. If two
+    fixtures corroborate, two is the honest answer and the page says two.
+    """
+    picked = [r for r in todays(rows, day, tz) if qualifies(r, min_prob)]
+    picked.sort(key=order, reverse=True)
+    return picked[:max(0, count)]
 
 
 def published(entries: List[dict], count: int = COUNT) -> List[dict]:
@@ -140,6 +231,16 @@ def published(entries: List[dict], count: int = COUNT) -> List[dict]:
     written, and nothing here consults a result to decide which rows to count.
     """
     return list(entries or [])[:max(0, count)]
+
+
+def snapshot_order(entry: dict) -> float:
+    """`order`, for a frozen entry rather than a live board row.
+
+    The two shapes differ — an entry stores `prob` flat, a board row nests it under
+    `support` — and the record has to reconstruct the panel's ORDER, not just its
+    membership, or "the top angle that day" grades a row that was never top.
+    """
+    return entry.get("prob") or (entry.get("support") or {}).get("prob") or 0.0
 
 
 def gate(tally: Optional[dict], min_sample: int = MIN_SAMPLE) -> dict:

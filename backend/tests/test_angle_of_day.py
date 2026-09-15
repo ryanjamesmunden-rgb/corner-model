@@ -24,8 +24,13 @@ import angle_of_day as aod  # noqa: E402
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
-def row(name="Boro", kickoff="2026-09-15T18:45:00Z", **kw):
-    return {"name": name, "next_fixture": {"date": kickoff, "opponent": "Stoke"}, **kw}
+def row(name="Boro", kickoff="2026-09-15T18:45:00Z", prob=70.0, weak=True, **kw):
+    """A board row that clears the corroboration bar unless a test says otherwise."""
+    return {"name": name, "league_id": "eng-ch",
+            "next_fixture": {"date": kickoff, "opponent": "Stoke"},
+            "support": {"prob": prob, "weak_opponent": weak, "opp_conceded": 7.1,
+                        "league_avg": 5.4, "opp_bar": 5.94, "opp_fh_rate": 62},
+            **kw}
 
 
 def entry(name="Boro", kickoff="2026-09-15T18:45:00Z", **kw):
@@ -77,12 +82,79 @@ class TestAThinDayStaysThin:
         many = [row(str(i)) for i in range(20)]
         assert len(aod.shortlist(many, "2026-09-15", count=5)) == 5
 
-    def test_board_order_is_preserved_and_not_re_ranked(self):
-        # The board's order IS the rule. Re-sorting here would be a second, undocumented
-        # ranking competing with the documented one.
-        rows = [row("first"), row("second"), row("third")]
+    def test_the_most_likely_to_land_leads(self):
+        # The stated order, and the direct answer to "pick the ones more likely to land".
+        rows = [row("middling", prob=66.0), row("best", prob=78.0), row("thin", prob=61.0)]
         assert [r["name"] for r in aod.shortlist(rows, "2026-09-15", count=3)] == \
-            ["first", "second", "third"]
+            ["best", "middling", "thin"]
+
+
+class TestTheFixtureHasToBackTheStreakUp:
+    """The change that stops eight rows appearing on a Tuesday.
+
+    A streak says a team keeps clearing a line. It says nothing about who they play next,
+    which is the half that decides whether the run continues — so on a quiet midweek the
+    board was simply serving whatever was left, and eight rows read as eight things worth
+    backing when it was eight rows.
+    """
+
+    def test_a_streak_against_a_mean_defence_does_not_qualify(self):
+        assert aod.qualifies(row(weak=False)) is False
+
+    def test_a_streak_the_model_rates_below_the_floor_does_not(self):
+        assert aod.qualifies(row(prob=aod.MIN_PROB - 0.1)) is False
+
+    def test_the_floor_is_a_boundary(self):
+        assert aod.qualifies(row(prob=aod.MIN_PROB)) is True
+
+    def test_both_bars_are_required_not_either(self):
+        # Either-or would let a leaky-opponent fixture through on a coin-flip probability,
+        # which is most of what the panel is meant to stop publishing.
+        assert aod.qualifies(row(prob=80.0, weak=False)) is False
+        assert aod.qualifies(row(prob=40.0, weak=True)) is False
+
+    def test_a_row_the_model_could_not_price_fails_rather_than_passing(self):
+        # No opponent history, no projection. Passing on the strength of the streak alone
+        # is exactly the old behaviour, and the streak was never the part in doubt.
+        assert aod.qualifies({"support": {"weak_opponent": True, "prob": None}}) is False
+        assert aod.qualifies({}) is False
+
+    def test_a_weak_opponent_is_measured_against_that_leagues_own_average(self):
+        # 6.0 conceded is leaky in a 5.0 league and ordinary in a 6.5 one. A flat threshold
+        # would quietly publish every fixture in the high-corner leagues and none anywhere else.
+        proj = {"projection": {"opp_conceded": 6.0, "prob": 70.0}}
+        assert aod.support_for(proj, league_avg=5.0)["weak_opponent"] is True
+        assert aod.support_for(proj, league_avg=6.5)["weak_opponent"] is False
+
+    def test_the_margin_is_the_mismatch_boards_own(self):
+        # One definition of "weak", shared, so the two boards cannot drift into separate
+        # opinions about the same fixture.
+        assert aod.MISMATCH_EDGE == 1.1
+        s = aod.support_for({"projection": {"opp_conceded": 5.5, "prob": 70.0}}, 5.0)
+        assert s["opp_bar"] == 5.5 and s["weak_opponent"] is True
+
+    def test_a_league_with_no_average_cannot_certify_a_weak_opponent(self):
+        s = aod.support_for({"projection": {"opp_conceded": 9.0, "prob": 90.0}}, None)
+        assert s["weak_opponent"] is False
+
+    def test_the_first_half_rate_is_carried_but_gates_nothing(self):
+        """The half of the request that the repo's own measurements refuse.
+
+        Five tests have failed to find an effect from the opponent's first-half scoring —
+        `no_opp_fh` scored +0.03 against a RANDOM control that came out flat. It rides on
+        the row so a reader can see it; it must never decide anything.
+        """
+        assert aod.qualifies(row(**{"opp_fh_rate": 10})) is True
+        assert aod.qualifies(row(**{"opp_fh_rate": 90})) is True
+        s = aod.support_for({"projection": {"opp_conceded": 7.0, "prob": 70.0},
+                             "opp_fh_rate": 62}, 5.0)
+        assert s["opp_fh_rate"] == 62
+
+    def test_ordering_ignores_the_first_half_rate(self):
+        low = row("low-fh", prob=75.0, **{"opp_fh_rate": 5})
+        high = row("high-fh", prob=70.0, **{"opp_fh_rate": 95})
+        assert [r["name"] for r in aod.shortlist([high, low], "2026-09-15", count=2)] == \
+            ["low-fh", "high-fh"]
 
 
 class TestAGameThatHasStartedIsNotAnAngle:
@@ -199,7 +271,7 @@ class TestADeadDaySaysWhy:
 
 class TestTheRuleIsStatedNotDiscovered:
     def test_the_rule_is_named_for_what_it_does(self):
-        assert aod.RULE == "streak_board_order_over_todays_fixtures"
+        assert aod.RULE == "corroborated_streaks_by_model_probability"
 
     def test_the_module_records_why_the_record_is_not_the_selector(self):
         """So nobody re-introduces "lead with whatever has been landing" without seeing
@@ -209,11 +281,18 @@ class TestTheRuleIsStatedNotDiscovered:
         assert "+7.9" in src and "+7.5" in src, \
             "the falsified-ranking result is the argument — it has to stay next to the rule"
 
-    def test_the_bar_is_not_relaxed_anywhere_in_this_module(self):
+    def test_the_streak_bar_still_belongs_to_the_board(self):
         src = open(aod.__file__).read()
         assert "min_hits" not in src.replace("`min_hits`", ""), \
-            "the qualifying bar belongs to the board's own call, not to the panel — a " \
+            "the streak bar belongs to the board's own call, not to the panel — a " \
             "min_hits here would be the panel lowering it to fill itself"
+
+    def test_the_falsified_opponent_term_is_recorded_as_not_a_gate(self):
+        """Five measurements found no effect. It is carried as context and gates nothing —
+        and the reason has to stay next to the rule, or it comes back."""
+        src = open(aod.__file__).read()
+        assert "CONTEXT, NEVER A GATE" in src
+        assert "measured five times" in src
 
     def test_the_endpoint_does_not_order_angles_by_the_record(self):
         import inspect

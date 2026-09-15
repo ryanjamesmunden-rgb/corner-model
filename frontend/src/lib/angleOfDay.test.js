@@ -1,5 +1,5 @@
 import {
-  angleLabel, deadMessage, hasPanel, runLabel, splitAngles, statedRecord,
+  angleLabel, deadMessage, hasPanel, runLabel, splitAngles, statedRecord, whyLabel,
 } from "./angleOfDay";
 
 // The thing being protected here is a sentence, not a layout. "88%" and "7 of 8" describe
@@ -143,5 +143,31 @@ describe("what the angle says it is", () => {
 
   test("a bare window stands in when nothing has settled", () => {
     expect(runLabel({ hits: 5, window: 5 })).toBe("5 of 5");
+  });
+});
+
+describe("why the fixture backs the streak up", () => {
+  // The bar is what stops a quiet Tuesday filling with whatever was left on the board, so
+  // the panel shows it rather than applying it silently.
+  test("the model's read and the opponent's leakiness are both stated", () => {
+    expect(whyLabel({ support: { prob: 71.2, opp_conceded: 7.1 } }))
+      .toBe("model 71.2% · opp concedes 7.1/game");
+  });
+
+  test("the opponent's first-half scoring is not offered as a reason", () => {
+    // Five measurements in this repo have failed to find an effect from it. It rides on
+    // the row as context; listing it here would make it read as part of the bar.
+    const why = whyLabel({ support: { prob: 71.2, opp_conceded: 7.1, opp_fh_rate: 62 } });
+    expect(why).not.toMatch(/62/);
+    expect(why).not.toMatch(/first|1H|fh/i);
+  });
+
+  test("a half-populated row says what it can", () => {
+    expect(whyLabel({ support: { prob: 66 } })).toBe("model 66%");
+  });
+
+  test("no support at all is an empty string, not the word undefined", () => {
+    expect(whyLabel({})).toBe("");
+    expect(whyLabel(null)).toBe("");
   });
 });

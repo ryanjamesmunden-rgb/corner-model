@@ -91,6 +91,9 @@ export const api = {
   // Every upcoming game ranked by projected corners — including the ones the fixture
   // board drops, which is the whole point. See the note on /api/projections.
   projections: (params) => axios.get(`${API}/projections`, { params }).then(withPreview),
+  // How the board above has actually done. Same gate as the board itself — the record is
+  // the board's claim to be worth reading, and the board is not public.
+  projectionRecord: (params) => axios.get(`${API}/projections/record`, { params }).then((r) => r.data),
   topCornerTeams: (params) => axios.get(`${API}/top-corner-teams`, { params }).then((r) => r.data),
   perfectGames: (params) => axios.get(`${API}/perfect-games`, { params }).then(withPreview),
   topMismatches: (params) => axios.get(`${API}/top-mismatches`, { params }).then(withPreview),

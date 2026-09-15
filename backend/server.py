@@ -23,6 +23,7 @@ from datetime import datetime, timezone, timedelta
 from collections import defaultdict, deque
 
 import settlement
+import projection_record
 from settlement import settle_pending
 
 ROOT_DIR = Path(__file__).parent
@@ -4974,6 +4975,158 @@ async def projections(days: int = 7, league_id: Optional[str] = None,
             # No explicit limit: the tier decides — 3 signed out, 6 signed in, all for a
             # member. Pinning PREVIEW_ROWS here would have capped a member at three.
             "rows": _preview(out, user, response)}
+
+
+class ProjectionSnapshotBody(BaseModel):
+    """Which projections went out, so they can be graded once the games are played."""
+    tag: Optional[str] = None       # defaults to today
+    days: int = 3                   # horizon to freeze
+    limit: int = 250
+
+
+@api_router.post("/projections/snapshot")
+async def snapshot_projections(body: ProjectionSnapshotBody, token: Optional[str] = None,
+                               user: dict = Depends(get_current_user)):
+    """Freeze today's projections before the games are played.
+
+    WITHOUT THIS THERE IS NO RECORD AND THERE CANNOT BE ONE LATER. A projection is a number
+    about a fixture that has not happened; once it has happened the fixture leaves the
+    upcoming window and the number is gone. Recomputing it afterwards would produce a
+    projection made with the benefit of the result — every subsequent game the two sides
+    played is now in the sample — so a record built that way would grade the model against
+    a version of itself that knew more. Every day nobody snapshots is a day that can never
+    be graded, which is the same argument snapshot_streaks makes and the reason it runs on
+    a schedule rather than when somebody remembers.
+
+    EVERY ROW, BOTH ENDS, NO QUALITY BAR. The board's whole purpose is showing the quiet
+    games as well as the busy ones, and a snapshot that kept only the confident half would
+    produce a record of the confident half. `limit` is a size guard, not a filter — rows
+    are taken in the board's own order so what is frozen is what was shown.
+
+    Idempotent per tag, and stale-data-refusing, for the reasons given on snapshot_streaks:
+    a snapshot that could be rewritten after kick-off is not a snapshot, and one built from
+    old numbers quietly becomes part of a published record.
+    """
+    _check_tools_token(token)
+    tag = body.tag or datetime.now(timezone.utc).date().isoformat()
+    existing = await db.projection_snapshots.find_one({"_id": tag}, {"_id": 0})
+    if existing:
+        return {"status": "exists", "tag": tag,
+                "entries": len(existing.get("entries") or [])}
+
+    now_ = datetime.now(timezone.utc)
+    newest = await db.leagues.find({"data_source": "real"}, {"_id": 0, "synced_at": 1}) \
+        .sort("synced_at", -1).limit(1).to_list(1)
+    age_h = None
+    if newest and newest[0].get("synced_at"):
+        try:
+            age_h = round((now_ - datetime.fromisoformat(newest[0]["synced_at"])).total_seconds() / 3600, 1)
+        except Exception:
+            age_h = None
+    if age_h is None or age_h > SNAPSHOT_MAX_AGE_HOURS:
+        return {"status": "stale", "tag": tag, "data_age_hours": age_h,
+                "max_age_hours": SNAPSHOT_MAX_AGE_HOURS, "entries": 0}
+
+    rows = await _fixture_projections(body.days)
+    fixtures = {f["fixture_id"]: f for f in
+                await db.fixtures.find({}, {"_id": 0}).to_list(5000)}
+    keep = sorted(rows.values(), key=lambda r: r.get("lambda_total") or 0, reverse=True)
+    entries = []
+    for i, r in enumerate(keep[:max(1, min(body.limit, 500))]):
+        fx = fixtures.get(r["fixture_id"]) or {}
+        if not fx.get("home_team_id"):
+            continue        # nothing to settle it against later
+        entries.append({
+            "fixture_id": r["fixture_id"], "kickoff": r["date"],
+            "league_id": r["league_id"], "league_name": r["league_name"],
+            "home": r["home"], "away": r["away"],
+            # THE HOME SIDE'S ID AND THE AWAY SIDE'S NAME, which is the pair _grade_entries
+            # settles on — the played match is found in the home team's own record and
+            # matched by opponent. Storing the shape the existing grader already uses means
+            # there is one way of identifying a played fixture on this codebase, not two.
+            "team_id": fx["home_team_id"], "opponent": r["away"],
+            "lambda_total": r["lambda_total"],
+            "lambda_home": r["lambda_home"], "lambda_away": r["lambda_away"],
+            "league_avg_total": r["league_avg_total"], "corner_edge": r["corner_edge"],
+            "home_games": r["home_games"], "away_games": r["away_games"],
+            "rank": i + 1,
+        })
+    doc = {"tag": tag, "created_at": now_.isoformat(), "days": body.days,
+           "data_age_hours": age_h, "entries": entries}
+    await db.projection_snapshots.insert_one({"_id": tag, **doc})
+    return {"status": "created", "tag": tag, "entries": len(entries)}
+
+
+async def _grade_projections(entries: List[dict]) -> List[dict]:
+    """Attach the actual corner count to each snapshotted fixture.
+
+    The played match is found in the home side's own record, matched on opponent AND on
+    being at or after the kick-off we froze — so a repeat fixture earlier in the season
+    cannot be graded in its place. Same rule as _grade_entries, for the same reason.
+    """
+    teams = await _teams_for(entries)
+    out = []
+    for e in entries:
+        team = teams.get(e["team_id"]) or {}
+        total = None
+        for m in (team.get("real_matches") or []):
+            if m.get("opponent") != e.get("opponent"):
+                continue
+            if e.get("kickoff") and (m.get("date") or "") < e["kickoff"][:10]:
+                continue
+            total = m.get("corners_for", 0) + m.get("corners_against", 0)
+            break
+        out.append(projection_record.grade(e, total))
+    return out
+
+
+@api_router.get("/projections/record")
+async def projections_record(days: int = 30, token: Optional[str] = None,
+                             user: dict = Depends(get_current_user)):
+    """How the projections board has actually done.
+
+    THE QUESTION IS NOT "how accurate is the model". It is the one somebody stands to act
+    on: when this board calls a game quiet, does that game go under. So the record leads
+    with the per-line hit rate split by the side the projection called, and reports the
+    error second — a model can be two corners out on average and still land the right side
+    of 9.5 four times in five, and only one of those facts settles a bet.
+
+    Behind the same free account as the board itself. The record IS the board's claim to
+    be worth reading, and the board is not public.
+    """
+    if not _has_tools_token(token) and user.get("user_id") == PUBLIC_USER_ID:
+        raise HTTPException(status_code=401, detail="Sign in to see the projection record")
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=max(1, min(days, 365)))).date().isoformat()
+    snaps = await db.projection_snapshots.find(
+        {"tag": {"$gte": cutoff}}, {"_id": 0}).sort("tag", -1).to_list(400)
+    # ONE ROW PER FIXTURE, newest snapshot wins. A fixture three days out is frozen again
+    # the next day and the day after, and counting it three times would weight whichever
+    # games sat longest in the window — a silent thumb on the scale that nothing in the
+    # output would reveal.
+    seen, entries = set(), []
+    for s in snaps:
+        for e in (s.get("entries") or []):
+            if e["fixture_id"] in seen:
+                continue
+            seen.add(e["fixture_id"])
+            entries.append({**e, "tag": s.get("tag")})
+    rows = await _grade_projections(entries)
+    summary = projection_record.summarise(rows)
+    settled = [r for r in rows if r.get("settled")]
+    settled.sort(key=lambda r: r.get("kickoff") or "", reverse=True)
+    return {
+        "days": days, "snapshots": len(snaps), **summary,
+        # The settled games themselves, so a reader can check any line of the summary
+        # against a match they remember rather than taking the percentage on trust.
+        "rows": [{
+            "fixture_id": r["fixture_id"], "kickoff": r.get("kickoff"),
+            "league_id": r.get("league_id"), "league_name": r.get("league_name"),
+            "home": r.get("home"), "away": r.get("away"),
+            "projected": r.get("lambda_total"), "actual": r.get("actual_total"),
+            "error": r.get("error"), "band": r.get("band"),
+            "league_avg_total": r.get("league_avg_total"),
+        } for r in settled[:200]],
+    }
 
 
 @api_router.get("/top-corner-teams")

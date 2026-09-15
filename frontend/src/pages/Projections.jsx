@@ -7,6 +7,7 @@ import PreviewWall from "@/components/PreviewWall";
 import { flagBullet } from "@/lib/countryFlag";
 import { kickoffLabel } from "@/lib/kickoff";
 import SignedInOnly from "@/components/SignedInOnly";
+import ProjectionRecord from "@/components/ProjectionRecord";
 import { lockClass, lockCounts } from "@/lib/locked";
 
 // EVERY GAME, RANKED BY PROJECTED CORNERS — BOTH ENDS OF THE LIST.
@@ -230,6 +231,12 @@ function ProjectionsBoard() {
             locked={lockCounts(rows).locked} noun="games" />
         )}
       </div>
+
+      {/* THE RECORD SITS UNDER THE BOARD, not on a page of its own. A projection and its
+          track record are one thought — the number above is worth exactly as much as the
+          evidence below it, and putting them in two places lets the first be read without
+          the second. */}
+      <ProjectionRecord days={30} />
 
       <p className="text-[10px] text-muted-foreground leading-relaxed max-w-2xl">
         <span className="text-foreground">λ is an expected count, not a price.</span> It

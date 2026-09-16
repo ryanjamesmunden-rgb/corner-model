@@ -7,7 +7,7 @@ import { withFlag } from "@/lib/countryFlag";
 import { fixtureShare } from "@/lib/shareText";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import StarButton from "@/components/StarButton";
-import { TONE, toneClass, toneLabel } from "@/lib/angleTone";
+import { TONE, runFraction, thinHistory, toneClass, toneLabel } from "@/lib/angleTone";
 import { FILTERS, applyFilter } from "@/lib/fixtureFilters";
 
 // The best upcoming games, grouped by day — a schedule you can scan, not another ranked
@@ -184,6 +184,18 @@ export default function FixtureBoard({ leagueId = "all" }) {
             one thing and always carries its own icon, so the shape tells you as much as the
             colour does.
           </span>
+          {/* WHAT THE NUMBERS ON A CHIP MEAN. The key explained the colours and said
+              nothing about the figures beside them, which is the half that decides whether
+              a chip is worth anything — 9/10 and 4/5 are different claims and both used to
+              arrive looking identical. */}
+          <span className="text-[10px] text-muted-foreground/70 w-full">
+            <span className="font-mono-data text-foreground">9/10</span> is the run — games
+            cleared out of games counted, over the last five or the last ten.{" "}
+            <span className="font-mono-data text-foreground">·5g</span> flags a side with
+            barely any season on file, where a run is most of its record rather than form
+            inside it. Games where several angles land at once sort first: more to work out,
+            and more ways to be right.
+          </span>
         </div>
       )}
 
@@ -290,12 +302,31 @@ function FixtureRow({ f, onClick }) {
           {f.angles.map((a, i) => {
             const Icon = KIND[a.kind] || Target;
             const cls = toneClass(a.kind, a.strong, a.streak_len);
+            const run = runFraction(a);
+            const thin = thinHistory(a);
             return (
               <span key={i} data-testid="fb-angle" data-strong={a.strong ? "1" : "0"}
+                data-run={run || ""}
                 title={`${toneLabel(a.kind, a.strong, a.streak_len)} — ${a.team} · ${a.detail}`}
                 className={`inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded border font-mono-data ${cls}`}>
                 <Icon className="h-2.5 w-2.5" />
                 <span className="font-sans">{a.team}</span> {a.label}
+                {/* THE RUN, ON THE CHIP. It lived in the `title` attribute, which a phone
+                    has no way to show — so the board said "Cercle Brugge 4+ corners" and
+                    nothing about whether that was four games or fourteen. The fraction is
+                    the difference between a chip and a claim. */}
+                {run && (
+                  <span className="font-semibold opacity-90 tabular-nums"
+                    data-testid="fb-angle-run">{run}</span>
+                )}
+                {/* A side with almost no season on file, said rather than implied. The
+                    backend already refuses to call this strong; without a mark the reader
+                    sees only a paler chip and cannot tell "unproven" from "nothing to
+                    prove it with". */}
+                {thin && (
+                  <span className="opacity-70" data-testid="fb-angle-thin"
+                    title={`only ${a.games} games on file`}>·{a.games}g</span>
+                )}
               </span>
             );
           })}

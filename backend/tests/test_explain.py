@@ -9,8 +9,18 @@ from dotenv import dotenv_values
 
 frontend_env = dotenv_values("/app/frontend/.env")
 base_url = os.environ.get("REACT_APP_BACKEND_URL") or frontend_env.get("REACT_APP_BACKEND_URL")
+# AN INTEGRATION TEST, AND IT SAYS SO RATHER THAN EXPLODING.
+#
+# This file talks to a RUNNING backend over HTTP. Without one there is nothing to test, and
+# raising at import time made pytest report a collection ERROR — so a suite that was
+# entirely healthy printed "12 errors" on every run, for months, and everybody learned to
+# read past it. A test that cannot run is a skip with a reason, not a failure: the first is
+# information and the second is noise that hides real breakage.
+#
+# Set REACT_APP_BACKEND_URL to run these against a deployment.
 if not base_url:
-    raise RuntimeError("REACT_APP_BACKEND_URL missing")
+    pytest.skip("REACT_APP_BACKEND_URL is not set — these need a running backend",
+                allow_module_level=True)
 BASE_URL = base_url.rstrip("/")
 TOKEN = "qa-test-token-123"
 

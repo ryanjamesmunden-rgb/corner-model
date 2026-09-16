@@ -29,3 +29,7 @@ httpx==0.28.1
 APScheduler==3.11.3
 anthropic>=0.75.0
 stripe>=9.0.0
+# Used by tools/board_xlsx.py, which builds the fill-in EV sheet, and by the 27 tests
+# that cover it. Undeclared until CI ran for the first time and quietly skipped every
+# one of them — a green tick over a file nobody was testing.
+openpyxl>=3.1.0

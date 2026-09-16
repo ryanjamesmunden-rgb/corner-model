@@ -1,0 +1,105 @@
+# Run the tests. Nothing did, until now.
+#
+# WHY THIS IS THE GAP IT IS. There are roughly 1,300 tests in this repo and not one of them
+# ran anywhere except on somebody's machine, by hand, when they remembered. Every guard
+# written to stop a silent failure — the snapshot that must freeze before kick-off, the
+# percentage that must not be shown below its sample floor, the held rows that must never
+# reach the headline — was only as good as the last person who thought to type `pytest`.
+#
+# That is the worst kind of safety net: one that exists, reads convincingly in review, and
+# is not connected to anything. A change that breaks fifty of these merges green.
+#
+# ON EVERY PUSH AND EVERY PULL REQUEST, because the value is in the runs nobody asked for.
+# A suite you have to remember to trigger is the same suite you have to remember to run.
+#
+# FAST AND CHEAP ON PURPOSE. No database, no browser, no API credits: the backend tests run
+# against fakes and the frontend ones are pure logic (see the note about react-router in
+# lib/). The whole thing is well under two minutes, which is what keeps it from becoming
+# something people learn to skip.
+name: Tests
+
+on:
+  push:
+  pull_request:
+
+# A second push to the same branch makes the first run's answer irrelevant.
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install
+        working-directory: backend
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      # MONGO_URL AND DB_NAME ARE SET AND NOTHING CONNECTS. Importing server.py builds a
+      # motor client, which does not dial until awaited — so the suite needs the variables
+      # present and needs no database behind them. A real Mongo here would be a service
+      # container and two minutes for tests that deliberately use fakes.
+      #
+      # REACT_APP_BACKEND_URL IS DELIBERATELY ABSENT. Six files talk to a running backend
+      # over HTTP; without one they skip, with a reason. Setting it here would point them
+      # at production and turn a test run into live traffic.
+      - name: Backend tests
+        working-directory: backend
+        env:
+          MONGO_URL: mongodb://localhost:27017
+          DB_NAME: ci_corner_model
+        run: python -m pytest tests/ -q
+
+  frontend:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          # 24 BECAUSE package.json SAYS SO. `engines.node` is "24.x" and yarn enforces
+          # it during validation, so pinning 20 here failed the install outright — before a
+          # single test ran, on the very first CI run this repo has ever had. Taken from
+          # the declaration rather than guessed a second time.
+          node-version: "24"
+          # YARN, NOT NPM. The repo has a yarn.lock and no package-lock.json, so `npm ci`
+          # would fail outright and an npm cache key would point at a file that does not
+          # exist — a workflow that has never run is exactly where that goes unnoticed.
+          cache: yarn
+          cache-dependency-path: frontend/yarn.lock
+
+      - name: Install
+        working-directory: frontend
+        # --frozen-lockfile so a run cannot quietly resolve a different tree than the one
+        # that was committed. CI testing something other than the checked-in dependencies
+        # is CI testing nothing in particular.
+        run: yarn install --frozen-lockfile --non-interactive
+
+      - name: Frontend tests
+        working-directory: frontend
+        env:
+          CI: "true"
+        run: npx craco test --watchAll=false
+
+      # THE BUILD IS A TEST. Jest never imports the pages — they pull in react-router, which
+      # it cannot resolve, which is why the logic lives in lib/ — so a component that does
+      # not compile passes every test in the suite and fails on deploy. This is the only
+      # thing in CI that reads the JSX.
+      - name: Build
+        working-directory: frontend
+        env:
+          CI: "true"
+          REACT_APP_BACKEND_URL: https://corner-model.onrender.com
+        run: npx craco build

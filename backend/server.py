@@ -5821,50 +5821,65 @@ async def public_results(weeks: int = RESULTS_WEEKS, token: Optional[str] = None
             out.append(e)
         return out
 
-    # ONE BLOCK PER WEEK, NOT PER SNAPSHOT. The snapshot went daily and each one became its
-    # own section, so a month of football arrived as thirty blocks under a heading that
-    # still said "week". See record_view.
-    weeks_out, everything, held_rows = [], [], []
-    for block in record_view.group_by_week(snaps):
-        rows, held, tags = [], [], []
-        for s in block["days"]:
-            fresh = _fresh(s.get("entries") or [])
-            # WHAT THE SITE STOOD BEHIND, counted under the rule in force when it was
-            # frozen. A quiet Tuesday freezes the whole board because 25 is a quota, not a
-            # bar — and the site published none of it. Counting those as claims would
-            # record picks it declined to make; re-judging the older rows by today's bar
-            # would score them under a rule they were never made under.
-            pub, unpublished = record_view.split(fresh)
-            rows.extend(_grade_entries(pub, teams))
-            held.extend(_grade_entries(unpublished, teams))
-            tags.append(s.get("tag"))
-        everything.extend(rows)
-        held_rows.extend(held)
+    def _row(r):
+        return {
+            "name": r["name"], "league_id": r["league_id"],
+            "line": r["line"], "direction": r["direction"],
+            # Built here rather than in the browser so the page cannot label an under
+            # as an over — the same rule the share text follows.
+            "line_label": streak_line_label(r["line"], r["direction"]),
+            "subject": r["subject"], "opponent": r.get("opponent"),
+            "is_home": r.get("is_home"), "kickoff": r.get("kickoff"),
+            "result": r["result"], "value": r.get("value"),
+            "price": r.get("price"), "stake": r.get("stake"),
+        }
 
-        def _row(r):
-            return {
-                "name": r["name"], "league_id": r["league_id"],
-                "line": r["line"], "direction": r["direction"],
-                # Built here rather than in the browser so the page cannot label an under
-                # as an over — the same rule the share text follows.
-                "line_label": streak_line_label(r["line"], r["direction"]),
-                "subject": r["subject"], "opponent": r.get("opponent"),
-                "is_home": r.get("is_home"), "kickoff": r.get("kickoff"),
-                "result": r["result"], "value": r.get("value"),
-                "price": r.get("price"), "stake": r.get("stake"),
-            }
+    def _weeks(source):
+        """Snapshots -> week blocks, and everything that counted, in one pass.
 
-        weeks_out.append({
-            "tag": block["week"], "week": block["week"],
-            "label": record_view.label(block["week"]),
-            "days": len(block["days"]), "tags": tags,
-            **_tally(rows),
-            # Shown, never counted. The gap between these two numbers is the most
-            # interesting thing on a quiet midweek: what was on the board, and what the
-            # site was willing to put its name to.
-            "held": {**_tally(held), "rows": [_row(r) for r in held]},
-            "rows": [_row(r) for r in rows],
-        })
+        ONE BLOCK PER WEEK, NOT PER SNAPSHOT. The snapshot went daily and each one became
+        its own section, so a month of football arrived as thirty blocks under a heading
+        that still said "week".
+        """
+        blocks, counted_rows = [], []
+        for block in record_view.group_by_week(source):
+            rows, held, tags = [], [], []
+            for s in block["days"]:
+                # WHAT THE SITE STOOD BEHIND. The snapshot freezes the top 25 every night,
+                # which on a quiet Tuesday is the whole board including the bottom of it —
+                # and the site published none of it. Counting those would record picks it
+                # declined to make.
+                pub, unpublished = record_view.split(_fresh(s.get("entries") or []))
+                rows.extend(_grade_entries(pub, teams))
+                held.extend(_grade_entries(unpublished, teams))
+                tags.append(s.get("tag"))
+            counted_rows.extend(rows)
+            blocks.append({
+                "tag": block["week"], "week": block["week"],
+                "label": record_view.label(block["week"]),
+                "days": len(block["days"]), "tags": tags,
+                **_tally(rows),
+                # Shown, never counted. The gap between these two numbers is the most
+                # interesting thing on a quiet midweek: what was on the board, and what
+                # the site was willing to put its name to.
+                "held": {**_tally(held), "rows": [_row(r) for r in held]},
+                "rows": [_row(r) for r in rows],
+            })
+        return blocks, counted_rows
+
+    # THE CLEAN SLATE. The picks were chosen one way and are now chosen another, and a
+    # single percentage spanning both describes neither — it is an average of two rules,
+    # and a reader cannot tell which one they are being sold.
+    #
+    # So the headline covers the CURRENT rule only, and begins with almost nothing in it.
+    # The earlier era is kept whole and graded under its own heading: those calls were made
+    # before kick-off and they landed or they did not, and a snapshot is the only evidence
+    # of what was claimed before a game was played — recomputed afterwards it counts only
+    # the survivors. Hiding it would make the record a highlight reel; deleting it would
+    # end any chance of ever grading that period again.
+    current_snaps, earlier_snaps = record_view.split_eras(snaps)
+    weeks_out, everything = _weeks(current_snaps)
+    archive_weeks, archive_rows = _weeks(earlier_snaps)
 
     # ANGLES POSTED BY HAND, split by whether they were logged while still a prediction.
     # The split is the point. Both lists are published — hiding the ones added afterwards
@@ -5894,9 +5909,24 @@ async def public_results(weeks: int = RESULTS_WEEKS, token: Optional[str] = None
 
     counted = everything + claimed
     return {
+        # THE CURRENT RULE ONLY. Hand-posted angles still count towards it — they are
+        # claims a person made in public before kick-off, which is the one thing the
+        # headline has always measured — but the snapshot half is the corroborated era
+        # alone. See record_view for why the boundary is read from the data.
         "summary": {**_tally(counted), "weeks": len(weeks_out),
-                    "since": weeks_out[-1]["tag"] if weeks_out else None},
+                    "since": weeks_out[-1]["tag"] if weeks_out else None,
+                    "rule": record_view.ERA_CORROBORATED},
         "weeks": weeks_out,
+        # KEPT, NOT DELETED, AND NOT IN THE NUMBER ABOVE. Those calls were made before
+        # kick-off and they landed or they did not; hiding them because the method moved on
+        # is how a record becomes a highlight reel. It cannot be rebuilt either — a
+        # snapshot is the only evidence of what was claimed before a game was played.
+        "archive": {
+            "rule": record_view.ERA_STREAK_ONLY,
+            "summary": {**_tally(archive_rows), "weeks": len(archive_weeks),
+                        "since": archive_weeks[-1]["tag"] if archive_weeks else None},
+            "weeks": archive_weeks,
+        },
         "posted": {
             "claimed": {**_tally(claimed), "rows": [public_row(r) for r in claimed]},
             "recalled": {**_tally(recalled), "rows": [public_row(r) for r in recalled]},

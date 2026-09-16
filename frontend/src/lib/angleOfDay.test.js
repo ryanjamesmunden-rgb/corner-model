@@ -1,5 +1,6 @@
 import {
-  angleLabel, deadMessage, hasPanel, runLabel, splitAngles, statedRecord, whyLabel,
+  angleLabel, coversLabel, deadMessage, hasPanel, runLabel, splitAngles,
+  statedRecord, whyLabel,
 } from "./angleOfDay";
 
 // The thing being protected here is a sentence, not a layout. "88%" and "7 of 8" describe
@@ -58,7 +59,7 @@ describe("what the record may be stated as", () => {
 describe("a dead day says which kind of dead", () => {
   test("stale data admits it is the data", () => {
     const d = deadMessage({ dead: true, reason: "stale" });
-    expect(d.title).toBe("Not publishing today");
+    expect(d.title).toBe("Not publishing this round");
     expect(d.body).toMatch(/stale form/);
   });
 
@@ -68,7 +69,7 @@ describe("a dead day says which kind of dead", () => {
     const quiet = deadMessage({ dead: true, reason: "no_fixtures" });
     const strict = deadMessage({ dead: true, reason: "no_qualifier" });
     expect(quiet.title).not.toBe(strict.title);
-    expect(strict.body).toMatch(/all five of its last five/);
+    expect(strict.body).toMatch(/long enough to speak for itself/);
   });
 
   test("an unknown reason still produces words", () => {
@@ -188,5 +189,35 @@ describe("why the fixture backs the streak up", () => {
   test("no support at all is an empty string, not the word undefined", () => {
     expect(whyLabel({})).toBe("");
     expect(whyLabel(null)).toBe("");
+  });
+});
+
+
+describe("which days the card is about", () => {
+  // A card is a block of days, and a reader who cannot see which days is looking at a list
+  // of games with no idea whether tonight is among them.
+  // Asserted on SHAPE rather than on the exact month abbreviation: ICU renders September
+  // as "Sept" in Node and "Sep" in some browsers, and pinning either would fail on a
+  // machine where the code is perfectly correct.
+  test("a span reads as a range, with both ends dated", () => {
+    const label = coversLabel({ covers: { first: "2026-09-15", last: "2026-09-17" } }, "en-GB");
+    expect(label).toMatch(/^Tue 15 Sept? – Thu 17 Sept?$/);
+  });
+
+  test("a single day does not read as a range of one", () => {
+    const label = coversLabel({ covers: { first: "2026-09-15", last: "2026-09-15" } }, "en-GB");
+    expect(label).toMatch(/^Tue 15 Sept?$/);
+    expect(label).not.toContain("–");
+  });
+
+
+  test("no window is an empty string, not the word undefined", () => {
+    expect(coversLabel(null)).toBe("");
+    expect(coversLabel({})).toBe("");
+    expect(coversLabel({ covers: { first: "2026-09-15" } })).toBe("");
+  });
+
+  test("an unreadable date falls back to the raw value rather than Invalid Date", () => {
+    expect(coversLabel({ covers: { first: "nonsense", last: "nonsense" } })).toBe("nonsense");
   });
 });

@@ -116,9 +116,10 @@ export const api = {
   // costs nothing, so it is a door and not a wall, and the share card carries the number
   // to people who have not come through it.
   results: (weeks) => axios.get(`${API}/results`, { params: { weeks } }).then((r) => r.data),
-  // Today's angles, and the record of the rule that picked them. Gated the same way and
-  // for the same reason: this is the same board one day fresher.
-  anglesToday: (count) => axios.get(`${API}/angles/today`, { params: { count } }).then((r) => r.data),
+  // The round ahead — midweek from Monday, the weekend from Wednesday — and the record of
+  // the rule that picked it. Gated the same way and for the same reason as the record:
+  // this is the same picks, earlier.
+  anglesCard: (count) => axios.get(`${API}/angles/card`, { params: { count } }).then((r) => r.data),
   // Token-gated write. The backend stamps before_kickoff from its own clock — the caller
   // cannot send it, which is what keeps the public rate honest.
   logPostedAngle: (token, body) => axios.post(`${API}/angles/posted`, body, { params: { token } }).then((r) => r.data),

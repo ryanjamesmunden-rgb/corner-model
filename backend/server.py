@@ -1815,7 +1815,11 @@ async def _screen_angle_board():
     the reader means is a London calendar date, so the window is taken wide and the date is
     applied exactly.
     """
-    return await _angle_rows(within_days=2)
+    # SIX DAYS, BECAUSE THE WEEKEND CARD LOOKS FIVE AHEAD. It was two, which was right when
+    # the panel was a single day and silently wrong the moment it became a card: Wednesday's
+    # weekend card runs to Monday, and a two-day scan would have returned an empty card
+    # every week without erroring once.
+    return await _angle_rows(within_days=6)
 
 
 async def _screen_top_teams():
@@ -5440,6 +5444,14 @@ class StreakSnapshotBody(BaseModel):
     tag: Optional[str] = None       # defaults to today; the label the results are read back by
     days: int = 3                   # horizon the posted board covered
     limit: int = 8
+    # WHICH CARD THIS FREEZE IS FOR — "midweek" or "weekend". Given one, the window comes
+    # from the card rather than from `days`, and `qualified` is set only for rows INSIDE it.
+    #
+    # Without this the snapshot and the card disagree about what was published: a Monday
+    # freeze reaching four days ahead also sweeps up Monday evening's own fixtures, which
+    # the midweek card (Tuesday to Thursday) never shows. Marking those qualified would put
+    # picks in the record that no member ever saw.
+    card: Optional[str] = None
 
 
 @api_router.post("/streaks/snapshot")
@@ -5501,6 +5513,13 @@ async def snapshot_streaks(body: StreakSnapshotBody, token: Optional[str] = None
     #   opponent was on the day, and that number moves every time the league plays — so it
     #   cannot be reconstructed afterwards without quietly using games that had not been
     #   played yet. Written down now or never knowable.
+    # THE CARD'S OWN WINDOW WHEN ONE IS NAMED. A Monday freeze reaching Thursday also
+    # sweeps up Monday evening's fixtures, which the midweek card never shows — so the
+    # window decides `qualified`, and `days` only decides how far the scan looks.
+    window = None
+    if body.card in angle_of_day.CARDS:
+        window = angle_of_day.card_window(
+            body.card, datetime.fromisoformat(tag).date())
     rows = await _angle_rows(within_days=body.days)
     entries = []
     for r in rows[:max(1, min(body.limit, 25))]:
@@ -5535,7 +5554,14 @@ async def snapshot_streaks(body: StreakSnapshotBody, token: Optional[str] = None
             # of the snapshot is: a bar re-applied later is a bar applied to different data.
             "support": support,
             "prob": support.get("prob"),
-            "qualified": angle_of_day.qualifies(r),
+            # ON THE CARD, which is a stricter question than clearing the bar: a row can
+            # qualify and still fall outside the window this card covers, and a pick nobody
+            # was shown is not a claim the site made.
+            "qualified": angle_of_day.qualifies(r) and (
+                window is None
+                or (angle_of_day.london_day(nf.get("date")) or "") >= window[0].isoformat()
+                and (angle_of_day.london_day(nf.get("date")) or "") <= window[1].isoformat()),
+            "card": body.card,
             # WHICH ARGUMENT LET IT THROUGH. "10 in a row" and "6 in a row against a
             # defence conceding 7.1" are different claims, and a record that cannot tell
             # them apart cannot later say which kind of pick has been working. Frozen with
@@ -6034,24 +6060,35 @@ async def _angle_record(count: int) -> dict:
     }
 
 
-@api_router.get("/angles/today")
-async def angles_today(count: int = angle_of_day.COUNT, token: Optional[str] = None,
-                       user: dict = Depends(get_current_user)):
-    """Today's angles, the record behind the rule, or an honest nothing.
+@api_router.get("/angles/card")
+async def angles_card(count: int = angle_of_day.COUNT, token: Optional[str] = None,
+                      user: dict = Depends(get_current_user)):
+    """The round ahead, the record behind the rule, or an honest nothing.
+
+    TWO DROPS A WEEK RATHER THAN A DAILY RESET. Monday puts out the midweek — Tuesday to
+    Thursday — and Wednesday puts out the weekend, Friday to Monday. Between them every day
+    belongs to exactly one card: covered twice would be a fixture claimed twice, covered by
+    neither would be a night this site never had a view on.
+
+    Wednesday for the weekend is this site's own prior finding rather than a guess — that is
+    roughly when the weekend's prices appear, so the card reaches a member while the price
+    is still there to take. See the weekend-card note in social_draft.yml.
 
     GATED LIKE THE RECORD IT SITS ON. /api/results answers 401 to a guest because the picks
-    are the product; this is the same picks, one day fresher, and leaving it open would be
-    a side door into the thing the other endpoint gates.
+    are the product; this is the same picks, earlier, and leaving it open would be a side
+    door into the thing the other endpoint gates.
 
     REFUSES ON STALE DATA rather than publishing off old form, on the same reasoning as the
     snapshot: a call read by someone who cannot see how fresh it was does not merely go
     unused — it becomes something they acted on.
     """
     if not _has_tools_token(token) and user.get("user_id") == PUBLIC_USER_ID:
-        raise HTTPException(status_code=401, detail="Sign in to see today's angles")
+        raise HTTPException(status_code=401, detail="Sign in to see the card")
     count = max(1, min(count, 10))
     now = datetime.now(timezone.utc)
-    day = now.astimezone(ZoneInfo(angle_of_day.TZ)).date().isoformat()
+    today = now.astimezone(ZoneInfo(angle_of_day.TZ)).date()
+    card, published_on = angle_of_day.live_card(today)
+    first, last = angle_of_day.card_window(card, published_on)
 
     newest = await db.leagues.find({"data_source": "real"}, {"_id": 0, "synced_at": 1}) \
         .sort("synced_at", -1).limit(1).to_list(1)
@@ -6068,25 +6105,33 @@ async def angles_today(count: int = angle_of_day.COUNT, token: Optional[str] = N
     # one in the logs, and the panel says "not publishing" either way.
     rows = await _screen("angle_board") if _cache_ok() else await _screen_angle_board()
     live = angle_of_day.upcoming(rows, now.isoformat())
-    angles = [] if stale else angle_of_day.shortlist(live, day, count)
+    angles = [] if stale else angle_of_day.shortlist(live, first, last, count)
     # THE ARGUMENT EACH ONE IS PUBLISHED ON, so the panel can say it. A long run and a
     # corroborated one are different claims and a reader who cannot tell which is which has
     # been handed a list rather than a reason.
     for a in angles:
         a["route"] = angle_of_day.qualifying_route(a)
 
+    # FIXTURES IN THE CARD'S WINDOW, not today's. It is what separates "no football in this
+    # round" from "football, and none of it clears the bar" — and on a card covering four
+    # days those are very different admissions.
     fixtures = await db.fixtures.find({}, {"_id": 0, "date": 1}).to_list(5000)
-    fixtures_today = sum(1 for f in fixtures
-                         if angle_of_day.london_day(f.get("date")) == day)
+    lo, hi = first.isoformat(), last.isoformat()
+    in_window = sum(1 for f in fixtures
+                    if (angle_of_day.london_day(f.get("date")) or "") >= lo
+                    and (angle_of_day.london_day(f.get("date")) or "") <= hi)
 
     return {
-        "day": day, "rule": angle_of_day.RULE, "count": count,
+        "card": card, "label": angle_of_day.CARDS[card]["label"],
+        "published_on": published_on.isoformat(),
+        "covers": {"first": lo, "last": hi},
+        "rule": angle_of_day.RULE, "count": count,
         "data_age_hours": age_h,
-        **angle_of_day.state(angles, fixtures_today, stale),
+        **angle_of_day.state(angles, in_window, stale),
         "top": angles[0] if angles else None,
         "angles": angles,
-        "fixtures_today": fixtures_today,
-        "qualified": len(angle_of_day.shortlist(live, day, 99)),
+        "fixtures_today": in_window,
+        "qualified": len(angle_of_day.shortlist(live, first, last, 99)),
         "record": await _angle_record(count),
     }
 

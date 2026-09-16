@@ -10,6 +10,7 @@ import asyncio
 import os
 import sys
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -28,7 +29,31 @@ def iso(hours):
     return (NOW + timedelta(hours=hours)).isoformat().replace("+00:00", "Z")
 
 
-TODAY = aod.london_day(iso(0))
+# THE LIVE CARD'S OWN WINDOW, computed the way the endpoint computes it. The tests used to
+# place fixtures a few hours out and call that "today", which stopped meaning anything once
+# the panel became a card: on a Wednesday the weekend card covers Friday to Monday, so a
+# game four hours away is not on it at all.
+TODAY = datetime.now(timezone.utc).astimezone(ZoneInfo(aod.TZ)).date()
+CARD, PUBLISHED = aod.live_card(TODAY)
+FIRST, LAST = aod.card_window(CARD, PUBLISHED)
+
+
+def in_card(day_offset=0, hour=15):
+    """Noon-ish on a day inside the card's window, as UTC ISO.
+
+    Always in the future — the window opens at least a day after the drop — so `upcoming`
+    keeps it, and always inside the window, so the card keeps it.
+    """
+    d = FIRST + timedelta(days=day_offset)
+    return datetime(d.year, d.month, d.day, hour, tzinfo=timezone.utc) \
+        .isoformat().replace("+00:00", "Z")
+
+
+def past_card():
+    """A kick-off beyond the card — it belongs to the next drop, not this one."""
+    d = LAST + timedelta(days=1)
+    return datetime(d.year, d.month, d.day, 15, tzinfo=timezone.utc) \
+        .isoformat().replace("+00:00", "Z")
 
 
 class FakeCursor:
@@ -62,7 +87,8 @@ class FakeDB:
         self.streak_snapshots = FakeCollection(snapshots)
 
 
-def board_row(name, hours=6, line=6, fixture_id=None, prob=70.0, weak=True, run=6):
+def board_row(name, hours=None, line=6, fixture_id=None, prob=70.0, weak=True, run=6,
+              kickoff=None):
     """A streaks-board row, enriched as _angle_rows hands one over.
 
     Qualifying by default: the tests that care about the bar say so explicitly, and the
@@ -74,7 +100,8 @@ def board_row(name, hours=6, line=6, fixture_id=None, prob=70.0, weak=True, run=
             "streak": {"length": 5}, "opp_fh_rate": 62,
             "support": {"run": run, "prob": prob, "weak_opponent": weak, "opp_conceded": 7.1,
                         "league_avg": 5.4, "opp_bar": 5.94, "opp_fh_rate": 62},
-            "next_fixture": {"fixture_id": fixture_id or f"fx-{name}", "date": iso(hours),
+            "next_fixture": {"fixture_id": fixture_id or f"fx-{name}",
+                             "date": kickoff or (iso(hours) if hours is not None else in_card()),
                              "opponent": "Stoke", "is_home": True}}
 
 
@@ -96,7 +123,7 @@ def install(monkeypatch, *, rows=(), snapshots=(), fixtures=None, age_hours=2.0,
     anything. What is under test here is which rows reach it.
     """
     synced = (NOW - timedelta(hours=age_hours)).isoformat()
-    fixtures = fixtures if fixtures is not None else [{"date": iso(6)}]
+    fixtures = fixtures if fixtures is not None else [{"date": in_card()}]
     monkeypatch.setattr(server, "db", FakeDB(
         leagues=[{"league_id": "eng-ch", "synced_at": synced}],
         fixtures=fixtures, snapshots=list(snapshots)))
@@ -131,7 +158,7 @@ def run(coro):
 
 
 def call(**kw):
-    return run(server.angles_today(user=USER, **kw))
+    return run(server.angles_card(user=USER, **kw))
 
 
 class TestALiveDay:
@@ -151,16 +178,19 @@ class TestALiveDay:
         assert out["qualified"] == 9
 
     def test_a_game_that_has_already_kicked_off_is_not_offered(self, monkeypatch):
-        install(monkeypatch, rows=[board_row("done", hours=-3), board_row("later", hours=5)])
+        install(monkeypatch, rows=[board_row("done", hours=-3), board_row("later")])
         out = call()
         assert [a["name"] for a in out["angles"]] == ["later"]
 
-    def test_tomorrows_game_is_not_todays_angle(self, monkeypatch):
-        # The board is two days wide on purpose; the panel is one London day.
-        install(monkeypatch, rows=[board_row("today", hours=6), board_row("later", hours=40)])
+    def test_a_game_past_the_cards_window_is_not_on_it(self, monkeypatch):
+        # The scan reaches six days so the weekend card can see Monday; the card itself is
+        # three or four days wide, and a game beyond it belongs to the next drop.
+        install(monkeypatch, rows=[board_row("inside"),
+                                   board_row("beyond", kickoff=past_card())])
         out = call()
-        assert [a["name"] for a in out["angles"]] == ["today"]
-        assert out["day"] == TODAY
+        assert [a["name"] for a in out["angles"]] == ["inside"]
+        assert out["card"] == CARD
+        assert out["covers"] == {"first": FIRST.isoformat(), "last": LAST.isoformat()}
 
 
 class TestADeadDayPublishesNothing:
@@ -174,13 +204,13 @@ class TestADeadDayPublishesNothing:
         assert out["angles"] == [] and out["top"] is None
 
     def test_football_on_and_nothing_qualifying_says_so(self, monkeypatch):
-        install(monkeypatch, rows=[], fixtures=[{"date": iso(4)} for _ in range(30)])
+        install(monkeypatch, rows=[], fixtures=[{"date": in_card()} for _ in range(30)])
         out = call()
         assert out["reason"] == aod.DEAD_NO_QUALIFIER
         assert out["fixtures_today"] == 30
 
     def test_an_empty_calendar_is_a_different_answer(self, monkeypatch):
-        install(monkeypatch, rows=[], fixtures=[{"date": iso(72)}])
+        install(monkeypatch, rows=[], fixtures=[{"date": past_card()}])
         out = call()
         assert out["reason"] == aod.DEAD_NO_FIXTURES
         assert out["fixtures_today"] == 0
@@ -248,7 +278,7 @@ class TestTheFixtureHasToBackTheStreakUp:
 
     def test_an_uncorroborated_streak_is_not_published(self, monkeypatch):
         install(monkeypatch, rows=[board_row("strong-run", weak=False)],
-                fixtures=[{"date": iso(4)} for _ in range(20)])
+                fixtures=[{"date": in_card()} for _ in range(20)])
         out = call()
         assert out["angles"] == []
         # And it reads as a decision rather than an empty calendar.
@@ -311,7 +341,7 @@ class TestTheDoor:
     def test_a_guest_is_refused(self, monkeypatch):
         install(monkeypatch, rows=[board_row("A")])
         with pytest.raises(server.HTTPException) as e:
-            run(server.angles_today(user={"user_id": server.PUBLIC_USER_ID}))
+            run(server.angles_card(user={"user_id": server.PUBLIC_USER_ID}))
         assert e.value.status_code == 401
 
     def test_the_count_cannot_be_used_to_pull_the_whole_board(self, monkeypatch):

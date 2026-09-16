@@ -19,7 +19,12 @@ os.environ.setdefault("MONGO_URL", "mongodb://localhost:27017")
 os.environ.setdefault("DB_NAME", "test_corner_model")
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from datetime import date  # noqa: E402
+
 import angle_of_day as aod  # noqa: E402
+
+# The midweek card published Mon 14 Sep 2026 covers Tue 15 to Thu 17.
+CARD = (date(2026, 9, 15), date(2026, 9, 17))
 
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -65,28 +70,34 @@ class TestTheDayIsALondonDay:
 class TestAThinDayStaysThin:
     def test_fewer_qualifiers_than_the_cap_yields_fewer(self):
         two = [row("A"), row("B")]
-        assert len(aod.shortlist(two, "2026-09-15", count=5)) == 2
+        assert len(aod.shortlist(two, *CARD, count=5)) == 2
 
     def test_nothing_qualifying_yields_nothing(self):
-        assert aod.shortlist([], "2026-09-15") == []
+        assert aod.shortlist([], *CARD) == []
 
-    def test_tomorrows_games_do_not_top_up_today(self):
-        # The single most tempting line of code in this feature: the page looks bare, so
-        # reach into tomorrow. That publishes an angle on a game whose price and team news
-        # are both a day from settling, under a heading that says "today".
-        today = [row("A")]
-        tomorrow = [row("B", kickoff="2026-09-16T18:45:00Z")]
-        out = aod.shortlist(today + tomorrow, "2026-09-15", count=5)
-        assert [r["name"] for r in out] == ["A"]
+    def test_the_next_cards_games_do_not_top_up_this_one(self):
+        # The single most tempting line of code in this feature: the card looks bare, so
+        # reach past its window. That puts a weekend game on the midweek card, where a
+        # reader will take it as something to back in the next three days.
+        inside = [row("A"), row("B", kickoff="2026-09-17T18:45:00Z")]   # Tue and Thu
+        beyond = [row("C", kickoff="2026-09-18T18:45:00Z")]             # Friday
+        out = aod.shortlist(inside + beyond, *CARD, count=5)
+        assert [r["name"] for r in out] == ["A", "B"]
+
+    def test_a_game_before_the_window_opens_is_not_on_the_card_either(self):
+        # Monday evening's own fixtures are covered by the previous weekend card. Sweeping
+        # them into the midweek card would claim them twice.
+        before = [row("mon", kickoff="2026-09-14T18:45:00Z")]
+        assert aod.shortlist(before, *CARD, count=5) == []
 
     def test_the_cap_is_a_ceiling(self):
         many = [row(str(i)) for i in range(20)]
-        assert len(aod.shortlist(many, "2026-09-15", count=5)) == 5
+        assert len(aod.shortlist(many, *CARD, count=5)) == 5
 
     def test_the_most_likely_to_land_leads(self):
         # The stated order, and the direct answer to "pick the ones more likely to land".
         rows = [row("middling", prob=66.0), row("best", prob=78.0), row("thin", prob=61.0)]
-        assert [r["name"] for r in aod.shortlist(rows, "2026-09-15", count=3)] == \
+        assert [r["name"] for r in aod.shortlist(rows, *CARD, count=3)] == \
             ["best", "middling", "thin"]
 
 
@@ -143,7 +154,7 @@ class TestTheRunHasToBeARun:
         priced = row("priced", run=11, prob=64.0)
         unpriced_long = row("unpriced-long", run=14, prob=None, weak=False)
         unpriced_short = row("unpriced-short", run=10, prob=None, weak=False)
-        out = aod.shortlist([unpriced_short, unpriced_long, priced], "2026-09-15", count=3)
+        out = aod.shortlist([unpriced_short, unpriced_long, priced], *CARD, count=3)
         assert [r["name"] for r in out] == ["priced", "unpriced-long", "unpriced-short"]
 
     def test_the_top_of_the_useful_range_is_stated(self):
@@ -228,7 +239,7 @@ class TestTheFixtureHasToBackTheStreakUp:
     def test_ordering_ignores_the_first_half_rate(self):
         low = row("low-fh", prob=75.0, **{"opp_fh_rate": 5})
         high = row("high-fh", prob=70.0, **{"opp_fh_rate": 95})
-        assert [r["name"] for r in aod.shortlist([high, low], "2026-09-15", count=2)] == \
+        assert [r["name"] for r in aod.shortlist([high, low], *CARD, count=2)] == \
             ["low-fh", "high-fh"]
 
 
@@ -373,10 +384,80 @@ class TestTheRuleIsStatedNotDiscovered:
         import inspect
 
         import server
-        src = inspect.getsource(server.angles_today)
+        src = inspect.getsource(server.angles_card)
         body = src[src.index('"""', src.index('"""') + 3):]
         assert "_angle_record" in body, "the record is still shown"
         # It appears once, in the returned payload — never before `angles` is built.
         assert body.index("angles = ") < body.index("_angle_record"), \
             "the angles are being built after the record is read, which is how the record " \
             "starts choosing them"
+
+
+class TestTwoCardsAWeek:
+    """Monday puts out the midweek, Wednesday the weekend.
+
+    The property that matters is coverage: every day belongs to exactly one card. Covered
+    twice is a fixture claimed twice; covered by neither is a night this site never had a
+    view on — and a daily panel used to guarantee the first while a Friday-only one
+    guaranteed the second.
+    """
+
+    MON = date(2026, 9, 14)
+
+    def test_monday_publishes_the_midweek_and_wednesday_the_weekend(self):
+        from datetime import timedelta
+        assert aod.card_published_on(self.MON) == aod.CARD_MIDWEEK
+        assert aod.card_published_on(self.MON + timedelta(days=2)) == aod.CARD_WEEKEND
+        assert aod.card_published_on(self.MON + timedelta(days=1)) is None
+
+    def test_the_midweek_card_covers_tuesday_to_thursday(self):
+        first, last = aod.card_window(aod.CARD_MIDWEEK, self.MON)
+        assert (first.isoformat(), last.isoformat()) == ("2026-09-15", "2026-09-17")
+
+    def test_the_weekend_card_covers_friday_to_monday(self):
+        from datetime import timedelta
+        wed = self.MON + timedelta(days=2)
+        first, last = aod.card_window(aod.CARD_WEEKEND, wed)
+        assert (first.isoformat(), last.isoformat()) == ("2026-09-18", "2026-09-21")
+
+    def test_every_day_of_the_week_belongs_to_exactly_one_card(self):
+        from datetime import timedelta
+        covered = []
+        for offset in (0, 2):                       # the Monday and Wednesday drops
+            pub = self.MON + timedelta(days=offset)
+            card = aod.card_published_on(pub)
+            first, last = aod.card_window(card, pub)
+            d = first
+            while d <= last:
+                covered.append(d)
+                d += timedelta(days=1)
+        assert len(covered) == len(set(covered)), "a day is covered by two cards"
+        # Tue 15 through Mon 21 — the seven days the pair is responsible for.
+        assert sorted(covered) == [self.MON + timedelta(days=n) for n in range(1, 8)]
+
+    def test_the_live_card_is_the_most_recent_drop_not_the_next_one(self):
+        from datetime import timedelta
+        # On a Friday the card to look at is Wednesday's. Looking FORWARD would show a
+        # reader a card for games that have not been selected yet.
+        card, pub = aod.live_card(self.MON + timedelta(days=4))
+        assert card == aod.CARD_WEEKEND
+        assert pub == self.MON + timedelta(days=2)
+
+    def test_on_a_drop_day_the_card_is_that_days_own(self):
+        card, pub = aod.live_card(self.MON)
+        assert card == aod.CARD_MIDWEEK and pub == self.MON
+
+    def test_the_weekend_card_still_stands_on_the_monday_it_covers(self):
+        from datetime import timedelta
+        # Monday's own fixtures are on the previous Wednesday's card, and that card is what
+        # a reader should still see until the new midweek one is published — which happens
+        # the same day. The midweek card wins, and Monday's games are already claimed.
+        card, _pub = aod.live_card(self.MON + timedelta(days=7))
+        assert card == aod.CARD_MIDWEEK
+
+    def test_every_weekday_resolves_to_a_card(self):
+        from datetime import timedelta
+        for n in range(14):
+            card, pub = aod.live_card(self.MON + timedelta(days=n))
+            assert card in aod.CARDS
+            assert (self.MON + timedelta(days=n) - pub).days < 7

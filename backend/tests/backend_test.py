@@ -8,12 +8,28 @@ from datetime import datetime, timezone, timedelta
 
 BASE_URL = os.environ.get("REACT_APP_BACKEND_URL", "").rstrip("/")
 if not BASE_URL:
-    with open("/app/frontend/.env") as f:
-        for line in f:
-            if line.startswith("REACT_APP_BACKEND_URL="):
-                BASE_URL = line.split("=", 1)[1].strip().rstrip("/")
+    # The dev container's path. Absent everywhere else, and a bare open() here raised
+    # FileNotFoundError before the check below could say anything useful.
+    try:
+        with open("/app/frontend/.env") as f:
+            for line in f:
+                if line.startswith("REACT_APP_BACKEND_URL="):
+                    BASE_URL = line.split("=", 1)[1].strip().rstrip("/")
+    except OSError:
+        pass
+
+# AN INTEGRATION TEST, AND IT SAYS SO RATHER THAN EXPLODING.
+#
+# This file talks to a RUNNING backend over HTTP. Without one there is nothing to test, and
+# raising at import time made pytest report a collection ERROR — so a suite that was
+# entirely healthy printed "12 errors" on every run, for months, and everybody learned to
+# read past it. A test that cannot run is a skip with a reason, not a failure: the first is
+# information and the second is noise that hides real breakage.
+#
+# Set REACT_APP_BACKEND_URL to run these against a deployment.
 if not BASE_URL:
-    raise RuntimeError("REACT_APP_BACKEND_URL missing")
+    pytest.skip("REACT_APP_BACKEND_URL is not set — these need a running backend",
+                allow_module_level=True)
 API = f"{BASE_URL}/api"
 
 MONGO_URL = os.environ.get("MONGO_URL", "mongodb://localhost:27017")

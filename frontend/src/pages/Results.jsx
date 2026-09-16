@@ -180,11 +180,7 @@ function ResultsBoard() {
     );
   }
 
-  const { summary = {}, weeks = [], posted = {}, archive = null } = data;
-  // THE RECORD STARTS AGAIN AT THE RULE CHANGE, so on day one there is nothing in it. That
-  // is the honest state of a two-day-old rule and it has to be said in words — an empty
-  // panel where a percentage used to be reads as the site having lost the record.
-  const archiveWeeks = archive?.weeks || [];
+  const { summary = {}, weeks = [], posted = {} } = data;
 
   return (
     <div className="space-y-4 max-w-4xl" data-testid="results-page">
@@ -204,25 +200,6 @@ function ResultsBoard() {
         </p>
       </header>
 
-      {/* THE CLEAN SLATE, SAID OUT LOUD. The picks used to need only a streak; they now
-          need the fixture to back it up. One percentage across both would be an average of
-          two rules with no way for a reader to tell which they were being sold, so the
-          record starts again — and on day one that means it is nearly empty. Saying why
-          is the difference between a new record and a lost one. */}
-      {archiveWeeks.length > 0 && (
-        <p className="text-xs text-muted-foreground bg-secondary/40 border border-border
-                      rounded-lg px-4 py-3 leading-relaxed max-w-2xl"
-          data-testid="results-rule-change">
-          <span className="text-foreground font-medium">The record below starts from the
-          rule change.</span>{" "}
-          A streak used to be enough on its own; it now has to be backed by the fixture —
-          a weak opponent and a model probability above the bar. Mixing the two would
-          average two different methods into one number that describes neither. Everything
-          from before is kept in full{" "}
-          <a href="#earlier-rule" className="text-primary underline">further down</a>, graded
-          the same way and counted separately.
-        </p>
-      )}
 
       {/* TODAY'S CALL, DIRECTLY ABOVE THE GRADED HISTORY OF THE RULE THAT MADE IT.
           That arrangement is the argument: every other panel on this page is what the site
@@ -297,19 +274,8 @@ function ResultsBoard() {
                  would not be worth reading." />
       )}
 
-      {/* NOTHING UNDER THE NEW RULE YET, WHICH IS NOT THE SAME AS NOTHING AT ALL. With an
-          archive present this must not say "no streaks have been posted" — the site has
-          posted plenty, under a rule that has since changed, and claiming otherwise reads
-          as the record having been lost rather than restarted. */}
-      {weeks.length === 0 && archiveWeeks.length > 0 && (
-        <Panel>
-          Nothing has been posted under the new rule yet. The first night it publishes an
-          angle, it appears here — and the earlier record is below, untouched.
-        </Panel>
-      )}
 
-      {weeks.length === 0 && archiveWeeks.length === 0
-        && posted.claimed?.rows?.length === 0
+      {weeks.length === 0 && posted.claimed?.rows?.length === 0
         && posted.recalled?.rows?.length === 0 && (
         <Panel>
           No streaks have been posted yet. Once they are, every one of them shows up here
@@ -317,34 +283,6 @@ function ResultsBoard() {
         </Panel>
       )}
 
-      {/* THE EARLIER RULE. Kept whole, graded the same way, counted on its own. Those calls
-          were made before kick-off and they landed or they did not — hiding them because
-          the method has moved on is how a record turns into a highlight reel. It also
-          cannot be rebuilt: a snapshot is the only evidence of what was claimed before a
-          game was played, and recomputing it afterwards counts only the survivors. */}
-      {archiveWeeks.length > 0 && (
-        <section id="earlier-rule" className="space-y-4 pt-2" data-testid="results-archive">
-          <div className="flex items-baseline gap-3 flex-wrap border-t border-border pt-5">
-            <h2 className="font-head text-lg font-semibold">Under the earlier rule</h2>
-            <span className="font-mono-data text-[11px] text-muted-foreground">
-              {archive.summary?.settled > 0
-                ? <>{archive.summary.landed}/{archive.summary.settled} landed</>
-                : <>none settled</>}
-              {archive.summary?.pending > 0 && <> · {archive.summary.pending} to play</>}
-            </span>
-            <span className="text-[10px] px-1.5 py-0.5 rounded border border-border
-                             text-muted-foreground font-mono-data">
-              not counted above
-            </span>
-          </div>
-          <p className="text-xs text-muted-foreground leading-relaxed max-w-2xl">
-            A streak alone put these on the board. They are graded exactly the same way and
-            kept in full, because they were real calls made before kick-off — but a rate
-            spanning two selection rules describes neither, so they sit on their own.
-          </p>
-          {archiveWeeks.map((w) => <WeekBlock key={`a-${w.tag}`} w={w} />)}
-        </section>
-      )}
 
       {/* HOW IT IS GRADED, in plain words. A record that will not explain its own method
           is asking to be taken on trust, which is the thing it exists to replace. */}
@@ -389,9 +327,8 @@ function ResultsBoard() {
   );
 }
 
-// ONE RENDERER FOR BOTH ERAS. The archive shows the same rows graded the same way, so
-// it must not be a second copy of this markup — two copies drift, and the drift would be
-// between how the site presents the record it is selling and the record it is not.
+// One week of the record. Extracted rather than inlined in the map so the markup has a
+// single home — it was briefly rendered in two places and two copies drift.
 function WeekBlock({ w }) {
   return (
       <section className="bg-card border border-border rounded-lg overflow-hidden"

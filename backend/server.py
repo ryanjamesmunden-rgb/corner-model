@@ -5895,19 +5895,18 @@ async def public_results(weeks: int = RESULTS_WEEKS, token: Optional[str] = None
             })
         return blocks, counted_rows
 
-    # THE CLEAN SLATE. The picks were chosen one way and are now chosen another, and a
-    # single percentage spanning both describes neither — it is an average of two rules,
-    # and a reader cannot tell which one they are being sold.
+    # ONE RECORD, ALL OF IT. This briefly split into eras — the corroborated rule in the
+    # headline and everything before it in an archive — and that was the wrong fix to the
+    # right complaint. What was wrong was a quiet Tuesday freezing twenty-five forced
+    # streaks and all of them counting; it was never that the weeks before were picked
+    # differently. Those calls were made before kick-off and they landed or they did not,
+    # and moving them out of the number is hiding them however carefully it is labelled.
     #
-    # So the headline covers the CURRENT rule only, and begins with almost nothing in it.
-    # The earlier era is kept whole and graded under its own heading: those calls were made
-    # before kick-off and they landed or they did not, and a snapshot is the only evidence
-    # of what was claimed before a game was played — recomputed afterwards it counts only
-    # the survivors. Hiding it would make the record a highlight reel; deleting it would
-    # end any chance of ever grading that period again.
-    current_snaps, earlier_snaps = record_view.split_eras(snaps)
-    weeks_out, everything = _weeks(current_snaps)
-    archive_weeks, archive_rows = _weeks(earlier_snaps)
+    # The distinction that actually matters is per-row and is already made below: a row the
+    # site published counts, and one the board carried but the site declined to publish
+    # does not. That separates the forced night from the rest without discarding a month of
+    # honest record to do it.
+    weeks_out, everything = _weeks(snaps)
 
     # ANGLES POSTED BY HAND, split by whether they were logged while still a prediction.
     # The split is the point. Both lists are published — hiding the ones added afterwards
@@ -5937,24 +5936,11 @@ async def public_results(weeks: int = RESULTS_WEEKS, token: Optional[str] = None
 
     counted = everything + claimed
     return {
-        # THE CURRENT RULE ONLY. Hand-posted angles still count towards it — they are
-        # claims a person made in public before kick-off, which is the one thing the
-        # headline has always measured — but the snapshot half is the corroborated era
-        # alone. See record_view for why the boundary is read from the data.
+        # EVERY PUBLISHED CLAIM, WHENEVER IT WAS MADE. Hand-posted angles count for the
+        # same reason snapshot rows do: a person made them in public before kick-off.
         "summary": {**_tally(counted), "weeks": len(weeks_out),
-                    "since": weeks_out[-1]["tag"] if weeks_out else None,
-                    "rule": record_view.ERA_CORROBORATED},
+                    "since": weeks_out[-1]["tag"] if weeks_out else None},
         "weeks": weeks_out,
-        # KEPT, NOT DELETED, AND NOT IN THE NUMBER ABOVE. Those calls were made before
-        # kick-off and they landed or they did not; hiding them because the method moved on
-        # is how a record becomes a highlight reel. It cannot be rebuilt either — a
-        # snapshot is the only evidence of what was claimed before a game was played.
-        "archive": {
-            "rule": record_view.ERA_STREAK_ONLY,
-            "summary": {**_tally(archive_rows), "weeks": len(archive_weeks),
-                        "since": archive_weeks[-1]["tag"] if archive_weeks else None},
-            "weeks": archive_weeks,
-        },
         "posted": {
             "claimed": {**_tally(claimed), "rows": [public_row(r) for r in claimed]},
             "recalled": {**_tally(recalled), "rows": [public_row(r) for r in recalled]},

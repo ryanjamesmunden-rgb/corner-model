@@ -24,12 +24,13 @@ import angle_of_day as aod  # noqa: E402
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
-def row(name="Boro", kickoff="2026-09-15T18:45:00Z", prob=70.0, weak=True, **kw):
-    """A board row that clears the corroboration bar unless a test says otherwise."""
+def row(name="Boro", kickoff="2026-09-15T18:45:00Z", prob=70.0, weak=True, run=6, **kw):
+    """A board row that clears every bar unless a test says otherwise."""
     return {"name": name, "league_id": "eng-ch",
             "next_fixture": {"date": kickoff, "opponent": "Stoke"},
-            "support": {"prob": prob, "weak_opponent": weak, "opp_conceded": 7.1,
-                        "league_avg": 5.4, "opp_bar": 5.94, "opp_fh_rate": 62},
+            "support": {"run": run, "prob": prob, "weak_opponent": weak,
+                        "opp_conceded": 7.1, "league_avg": 5.4, "opp_bar": 5.94,
+                        "opp_fh_rate": 62},
             **kw}
 
 
@@ -87,6 +88,49 @@ class TestAThinDayStaysThin:
         rows = [row("middling", prob=66.0), row("best", prob=78.0), row("thin", prob=61.0)]
         assert [r["name"] for r in aod.shortlist(rows, "2026-09-15", count=3)] == \
             ["best", "middling", "thin"]
+
+
+class TestTheRunHasToBeARun:
+    """The bar that was missing entirely.
+
+    The fixture bars ask whether the opponent is leaky and whether the model rates it.
+    Neither asks the first question anyone would: how long has this actually been going? So
+    a team two games into a run could clear both and be published as a streak.
+    """
+
+    def test_a_two_game_run_is_not_a_streak_however_good_the_fixture(self):
+        assert aod.qualifies(row(run=2, weak=True, prob=85.0)) is False
+
+    def test_the_floor_is_five(self):
+        assert aod.MIN_RUN == 5
+        assert aod.qualifies(row(run=4)) is False
+        assert aod.qualifies(row(run=5)) is True
+
+    def test_a_long_run_still_needs_the_fixture(self):
+        # Length is necessary and was never sufficient. A ten-game run into a mean defence
+        # is still a bet against the thing that decides it.
+        assert aod.qualifies(row(run=12, weak=False)) is False
+        assert aod.qualifies(row(run=12, prob=40.0)) is False
+
+    def test_a_row_with_no_run_recorded_does_not_pass(self):
+        assert aod.qualifies({"support": {"weak_opponent": True, "prob": 90.0}}) is False
+
+    def test_the_top_of_the_useful_range_is_stated(self):
+        """So nobody reads MIN_RUN as a target to tune. A side that has cleared its line ten
+        straight is telling you what it is; the eleventh does not change the call."""
+        assert aod.STRONG_RUN == 10
+        assert aod.STRONG_RUN > aod.MIN_RUN
+
+    def test_the_run_is_the_live_one_not_the_windows_hit_count(self):
+        # A 4-of-5 whose most recent game was the miss is a broken streak wearing a good
+        # record, and the hit count cannot tell the two apart.
+        s = aod.support_for({"streak": {"length": 7},
+                             "projection": {"opp_conceded": 7.0, "prob": 70.0}}, 5.0)
+        assert s["run"] == 7
+
+    def test_a_row_with_no_streak_block_reports_zero_rather_than_raising(self):
+        s = aod.support_for({"projection": {"opp_conceded": 7.0, "prob": 70.0}}, 5.0)
+        assert s["run"] == 0
 
 
 class TestTheFixtureHasToBackTheStreakUp:

@@ -12,39 +12,23 @@ including the bottom of it — so a quiet midweek contributed as many claims as 
 weekend, and they were the weakest claims on offer. The site published nothing that night
 and the record wrote down twenty-five picks.
 
-TWO TECHNIQUES, TWO RECORDS. THE HEADLINE IS ONE OF THEM.
+ONE RECORD, ALL OF IT, AND THE SPLIT THAT MATTERS IS PER ROW.
 
-The picks were chosen one way and are now chosen another: a streak had only to be a streak,
-and now it has to be corroborated by the fixture it is walking into. A single percentage
-spanning both describes neither. It is an average of two rules, and the reader has no way
-to know which one they are being sold.
+This briefly divided into eras — the tightened rule in the headline, everything before it
+in an archive — and that was the wrong fix to the right complaint. The complaint was a
+quiet Tuesday freezing twenty-five forced streaks and every one of them counting. It was
+never that the weeks before had been picked differently: those calls were made before
+kick-off and they landed or they did not, and moving them out of the number is hiding them
+however carefully the heading is worded.
 
-So the record starts again at the change. The headline, the rate, and everything the page
-argues from cover the CURRENT rule only, and they begin with almost nothing in them —
-which is the honest state of a rule that is two days old and the thing a clean slate
-actually means.
+So the record is whole, and the distinction is made where it belongs — on each row. A row
+the site PUBLISHED counts. A row the board carried and the site declined to publish does
+not. That separates the forced night from the rest without discarding a month of honest
+record to do it, and it needs no cutover date to get wrong.
 
-NOTHING IS DELETED. The earlier era is kept whole, graded, and shown under its own heading
-with its own tally. Two reasons, and the second is the one that matters:
-
-  It is still true. Those calls were made before kick-off and they landed or they did not.
-  Hiding them because the method has moved on is how a record becomes a highlight reel.
-
-  It cannot be rebuilt. A snapshot is the only evidence of what was claimed before a game
-  was played; recomputing it afterwards counts only the survivors. Deleted, it is gone for
-  good, and no future version of this site can ever grade that period again.
-
-WHICH ERA A SNAPSHOT BELONGS TO IS READ FROM THE DATA, NOT FROM A DATE. A snapshot frozen
-under the new rule records `qualified` on its rows; one frozen before it does not. Using
-the field rather than a hardcoded cutover means nothing depends on guessing which side of a
-deploy a given night fell on — the commonest way a boundary like this ends up one day out,
-silently, in whichever direction flatters the number.
-
-WHAT COUNTS WITHIN THE CURRENT ERA. Only rows the site actually published. The snapshot
-freezes the top 25 of the board every night; on a quiet Tuesday that is the whole board
-including the bottom of it, and the site published none of it. Those are shown and not
-counted — recording claims it declined to make would be the same dishonesty pointed the
-other way.
+Rows frozen before the bar existed carry no verdict, and for those the board WAS the claim.
+Absence therefore means counted — treating it as unpublished would erase the record
+overnight, which is exactly the hiding this file now exists not to do.
 
 Pure functions, no database, so the rule can be tested without one.
 """
@@ -71,28 +55,6 @@ def week_of(tag: Optional[str]) -> Optional[str]:
     return (d.fromordinal(d.toordinal() - d.weekday())).isoformat()
 
 
-# The two selection rules this site has used. Named rather than "old" and "new", because
-# in six months "new" will be neither.
-ERA_CORROBORATED = "corroborated"   # a streak AND the fixture backing it up
-ERA_STREAK_ONLY = "streak_only"     # a streak was enough on its own
-
-
-def era_of(snapshot: dict) -> str:
-    """Which rule froze this snapshot, read off the snapshot itself.
-
-    NOT A DATE. The obvious implementation is a cutover constant, and it would need to be
-    the exact night the deploy landed relative to an 11:00 UTC job — which is how a
-    boundary ends up a day out, silently, in whichever direction flatters the number.
-
-    A snapshot frozen under the corroboration bar records `qualified` on its rows. One
-    frozen before it does not. The data says which it is, so nothing has to be remembered.
-    """
-    for e in (snapshot.get("entries") or []):
-        if "qualified" in e:
-            return ERA_CORROBORATED
-    return ERA_STREAK_ONLY
-
-
 def counted(entry: dict) -> bool:
     """Within the current era: was this row something the site actually published?
 
@@ -115,18 +77,6 @@ def split(entries: List[dict]) -> tuple:
     published = [e for e in entries if counted(e)]
     held = [e for e in entries if not counted(e)]
     return published, held
-
-
-def split_eras(snapshots: List[dict]) -> tuple:
-    """(current, earlier) — the clean slate, drawn where the rule actually changed.
-
-    A single week can straddle the boundary, so this splits by SNAPSHOT and not by week.
-    That week then appears in both lists, which looks odd exactly once and is the truth:
-    some of its nights were picked one way and some the other.
-    """
-    current = [s for s in snapshots if era_of(s) == ERA_CORROBORATED]
-    earlier = [s for s in snapshots if era_of(s) == ERA_STREAK_ONLY]
-    return current, earlier
 
 
 def group_by_week(snapshots: List[dict]) -> List[dict]:

@@ -5,10 +5,15 @@ import { api } from "@/lib/api";
 import { withFlag } from "@/lib/countryFlag";
 import { kickoffLabel } from "@/lib/kickoff";
 import {
-  angleLabel, deadMessage, hasPanel, runLabel, splitAngles, statedRecord, whyLabel,
+  angleLabel, coversLabel, deadMessage, hasPanel, runLabel, splitAngles, statedRecord,
+  whyLabel,
 } from "@/lib/angleOfDay";
 
-// THE ANGLE OF THE DAY — the site's answer to "what do you actually like today".
+// THE CARD — the site's answer to "what do you actually like this round".
+//
+// TWO DROPS A WEEK, NOT A DAILY RESET. Monday puts out the midweek, Wednesday the weekend.
+// A daily panel meant a reader who looked on Tuesday and again on Friday saw two unrelated
+// lists and never a card being worked through, and it gave no lead time on a price.
 //
 // It sits at the top of the record on purpose. Every other panel here is history; this is
 // the claim being made right now, and putting it directly above the graded results is the
@@ -32,7 +37,7 @@ export default function TopAngle({ count }) {
   const [failed, setFailed] = useState(false);
 
   useEffect(() => {
-    api.anglesToday(count).then(setData).catch(() => setFailed(true));
+    api.anglesCard(count).then(setData).catch(() => setFailed(true));
   }, [count]);
 
   // A FAILED LOAD DRAWS NOTHING RATHER THAN AN EMPTY PANEL. "No angle today" and "we could
@@ -50,7 +55,16 @@ export default function TopAngle({ count }) {
       data-testid="top-angle">
       <header className="px-4 py-3 border-b border-border flex items-center gap-2 flex-wrap">
         <Flame className="h-4 w-4 text-primary shrink-0" />
-        <span className="font-head font-semibold text-sm">Today's angle</span>
+        <span className="font-head font-semibold text-sm">
+          {data.label ? `${data.label} card` : "The card"}
+        </span>
+        {/* WHAT IT COVERS, ON THE HEADING. A card is a block of days, and a reader who
+            cannot see which days is looking at a list of games with no idea whether
+            tonight is in it. */}
+        {coversLabel(data) && (
+          <span className="font-mono-data text-[11px] text-muted-foreground"
+            data-testid="angle-covers">{coversLabel(data)}</span>
+        )}
         <span className="font-mono-data text-[11px] text-muted-foreground">
           {dead ? "nothing published" : `${data.angles.length} of ${data.qualified} qualifying`}
         </span>
@@ -72,9 +86,9 @@ export default function TopAngle({ count }) {
   );
 }
 
-// THE DAY WITH NOTHING ON IT. Stated as a decision rather than an absence — "no angle
-// today" reads as the site having nothing, "none of it clears the bar" reads as the site
-// having standards, and only the second is true.
+// A ROUND WITH NOTHING ON IT. Stated as a decision rather than an absence — "no angle"
+// reads as the site having nothing, "none of it clears the bar" reads as the site having
+// standards, and only the second is true.
 function Dead({ dead, data }) {
   const Icon = DEAD_ICON[dead.reason] || ShieldOff;
   return (
@@ -87,7 +101,7 @@ function Dead({ dead, data }) {
             none of them" is the difference between a claim and a demonstration. */}
         {dead.reason === "no_qualifier" && data.fixtures_today > 0 && (
           <p className="text-[11px] text-muted-foreground font-mono-data">
-            {data.fixtures_today} fixtures today · none qualifying
+            {data.fixtures_today} fixtures this round · none qualifying
           </p>
         )}
       </div>

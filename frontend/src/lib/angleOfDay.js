@@ -61,27 +61,27 @@ export function statedRecord(tally) {
   };
 }
 
-// What a dead day says. Written out rather than assembled, because each of these is a
-// different admission and a generic "no angles today" would flatten three facts into one.
+// What a dead card says. Written out rather than assembled, because each of these is a
+// different admission and a generic "no angles" would flatten three facts into one.
 const DEAD = {
   stale: {
-    title: "Not publishing today",
-    body: "The match data is older than this panel will make a call on. An angle off stale form is still an angle, and someone would back it.",
+    title: "Not publishing this round",
+    body: "The match data is older than this card will make a call on. An angle off stale form is still an angle, and someone would back it.",
   },
   no_fixtures: {
-    title: "Nothing on today",
-    body: "No fixtures in the leagues this model covers. Back tomorrow.",
+    title: "Nothing on this round",
+    body: "No fixtures in the leagues this model covers. The next card is a few days away.",
   },
   no_qualifier: {
-    title: "No angle today",
-    body: "There is football on and none of it clears the bar. A team only appears here having cleared its line in all five of its last five — today nobody has.",
+    title: "No angle this round",
+    body: "There is football on and none of it clears the bar. A team gets on the card with a run long enough to speak for itself, or a shorter one the fixture backs up — this round, nobody has either.",
   },
 };
 
 export function deadMessage(payload) {
   if (!payload?.dead) return null;
   const copy = DEAD[payload.reason] || {
-    title: "No angle today",
+    title: "No angle this round",
     body: "Nothing clears the bar.",
   };
   return { ...copy, reason: payload.reason };
@@ -147,6 +147,27 @@ export function runLabel(angle) {
   if (p.voids) bits.push(`${p.voids} push`);
   if (p.run) bits.push(`${p.run} in a row`);
   return bits.join(" · ");
+}
+
+/**
+ * "Tue 15 – Thu 17" — which days this card is about.
+ *
+ * A card is a block of days rather than a single one, and a reader who cannot see which
+ * days is looking at a list of games with no idea whether tonight is among them. Rendered
+ * from the dates the backend sends rather than recomputed, so the heading and the rows
+ * cannot come to disagree about the window.
+ */
+export function coversLabel(payload, locale = undefined) {
+  const first = payload?.covers?.first;
+  const last = payload?.covers?.last;
+  if (!first || !last) return "";
+  const fmt = (iso) => {
+    const d = new Date(`${iso}T12:00:00Z`);
+    return Number.isNaN(d.getTime())
+      ? iso
+      : d.toLocaleDateString(locale, { weekday: "short", day: "numeric", month: "short" });
+  };
+  return first === last ? fmt(first) : `${fmt(first)} – ${fmt(last)}`;
 }
 
 /**

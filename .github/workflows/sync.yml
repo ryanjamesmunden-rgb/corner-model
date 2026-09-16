@@ -36,6 +36,25 @@ on:
   # the sync it triggers is token-gated regardless. Remove it again if you would rather
   # wait out a stall than have the escape hatch.
   workflow_dispatch:
+    inputs:
+      force:
+        # THE HALF-ESCAPE-HATCH THAT WASN'T ONE. Dispatching this workflow called
+        # `if-stale`, which does nothing unless the data is over 11h old — so pressing
+        # the button on fresh data printed "already current", exited GREEN, and changed
+        # nothing. That is fine for a stall (the data is old by definition) and useless
+        # for the case that actually comes up: a competition was just ADDED and none of
+        # its fixtures are in the database, while everything already there is an hour
+        # old. Nothing about the staleness check can see a league that isn't there yet.
+        #
+        # So `force` calls the token-gated `refresh-all` instead, which has no staleness
+        # test — only its own 5-minute lock. Triggering it needs repo access, the same
+        # bar `workflow_dispatch` already sets, and the token is the repo secret the
+        # snapshot step below already uses. The open `if-stale` path is untouched: it is
+        # ungated precisely because it is self-limiting, and that stays true.
+        description: "Sync even if the data is fresh — use after adding a league or cup"
+        type: boolean
+        default: false
+        required: false
 
 concurrency:
   group: corner-sync
@@ -73,16 +92,38 @@ jobs:
         # It is safe to leave open because it is self-limiting, not trusted: it does
         # nothing unless the data is over 11h old, and a DB lock blocks a second sync
         # within 20 minutes. The most anyone can trigger is the sync that was already due.
+        env:
+          # Only read on a forced run. Absent on the schedule, which is the point: the
+          # twice-daily path must keep working with no secret configured at all.
+          TOOLS_TOKEN: ${{ secrets.TOOLS_TOKEN }}
+          FORCE: ${{ inputs.force }}
         run: |
-          body=$(curl -s --max-time 120 -X POST "$BACKEND/api/sync/if-stale" || true)
+          if [ "$FORCE" = "true" ]; then
+            if [ -z "$TOOLS_TOKEN" ]; then
+              echo "::error::force needs TOOLS_TOKEN as a repo secret — add it, or run without force"
+              exit 1
+            fi
+            echo "forced: calling refresh-all, which skips the staleness check"
+            # The token goes in the query string because that is the only way this
+            # endpoint takes it. Actions masks the secret in this log, and the backend
+            # redacts `token=` out of its own access log — see backend/log_redact.py,
+            # which exists because this exact parameter was being written in the clear.
+            body=$(curl -s --max-time 120 -X POST "$BACKEND/api/sync/refresh-all?token=$TOOLS_TOKEN" || true)
+          else
+            body=$(curl -s --max-time 120 -X POST "$BACKEND/api/sync/if-stale" || true)
+          fi
           echo "response: $body"
           case "$body" in
             *'"syncing"'*)         echo "sync started" ;;
-            *'"fresh"'*)           echo "::notice::data is already current — nothing to do" ;;
+            *'"fresh"'*)
+              echo "::notice::data is already current — nothing to do"
+              echo "::notice::if you just added a league or cup, re-run with force enabled" ;;
             *'"already_syncing"'*) echo "::notice::a sync is already running" ;;
+            *'Bad or missing token'*)
+              echo "::error::TOOLS_TOKEN is wrong or stale — check the repo secret matches Render"; exit 1 ;;
             *'Not Found'*)
-              echo "::error::backend has no /api/sync/if-stale — it is running an older build"; exit 1 ;;
-            *) echo "::error::unexpected response from if-stale (backend down or erroring)"; exit 1 ;;
+              echo "::error::backend has no such sync endpoint — it is running an older build"; exit 1 ;;
+            *) echo "::error::unexpected response from the sync endpoint (backend down or erroring)"; exit 1 ;;
           esac
 
       # FREEZE THE PROJECTIONS, AFTER THE SYNC AND BEFORE THE GAMES.

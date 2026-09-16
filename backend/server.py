@@ -1409,8 +1409,23 @@ _last_refresh = {}
 async def refresh_league(league_id: str, token: Optional[str] = None,
                          user: dict = Depends(get_current_user)):
     _check_tools_token(token)
-    if not await db.leagues.find_one({"league_id": league_id}):
-        raise HTTPException(status_code=404, detail="League not found")
+    # THE ONE COMPETITION YOU CANNOT SYNC IS THE ONE THAT HAS NEVER SYNCED.
+    #
+    # This checked `db.leagues` for an existing document, which is written at the END of
+    # a sync — so a newly added league or cup, whose whole problem is that it has no data
+    # yet, answered 404 to the endpoint that exists to give it some. The only way in was
+    # a full refresh-all or waiting for the cron. It went unnoticed because every league
+    # in the list was added before the endpoint, so the case had never come up.
+    #
+    # The managed set is the right question: it is what the sync will accept as a target,
+    # and it is the same set boot cleanup keeps. An id that is in neither is a genuine
+    # 404, and its message says which list to look at rather than just "not found".
+    if league_id not in MANAGED_LEAGUE_IDS:
+        if not await db.leagues.find_one({"league_id": league_id}):
+            raise HTTPException(
+                status_code=404,
+                detail=f"'{league_id}' is not a competition this app manages — it is in "
+                       f"neither LEAGUE_META nor CUP_META, so there is nothing to sync.")
     now = datetime.now(timezone.utc)
     last = _last_refresh.get(league_id)
     if last and (now - last).total_seconds() < 120:

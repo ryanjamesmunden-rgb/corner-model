@@ -300,10 +300,55 @@ class TestTheIdIsAcceptedWhereItWorksAndRefusedWhereItDoesNot:
         assert "unknown" in server._not_a_league("zzz-x").lower()
 
     def test_the_tool_endpoints_validate_against_the_league_list(self):
+        """FOUR ENDPOINTS, AND ONLY FOUR. They launch per-league scripts — syncing teams,
+        backfilling per-fixture statistics, probing api ids — and every one of those
+        iterates LEAGUE_META. A cup id accepted here starts a subprocess that exits with
+        "unknown league key" while the endpoint reports that it began fine."""
         import inspect
         src = inspect.getsource(server)
-        assert "if league_id not in MANAGED_LEAGUE_IDS" not in src, \
-            "a cup id would be accepted by a tool that only knows how to sync leagues"
+        assert src.count("_not_a_league(league_id)") == 4
+
+    def test_but_refresh_can_still_be_pointed_at_a_cup(self):
+        """The opposite requirement, and the reason the check above is a count rather
+        than a ban on the string. `refresh_league` runs sync_real, which DOES dispatch
+        cups — so it validates against the managed set, deliberately, and it is the only
+        place that should."""
+        import inspect
+        assert "MANAGED_LEAGUE_IDS" in inspect.getsource(server.refresh_league)
+        src = inspect.getsource(server)
+        assert src.count("if league_id not in MANAGED_LEAGUE_IDS") == 1, \
+            "only refresh_league may accept a cup id"
+
+    def test_a_competition_that_has_never_synced_can_still_be_refreshed(self, monkeypatch):
+        """THE CHICKEN AND EGG. `refresh_league` used to require an existing document in
+        db.leagues — which is written at the END of a sync. So a newly added league or
+        cup, whose entire problem is having no data, answered 404 to the one endpoint
+        that would give it some, and the only way in was a full refresh-all or waiting
+        for the cron."""
+        import server as srv
+        monkeypatch.setattr(srv, "db", FakeDB([], [], leagues=[]))       # nothing synced
+        monkeypatch.setattr(srv, "TOOLS_TOKEN", "t" * 20)
+        monkeypatch.setattr(srv, "run_sync_all", lambda *a, **k: None)
+        srv._last_refresh.clear()
+        # Patched on the real module: refresh_league imports subprocess INSIDE the
+        # function, so there is no server.subprocess attribute to reach for.
+        import subprocess
+        started = []
+        monkeypatch.setattr(subprocess, "Popen",
+                            lambda *a, **k: started.append(a) or object())
+        out = run(srv.refresh_league("ucl", token="t" * 20, user={"user_id": "u1"}))
+        assert out["status"] == "syncing"
+        assert started, "no sync process was launched"
+
+    def test_and_an_id_we_do_not_manage_is_still_a_404(self, monkeypatch):
+        import pytest
+        import server as srv
+        monkeypatch.setattr(srv, "db", FakeDB([], [], leagues=[]))
+        monkeypatch.setattr(srv, "TOOLS_TOKEN", "t" * 20)
+        srv._last_refresh.clear()
+        with pytest.raises(srv.HTTPException) as e:
+            run(srv.refresh_league("not-a-league", token="t" * 20, user={"user_id": "u1"}))
+        assert e.value.status_code == 404
 
     def test_logging_a_cup_pick_can_find_its_competition_name(self):
         """The pick endpoint validates against MANAGED_LEAGUE_IDS — which now accepts a

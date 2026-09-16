@@ -118,7 +118,15 @@ export function angleLabel(angle) {
  */
 export function whyLabel(angle) {
   const s = angle?.support || {};
+  // A LONG RUN IS ITS OWN ARGUMENT, and says so. Listing the fixture numbers beside it
+  // would imply they are why it qualified — and for these rows they are not; some have no
+  // opponent average at all, which is precisely when the run has to carry it alone.
+  if (angle?.route === "long_run") {
+    const run = s.run;
+    return run ? `${run} in a row — long enough on its own` : "a run long enough on its own";
+  }
   const bits = [];
+  if (s.run) bits.push(`${s.run} in a row`);
   if (s.prob != null) bits.push(`model ${s.prob}%`);
   if (s.opp_conceded != null) bits.push(`opp concedes ${s.opp_conceded}/game`);
   return bits.join(" · ");

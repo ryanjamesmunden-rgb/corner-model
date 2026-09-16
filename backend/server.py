@@ -5536,6 +5536,12 @@ async def snapshot_streaks(body: StreakSnapshotBody, token: Optional[str] = None
             "support": support,
             "prob": support.get("prob"),
             "qualified": angle_of_day.qualifies(r),
+            # WHICH ARGUMENT LET IT THROUGH. "10 in a row" and "6 in a row against a
+            # defence conceding 7.1" are different claims, and a record that cannot tell
+            # them apart cannot later say which kind of pick has been working. Frozen with
+            # the row for the same reason the rest is: the route depends on numbers that
+            # move every time the league plays.
+            "route": angle_of_day.qualifying_route(r),
         })
     doc = {"tag": tag, "created_at": datetime.now(timezone.utc).isoformat(),
            "days": body.days, "entries": entries}
@@ -6063,6 +6069,11 @@ async def angles_today(count: int = angle_of_day.COUNT, token: Optional[str] = N
     rows = await _screen("angle_board") if _cache_ok() else await _screen_angle_board()
     live = angle_of_day.upcoming(rows, now.isoformat())
     angles = [] if stale else angle_of_day.shortlist(live, day, count)
+    # THE ARGUMENT EACH ONE IS PUBLISHED ON, so the panel can say it. A long run and a
+    # corroborated one are different claims and a reader who cannot tell which is which has
+    # been handed a list rather than a reason.
+    for a in angles:
+        a["route"] = angle_of_day.qualifying_route(a)
 
     fixtures = await db.fixtures.find({}, {"_id": 0, "date": 1}).to_list(5000)
     fixtures_today = sum(1 for f in fixtures

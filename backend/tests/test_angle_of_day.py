@@ -106,14 +106,45 @@ class TestTheRunHasToBeARun:
         assert aod.qualifies(row(run=4)) is False
         assert aod.qualifies(row(run=5)) is True
 
-    def test_a_long_run_still_needs_the_fixture(self):
-        # Length is necessary and was never sufficient. A ten-game run into a mean defence
-        # is still a bet against the thing that decides it.
-        assert aod.qualifies(row(run=12, weak=False)) is False
-        assert aod.qualifies(row(run=12, prob=40.0)) is False
+    def test_a_long_enough_run_qualifies_on_its_own(self):
+        # At STRONG_RUN the run IS the evidence. The fixture bars need an opponent with
+        # enough history to have an average; where there is none they cannot certify
+        # anything, and requiring them would throw away the strongest streaks on the board
+        # exactly when there is nothing else to judge by.
+        assert aod.qualifies(row(run=aod.STRONG_RUN, weak=False, prob=None)) is True
+        assert aod.qualifies(row(run=12, weak=False, prob=30.0)) is True
+
+    def test_just_short_of_the_long_route_still_needs_the_fixture(self):
+        assert aod.qualifies(row(run=aod.STRONG_RUN - 1, weak=False)) is False
+        assert aod.qualifies(row(run=aod.STRONG_RUN - 1, prob=40.0)) is False
+        assert aod.qualifies(row(run=aod.STRONG_RUN - 1, weak=True, prob=70.0)) is True
 
     def test_a_row_with_no_run_recorded_does_not_pass(self):
         assert aod.qualifies({"support": {"weak_opponent": True, "prob": 90.0}}) is False
+
+    def test_each_route_names_itself(self):
+        # So a frozen row records WHICH argument let it through. "10 in a row" and "6 in a
+        # row against a defence conceding 7.1" are different claims, and a record that
+        # cannot tell them apart cannot say which kind of pick has been working.
+        assert aod.qualifying_route(row(run=12, weak=False)) == aod.ROUTE_LONG_RUN
+        assert aod.qualifying_route(row(run=6, weak=True, prob=70.0)) == aod.ROUTE_CORROBORATED
+        assert aod.qualifying_route(row(run=3)) is None
+
+    def test_the_long_route_is_tested_first(self):
+        """A twelve-game streak must never be failed for want of an opponent average —
+        which is the whole reason the route exists."""
+        no_fixture_data = {"support": {"run": 12}}
+        assert aod.qualifying_route(no_fixture_data) == aod.ROUTE_LONG_RUN
+
+    def test_a_row_the_model_cannot_price_sorts_last_rather_than_first(self):
+        # The order is the model's confidence, and a fixture it cannot assess has none to
+        # offer. The run breaks the tie beneath, so those rows are at least ordered sanely
+        # among themselves.
+        priced = row("priced", run=11, prob=64.0)
+        unpriced_long = row("unpriced-long", run=14, prob=None, weak=False)
+        unpriced_short = row("unpriced-short", run=10, prob=None, weak=False)
+        out = aod.shortlist([unpriced_short, unpriced_long, priced], "2026-09-15", count=3)
+        assert [r["name"] for r in out] == ["priced", "unpriced-long", "unpriced-short"]
 
     def test_the_top_of_the_useful_range_is_stated(self):
         """So nobody reads MIN_RUN as a target to tune. A side that has cleared its line ten
@@ -315,7 +346,7 @@ class TestADeadDaySaysWhy:
 
 class TestTheRuleIsStatedNotDiscovered:
     def test_the_rule_is_named_for_what_it_does(self):
-        assert aod.RULE == "corroborated_streaks_by_model_probability"
+        assert aod.RULE == "long_runs_or_corroborated_streaks"
 
     def test_the_module_records_why_the_record_is_not_the_selector(self):
         """So nobody re-introduces "lead with whatever has been landing" without seeing

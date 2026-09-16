@@ -34,7 +34,7 @@ from zoneinfo import ZoneInfo
 
 # What the rule IS, named after what it does rather than what anyone hopes it does. Same
 # discipline as DAILY_PICK_RULE: a name like "value_finder" would be a claim.
-RULE = "corroborated_streaks_by_model_probability"
+RULE = "long_runs_or_corroborated_streaks"
 
 # How many angles the page publishes. A CEILING, NOT A TARGET, and the difference is the
 # whole point of the corroboration bar below: a big Saturday can fill it, a Tuesday should
@@ -50,7 +50,7 @@ COUNT = 8
 # was left, and eight rows on a Tuesday is the board reporting that it found eight things
 # worth backing when what it found was eight rows.
 #
-# So a streak now has to be long enough to be a streak (see MIN_RUN below) AND
+# So a streak that is not long enough to speak for itself (see STRONG_RUN below) has to be
 # corroborated by the FIXTURE:
 #
 #   1. The opponent is actually weak at this. `opp_conceded` against the league's own
@@ -77,21 +77,20 @@ MIN_PROB = 60.0         # the model's probability for the streak continuing, in 
 
 # HOW LONG THE RUN ITSELF HAS TO BE, and the bar this file was missing entirely.
 #
-# The two bars above ask about the FIXTURE — is the opponent leaky, does the model rate it.
+# The fixture bars above ask whether the opponent is leaky and whether the model rates it.
 # Neither asks the first question anyone would: how long has this actually been going? So a
 # team two games into a run could qualify on a soft opponent and a good number, and did.
 #
-# Five, because below that there is no run worth the word — three in a row is a thing that
-# happens to most teams most months, and a streak that short is carrying no information the
-# opponent test has not already supplied. Ten is where it stops adding much: a side that
-# has cleared its line ten straight is telling you what it is, and the eleventh does not
-# change the call.
+# MIN_RUN is the floor for being a run at all. Three in a row happens to most teams most
+# months and carries nothing the opponent test has not already supplied.
 #
-# IT MATTERS MOST WHEN THE OPPONENT HAS NOT BEEN LOOKED AT. The fixture bars need an
-# opponent with enough history to have an average at all; where that is missing the run is
-# the only evidence there is, and a short one is no evidence.
-MIN_RUN = 5
-STRONG_RUN = 10         # where length stops adding — stated so nobody reads MIN_RUN as a target
+# STRONG_RUN IS A ROUTE OF ITS OWN, not a label. At ten the run is the evidence and stands
+# without the fixture — see qualifying_route. That matters most exactly where the fixture
+# bars are weakest: they need an opponent with enough history to have an average, and where
+# there is none they cannot certify anything. Requiring them would throw away the strongest
+# streaks on the board at the moment there is nothing else to judge by.
+MIN_RUN = 5             # below this, not a run
+STRONG_RUN = 10         # at or above this, evidence enough on its own
 
 # The audience is in the UK, and "today" is a local idea. A kick-off at 00:30 BST is
 # tomorrow's game to a reader even though UTC has already turned over.
@@ -203,22 +202,51 @@ def support_for(row: dict, league_avg: Optional[float],
     }
 
 
-def qualifies(row: dict, min_prob: float = MIN_PROB, min_run: int = MIN_RUN) -> bool:
-    """Three bars now, and a row missing the numbers to prove any of them does not pass.
+# The two ways in. Named so a frozen row can record WHICH one let it through — "10 in a
+# row" and "6 in a row against a defence conceding 7.1" are different arguments, and a
+# record that cannot tell them apart cannot later say which kind of pick has been working.
+ROUTE_LONG_RUN = "long_run"
+ROUTE_CORROBORATED = "corroborated"
 
-    THE RUN IS FIRST BECAUSE IT WAS MISSING. The other two ask about the fixture — is the
-    opponent leaky, does the model rate it — and neither asks how long the thing has been
-    going. A team two games into a run could clear both and be published as a streak.
 
-    A row whose projection could not be built — no opponent history, a fixture the model
-    cannot price — still fails rather than passing on its streak alone. Length is necessary
-    and was never sufficient.
+def qualifying_route(row: dict, min_prob: float = MIN_PROB, min_run: int = MIN_RUN,
+                     strong_run: int = STRONG_RUN) -> Optional[str]:
+    """Which argument, if any, this row can be published on.
+
+    TWO ROUTES, NOT THREE BARS.
+
+      LONG RUN ALONE. At `strong_run` or more the run IS the evidence and it stands without
+      the fixture. This is the case the corroboration bars handle worst: they need an
+      opponent with enough history to have an average at all, and where that is missing
+      they cannot certify anything — so requiring them would throw away the strongest
+      streaks on the board precisely when there is nothing else to judge by.
+
+      CORROBORATED. Between `min_run` and `strong_run` the run is real but not conclusive,
+      so the fixture has to back it: a leaky opponent AND a model probability over the bar.
+
+    Below `min_run` there is no route. Three in a row happens to most teams most months and
+    carries nothing the opponent test has not already supplied.
+
+    THE ORDER OF THE CHECKS MATTERS. The long run is tested first so a twelve-game streak
+    is never failed for want of an opponent average — which is the whole point of having
+    the route at all.
     """
     s = row.get("support") or {}
+    run = s.get("run") or 0
+    if run >= strong_run:
+        return ROUTE_LONG_RUN
+    if run < min_run:
+        return None
     prob = s.get("prob")
-    if (s.get("run") or 0) < min_run:
-        return False
-    return bool(s.get("weak_opponent") and prob is not None and prob >= min_prob)
+    if s.get("weak_opponent") and prob is not None and prob >= min_prob:
+        return ROUTE_CORROBORATED
+    return None
+
+
+def qualifies(row: dict, min_prob: float = MIN_PROB, min_run: int = MIN_RUN,
+              strong_run: int = STRONG_RUN) -> bool:
+    """Whether there is any route at all. One decision, made in qualifying_route."""
+    return qualifying_route(row, min_prob, min_run, strong_run) is not None
 
 
 def order(row: dict) -> float:
@@ -231,8 +259,14 @@ def order(row: dict) -> float:
     WHAT THIS DELIBERATELY DOES NOT DO: chase long odds. Most probable means lowest lines,
     so this leads with 5+ ahead of 8+ even when the 8+ run is longer. That is the honest
     consequence of sorting by "most likely to land" and not a bug to sort around.
+
+    A ROW THE MODEL CANNOT PRICE SORTS LAST, and that is the ordering being honest rather
+    than dismissive. A long run qualifies without an opponent average, but the order here is
+    the model's confidence, and a fixture it cannot assess has none to offer. The run breaks
+    the tie beneath, so those rows are at least sensibly ordered among themselves.
     """
-    return (row.get("support") or {}).get("prob") or 0.0
+    s = row.get("support") or {}
+    return (s.get("prob") or 0.0, s.get("run") or 0)
 
 
 def shortlist(rows: List[dict], day: str, count: int = COUNT, tz: str = TZ,

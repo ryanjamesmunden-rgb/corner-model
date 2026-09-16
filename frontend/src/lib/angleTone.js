@@ -101,3 +101,44 @@ export function toneLabel(kind, strong, streakLen = 0) {
 
 /** Icon name for the tone — the second channel that makes the colour legal. */
 export const toneIcon = (kind, strong, streakLen = 0) => toneOf(kind, strong, streakLen).icon;
+
+/**
+ * The run behind a chip, as a fraction the reader can weigh.
+ *
+ * WHY THIS IS ON THE CHIP AND NOT IN THE TOOLTIP. It was in the `title` attribute, which
+ * on a phone does not exist — and this audience is largely on a phone. So every chip said
+ * "Cercle Brugge 4+ corners" and nothing about whether that rested on four games or on
+ * fourteen, which is most of what decides whether it is worth anything.
+ *
+ * A numerator without its denominator is not a claim. "9" could be nine of ten or nine of
+ * twenty; the first is a streak and the second is a coin. So this returns the fraction or
+ * it returns nothing — never a bare count.
+ *
+ * Mismatches and chase spots have no run by construction: a mismatch is two averages
+ * pointed at each other and has no hit rate at all. They get null rather than a
+ * manufactured "0/0", which would read as a streak that has never landed.
+ */
+export function runFraction(angle) {
+  if (!angle) return null;
+  const hits = angle.hits;
+  const of = angle.settled ?? angle.window;
+  if (hits == null || !of) return null;
+  if (angle.kind === "mismatch" || angle.kind === "chase") return null;
+  return `${hits}/${of}`;
+}
+
+/** Below this many real games, a run is the side's whole record rather than form in it. */
+export const THIN_HISTORY = 6;
+
+/**
+ * Is this angle drawn from too little football to read as form?
+ *
+ * Mirrors BOARD_MIN_STREAK_GAMES in server.py. The backend already refuses to call such an
+ * angle strong; this is what lets the chip SAY so rather than just quietly looking weaker,
+ * because "not proven yet" and "barely any games to prove it with" are different problems
+ * and only one of them gets better by waiting for the run to grow.
+ */
+export function thinHistory(angle) {
+  const games = angle?.games;
+  return games != null && games < THIN_HISTORY;
+}

@@ -4680,6 +4680,41 @@ BOARD_MIN_EDGE = 1.0               # the model must expect an at-or-above-par co
 # so the only thing that can make it solid is how many real games the two averages rest
 # on. Same bar the Best Bets card already uses, so the two screens cannot disagree.
 BOARD_MIN_MISMATCH_GAMES = 6
+# A streak is judged on its run, and now also on how much history that run sits inside.
+# Five of five from a side with exactly five games on file is not a run within a season —
+# it IS the season, and the board was presenting the two identically. Same bar as the
+# mismatch above, and as the fixture's own context hurdle, so one number means one thing.
+BOARD_MIN_STREAK_GAMES = 6
+
+# WHICH STREAK SCANS THE BOARD RUNS, as a table rather than a literal in the loop.
+#
+# It was four grids at a fixed 5 of 5. That is one shape of claim, and it made every
+# streak on the board look alike: a side that had cleared its line in five straight and a
+# side that had cleared it in nine of ten arrived as the same chip, and the second is much
+# the stronger thing to know.
+#
+#   window 5, 4 hits   the short read — recent form, and it tolerates one miss, because a
+#                      run that survived a blip is still a run and 5 of 5 was refusing to
+#                      show it at all
+#   window 10, 9 hits  the long read — only a side with ten games on file can produce one,
+#                      so it carries its own sample requirement
+#
+# Both windows on the same grid is not double counting: dedupe_angles keeps ONE angle per
+# team per quantity, ranked, so a side appearing in both shows whichever is the better
+# claim and the other is dropped.
+#
+# MATCH TOTALS ARE NOT RUN AT TEN. Each row here is a full pass over every team, and the
+# long window earns its cost on the two grids anyone bets — a team's own corners. Adding
+# the other two would be two more scans for the rarest chips on the board.
+STREAK_GRIDS = (
+    # direction, subject, min_line, window, min_hits
+    ("over", "team", 3, 5, 4),
+    ("under", "team", 3, 5, 4),
+    ("over", "match", 7, 5, 4),
+    ("under", "match", 3, 5, 4),
+    ("over", "team", 3, 10, 9),
+    ("under", "team", 3, 10, 9),
+)
 # How far ahead the board may look. Was 14 while the UI offered a "Month" tab, so
 # selecting Month silently returned a fortnight — no error, just fewer days than asked.
 BOARD_MAX_DAYS = 30
@@ -4745,6 +4780,13 @@ def angle_is_strong(a: dict, min_run: int = BOARD_MIN_RUN,
     # A mismatch has no run and no hit rate to judge — see BOARD_MIN_MISMATCH_GAMES.
     if a.get("kind") == "mismatch":
         return (a.get("real_samples") or 0) >= BOARD_MIN_MISMATCH_GAMES
+    # A RUN, AND ENOUGH SEASON FOR IT TO BE A RUN WITHIN. Three straight out of a side's
+    # only four games on file is the whole record pointed at itself; the same three inside
+    # a dozen games is form. `games` is absent on angles built before this was recorded,
+    # and those are treated as passing rather than retroactively demoted — the bar applies
+    # to what the board computes now, not to a field that did not exist.
+    if (a.get("games") is not None) and a["games"] < BOARD_MIN_STREAK_GAMES:
+        return False
     return (a.get("streak_len") or 0) >= min_run
 
 
@@ -4826,6 +4868,31 @@ def fixture_qualifies(row: dict, min_games: int = BOARD_MIN_GAMES,
     return any(a.get("strong") for a in row.get("angles") or [])
 
 
+def fixture_rank(row: dict) -> tuple:
+    """Which fixture is more worth looking at. A STATED rule, not a measured one.
+
+    It was `(corner_edge, angle_count)`, which made the projection everything and the
+    number of angles a tiebreak that almost never broke a tie — two sides both carrying
+    live runs into a game lost to a fixture projecting 0.01 higher and holding one.
+
+    A game where several things line up is a game with more to work out, and more ways to
+    be right about it: two teams on runs, or a run and a mismatch, is a different prospect
+    from one angle beside a big lambda. So the count of STRONG angles leads, and the
+    projection orders within it.
+
+    STRONG ONES ONLY. Counting every angle would reward a fixture for accumulating weak
+    ones, which is the opposite of the intent — four chips that each failed the evidence
+    bar is not four reasons.
+
+    THIS IS NOT A CLAIM THAT MULTI-ANGLE FIXTURES WIN MORE, and it has not been measured.
+    It is a claim about where attention is best spent, which is what this board is for.
+    Anyone minded to turn it into the other thing should read DAILY_PICK_RULE first, where
+    four candidate rankings were replayed walk-forward and every one came out flat.
+    """
+    return (row.get("strong_angles") or 0, row.get("corner_edge") or 0,
+            row.get("angle_count") or 0)
+
+
 def board_days(rows: List[dict], per_day: int) -> List[dict]:
     """Group scored fixtures by kickoff day, keep the best `per_day` of each, and read
     each day back in KICKOFF order rather than in score order.
@@ -4837,9 +4904,7 @@ def board_days(rows: List[dict], per_day: int) -> List[dict]:
         by_day[(r.get("date") or "")[:10]].append(r)
     out = []
     for day in sorted(k for k in by_day if k):
-        ranked = sorted(by_day[day],
-                        key=lambda r: (r["corner_edge"], r.get("angle_count") or 0),
-                        reverse=True)
+        ranked = sorted(by_day[day], key=fixture_rank, reverse=True)
         picked = sorted(ranked[:per_day], key=lambda r: r.get("date") or "")
         out.append({"day": day, "considered": len(by_day[day]), "fixtures": picked})
     return out
@@ -4959,21 +5024,31 @@ async def _fixture_board(days: int = 7, per_day: int = FIXTURE_BOARD_PER_DAY,
             "consistency_rate": round(rate, 3), "opp_fh_rate": c["opp_fh_rate"],
             "prob": c["prob"], "fair_odds": c["fair_odds"], "ev": c.get("ev")})
 
-    # the same four grids the streaks export walks, so the board cannot disagree with it
-    for direction, subject, min_line in (("over", "team", 3), ("under", "team", 3),
-                                         ("over", "match", 7), ("under", "match", 3)):
-        for s in await streaks(league_id=lid, side="overall", window=5, min_hits=5,
+    for direction, subject, min_line, window, min_hits in STREAK_GRIDS:
+        for s in await streaks(league_id=lid, side="overall", window=window,
+                               min_hits=min_hits,
                                threshold=None, min_line=min_line, within_days=days,
                                direction=direction, subject=subject, user=user):
             nf = s.get("next_fixture") or {}
             run = (s.get("streak") or {}).get("length") or 0
             what = "match total" if subject == "match" else "corners"
+            settled = s["settled"] or s["window"]
             add(nf.get("fixture_id"), {
                 "kind": f"{direction}_{subject}", "team": s["name"],
                 "label": f"{s['line_label']} {what}",
-                "detail": f"{s['hits']}/{s['settled'] or s['window']} · run {run}"
+                "detail": f"{s['hits']}/{settled} · run {run}"
                           + (f" · {s['voids']} void" if s.get("voids") else ""),
                 "line": s["line"], "hits": s["hits"], "streak_len": run,
+                # THE DENOMINATOR TRAVELS WITH THE NUMERATOR. "4" on its own is not a
+                # claim anyone can weigh, and the chip could only ever say "4" because
+                # the window it came from stopped at the API boundary. Now a 9/10 is
+                # visibly a different thing from a 4/5 on the row rather than in a
+                # tooltip that a phone cannot show at all.
+                "window": s["window"], "settled": settled, "voids": s.get("voids") or 0,
+                # How much history the run is drawn from, which is the other half of
+                # reading it: 5 of 5 from a side with exactly five games on file is its
+                # entire season, not a run within one.
+                "games": s.get("real_samples") or 0,
                 "prob": (s.get("projection") or {}).get("prob"),
                 "fair_odds": (s.get("projection") or {}).get("fair_odds"),
                 "ev": (s.get("projection") or {}).get("ev")})

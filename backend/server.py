@@ -5511,7 +5511,23 @@ async def snapshot_streaks(body: StreakSnapshotBody, token: Optional[str] = None
         entries.append({
             "team_id": r["team_id"], "name": r["name"], "league_id": r["league_id"],
             "line": r["line"], "direction": r["direction"], "subject": r["subject"],
+            # HOW LONG IT HAD BEEN GOING, WRITTEN DOWN WITH THE CLAIM.
+            #
+            # `hits`/`window` were stored and the RUN was not, so the record could say the
+            # site called 4+ and nothing about whether that rested on a side scraping four
+            # of five or one that had cleared it nine straight. Those are different claims
+            # and the record was presenting them identically.
+            #
+            # It has to be frozen here for the same reason everything else is: a run is
+            # alive only until it breaks, so counting it back afterwards reads the run as
+            # it ended rather than as it stood when the call was made.
             "hits": r["hits"], "window": r["window"],
+            "settled": r.get("settled") or r["window"],
+            "voids": r.get("voids") or 0,
+            "streak_len": (r.get("streak") or {}).get("length") or 0,
+            # How much season the run sits inside — five of five from a side with five
+            # games on file is its whole record, not form within one.
+            "games": r.get("real_samples") or 0,
             "fixture_id": nf["fixture_id"], "kickoff": nf.get("date"),
             "opponent": nf.get("opponent"), "is_home": nf.get("is_home"),
             # The evidence as it stood BEFORE kick-off, and the verdict that followed from
@@ -5832,6 +5848,18 @@ async def public_results(weeks: int = RESULTS_WEEKS, token: Optional[str] = None
             "is_home": r.get("is_home"), "kickoff": r.get("kickoff"),
             "result": r["result"], "value": r.get("value"),
             "price": r.get("price"), "stake": r.get("stake"),
+            # THE RUN AS IT STOOD GOING IN. Without these the record reads "Cercle Brugge
+            # 4+ — Landed" and says nothing about whether that was a side scraping four of
+            # five or one that had cleared it nine straight. They are different claims and
+            # the page was presenting them identically.
+            #
+            # `streak_len` and `games` are absent on rows frozen before they were recorded,
+            # and the label degrades to the fraction rather than inventing a run. A zero
+            # there would read as "no run at all", which is a claim about the team rather
+            # than about what was written down.
+            "hits": r.get("hits"), "window": r.get("window"),
+            "settled": r.get("settled"), "voids": r.get("voids") or 0,
+            "streak_len": r.get("streak_len"), "games": r.get("games"),
         }
 
     def _weeks(source):

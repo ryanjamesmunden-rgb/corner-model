@@ -227,3 +227,46 @@ class TestTheCleanSlate:
         # did rather than being retroactively thinned by a bar that did not exist.
         published, held = rv.split([entry("a"), entry("b")])
         assert len(published) == 2 and held == []
+
+
+class TestTheRunTravelsWithTheClaim:
+    """"Cercle Brugge 3+ — Landed" says nothing about how long the run had been going.
+
+    A side scraping three of five and one that had cleared it nine straight are different
+    claims, and the record was presenting them identically. The strength of a claim is most
+    of what a record is for.
+    """
+
+    def test_the_snapshot_freezes_the_run_not_just_the_window(self):
+        import inspect
+        import server
+        src = inspect.getsource(server.snapshot_streaks)
+        for field in ('"streak_len"', '"settled"', '"voids"', '"games"'):
+            assert field in src, \
+                f"{field} is not frozen, so the record can never report it for this night"
+
+    def test_the_run_is_read_from_the_board_row_rather_than_recounted(self):
+        # A run is alive only until it breaks. Counting it back after the game reads the
+        # run as it ENDED rather than as it stood when the call was made — the same
+        # look-ahead the snapshot exists to prevent.
+        import inspect
+        import server
+        src = inspect.getsource(server.snapshot_streaks)
+        assert 'r.get("streak") or {}' in src
+
+    def test_the_public_row_surfaces_it(self):
+        import inspect
+        import server
+        src = inspect.getsource(server.public_results)
+        for field in ('"hits"', '"window"', '"streak_len"', '"games"'):
+            assert field in src, f"{field} is stored but never reaches the page"
+
+    def test_an_older_row_reports_nothing_rather_than_a_zero_run(self):
+        # `streak_len` is absent on rows frozen before it was recorded. A zero would read
+        # as "no run at all", which is a claim about the team rather than about what was
+        # written down.
+        import inspect
+        import server
+        src = inspect.getsource(server.public_results)
+        assert '"streak_len": r.get("streak_len")' in src, \
+            "a default here would manufacture a run for every row frozen before this"

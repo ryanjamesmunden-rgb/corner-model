@@ -1,3 +1,5 @@
+import { runParts } from "./angleTone";
+
 // What the angle panel is allowed to say, kept out of the component.
 //
 // THE WHOLE RISK IN THIS FEATURE IS A SENTENCE, not a layout. "88% strike rate" and "7 of
@@ -122,15 +124,20 @@ export function whyLabel(angle) {
   return bits.join(" · ");
 }
 
-/** "5 of 5 · 4 in a row" — the run behind it, which is the entire reason it is here. */
+/**
+ * "5 of 5 · 4 in a row" — the run behind it, which is the entire reason it is here.
+ *
+ * Prose here, "5/5" on a chip: the same facts at two densities. They read the run out of
+ * ONE extraction (runParts) so the panel and the board cannot come to disagree about what
+ * a team's run actually is — which is the kind of difference nobody notices until two
+ * screens are open side by side.
+ */
 export function runLabel(angle) {
-  if (!angle) return "";
-  const settled = angle.settled ?? angle.window;
-  const bits = [];
-  if (angle.hits != null && settled != null) bits.push(`${angle.hits} of ${settled}`);
-  if (angle.voids) bits.push(`${angle.voids} push`);
-  const len = angle.streak?.length;
-  if (len) bits.push(`${len} in a row`);
+  const p = runParts(angle);
+  if (!p) return "";
+  const bits = [`${p.hits} of ${p.of}`];
+  if (p.voids) bits.push(`${p.voids} push`);
+  if (p.run) bits.push(`${p.run} in a row`);
   return bits.join(" · ");
 }
 

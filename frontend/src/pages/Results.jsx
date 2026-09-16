@@ -255,7 +255,11 @@ function ResultsBoard() {
         <section key={w.tag} className="bg-card border border-border rounded-lg overflow-hidden"
           data-testid="results-week">
           <div className="px-4 py-3 border-b border-border flex items-center gap-3 flex-wrap">
-            <span className="font-head font-semibold text-sm">{weekLabel(w.tag)}</span>
+            {/* A WEEK, NOT A NIGHT. The snapshot went daily and every one of them became
+                its own section here, so a month arrived as thirty blocks under a heading
+                that still said "week". The label comes from the backend so the page and
+                the record cannot disagree about which week a row belongs to. */}
+            <span className="font-head font-semibold text-sm">{w.label || weekLabel(w.tag)}</span>
             <span className="font-mono-data text-[11px] text-muted-foreground">
               {w.settled > 0
                 ? <>{w.landed}/{w.settled} landed</>
@@ -263,6 +267,18 @@ function ResultsBoard() {
               {w.voided > 0 && <> · {w.voided} push</>}
               {w.pending > 0 && <> · {w.pending} to play</>}
             </span>
+            {/* WHAT WAS ON THE BOARD AND NOT PUBLISHED. The snapshot freezes the top 25
+                every night, which on a Saturday is a selection and on a ten-fixture
+                Tuesday is the whole board including the bottom of it. Those are not
+                claims the site made, so they are not counted — and the gap is worth
+                showing, because on a quiet midweek it IS the story. */}
+            {w.held?.rows?.length > 0 && (
+              <span className="font-mono-data text-[10px] text-muted-foreground/70 border
+                               border-dashed border-border rounded px-1.5 py-0.5"
+                data-testid="week-held">
+                {w.held.rows.length} on the board, not published
+              </span>
+            )}
           </div>
           <div className="divide-y divide-border">
             {w.rows.map((r, i) => (

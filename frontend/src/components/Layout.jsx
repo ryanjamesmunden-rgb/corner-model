@@ -10,6 +10,7 @@ import SignIn from "@/components/SignIn";
 import SiteFooter from "@/components/SiteFooter";
 import { useAuth } from "@/context/AuthContext";
 import { dataHealth, healthTitle, freshnessLabel } from "@/lib/freshness";
+import ChannelBanner from "@/components/ChannelBanner";
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from "@/components/ui/select";
@@ -187,6 +188,13 @@ export default function Layout({ children }) {
             </div>
           )}
         </header>
+
+        {/* DIRECTLY UNDER THE HEADER, ON EVERY PAGE, and only for a member who has paid
+            and not yet arrived in the channel. It lived on the account page alone, which
+            meant the only people who found the invite were the ones who went looking for
+            it — and a subscriber who closed the tab after Stripe never did. It draws
+            nothing for everybody else. */}
+        <ChannelBanner />
 
         {/* Bottom padding clears the tab bar. Without it the last row of every board sits
             underneath it, which reads as the page having been cut off. */}

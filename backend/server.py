@@ -25,6 +25,7 @@ from collections import defaultdict, deque
 
 import settlement
 import angle_of_day
+import log_redact
 import record_view
 import projection_record
 from settlement import settle_pending
@@ -40,6 +41,11 @@ app = FastAPI()
 api_router = APIRouter(prefix="/api")
 
 logging.basicConfig(level=logging.INFO)
+# IMMEDIATELY AFTER basicConfig, because there are no handlers to filter before it and the
+# very first outbound call could otherwise be logged in the clear. Telegram puts the bot
+# token in the URL PATH and httpx logs every request URL at INFO, so this level — set right
+# above — was publishing the token on every message the bot sent. See log_redact.
+log_redact.install()
 logger = logging.getLogger(__name__)
 
 # ----------------------------- Poisson Engine -----------------------------
@@ -7476,6 +7482,11 @@ async def _maybe_sync_on_boot():
 
 @app.on_event("startup")
 async def on_startup():
+    # AGAIN, AND FIRST. Uvicorn configures its own loggers before it imports this module,
+    # but a reload or a programmatic run can land the other way round — and `uvicorn.access`
+    # carries `propagate=False`, so a handler this misses never gets filtered at all. That
+    # is the logger the tools token appears on, in the query string. Idempotent.
+    log_redact.install()
     # Protect everyone who already had access, before the billing webhook can act on
     # anyone. Idempotent; see billing.grandfather_existing_members for why it runs here
     # rather than as a script someone has to remember.

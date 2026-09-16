@@ -2,22 +2,13 @@ import { useState } from "react";
 import { toast } from "sonner";
 import { Download, Copy, FileText, Table, Loader2, Flame, Lock } from "lucide-react";
 import { api } from "@/lib/api";
+import { copyOrDownload, download, exportError } from "@/lib/exportCopy";
 import { useAuth } from "@/context/AuthContext";
 import { Link } from "react-router-dom";
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel,
   DropdownMenuSeparator, DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-
-function download(text, filename, mime) {
-  const blob = new Blob([text], { type: mime });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = filename;
-  a.click();
-  URL.revokeObjectURL(url);
-}
 
 // THE PAYWALL HAD A SIDE DOOR HERE, with a label on it.
 //
@@ -37,21 +28,33 @@ export default function ExportMenu() {
   const { member } = useAuth();
   const [busy, setBusy] = useState(false);
 
+  // THE ERROR IS NAMED, NOT SWALLOWED. Every failure here used to read "Export failed",
+  // which is three different problems wearing one sentence — not a member, a backend that
+  // was asleep, a browser refusing the clipboard — each with a different next step.
   const run = async (fn) => {
     setBusy(true);
-    try { await fn(); } catch { toast.error("Export failed"); }
+    try { await fn(); } catch (e) { toast.error(exportError(e)); }
     finally { setBusy(false); }
   };
 
+  // The copy goes through copyOrDownload, which hands the clipboard the PROMISE rather
+  // than awaiting the request first. Awaiting first is what broke this: the gesture that
+  // permits a clipboard write expires in about five seconds, and the first request to a
+  // sleeping backend takes ten times that. See lib/exportCopy.
+  const said = (how, what) => toast.success(
+    how === "clipboard"
+      ? `${what} copied — paste into Claude`
+      : `${what} downloaded — the browser would not allow a copy, so it saved the file instead`);
+
   const copyMd = () => run(async () => {
-    const md = await api.exportMarkdown();
-    await navigator.clipboard.writeText(md);
-    toast.success("All stats copied — paste into Claude");
+    const { how } = await copyOrDownload(() => api.exportMarkdown(),
+                                         "corner-model-export.md");
+    said(how, "All stats");
   });
   const copyStreaks = (days) => run(async () => {
-    const md = await api.exportStreaks(days);
-    await navigator.clipboard.writeText(md);
-    toast.success(`Next ${days} days of streaks copied — paste into Claude`);
+    const { how } = await copyOrDownload(() => api.exportStreaks(days),
+                                         `corner-model-streaks-${days}d.md`);
+    said(how, `Next ${days} days of streaks`);
   });
   const dlMd = () => run(async () => {
     download(await api.exportMarkdown(), "corner-model-export.md", "text/markdown");

@@ -62,7 +62,7 @@ class FakeDB:
         self.streak_snapshots = FakeCollection(snapshots)
 
 
-def board_row(name, hours=6, line=6, fixture_id=None, prob=70.0, weak=True):
+def board_row(name, hours=6, line=6, fixture_id=None, prob=70.0, weak=True, run=6):
     """A streaks-board row, enriched as _angle_rows hands one over.
 
     Qualifying by default: the tests that care about the bar say so explicitly, and the
@@ -72,7 +72,7 @@ def board_row(name, hours=6, line=6, fixture_id=None, prob=70.0, weak=True):
             "line_label": f"{line}+", "direction": "over", "subject": "team",
             "hits": 5, "settled": 5, "window": 5, "voids": 0,
             "streak": {"length": 5}, "opp_fh_rate": 62,
-            "support": {"prob": prob, "weak_opponent": weak, "opp_conceded": 7.1,
+            "support": {"run": run, "prob": prob, "weak_opponent": weak, "opp_conceded": 7.1,
                         "league_avg": 5.4, "opp_bar": 5.94, "opp_fh_rate": 62},
             "next_fixture": {"fixture_id": fixture_id or f"fx-{name}", "date": iso(hours),
                              "opponent": "Stoke", "is_home": True}}

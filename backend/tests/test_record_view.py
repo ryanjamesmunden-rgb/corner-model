@@ -148,85 +148,20 @@ class TestTheEndpointStillDoesThis:
             "held rows are being folded into the counted list — the headline would " \
             "include picks the site declined to make"
 
-    def test_the_headline_covers_the_current_rule_only(self):
+    def test_the_record_is_not_split_into_eras(self):
+        """It briefly was, and that was the wrong fix to the right complaint.
+
+        The problem was a quiet night freezing twenty-five forced streaks and all of them
+        counting — not that earlier weeks were picked differently. Those calls were made
+        before kick-off and they landed or they did not; moving them out of the number is
+        hiding them however carefully the heading is worded.
+        """
         import inspect
         import server
         src = inspect.getsource(server.public_results)
-        assert "record_view.split_eras" in src, \
-            "the record is back to one number spanning two selection rules"
-        assert '"archive"' in src, "the earlier era is no longer published at all"
-
-
-class TestTheCleanSlate:
-    """The picks were chosen one way and are now chosen another.
-
-    A single percentage spanning both describes neither — it is an average of two rules,
-    and a reader has no way to know which one they are being sold. So the headline starts
-    again at the change, and the earlier era is kept whole under its own heading.
-    """
-
-    def test_a_snapshot_frozen_under_the_bar_is_the_current_era(self):
-        assert rv.era_of(snap("2026-09-16", [entry(qualified=True)])) == rv.ERA_CORROBORATED
-
-    def test_one_frozen_before_it_is_not(self):
-        assert rv.era_of(snap("2026-09-10", [entry(), entry()])) == rv.ERA_STREAK_ONLY
-
-    def test_a_night_where_nothing_qualified_is_still_the_current_era(self):
-        # The field is present and false. That is a night the new rule ran and published
-        # nothing, which is the rule working — not a night from before it existed.
-        s = snap("2026-09-16", [entry(qualified=False), entry(qualified=False)])
-        assert rv.era_of(s) == rv.ERA_CORROBORATED
-
-    def test_an_empty_snapshot_falls_to_the_earlier_era(self):
-        # Nothing to read the rule from. It goes to the archive, where it affects no
-        # headline either way.
-        assert rv.era_of(snap("2026-09-16", [])) == rv.ERA_STREAK_ONLY
-
-    def test_the_boundary_is_read_from_the_data_not_from_a_date(self):
-        """A cutover constant would have to be the exact night a deploy landed relative to
-        an 11:00 UTC job — which is how a boundary ends up a day out, silently, in
-        whichever direction flatters the number."""
-        import inspect
-        src = inspect.getsource(rv.era_of)
-        assert "qualified" in src
-        assert "2026" not in src, "era_of is comparing against a hardcoded date"
-
-    def test_the_two_eras_come_apart_cleanly(self):
-        snaps = [snap("2026-09-16", [entry(qualified=True)]),
-                 snap("2026-09-10", [entry()]),
-                 snap("2026-09-17", [entry(qualified=False)])]
-        current, earlier = rv.split_eras(snaps)
-        assert [s["tag"] for s in current] == ["2026-09-16", "2026-09-17"]
-        assert [s["tag"] for s in earlier] == ["2026-09-10"]
-
-    def test_nothing_is_lost_between_them(self):
-        # Every snapshot lands in exactly one era. A row that fell through the gap would be
-        # a claim that was made and is now graded nowhere.
-        snaps = [snap("2026-09-16", [entry(qualified=True)]), snap("2026-09-10", [entry()]),
-                 snap("2026-09-11", []), snap("2026-09-17", [entry(qualified=False)])]
-        current, earlier = rv.split_eras(snaps)
-        assert len(current) + len(earlier) == len(snaps)
-
-    def test_a_week_straddling_the_change_appears_in_both(self):
-        # It looks odd exactly once and it is the truth: some of that week's nights were
-        # picked one way and some the other.
-        snaps = [snap("2026-09-15", [entry()]), snap("2026-09-17", [entry(qualified=True)])]
-        current, earlier = rv.split_eras(snaps)
-        assert rv.group_by_week(current)[0]["week"] == "2026-09-14"
-        assert rv.group_by_week(earlier)[0]["week"] == "2026-09-14"
-
-    def test_the_earlier_era_is_kept_rather_than_discarded(self):
-        # Deleting it would end any chance of grading that period ever again: a snapshot is
-        # the only evidence of what was claimed before a game was played, and recomputing
-        # it afterwards counts only the survivors.
-        _current, earlier = rv.split_eras([snap("2026-09-10", [entry("Boro")])])
-        assert earlier[0]["entries"][0]["name"] == "Boro"
-
-    def test_old_rows_are_still_all_counted_within_their_own_era(self):
-        # In that era the board WAS the claim, so the archive's tally reads as it always
-        # did rather than being retroactively thinned by a bar that did not exist.
-        published, held = rv.split([entry("a"), entry("b")])
-        assert len(published) == 2 and held == []
+        assert '"archive"' not in src, \
+            "the earlier weeks are being moved out of the headline again"
+        assert "split_eras" not in src
 
 
 class TestTheRunTravelsWithTheClaim:

@@ -42,7 +42,7 @@ RULE = "corroborated_streaks_by_model_probability"
 # up to eight, and nothing here ever will.
 COUNT = 8
 
-# THE SECOND BAR, AND WHY THERE HAD TO BE ONE.
+# THE FIXTURE BARS, AND WHY THERE HAD TO BE ANY.
 #
 # A streak on its own says a team keeps clearing a line. It says nothing about who they
 # play next, which is the half that decides whether the run continues. Ordered only by the
@@ -50,7 +50,8 @@ COUNT = 8
 # was left, and eight rows on a Tuesday is the board reporting that it found eight things
 # worth backing when what it found was eight rows.
 #
-# So a streak now has to be corroborated by the FIXTURE:
+# So a streak now has to be long enough to be a streak (see MIN_RUN below) AND
+# corroborated by the FIXTURE:
 #
 #   1. The opponent is actually weak at this. `opp_conceded` against the league's own
 #      average, at the mismatch board's own margin — one number, one source, so the two
@@ -73,6 +74,24 @@ COUNT = 8
 # beside a pick reads as a reason for the pick, and this one has been shown not to be.
 MISMATCH_EDGE = 1.1     # the mismatch board's own margin over the league average
 MIN_PROB = 60.0         # the model's probability for the streak continuing, in percent
+
+# HOW LONG THE RUN ITSELF HAS TO BE, and the bar this file was missing entirely.
+#
+# The two bars above ask about the FIXTURE — is the opponent leaky, does the model rate it.
+# Neither asks the first question anyone would: how long has this actually been going? So a
+# team two games into a run could qualify on a soft opponent and a good number, and did.
+#
+# Five, because below that there is no run worth the word — three in a row is a thing that
+# happens to most teams most months, and a streak that short is carrying no information the
+# opponent test has not already supplied. Ten is where it stops adding much: a side that
+# has cleared its line ten straight is telling you what it is, and the eleventh does not
+# change the call.
+#
+# IT MATTERS MOST WHEN THE OPPONENT HAS NOT BEEN LOOKED AT. The fixture bars need an
+# opponent with enough history to have an average at all; where that is missing the run is
+# the only evidence there is, and a short one is no evidence.
+MIN_RUN = 5
+STRONG_RUN = 10         # where length stops adding — stated so nobody reads MIN_RUN as a target
 
 # The audience is in the UK, and "today" is a local idea. A kick-off at 00:30 BST is
 # tomorrow's game to a reader even though UTC has already turned over.
@@ -167,6 +186,10 @@ def support_for(row: dict, league_avg: Optional[float],
     opp_conceded = proj.get("opp_conceded")
     bar = round(league_avg * edge, 2) if league_avg else None
     return {
+        # THE RUN ALIVE RIGHT NOW, not the window's hit count. A 4-of-5 whose most recent
+        # game was the miss is a broken streak wearing a good record, and the hit count
+        # cannot tell the two apart.
+        "run": (row.get("streak") or {}).get("length") or 0,
         "prob": proj.get("prob"),
         "lambda": proj.get("lambda"),
         "opp_conceded": opp_conceded,
@@ -180,15 +203,21 @@ def support_for(row: dict, league_avg: Optional[float],
     }
 
 
-def qualifies(row: dict, min_prob: float = MIN_PROB) -> bool:
-    """Both bars, and a row missing the numbers to prove either does not pass.
+def qualifies(row: dict, min_prob: float = MIN_PROB, min_run: int = MIN_RUN) -> bool:
+    """Three bars now, and a row missing the numbers to prove any of them does not pass.
+
+    THE RUN IS FIRST BECAUSE IT WAS MISSING. The other two ask about the fixture — is the
+    opponent leaky, does the model rate it — and neither asks how long the thing has been
+    going. A team two games into a run could clear both and be published as a streak.
 
     A row whose projection could not be built — no opponent history, a fixture the model
-    cannot price — fails rather than passing on the strength of its streak alone. That is
-    the whole change: the streak was never the part in doubt.
+    cannot price — still fails rather than passing on its streak alone. Length is necessary
+    and was never sufficient.
     """
     s = row.get("support") or {}
     prob = s.get("prob")
+    if (s.get("run") or 0) < min_run:
+        return False
     return bool(s.get("weak_opponent") and prob is not None and prob >= min_prob)
 
 

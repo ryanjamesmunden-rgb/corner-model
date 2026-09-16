@@ -9,6 +9,7 @@ import { kickoffLabel } from "@/lib/kickoff";
 import SignedInOnly from "@/components/SignedInOnly";
 import { renderRecordCard, renderDayCard } from "@/lib/storyImage";
 import { cardFrom, dayCardFrom, settledDays } from "@/lib/recordCard";
+import { runSummary } from "@/lib/angleTone";
 import TopAngle from "@/components/TopAngle";
 import ErrorBoundary from "@/components/ErrorBoundary";
 
@@ -428,6 +429,18 @@ function WeekBlock({ w }) {
                 <p className="text-sm truncate">
                   <span className="font-medium">{withFlag(r.league_id, r.name)}</span>
                   <span className="font-mono-data text-muted-foreground"> {r.line_label}</span>
+                  {/* HOW LONG IT HAD BEEN GOING WHEN THE CALL WAS MADE. Without it the row
+                      read "Cercle Brugge 3+ — Landed" and said nothing about whether that
+                      rested on a side scraping three of five or one that had cleared it
+                      nine straight. The record was presenting two different claims
+                      identically, and the strength of a claim is most of what a record is
+                      for. Frozen with the pick, so it is the run as it STOOD rather than as
+                      it later ended. */}
+                  {runSummary(r) && (
+                    <span className="font-mono-data text-[10px] ml-1.5 px-1 py-0.5 rounded
+                                     border border-border text-muted-foreground"
+                      data-testid="results-row-run">{runSummary(r)}</span>
+                  )}
                 </p>
                 <p className="text-[11px] text-muted-foreground truncate mt-0.5">
                   {r.is_home ? "vs" : "@"} {r.opponent}

@@ -118,13 +118,47 @@ export const toneIcon = (kind, strong, streakLen = 0) => toneOf(kind, strong, st
  * pointed at each other and has no hit rate at all. They get null rather than a
  * manufactured "0/0", which would read as a streak that has never landed.
  */
-export function runFraction(angle) {
+export function runParts(angle) {
   if (!angle) return null;
   const hits = angle.hits;
   const of = angle.settled ?? angle.window;
   if (hits == null || !of) return null;
-  if (angle.kind === "mismatch" || angle.kind === "chase") return null;
-  return `${hits}/${of}`;
+  // BOTH SHAPES. A board row nests the live run under `streak.length`; a frozen record row
+  // carries it flat as `streak_len`. One extraction reading both is what stops the board
+  // and the record growing separate opinions about the same run.
+  //
+  // `null` rather than 0 when it was never recorded: rows frozen before the run was stored
+  // have no run to report, and a zero would read as "no run at all" — a claim about the
+  // team rather than about what was written down.
+  const run = angle.streak_len ?? angle.streak?.length ?? null;
+  return { hits, of, run: run || null, voids: angle.voids || 0 };
+}
+
+export function runFraction(angle) {
+  if (angle?.kind === "mismatch" || angle?.kind === "chase") return null;
+  const p = runParts(angle);
+  return p ? `${p.hits}/${p.of}` : null;
+}
+
+/**
+ * The run, with how long it has actually been going — "9/10 · 4 in a row".
+ *
+ * WHY THE LENGTH AND NOT JUST THE FRACTION. "Cercle Brugge 3+" says nothing about whether
+ * that rests on a side scraping three of five or one that has cleared it nine straight,
+ * and those are different claims. The fraction fixed half of it: 4/5 and 9/10 now read
+ * differently. The live run is the other half — 4/5 whose most recent game was the miss is
+ * a broken streak wearing a good record, and the site's own bar already knows that (see
+ * angle_is_strong, which judges the run and not the window).
+ *
+ * Degrades rather than invents. A row with no recorded run gets the fraction alone.
+ */
+export function runSummary(angle) {
+  const p = runParts(angle);
+  if (!p) return null;
+  const bits = [`${p.hits}/${p.of}`];
+  if (p.voids) bits.push(`${p.voids} push`);
+  if (p.run) bits.push(`${p.run} in a row`);
+  return bits.join(" · ");
 }
 
 /** Below this many real games, a run is the side's whole record rather than form in it. */

@@ -1,4 +1,4 @@
-import { runFraction, thinHistory, THIN_HISTORY } from "./angleTone";
+import { runFraction, runParts, runSummary, thinHistory, THIN_HISTORY } from "./angleTone";
 
 // A chip said "Cercle Brugge 4+ corners" and nothing about whether that rested on four
 // games or fourteen. The run lived in the `title` attribute, which a phone cannot show —
@@ -62,5 +62,48 @@ describe("a side with barely any season on file", () => {
     // which reads as the board breaking rather than as caution.
     expect(thinHistory({})).toBe(false);
     expect(thinHistory(null)).toBe(false);
+  });
+});
+
+describe("how long the run has been going", () => {
+  // "Cercle Brugge 3+" says nothing about whether that rests on a side scraping three of
+  // five or one that has cleared it nine straight. Those are different claims and the
+  // record was presenting them identically.
+
+  test("the length rides with the fraction", () => {
+    expect(runSummary({ hits: 9, settled: 10, streak_len: 4 })).toBe("9/10 · 4 in a row");
+  });
+
+  test("a record row and a board row read the same run", () => {
+    // A board row nests it under streak.length; a frozen record row carries it flat. One
+    // extraction reading both is what stops the two growing separate opinions.
+    const nested = { hits: 5, settled: 5, streak: { length: 3 } };
+    const flat = { hits: 5, settled: 5, streak_len: 3 };
+    expect(runSummary(nested)).toBe(runSummary(flat));
+    expect(runParts(nested)).toEqual(runParts(flat));
+  });
+
+  test("a row with no recorded run degrades to the fraction", () => {
+    // Rows frozen before the run was stored have no run to report. Inventing one would be
+    // worse than omitting it.
+    expect(runSummary({ hits: 4, window: 5 })).toBe("4/5");
+  });
+
+  test("a zero run is treated as absent rather than as a claim", () => {
+    // 0 would read as "no run at all" — a claim about the team, not about what was
+    // written down.
+    expect(runSummary({ hits: 4, settled: 5, streak_len: 0 })).toBe("4/5");
+    expect(runParts({ hits: 4, settled: 5, streak_len: 0 }).run).toBeNull();
+  });
+
+  test("pushes are shown rather than folded away", () => {
+    expect(runSummary({ hits: 4, settled: 5, voids: 1, streak_len: 2 }))
+      .toBe("4/5 · 1 push · 2 in a row");
+  });
+
+  test("nothing to report is null, not an empty badge", () => {
+    expect(runSummary({})).toBeNull();
+    expect(runSummary(null)).toBeNull();
+    expect(runParts({ hits: 9 })).toBeNull();
   });
 });

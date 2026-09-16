@@ -69,7 +69,11 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          # 24 BECAUSE package.json SAYS SO. `engines.node` is "24.x" and yarn enforces
+          # it during validation, so pinning 20 here failed the install outright — before a
+          # single test ran, on the very first CI run this repo has ever had. Taken from
+          # the declaration rather than guessed a second time.
+          node-version: "24"
           # YARN, NOT NPM. The repo has a yarn.lock and no package-lock.json, so `npm ci`
           # would fail outright and an npm cache key would point at a file that does not
           # exist — a workflow that has never run is exactly where that goes unnoticed.

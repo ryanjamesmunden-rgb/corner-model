@@ -26,7 +26,7 @@ from pathlib import Path
 import httpx
 from dotenv import load_dotenv
 
-from leagues_meta import LEAGUE_META
+from leagues_meta import COMPETITION_META
 
 ROOT = Path(__file__).parent
 load_dotenv(ROOT / ".env")
@@ -82,7 +82,7 @@ async def list_country(hc, country):
         lg = row["league"]
         seasons = row.get("seasons") or []
         cur = next((s["year"] for s in seasons if s.get("current")), None)
-        known = next((k for k, m in LEAGUE_META.items() if m["api"] == lg["id"]), None)
+        known = next((k for k, m in COMPETITION_META.items() if m["api"] == lg["id"]), None)
         mark = f"  <- already ours as {known}" if known else ""
         print(f"    id={lg['id']:<5} {lg.get('type', ''):<7} {lg.get('name', '')}"
               f"{f'  (current season {cur})' if cur else '  (no current season)'}{mark}")
@@ -160,10 +160,16 @@ async def main():
         targets = {f"api-{i}": {"api": i, "name": "?", "country": "?"} for i in ids}
     else:
         keys = [a for a in args if not a.startswith("--")] or DEFAULT_KEYS
-        unknown = [k for k in keys if k not in LEAGUE_META]
+        # COMPETITION_META so a CUP id can be probed too. sync_cup already re-checks its
+        # api id against the provider's own name on every run, but this is the tool
+        # somebody reaches for BEFORE adding one — and the whole reason the nor-d2 entry
+        # was caught. Refusing the id here would mean the one competition whose id was
+        # never hand-verified is the one the verifier cannot look at.
+        unknown = [k for k in keys if k not in COMPETITION_META]
         if unknown:
-            raise SystemExit(f"unknown league key(s): {unknown}\nknown: {sorted(LEAGUE_META)}")
-        targets = {k: LEAGUE_META[k] for k in keys}
+            raise SystemExit(
+                f"unknown league key(s): {unknown}\nknown: {sorted(COMPETITION_META)}")
+        targets = {k: COMPETITION_META[k] for k in keys}
 
     print(f"probing {len(targets)} league(s) — about {len(targets) * 6} API calls\n")
     async with httpx.AsyncClient() as hc:

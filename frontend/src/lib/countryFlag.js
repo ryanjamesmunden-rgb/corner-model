@@ -44,6 +44,26 @@ const CODES = {
   swe: "SE",
 };
 
+// COMPETITIONS WITH NO COUNTRY, keyed by the WHOLE league id rather than a prefix.
+//
+// The lookups below slice the first three characters off a league id, which works because
+// every league id carries a country prefix — `nor-el`, `eng-pl`. A cup id does not: "ucl"
+// is three characters of competition, and slicing it produces "ucl", which is not in
+// CODES, so the row shares with a bare bullet while every line around it carries a flag.
+//
+// Matched whole, and checked FIRST, so a cup id can never be read as a country prefix by
+// accident — a future "usa-cup" must flag as the United States, not as a cup.
+//
+// ALL THREE GET THE SAME BADGE, on purpose. A trophy says "this is a European tie, not a
+// league game", which is the thing a reader needs to know at a glance; three different
+// emoji would be three things to learn and would imply a ranking between the competitions
+// that the marker is not making. The name is right next to it and says which one it is.
+const COMPETITIONS = {
+  ucl: "\u{1F3C6}",      // trophy: a European tie has no one country to fly
+  uel: "\u{1F3C6}",
+  uecl: "\u{1F3C6}",
+};
+
 // Two letters -> the pair of regional indicator symbols the platform draws as a flag.
 const regional = (iso) =>
   [...iso.toUpperCase()].map((c) => String.fromCodePoint(0x1f1e6 + c.charCodeAt(0) - 65)).join("");
@@ -63,14 +83,20 @@ const subdivision = (code) =>
  * lib/storyImage, which probes for that and falls back to this.
  */
 export const countryCodeFor = (leagueId) => {
-  const code = CODES[String(leagueId || "").slice(0, 3).toLowerCase()];
+  const id = String(leagueId || "").toLowerCase();
+  // A cup has no country, and there is no honest short code for "twenty of them". The
+  // caller falls back to plain text, which is the right answer rather than a made-up one.
+  if (COMPETITIONS[id]) return "";
+  const code = CODES[id.slice(0, 3)];
   if (!code) return "";
   return code.includes("-") ? code.split("-")[1].toUpperCase() : code.toUpperCase();
 };
 
 /** The flag for a league id, or "" when the league isn't one we know. */
 export const flagFor = (leagueId) => {
-  const code = CODES[String(leagueId || "").slice(0, 3).toLowerCase()];
+  const id = String(leagueId || "").toLowerCase();
+  if (COMPETITIONS[id]) return COMPETITIONS[id];
+  const code = CODES[id.slice(0, 3)];
   if (!code) return "";
   return code.includes("-") ? subdivision(code) : regional(code);
 };

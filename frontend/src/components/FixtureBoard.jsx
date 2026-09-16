@@ -9,6 +9,7 @@ import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import StarButton from "@/components/StarButton";
 import { TONE, runFraction, thinHistory, toneClass, toneLabel } from "@/lib/angleTone";
 import { FILTERS, applyFilter } from "@/lib/fixtureFilters";
+import { edgeTitle, isCrossLeague, leaguePair, transferNote } from "@/lib/cupRow";
 
 // The best upcoming games, grouped by day — a schedule you can scan, not another ranked
 // list of teams. Every other board here is team-first with the fixture riding along;
@@ -279,7 +280,7 @@ function FixtureRow({ f, onClick }) {
           <span className={`text-[10px] px-1.5 py-0.5 rounded border font-mono-data ${
             hot ? "bg-emerald-500/15 text-emerald-400 border-emerald-500/30"
                 : "bg-secondary text-muted-foreground border-border"}`}
-            title={`Model projects ${f.lambda_total} corners; this league averages ${f.league_avg_total}`}>
+            title={edgeTitle(f)}>
             λ {f.lambda_total} · {edgePct >= 0 ? "+" : ""}{edgePct}%
           </span>
         </div>
@@ -289,6 +290,18 @@ function FixtureRow({ f, onClick }) {
             title="Real matches behind each side's numbers">
             {Math.min(f.home_games ?? 0, f.away_games ?? 0)}+ games each
           </span>
+          {/* WHICH TWO LEAGUES THE EVIDENCE COMES FROM, on a cross-league tie only.
+              A cup row otherwise looks identical to a domestic one while resting on
+              records earned against different opposition — and the reader has no way to
+              tell from "Champions League" alone whether this is Arsenal v Bayern or
+              Arsenal v Spurs. Absent on an all-English tie in Europe, where both records
+              really are comparable and a warning would be a warning about nothing. */}
+          {isCrossLeague(f) && (
+            <span className="ml-2 normal-case tracking-normal" data-testid="fb-cross-league"
+              title={transferNote(f)}>
+              · {leaguePair(f)}
+            </span>
+          )}
         </div>
         {/* WHY THIS GAME IS HERE, in words. Every fixture cleared the evidence hurdle, so
             one of its angles is always the reason — before this the reader had to infer

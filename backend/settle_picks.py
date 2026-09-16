@@ -11,7 +11,8 @@ import httpx
 from dotenv import load_dotenv
 from motor.motor_asyncio import AsyncIOMotorClient
 
-from sync_real import af_get, current_season, LEAGUE_META
+from leagues_meta import COMPETITION_META
+from sync_real import af_get, current_season
 
 ROOT = Path(__file__).parent
 load_dotenv(ROOT / ".env")
@@ -66,7 +67,10 @@ async def settle(hc):
         by_league.setdefault(p["league_id"], []).append(p)
     settled = 0
     for lid, plist in by_league.items():
-        meta = LEAGUE_META.get(lid)
+        # COMPETITION_META covers cups as well as leagues. With a league-only lookup a
+        # pick on a European tie printed "no meta, skip" and stayed pending for ever —
+        # a posted bet that silently never reaches the published record.
+        meta = COMPETITION_META.get(lid)
         if not meta:
             print(f"[{lid}] no meta, skip"); continue
         api_id = meta["api"]

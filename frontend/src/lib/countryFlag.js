@@ -53,8 +53,15 @@ const CODES = {
 //
 // Matched whole, and checked FIRST, so a cup id can never be read as a country prefix by
 // accident — a future "usa-cup" must flag as the United States, not as a cup.
+//
+// ALL THREE GET THE SAME BADGE, on purpose. A trophy says "this is a European tie, not a
+// league game", which is the thing a reader needs to know at a glance; three different
+// emoji would be three things to learn and would imply a ranking between the competitions
+// that the marker is not making. The name is right next to it and says which one it is.
 const COMPETITIONS = {
   ucl: "\u{1F3C6}",      // trophy: a European tie has no one country to fly
+  uel: "\u{1F3C6}",
+  uecl: "\u{1F3C6}",
 };
 
 // Two letters -> the pair of regional indicator symbols the platform draws as a flag.

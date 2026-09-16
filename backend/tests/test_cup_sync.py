@@ -155,6 +155,21 @@ class TestTheSyncDispatchesCupsSeparately:
         assert "avg_shots" not in set_block
         assert "avg_blocked" not in set_block
 
+    def test_the_cap_is_applied_after_resolution_not_before(self):
+        """With three European competitions this is the difference between the feature
+        working and not. The Conference League's league phase is over a hundred fixtures,
+        a large share involving sides from leagues this app does not sync — so a cap taken
+        off the front of the FETCHED list spends the allowance on ties that get thrown
+        away, and usable games two matchdays later (still inside the board's month-long
+        horizon) are never looked at. It presents as "that competition barely has any
+        games on", which is indistinguishable from a quiet week."""
+        import inspect
+        src = inspect.getsource(sync_real.sync_cup)
+        assert "docs = docs[:UPCOMING_FIXTURES]" in src
+        # And the fetched list is NOT pre-trimmed, which is what would silently undo it.
+        fetched = src[src.index("ns = sorted"):src.index("teams = await")]
+        assert "UPCOMING_FIXTURES" not in fetched
+
     def test_everything_is_fetched_before_the_existing_round_is_deleted(self):
         """A failed request must leave the previous round standing rather than empty the
         competition and then fall over."""

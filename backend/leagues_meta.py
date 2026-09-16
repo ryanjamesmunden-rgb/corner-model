@@ -76,14 +76,29 @@ LEAGUE_META = {
 # against Brentford transfers imperfectly to a tie with Bayern, and cup weeks are when
 # managers rest players. Both are labelled on the row rather than modelled away — see
 # cups.py.
+# NO api id HERE IS TAKEN ON TRUST. `probe_leagues.py` exists because an id added from
+# memory once made it in (see the nor-d2 note above), so sync_cup re-verifies each of
+# these against the provider's own name for the competition on EVERY run, before it
+# writes anything. A wrong id fails the sync loudly instead of syncing some other
+# tournament under a European label.
+#
+# THE THREE `verify_name` VALUES ARE MUTUALLY EXCLUSIVE, and that is the property that
+# matters now there is more than one of them. These three competitions have confusingly
+# overlapping names — the third was "Europa Conference League" until UEFA dropped the
+# "Europa" in 2024 — so a check loose enough to survive a rename has to stay tight enough
+# that one of them cannot pass as another. "europa league" is NOT a substring of
+# "uefa europa conference league", and "conference league" is not a substring of
+# "uefa europa league", so ids 3 and 848 cannot be swapped without the sync refusing both.
+# test_cups pins this against every name each competition is known by.
 CUP_META = {
-    # The api id is NOT taken on trust. `probe_leagues.py` exists because an id added from
-    # memory once made it in (see the nor-d2 note above), so sync_cup re-verifies this
-    # against the provider's own name for the competition on EVERY run, before it writes
-    # anything. A wrong id fails the sync loudly instead of syncing some other tournament
-    # under a Champions League label.
-    "ucl": {"api": 2, "name": "Champions League", "country": "Europe",
-            "verify_name": "champions league", "verify_type": "cup"},
+    "ucl":  {"api": 2,   "name": "Champions League", "country": "Europe",
+             "verify_name": "champions league", "verify_type": "cup"},
+    "uel":  {"api": 3,   "name": "Europa League", "country": "Europe",
+             "verify_name": "europa league", "verify_type": "cup"},
+    # Named "Conference League" rather than "Europa Conference League": UEFA dropped the
+    # Europa in 2024, and the shorter name is also what fits a fixture row on a phone.
+    "uecl": {"api": 848, "name": "Conference League", "country": "Europe",
+             "verify_name": "conference league", "verify_type": "cup"},
 }
 
 # Leagues the app owns. Anything else in the DB is a leftover and gets cleaned up on

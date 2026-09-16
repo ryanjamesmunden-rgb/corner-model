@@ -465,13 +465,27 @@ async def sync_cup(hc, cup_id):
 
     fixtures = await af_get(hc, "/fixtures", {"league": api_id, "season": season})
     ns = sorted((f for f in fixtures if f["fixture"]["status"]["short"] in ("NS", "TBD")),
-                key=lambda f: f["fixture"]["date"])[:UPCOMING_FIXTURES]
+                key=lambda f: f["fixture"]["date"])
 
     teams = await db.teams.find({}, {"_id": 0, "team_id": 1, "api_team_id": 1,
                                      "league_id": 1, "name": 1,
                                      "real_samples": 1}).to_list(5000)
     by_api = cups.index_by_api_id(teams)
+    # THE CAP GOES ON WHAT IS KEPT, NOT ON WHAT IS CONSIDERED, and with three European
+    # competitions that difference is the feature working or not.
+    #
+    # Capping the fetched list first spends the allowance on ties that will be thrown
+    # away. The Conference League's league phase is 36 teams and over a hundred fixtures,
+    # a large share of them involving sides from leagues this app does not sync — so 80
+    # taken off the front by date could resolve to a dozen stored games while perfectly
+    # usable ties two matchdays later, still well inside the board's month-long horizon,
+    # were never looked at. It would present as "the Conference League barely has any
+    # games on", which is indistinguishable from the competition being quiet.
+    #
+    # Resolving first costs NOTHING: every fixture came from the single /fixtures response
+    # already fetched, and resolution is a dictionary lookup.
     docs, skipped = cup_fixture_docs(cup_id, ns, by_api)
+    docs = docs[:UPCOMING_FIXTURES]
     print(f"[{cup_id}] upcoming={len(ns)} stored={len(docs)} skipped={skipped or '{}'}")
 
     await db.fixtures.delete_many({"league_id": cup_id})

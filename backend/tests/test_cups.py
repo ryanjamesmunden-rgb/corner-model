@@ -76,6 +76,73 @@ class TestTheIdIsNotTakenOnTrust:
                                         CUP_META["ucl"]) == ""
 
 
+class TestTheThreeEuropeanCupsCannotBeMistakenForEachOther:
+    """THE RISK THAT ARRIVED WITH THE SECOND AND THIRD CUP.
+
+    One cup needed a name check loose enough to survive a sponsor rename. Three of them
+    need it tight enough that they cannot pass as one another — and these three have
+    deliberately overlapping names, one of which UEFA changed: "Europa Conference League"
+    lost its "Europa" in 2024, so both spellings are in circulation.
+
+    If ids 3 and 848 were ever transposed, a loose check would let each sync happily under
+    the other's name. Every European fixture would be filed in the wrong competition, and
+    nothing downstream would report it: the board would render, the projections would
+    compute, and the only symptom would be a Conference League tie appearing under a
+    Europa League heading.
+
+    So this asserts the check REFUSES each competition under every other's expectation,
+    which is the property, rather than that each one passes under its own, which is the
+    happy path already covered above.
+    """
+
+    # Every name the provider is known to use, or has used, for each competition.
+    KNOWN_AS = {
+        "ucl": ["UEFA Champions League", "Champions League"],
+        "uel": ["UEFA Europa League", "Europa League"],
+        "uecl": ["UEFA Europa Conference League", "UEFA Conference League",
+                 "Conference League"],
+    }
+
+    def test_each_competition_passes_under_its_own_entry_whatever_it_is_called(self):
+        for cid, names in self.KNOWN_AS.items():
+            for name in names:
+                entry = {"league": {"name": name, "type": "Cup"}}
+                assert cups.verify_identity(entry, CUP_META[cid]) == "", f"{cid} / {name}"
+
+    def test_and_is_refused_under_every_other_entry(self):
+        for cid, names in self.KNOWN_AS.items():
+            for other in CUP_META:
+                if other == cid:
+                    continue
+                for name in names:
+                    entry = {"league": {"name": name, "type": "Cup"}}
+                    assert cups.verify_identity(entry, CUP_META[other]), \
+                        f"'{name}' passed as {other} — ids {cid} and {other} could be " \
+                        f"transposed and both syncs would look fine"
+
+    def test_the_conference_league_is_not_read_as_the_europa_league(self):
+        """Called out on its own because it is the near miss: "UEFA Europa Conference
+        League" CONTAINS the word Europa, and a check matching on that word alone — or on
+        "europa" plus "league" separately — would accept it."""
+        entry = {"league": {"name": "UEFA Europa Conference League", "type": "Cup"}}
+        assert cups.verify_identity(entry, CUP_META["uel"])
+        assert cups.verify_identity(entry, CUP_META["uecl"]) == ""
+
+    def test_every_cup_is_checked_against_a_distinct_name(self):
+        names = [m["verify_name"] for m in CUP_META.values()]
+        assert len(names) == len(set(names))
+
+    def test_no_cups_expectation_is_a_substring_of_anothers(self):
+        """A `verify_name` contained in another would match both competitions, which is
+        the same failure as a duplicate wearing different words."""
+        for a in CUP_META.values():
+            for b in CUP_META.values():
+                if a is b:
+                    continue
+                assert a["verify_name"] not in b["verify_name"], \
+                    f"{a['verify_name']!r} would also match {b['name']}"
+
+
 class TestResolvingASideToItsDomesticRow:
     def test_both_sides_resolve_to_their_league_teams(self):
         by_api = cups.index_by_api_id([ARSENAL, BAYERN])

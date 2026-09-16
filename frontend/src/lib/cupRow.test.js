@@ -169,6 +169,29 @@ describe("a cup has a badge even though it has no country", () => {
     expect(withFlag("ucl", "Champions League")).not.toBe("Champions League");
   });
 
+  test("all three European competitions carry one", () => {
+    // Adding a cup and forgetting the badge is invisible: the row still renders, it just
+    // goes out bare while every line around it carries a flag — and on a board of mostly
+    // domestic fixtures the European tie is the one a reader is scanning for.
+    for (const id of ["ucl", "uel", "uecl"]) {
+      expect(flagFor(id)).toBeTruthy();
+    }
+  });
+
+  test("and the same one, because the name beside it says which", () => {
+    // Three different emoji would be three things to learn, and would imply a ranking
+    // between the competitions that the marker is not making.
+    expect(flagFor("uel")).toBe(flagFor("ucl"));
+    expect(flagFor("uecl")).toBe(flagFor("ucl"));
+  });
+
+  test("the longer cup id is not truncated into the shorter one's lookup", () => {
+    // `uecl` starts with `uec`; a prefix-sliced lookup would miss it entirely, and a
+    // sloppy startsWith would file it under `ucl`. Matched whole, so neither happens.
+    expect(flagFor("uecl")).toBeTruthy();
+    expect(flagFor("uec")).toBe("");
+  });
+
   test("a country league is unaffected", () => {
     expect(flagFor("ger-bl")).toBe(flagFor("ger-bl2"));
     expect(flagFor("eng-pl")).toBeTruthy();

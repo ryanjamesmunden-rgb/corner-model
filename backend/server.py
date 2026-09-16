@@ -25,6 +25,7 @@ from collections import defaultdict, deque
 
 import settlement
 import angle_of_day
+import cups
 import log_redact
 import record_view
 import projection_record
@@ -470,7 +471,23 @@ def _src(team: dict) -> list:
 
 
 def expected_lambdas(home: dict, away: dict, league_shots: float = REF_SHOTS,
-                     league_blocked: float = 0.0) -> dict:
+                     league_blocked: float = 0.0,
+                     away_shots: Optional[float] = None,
+                     away_blocked: Optional[float] = None) -> dict:
+    """Projected corners for each side of one fixture.
+
+    THE LEAGUE REFERENCES CAN DIFFER BY SIDE, and for a cup tie they must. `live_lambda`
+    uses them to judge whether a team's shot volume is high FOR ITS LEAGUE, so measuring
+    Bayern's shots against the Premier League's average is simply the wrong comparison —
+    it would read as intent that is really just a difference between two competitions.
+    They already entered this function per team-call; they just came from one source.
+
+    `away_shots`/`away_blocked` default to the home pair, so every existing caller — and
+    every one of the 27 domestic leagues, where both sides share a league anyway — keeps
+    exactly the behaviour it had.
+    """
+    a_shots = league_shots if away_shots is None else away_shots
+    a_blocked = league_blocked if away_blocked is None else away_blocked
     h_home = team_split(_src(home), "home", 0)
     a_away = team_split(_src(away), "away", 0)
     # fall back to overall if a team has no games on that venue
@@ -481,7 +498,7 @@ def expected_lambdas(home: dict, away: dict, league_shots: float = REF_SHOTS,
     lam_home = live_lambda((h_home["for_avg"] + a_away["against_avg"]) / 2, home, "home",
                            league_shots, league_blocked)
     lam_away = live_lambda((a_away["for_avg"] + h_home["against_avg"]) / 2, away, "away",
-                           league_shots, league_blocked)
+                           a_shots, a_blocked)
     return {"home": lam_home, "away": lam_away, "total": round(lam_home + lam_away, 2)}
 
 
@@ -622,7 +639,8 @@ def build_markets(lambdas: dict, odds: Dict[str, float]) -> List[dict]:
 
 
 def fixture_model_from(home: dict, away: dict, league: dict, odds: Dict[str, float],
-                       with_distribution: bool = False) -> dict:
+                       with_distribution: bool = False,
+                       away_league: Optional[dict] = None) -> dict:
     """The model for one fixture, from documents ALREADY LOADED.
 
     Split out so a screen that prices many fixtures at once can fetch its teams and
@@ -632,9 +650,14 @@ def fixture_model_from(home: dict, away: dict, league: dict, odds: Dict[str, flo
     EV for the same line is a board nobody can trust.
     """
     league = league or {}
+    # `away_league` is the away side's OWN league, which for a cup tie is not the
+    # fixture's. It defaults to `league`, so a domestic fixture is unchanged.
+    away_league = away_league or league
     ls = league.get("avg_shots") or REF_SHOTS
     lb = league.get("avg_blocked") or 0.0
-    lambdas = expected_lambdas(home, away, ls, lb)
+    lambdas = expected_lambdas(home, away, ls, lb,
+                               away_league.get("avg_shots") or REF_SHOTS,
+                               away_league.get("avg_blocked") or 0.0)
     out = {"lambdas": lambdas, "markets": build_markets(lambdas, odds),
            "confidence": confidence_for(home, away)}
     # OPT-IN, because it is ~60 rows per fixture and the boards price dozens at a time.
@@ -645,11 +668,21 @@ def fixture_model_from(home: dict, away: dict, league: dict, odds: Dict[str, flo
     return out
 
 
+async def _league_doc(league_id) -> dict:
+    return await db.leagues.find_one({"league_id": league_id}, {"_id": 0}) or {}
+
+
 async def get_fixture_model(fixture: dict, odds: Dict[str, float]) -> dict:
     home = await db.teams.find_one({"team_id": fixture["home_team_id"]}, {"_id": 0})
     away = await db.teams.find_one({"team_id": fixture["away_team_id"]}, {"_id": 0})
-    league = await db.leagues.find_one({"league_id": fixture["league_id"]}, {"_id": 0}) or {}
-    return fixture_model_from(home, away, league, odds, with_distribution=True)
+    # EACH SIDE'S OWN LEAGUE, not the fixture's. They are the same for all 27 domestic
+    # leagues; for a cup tie the fixture's league document has no shot averages on it at
+    # all (see sync_real.sync_cup), so reading them from it would silently price both
+    # sides off REF_SHOTS and call it a model.
+    h_league = await _league_doc((home or {}).get("league_id") or fixture["league_id"])
+    a_league = await _league_doc((away or {}).get("league_id") or fixture["league_id"])
+    return fixture_model_from(home, away, h_league, odds, with_distribution=True,
+                              away_league=a_league)
 
 
 # ----------------------------- Public access -----------------------------
@@ -1352,6 +1385,12 @@ async def get_leagues(user: dict = Depends(get_current_user)):
         meta = LEAGUE_META.get(r.get("league_id"))
         if meta and meta.get("tier"):
             r["tier"] = meta["tier"]
+        # A CUP HAS NO TIER, and leaving the field off is the honest answer rather than an
+        # oversight. Tier is the level within a COUNTRY — see leagues_meta — and a
+        # competition whose entrants come from twenty of them has no such level. The flag
+        # is what a filter list needs to know instead: a cup groups separately, and its
+        # rows carry the transfer caveat that domestic ones do not.
+        r["is_cup"] = cups.is_cup(r.get("league_id"))
     return rows
 
 
@@ -1516,7 +1555,10 @@ async def add_pick(body: ManualPickBody, token: Optional[str] = None):
                                    "cannot tell which side you backed")
     doc = {
         "pick_id": str(uuid.uuid4()), "auto": False,
-        "league_id": body.league_id, "league_name": LEAGUE_META[body.league_id]["name"],
+        # COMPETITION_META, so logging a cup pick does not raise a KeyError on a league id
+        # this endpoint has just accepted as valid.
+        "league_id": body.league_id,
+        "league_name": COMPETITION_META[body.league_id]["name"],
         "date": body.date, "home": body.home.strip(), "away": body.away.strip(),
         "team": body.team.strip(), "line": body.line,
         "venue": "home" if body.team.strip().lower() == body.home.strip().lower() else "away",
@@ -1808,7 +1850,23 @@ async def _angle_rows(within_days: int = 2):
         fh = fh_rate(opp, opp_venue) if opp else {"games": 0, "hits": 0}
         r["opp_fh_rate"] = (round(fh["hits"] / fh["games"] * 100)
                             if fh.get("games") else None)
-        r["support"] = angle_of_day.support_for(r, league_avgs.get(r["league_id"]))
+        # THE BAR THE OPPONENT IS JUDGED AGAINST SPANS BOTH LEAGUES.
+        #
+        # `weak_opponent` asks whether this defence concedes more corners than most, and
+        # "most" used to mean the STREAKING TEAM's league — correct for as long as both
+        # sides were in it. In a cup tie they are not, and the comparison then reads every
+        # low-corner league as full of strong defences and every high-corner one as leaky:
+        # a Bundesliga side conceding 5.5 where the league average is 3.5 is genuinely
+        # leaky, and judged against England's 7.0 bar it looks solid. That is a
+        # corroboration bar silently measuring the wrong thing, on the card people pay for.
+        opp_avg = league_avgs.get(opp["league_id"]) if opp else None
+        r["support"] = angle_of_day.support_for(
+            r, cups.blend(league_avgs.get(r["league_id"]), opp_avg, None))
+        # Recorded on the row so a FROZEN snapshot says the pick was a cup tie. The record
+        # is the only thing that can eventually answer whether cross-league picks land at
+        # the same rate as domestic ones, and it can only answer it if it was written down
+        # at the time — going back and deriving it later is survivorship bias.
+        r["support"]["cross_league"] = bool(nf.get("cross_league"))
     return rows
 
 
@@ -2164,6 +2222,26 @@ def _check_tools_token(token: Optional[str]):
         raise HTTPException(status_code=403, detail="Bad or missing token")
 
 
+def _not_a_league(league_id: str) -> str:
+    """Why a league_id was rejected by the per-league tools.
+
+    THE TOOLS BELOW ITERATE LEAGUE_META, NOT THE MANAGED SET. They sync teams, backfill
+    per-fixture statistics and probe api ids — all things a cup does not have, because it
+    stores fixtures only and no teams of its own. Validating against MANAGED_LEAGUE_IDS
+    (which now includes the cups, so boot cleanup does not wipe them) would accept `ucl`
+    here, launch a subprocess, and have it exit with "unknown league key" into a log
+    nobody is reading while the endpoint reported that it had started fine.
+
+    So the message says WHICH kind of id this is, rather than "unknown" about an id that
+    is perfectly well known and simply belongs to the other list.
+    """
+    if cups.is_cup(league_id):
+        return (f"'{league_id}' is a cup. It stores fixtures only and has no teams of its "
+                f"own, so there is nothing here to sync, backfill or probe — its sides are "
+                f"covered by their domestic leagues.")
+    return f"unknown league_id {league_id}"
+
+
 async def _tool_guard(script: str):
     """One run of a script at a time, and not more often than its cooldown."""
     running = await db.script_runs.find_one({"script": script, "status": "running"}, {"_id": 1})
@@ -2278,8 +2356,8 @@ async def tool_backfill_shots(token: Optional[str] = None, league_id: Optional[s
     _check_tools_token(token)
     argv, parts = [], []
     if league_id and league_id != "all":
-        if league_id not in MANAGED_LEAGUE_IDS:
-            raise HTTPException(status_code=400, detail=f"unknown league_id {league_id}")
+        if league_id not in LEAGUE_META:
+            raise HTTPException(status_code=400, detail=_not_a_league(league_id))
         argv.append(league_id)
         parts.append(league_id)
     argv += ["--limit", str(max(1, min(int(limit), 500)))]
@@ -2309,8 +2387,8 @@ async def tool_backfill_goals(token: Optional[str] = None, league_id: Optional[s
     _check_tools_token(token)
     argv, parts = [], []
     if league_id and league_id != "all":
-        if league_id not in MANAGED_LEAGUE_IDS:
-            raise HTTPException(status_code=400, detail=f"unknown league_id {league_id}")
+        if league_id not in LEAGUE_META:
+            raise HTTPException(status_code=400, detail=_not_a_league(league_id))
         argv.append(league_id)
         parts.append(league_id)
     capped = max(1, min(int(limit), 500))
@@ -2361,8 +2439,8 @@ async def tool_measure(token: Optional[str] = None, mode: str = "features",
     script, fixed, takes_league = MEASURE_MODES[mode]
     argv, parts = list(fixed), [mode]
     if league_id and league_id != "all":
-        if league_id not in MANAGED_LEAGUE_IDS:
-            raise HTTPException(status_code=400, detail=f"unknown league_id {league_id}")
+        if league_id not in LEAGUE_META:
+            raise HTTPException(status_code=400, detail=_not_a_league(league_id))
         if not takes_league:
             raise HTTPException(status_code=400,
                                 detail=f"mode {mode} runs across all leagues; drop league_id")
@@ -2423,8 +2501,8 @@ async def tool_probe_leagues(token: Optional[str] = None, league_id: Optional[st
         return await _start_tool("probe_leagues", ["--country", name], f"leagues in {name}")
     argv, label = [], "recently added leagues"
     if league_id and league_id != "all":
-        if league_id not in MANAGED_LEAGUE_IDS:
-            raise HTTPException(status_code=400, detail=f"unknown league_id {league_id}")
+        if league_id not in LEAGUE_META:
+            raise HTTPException(status_code=400, detail=_not_a_league(league_id))
         argv.append(league_id)
         label = league_id
     return await _start_tool("probe_leagues", argv, label)
@@ -3090,16 +3168,36 @@ async def fixture_detail(fixture_id: str, user: dict = Depends(get_current_user)
 
     # Why the live model nudges this team's lambda, per split — the same call pricing
     # makes, so the panel and the price cannot disagree.
-    league = await db.leagues.find_one({"league_id": fx["league_id"]}, {"_id": 0}) or {}
-    ls, lb = league.get("avg_shots") or REF_SHOTS, league.get("avg_blocked") or 0.0
+    #
+    # PER SIDE, because a cup tie's two teams are in different leagues and the fixture's
+    # own league document has no averages on it. Keyed by team_id so `intent` picks the
+    # right pair for whichever side it is handed.
+    side_lids = {t["team_id"]: t["league_id"] for t in (home, away) if t}
+    league_docs = {lid: await _league_doc(lid) for lid in set(side_lids.values())}
+    # The COMPETITION, which is what the fixture is played in and what a posted pick names.
+    # Kept separate from the per-side references above: for a cup they are different
+    # documents, and putting "Premier League" on an Arsenal v Bayern post would be wrong
+    # in a way nobody would notice until it was published.
+    league = await _league_doc(fx["league_id"])
+
+    def _refs(team):
+        lg = league_docs.get(side_lids.get((team or {}).get("team_id"))) or {}
+        return lg.get("avg_shots") or REF_SHOTS, lg.get("avg_blocked") or 0.0
 
     def intent(team):
+        ls, lb = _refs(team)
         return {sp: intent_breakdown(team, sp, ls, lb) for sp in ["home", "away", "overall"]}
 
     # League corners-per-team-per-game, the yardstick every trait is measured against.
     # Computed from the teams in this league rather than stored on the league doc, so it is
     # right the moment the code deploys instead of after the next sync.
-    lg_teams = await db.teams.find({"league_id": fx["league_id"]}, {"_id": 0}).to_list(60)
+    #
+    # BOTH SIDES' LEAGUES, and for a cup tie that is the only version that produces a
+    # number at all: the cup has no teams, `lg_avg` would be 0.0, and team_profile returns
+    # nothing when the yardstick is falsy — so every trait on the page would vanish with
+    # no error and no empty state, just a fixture that mysteriously has nothing to say.
+    lg_teams = await db.teams.find({"league_id": {"$in": sorted(set(side_lids.values()))}},
+                                   {"_id": 0}).to_list(200)
     lg_vals = [m["corners_for"] for t in lg_teams for m in _src(t)]
     lg_avg = (sum(lg_vals) / len(lg_vals)) if lg_vals else 0.0
 
@@ -3140,6 +3238,28 @@ async def fixture_detail(fixture_id: str, user: dict = Depends(get_current_user)
             # The league as it is SAID, not its id. `bra-sb` is what the flag is derived
             # from; "Série B" is what goes in the post.
             "league_name": league.get("name", ""),
+            # WHAT COMPETITION THIS IS, AND WHOSE FORM THE PAGE IS SHOWING.
+            #
+            # On a cup tie the two sides' twenty games come from two different leagues, and
+            # every number below — the splits, the traits, the ladders — was earned against
+            # different opposition on each side. The page looks identical to a domestic one
+            # either way, so the caveat travels WITH the payload rather than being inferred
+            # in the component from a league name.
+            #
+            # BUILT SERVER-SIDE so the page, the export and any posted pick all quote the
+            # same sentence. Two copies of a warning drift, and then the page and the post
+            # disagree about what the row means.
+            "competition": {
+                "league_id": fx["league_id"],
+                "name": league.get("name", ""),
+                "is_cup": cups.is_cup(fx["league_id"]),
+                "cross_league": cups.cross_league(home, away),
+                "home_league_name": (league_docs.get((home or {}).get("league_id")) or {}
+                                     ).get("name", ""),
+                "away_league_name": (league_docs.get((away or {}).get("league_id")) or {}
+                                     ).get("name", ""),
+                "transfer_note": cups.transfer_note(home, away),
+            },
             "key_factors": {
                 "home": key_factors(home, away, "home", home["name"], away["name"], lg_teams),
                 "away": key_factors(away, home, "away", away["name"], home["name"], lg_teams)},
@@ -3553,7 +3673,16 @@ async def _next_fixtures(q):
             if tid not in nf:
                 nf[tid] = {"fixture_id": fx["fixture_id"], "date": fx["date"],
                            "round": fx.get("round"),
-                           "opponent": opp, "opponent_team_id": opp_id, "is_home": is_home}
+                           "opponent": opp, "opponent_team_id": opp_id, "is_home": is_home,
+                           # A team's next game can now be a cup tie against a side from
+                           # another league. Everything built on top of this map — the
+                           # streak rows, the angle card, the snapshot — needs to be able
+                           # to SAY so, because a run earned in one league meeting a
+                           # defence measured in another is weaker evidence than the same
+                           # run meeting a domestic opponent, and a chip that does not
+                           # mention it is quietly overstating its case.
+                           "league_id": fx["league_id"],
+                           "cross_league": bool(fx.get("cross_league"))}
     return nf
 
 
@@ -4951,7 +5080,15 @@ async def _fixture_projections(days: int = 7, league_id: Optional[str] = None) -
     lid = league_id or "all"
     q = {} if lid == "all" else {"league_id": lid}
 
-    teams = await db.teams.find(q, {"_id": 0}).to_list(5000)
+    # EVERY TEAM, WHATEVER LEAGUE WAS ASKED FOR — only the FIXTURES are filtered.
+    #
+    # A cup fixture's sides live in their domestic leagues, so filtering teams by the
+    # requested id has two failure modes and both are silent. Asked for the cup, this map
+    # would be empty and every one of its fixtures would fall out at the `if not home or
+    # not away` guard below — a board that renders perfectly and shows nothing. Asked for
+    # "all", the per-league averages built underneath have to cover both sides' leagues
+    # anyway, which is the same requirement arriving from the other direction.
+    teams = await db.teams.find({}, {"_id": 0}).to_list(5000)
     teams_by_id = {t["team_id"]: t for t in teams}
     leagues = {l["league_id"]: l for l in await db.leagues.find({}, {"_id": 0}).to_list(200)}
     # what a normal match in this league actually produces, to judge the projection against
@@ -4987,10 +5124,27 @@ async def _fixture_projections(days: int = 7, league_id: Optional[str] = None) -
         home, away = teams_by_id.get(fx["home_team_id"]), teams_by_id.get(fx["away_team_id"])
         if not home or not away:
             continue
+        # EVERY LEAGUE REFERENCE BELOW KEYS OFF A TEAM, NOT OFF THE FIXTURE.
+        #
+        # They were identical for as long as both sides shared a league, which was every
+        # fixture in the database until cups arrived. A cup's own league document holds no
+        # averages at all — it has no teams to compute them from — so keying off the
+        # fixture would hand `expected_lambdas` REF_SHOTS for both sides and hand the edge
+        # calculation the hardcoded 10.0 below, producing a confident number with nothing
+        # measured behind it. See cups.py.
+        hl, al = home["league_id"], away["league_id"]
+        lgh, lga = leagues.get(hl, {}), leagues.get(al, {})
+        lam = expected_lambdas(home, away,
+                               lgh.get("avg_shots") or REF_SHOTS,
+                               lgh.get("avg_blocked") or 0.0,
+                               lga.get("avg_shots") or REF_SHOTS,
+                               lga.get("avg_blocked") or 0.0)
+        # The yardstick for "is this game busy?". A tie between two leagues belongs to
+        # neither, so it is judged against the midpoint — which IS the single league's
+        # own average whenever the two sides share one. See cups.blend.
+        avg = cups.blend(league_avg.get(hl), league_avg.get(al), 10.0)
         lg = leagues.get(fx["league_id"], {})
-        lam = expected_lambdas(home, away, lg.get("avg_shots") or REF_SHOTS,
-                               lg.get("avg_blocked") or 0.0)
-        avg = league_avg.get(fx["league_id"]) or 10.0
+        crossed = cups.cross_league(home, away)
         rows[fx["fixture_id"]] = {
             "fixture_id": fx["fixture_id"], "date": fx["date"], "round": fx.get("round"),
             "league_id": fx["league_id"], "league_name": lg.get("name", fx["league_id"]),
@@ -5001,15 +5155,34 @@ async def _fixture_projections(days: int = 7, league_id: Optional[str] = None) -
             # sample behind each side — the CONTEXT hurdle, and shown so a thin row is
             # visibly thin rather than quietly thin
             "home_games": len(_src(home)), "away_games": len(_src(away)),
+            # WHAT THE ROW IS, carried so the page can say it rather than a reader having
+            # to infer it from the competition name. `cross_league` is false for an
+            # all-English tie in Europe: the caveat is about two records earned against
+            # different opposition, not about the badge on the fixture.
+            "is_cup": cups.is_cup(fx["league_id"]),
+            "cross_league": crossed,
+            "home_league_name": (leagues.get(hl) or {}).get("name", hl),
+            "away_league_name": (leagues.get(al) or {}).get("name", al),
+            "transfer_note": cups.transfer_note(home, away),
             "angles": [],
         }
         # Both sides, every fixture in the window — see mismatch_angle for why this is
         # done here rather than borrowed from the next-fixture list.
+        #
+        # THE BAR IS BLENDED, THE LAMBDA IS NOT. Whether a side wins unusually many corners
+        # is a question about the tie, so it is asked against both leagues' midpoint; the
+        # shot references feeding that side's lambda are about the TEAM, so they come from
+        # its own league. Using the midpoint for both would judge Bayern's shot volume
+        # partly against the Premier League, which measures the competitions, not the team.
+        _bar = cups.blend(league_for_avg.get(hl), league_for_avg.get(al), 5.0)
         for _t, _o, _v in ((home, away, "home"), (away, home, "away")):
-            _mm = mismatch_angle(_t, _o, _v, league_for_avg.get(fx["league_id"], 5.0),
-                                 ls_map.get(fx["league_id"], REF_SHOTS),
-                                 bl_map.get(fx["league_id"], 0.0))
+            _tl = _t["league_id"]
+            _mm = mismatch_angle(_t, _o, _v, _bar,
+                                 ls_map.get(_tl, REF_SHOTS),
+                                 bl_map.get(_tl, 0.0))
             if _mm:
+                if crossed:
+                    _mm["cross_league"] = True
                 rows[fx["fixture_id"]]["angles"].append(_mm)
     return rows
 
@@ -5034,7 +5207,14 @@ async def _fixture_board(days: int = 7, per_day: int = FIXTURE_BOARD_PER_DAY,
         if row is not None:
             row["angles"].append(angle)
 
-    for c in await _chase_board(within_days=days, limit=500, league_id=lid):
+    # A CUP HAS NO TEAMS, so a streak or chase scan filtered by its id returns nothing and
+    # the board comes back with fixtures and not one angle on them — which reads as "no
+    # streaks are running into these games" rather than as "this filter cannot work".
+    # Scanning everywhere costs nothing here: `add` only keeps an angle whose fixture is
+    # already on this board, so the widening is self-limiting.
+    angle_lid = "all" if cups.is_cup(lid) else lid
+
+    for c in await _chase_board(within_days=days, limit=500, league_id=angle_lid):
         nf = c.get("next_fixture") or {}
         rate = (c["consistency"] / c["consistency_of"]) if c.get("consistency_of") else 0.0
         add(nf.get("fixture_id"), {
@@ -5046,7 +5226,7 @@ async def _fixture_board(days: int = 7, per_day: int = FIXTURE_BOARD_PER_DAY,
             "prob": c["prob"], "fair_odds": c["fair_odds"], "ev": c.get("ev")})
 
     for direction, subject, min_line, window, min_hits in STREAK_GRIDS:
-        for s in await streaks(league_id=lid, side="overall", window=window,
+        for s in await streaks(league_id=angle_lid, side="overall", window=window,
                                min_hits=min_hits,
                                threshold=None, min_line=min_line, within_days=days,
                                direction=direction, subject=subject, user=user):
@@ -5555,6 +5735,16 @@ async def snapshot_streaks(body: StreakSnapshotBody, token: Optional[str] = None
             "games": r.get("real_samples") or 0,
             "fixture_id": nf["fixture_id"], "kickoff": nf.get("date"),
             "opponent": nf.get("opponent"), "is_home": nf.get("is_home"),
+            # WHETHER THIS WAS A CUP TIE, FROZEN WITH THE CLAIM.
+            #
+            # A cross-league pick rests on weaker corroboration than a domestic one — the
+            # opponent's conceded rate was measured in a different league — and whether
+            # that costs anything is a question only the record can eventually answer. It
+            # can only answer it if the flag was written down at the time: deriving it
+            # afterwards from a fixture list that has since been resynced is exactly the
+            # survivorship problem the whole snapshot exists to avoid. Top-level rather
+            # than only inside `support`, so the split is one query rather than a scan.
+            "cross_league": bool(nf.get("cross_league")),
             # The evidence as it stood BEFORE kick-off, and the verdict that followed from
             # it. `qualified` is stored rather than recomputed for the same reason the rest
             # of the snapshot is: a bar re-applied later is a bar applied to different data.
@@ -7397,7 +7587,9 @@ app.add_middleware(
 # Derived, never re-typed. This used to be a hand-copied duplicate of sync_real's
 # LEAGUE_META, and the boot cleanup below DELETES any league not in this set — so a
 # league added to the sync alone had its data wiped on every restart, silently.
-from leagues_meta import LEAGUE_META, MANAGED_LEAGUE_IDS  # noqa: E402,F401
+from leagues_meta import (  # noqa: E402,F401
+    COMPETITION_META, CUP_META, LEAGUE_META, MANAGED_LEAGUE_IDS,
+)
 
 
 # Data older than this triggers a refresh. MUST BE STRICTLY LESS than the gap between

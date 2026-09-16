@@ -170,7 +170,12 @@ async def _resolve_api_fixture(db, hc, pick: Dict[str, Any]) -> Tuple[Optional[d
     Prefers ids already stored on the pick or its fixture doc; falls back to a
     league+date lookup matched on API team ids, and only then on team names.
     """
-    from sync_real import af_get, current_season, LEAGUE_META
+    # COMPETITION_META, NOT LEAGUE_META: a pick on a cup tie carries `ucl` as its league
+    # id, and a league-only lookup returns nothing — which does not raise. It logs "no
+    # league meta" and leaves the pick pending for ever, so the published record quietly
+    # shows fewer games than were actually posted.
+    from leagues_meta import COMPETITION_META
+    from sync_real import af_get, current_season
 
     api_fid = pick.get("api_fixture_id")
     if api_fid and not isinstance(api_fid, str):
@@ -188,7 +193,7 @@ async def _resolve_api_fixture(db, hc, pick: Dict[str, Any]) -> Tuple[Optional[d
         return (resp[0] if resp else None), (None if resp else f"api fixture {stored} not found")
 
     league_id = pick.get("league_id") or (fixture_doc or {}).get("league_id")
-    meta = LEAGUE_META.get(league_id or "")
+    meta = COMPETITION_META.get(league_id or "")
     if not meta:
         return None, f"no league meta for {league_id!r}"
 

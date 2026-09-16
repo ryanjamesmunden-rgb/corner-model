@@ -11,6 +11,7 @@ import { fixtureStreakShare } from "@/lib/shareText";
 import { useAuth } from "@/context/AuthContext";
 import ProbabilityChart from "@/components/ProbabilityChart";
 import { api, tierMeta, confMeta } from "@/lib/api";
+import { isCrossLeague, transferNote } from "@/lib/cupRow";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 
 // Bands, not a gradient: a rate either reads as reliable, playable, thin or unlikely.
@@ -165,6 +166,23 @@ export default function FixtureDetail() {
           </div>
         </div>
       </div>
+
+      {/* THE CAVEAT SITS ABOVE THE NUMBERS, not in a footnote under them.
+          Everything below this line — the splits, the traits, the corner ladders, the
+          priced markets — is each side's DOMESTIC form, and on a cross-league tie the two
+          records were earned against different opposition. The page is otherwise
+          indistinguishable from a league fixture, so a reader who scrolls past the bottom
+          never learns it. Absent entirely on a domestic game, and on an all-English tie
+          in Europe where both records really are comparable. */}
+      {isCrossLeague(data.competition) && (
+        <div data-testid="cup-transfer-note"
+          className="bg-amber-500/10 border border-amber-500/25 rounded-lg px-3.5 py-2.5">
+          <p className="text-xs text-amber-200/90 leading-relaxed">
+            <span className="font-semibold">{data.competition?.name || "Cup tie"}.</span>{" "}
+            {transferNote(data.competition)}
+          </p>
+        </div>
+      )}
 
       {/* The headline answer, drawn. This leads the page on purpose: it is the one thing a
           visitor who has never used the site can read, and everything below is the detail

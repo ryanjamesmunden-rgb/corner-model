@@ -14,7 +14,8 @@ from dotenv import load_dotenv
 from motor.motor_asyncio import AsyncIOMotorClient
 
 
-from leagues_meta import LEAGUE_META
+import cups
+from leagues_meta import CUP_META, LEAGUE_META
 ROOT = Path(__file__).parent
 load_dotenv(ROOT / ".env")
 
@@ -149,11 +150,23 @@ async def af_get(hc, path, params=None, retries=6):
     raise RuntimeError(f"{path} -> rate limited after {retries} retries")
 
 
-async def current_season(hc, api_id):
-    resp = await af_get(hc, "/leagues", {"id": api_id})
-    seasons = resp[0]["seasons"] if resp else []
+def season_from(entry):
+    """The current season year out of a /leagues entry, newest as a fallback."""
+    seasons = (entry or {}).get("seasons") or []
     cur = next((s["year"] for s in seasons if s.get("current")), None)
-    return cur or max((s["year"] for s in seasons), default=int(os.environ.get("API_FOOTBALL_SEASON", "2024")))
+    return cur or max((s["year"] for s in seasons),
+                      default=int(os.environ.get("API_FOOTBALL_SEASON", "2024")))
+
+
+async def league_entry(hc, api_id):
+    """The provider's own record of one competition. One call, two uses: the season to
+    sync, and — for a cup — the name to check the id against before writing anything."""
+    resp = await af_get(hc, "/leagues", {"id": api_id})
+    return resp[0] if resp else None
+
+
+async def current_season(hc, api_id):
+    return season_from(await league_entry(hc, api_id))
 
 
 def _round_label(raw):
@@ -390,10 +403,103 @@ async def sync_league(hc, my_lid):
             "cache_hit": len(cached), "api_fetched": fetched, "feature_coverage": coverage}
 
 
+def cup_fixture_docs(cup_id, upcoming, by_api, min_games=cups.CUP_MIN_GAMES):
+    """Provider fixtures -> our fixture documents, with each side resolved to its DOMESTIC
+    team row. Pure, so the resolution rules are testable without a database or an API key.
+
+    Returns (documents, {reason: count}) — the counts are printed, because "the round had
+    thirty-two ties and we stored eleven" is a sentence somebody will need explained, and
+    the alternative is a silently short board.
+
+    NO TEAMS ARE CREATED HERE, and that is the entire point of the cup path. The documents
+    below reference `eng-pl-42`, not `ucl-42`, so every streak, average and projection on a
+    cup game is computed from the side's full domestic season.
+    """
+    from collections import Counter
+    docs, skipped = [], Counter()
+    for f in upcoming:
+        hid, aid = f["teams"]["home"]["id"], f["teams"]["away"]["id"]
+        home, away, reason = cups.resolve_tie(hid, aid, by_api, min_games)
+        if reason:
+            skipped[reason] += 1
+            continue
+        docs.append({
+            # Same shape and same derivation as a league fixture — see the long note in
+            # sync_league about why these are NOT uuid4.
+            "fixture_id": f"{cup_id}-{f['fixture']['id']}", "league_id": cup_id,
+            "api_fixture_id": f["fixture"]["id"],
+            "round": _round_label((f.get("league") or {}).get("round")) or "Upcoming",
+            "home_team_id": home["team_id"], "away_team_id": away["team_id"],
+            "home_name": f["teams"]["home"]["name"], "away_name": f["teams"]["away"]["name"],
+            "date": f["fixture"]["date"], "status": "upcoming",
+            # STORED ON THE ROW so every reader downstream can see what it is holding
+            # without re-deriving it from two team lookups. `cross_league` is what the
+            # transfer caveat hangs off, and it is FALSE for an all-English tie in
+            # Europe — the caveat is about the two sides, not the competition.
+            "cup": True, "cross_league": cups.cross_league(home, away),
+            "home_league_id": home["league_id"], "away_league_id": away["league_id"],
+        })
+    return docs, dict(skipped)
+
+
+async def sync_cup(hc, cup_id):
+    """A cup: fixtures only, sides resolved to the teams the league syncs already built.
+
+    ORDER OF OPERATIONS MATTERS. Everything is fetched and resolved BEFORE the existing
+    fixtures are deleted, so a failed request or a wrong id leaves the previous round
+    standing rather than emptying the competition and then falling over.
+    """
+    meta = CUP_META[cup_id]
+    api_id = meta["api"]
+
+    # THE IDENTITY CHECK, BEFORE ANY WRITE. See cups.verify_identity — this repo has a scar
+    # from an api id added from memory, and the only thing that caught it was a human
+    # remembering to run the probe. This runs every time.
+    entry = await league_entry(hc, api_id)
+    complaint = cups.verify_identity(entry, meta)
+    if complaint:
+        raise RuntimeError(complaint)
+    season = season_from(entry)
+    print(f"[{cup_id}] api={api_id} season={season} "
+          f"({(entry.get('league') or {}).get('name')})")
+
+    fixtures = await af_get(hc, "/fixtures", {"league": api_id, "season": season})
+    ns = sorted((f for f in fixtures if f["fixture"]["status"]["short"] in ("NS", "TBD")),
+                key=lambda f: f["fixture"]["date"])[:UPCOMING_FIXTURES]
+
+    teams = await db.teams.find({}, {"_id": 0, "team_id": 1, "api_team_id": 1,
+                                     "league_id": 1, "name": 1,
+                                     "real_samples": 1}).to_list(5000)
+    by_api = cups.index_by_api_id(teams)
+    docs, skipped = cup_fixture_docs(cup_id, ns, by_api)
+    print(f"[{cup_id}] upcoming={len(ns)} stored={len(docs)} skipped={skipped or '{}'}")
+
+    await db.fixtures.delete_many({"league_id": cup_id})
+    if docs:
+        await db.fixtures.insert_many([dict(d) for d in docs])
+
+    # A LEAGUE DOCUMENT WITH NO SHOT AVERAGES ON IT, on purpose. It exists so the cup has a
+    # name to display and so boot cleanup recognises it; `avg_shots` and `avg_blocked` stay
+    # absent because a cup has no teams to compute them from, and server.py reads those
+    # references off each SIDE's league instead. Writing a number here would be the
+    # hardcoded-default bug in a different hiding place.
+    await db.leagues.update_one({"league_id": cup_id}, {"$set": {
+        "league_id": cup_id, "name": meta["name"], "country": meta["country"],
+        "data_source": "cup", "is_cup": True, "teams_from": "domestic",
+        "season": season, "synced_at": datetime.now(timezone.utc).isoformat()}}, upsert=True)
+    print(f"[{cup_id}] DONE fixtures={len(docs)}")
+    return {"teams": 0, "fixtures": len(docs), "skipped": skipped}
+
+
 async def main():
     import uuid as _uuid
     trigger = os.environ.get("SYNC_TRIGGER", "manual")
-    targets = [a for a in sys.argv[1:] if not a.startswith("--")] or list(LEAGUE_META.keys())
+    # CUPS LAST, and it is not cosmetic: a cup resolves its sides out of db.teams, so it
+    # has to run after the leagues that populate them. On the very first sync of a fresh
+    # database the other order would store no cup fixtures at all and look like the cup
+    # had no games on.
+    targets = ([a for a in sys.argv[1:] if not a.startswith("--")]
+               or list(LEAGUE_META.keys()) + list(CUP_META.keys()))
     run_id = str(_uuid.uuid4())
     await db.sync_runs.insert_one({
         "_id": run_id, "trigger": trigger, "started_at": datetime.now(timezone.utc).isoformat(),
@@ -402,7 +508,8 @@ async def main():
     async with httpx.AsyncClient() as hc:
         for lid in targets:
             try:
-                counts = await sync_league(hc, lid)
+                counts = await (sync_cup(hc, lid) if lid in CUP_META
+                                else sync_league(hc, lid))
                 entry = {"league_id": lid, "status": "ok", **(counts or {})}
             except Exception as e:
                 entry = {"league_id": lid, "status": "error", "error": str(e)[:300]}

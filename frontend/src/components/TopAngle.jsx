@@ -4,6 +4,7 @@ import { Link } from "react-router-dom";
 import { api } from "@/lib/api";
 import { withFlag } from "@/lib/countryFlag";
 import { kickoffLabel } from "@/lib/kickoff";
+import { fixtureCaveatTag } from "@/lib/cupRow";
 import {
   angleLabel, coversLabel, deadMessage, hasPanel, runLabel, splitAngles, statedRecord,
   whyLabel,
@@ -114,6 +115,25 @@ const fixtureLine = (a) => {
   return `${nf.is_home ? "vs" : "@"} ${nf.opponent || "?"}`;
 };
 
+/* THE CARD SAYS WHEN THE OPPONENT IS NOT FROM THIS LEAGUE.
+   A row is a run plus the defence it is about to meet, and the corroboration comes from
+   how leaky that defence has been. In a European tie it was measured in a DIFFERENT
+   league, so the row is weaker evidence than the identical-looking one above it — and
+   this is the card people pay for, so it is said rather than left to be noticed. */
+function CupTag({ angle }) {
+  const tag = fixtureCaveatTag(angle?.next_fixture);
+  if (!tag) return null;
+  return (
+    <span data-testid="angle-cup-tag"
+      className="ml-1.5 text-[10px] px-1 py-0.5 rounded border border-amber-500/30
+                 bg-amber-500/10 text-amber-300/90 font-mono-data whitespace-nowrap"
+      title="The opponent's numbers were earned in another league, so this run is meeting
+             a defence measured against different opposition. Cup weeks also bring rotation.">
+      {tag}
+    </span>
+  );
+}
+
 function TopRow({ angle }) {
   if (!angle) return null;
   return (
@@ -127,6 +147,7 @@ function TopRow({ angle }) {
             {fixtureLine(angle)}
             <span className="mx-1.5 opacity-40">·</span>
             {kickoffLabel(angle.next_fixture?.date)}
+            <CupTag angle={angle} />
           </p>
         </div>
         <span className="font-mono-data text-[11px] px-2 py-1 rounded border
@@ -162,6 +183,7 @@ function Row({ angle }) {
           {fixtureLine(angle)}
           <span className="mx-1.5 opacity-40">·</span>
           {kickoffLabel(angle.next_fixture?.date)}
+          <CupTag angle={angle} />
         </p>
       </div>
       <span className="font-mono-data text-[10px] text-muted-foreground shrink-0">

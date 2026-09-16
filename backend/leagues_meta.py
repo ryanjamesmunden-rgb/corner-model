@@ -48,6 +48,44 @@ LEAGUE_META = {
     "arg-lp":  {"api": 128, "name": "Liga Profesional", "country": "Argentina", "tier": 1},
 }
 
+# CUPS ARE FIXTURES, NOT LEAGUES, AND THAT DISTINCTION IS THE WHOLE DESIGN.
+#
+# The obvious way to add the Champions League is to put it in LEAGUE_META with api 2 and
+# let the sync run. That breaks quietly and badly, for three reasons:
+#
+#   1. A TEAM'S PRIMARY KEY CONTAINS ITS LEAGUE. `team_id = f"{league_id}-{api_id}"`, so
+#      syncing UCL as a league creates a SECOND Arsenal — `ucl-42`, with six or eight
+#      matches on file, three of them at home — that never merges with `eng-pl-42`. Every
+#      streak, every average, every projection would be computed from a fragment of the
+#      season, and the board would show both rows side by side as if they were two clubs.
+#   2. THE STREAK BARS ASSUME A SEASON. BOARD_MIN_STREAK_GAMES is 6 and the angle card's
+#      MIN_RUN is 5. A competition where nobody has played more than eight games hands
+#      both of them "5 from 5" runs that are the side's entire record pointed at itself.
+#   3. THE LEAGUE AVERAGE WOULD BE A HARDCODED DEFAULT. `league_avg.get(fx["league_id"])
+#      or 10.0` keys off the FIXTURE's league, so a competition with no teams of its own
+#      silently prices every game against 10.0 total corners and 5.0 won — not measured,
+#      not flagged, and wrong in a different direction for every tie.
+#
+# So a cup stores ONLY fixtures, and each side resolves to the team document it already
+# has in its domestic league. Arsenal v Bayern uses Arsenal's Premier League form and
+# Bayern's Bundesliga form. `api_team_id` is stored on every team, which is the hook that
+# makes the resolution possible at all.
+#
+# WHAT THIS BUYS AND WHAT IT DOES NOT. It buys real, deep form on both sides from the
+# first matchday. It does not fix the two things no amount of code can: form earned
+# against Brentford transfers imperfectly to a tie with Bayern, and cup weeks are when
+# managers rest players. Both are labelled on the row rather than modelled away — see
+# cups.py.
+CUP_META = {
+    # The api id is NOT taken on trust. `probe_leagues.py` exists because an id added from
+    # memory once made it in (see the nor-d2 note above), so sync_cup re-verifies this
+    # against the provider's own name for the competition on EVERY run, before it writes
+    # anything. A wrong id fails the sync loudly instead of syncing some other tournament
+    # under a Champions League label.
+    "ucl": {"api": 2, "name": "Champions League", "country": "Europe",
+            "verify_name": "champions league", "verify_type": "cup"},
+}
+
 # Leagues the app owns. Anything else in the DB is a leftover and gets cleaned up on
 # boot — which is exactly why this is derived rather than typed out a second time.
 # TIER is the level within its own COUNTRY: 1 = top flight, 2 = second tier, and so on.
@@ -64,4 +102,25 @@ LEAGUE_META = {
 # needs data this app does not have (coefficients, squad values), and inventing it from
 # corner counts would be a number with a confident face and no evidence behind it.
 
-MANAGED_LEAGUE_IDS = set(LEAGUE_META)
+# CUPS ARE IN THE MANAGED SET, and they have to be. Boot cleanup deletes every league
+# document — and every fixture carrying its id — that is not in here, so leaving the cups
+# out would mean the sync populated them and the next restart wiped them: exactly the
+# failure the note at the top of this file describes, reintroduced by the back door.
+MANAGED_LEAGUE_IDS = set(LEAGUE_META) | set(CUP_META)
+
+# The ids that are cups. Named separately because the two are managed identically and
+# SYNCED completely differently — sync_real dispatches on this.
+CUP_IDS = frozenset(CUP_META)
+
+# EVERYTHING WITH AN API-FOOTBALL ID BEHIND IT, for the code that only needs to turn one of
+# our ids into the provider's.
+#
+# Settlement is the caller that matters. It looks a pick's competition up to fetch the
+# fixture window it was played in, and a lookup that knew only about leagues would return
+# nothing for a cup pick — which does NOT fail: it logs "no league meta" and leaves the
+# pick pending for ever. A bet that silently never settles is worse than one that errors,
+# because the record simply shows fewer games than were actually posted.
+#
+# Distinct from MANAGED_LEAGUE_IDS, which answers "may this id own rows in the database",
+# and from LEAGUE_META, which is what the per-league syncs and backfills iterate.
+COMPETITION_META = {**LEAGUE_META, **CUP_META}

@@ -162,6 +162,25 @@ describe("why the fixture backs the streak up", () => {
     expect(why).not.toMatch(/first|1H|fh/i);
   });
 
+  test("a long run says it is its own argument", () => {
+    // Listing the fixture numbers beside it would imply they are why it qualified, and for
+    // these rows they are not — some have no opponent average at all, which is precisely
+    // when the run has to carry it alone.
+    const why = whyLabel({ route: "long_run", support: { run: 12, prob: 55, opp_conceded: 4.2 } });
+    expect(why).toBe("12 in a row — long enough on its own");
+    expect(why).not.toMatch(/4\.2|55/);
+  });
+
+  test("a long run with no recorded length still reads as one", () => {
+    expect(whyLabel({ route: "long_run", support: {} }))
+      .toBe("a run long enough on its own");
+  });
+
+  test("a corroborated row leads with the run, then the fixture", () => {
+    expect(whyLabel({ route: "corroborated", support: { run: 6, prob: 71.2, opp_conceded: 7.1 } }))
+      .toBe("6 in a row · model 71.2% · opp concedes 7.1/game");
+  });
+
   test("a half-populated row says what it can", () => {
     expect(whyLabel({ support: { prob: 66 } })).toBe("model 66%");
   });

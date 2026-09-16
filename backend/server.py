@@ -25,6 +25,7 @@ from collections import defaultdict, deque
 
 import settlement
 import angle_of_day
+import record_view
 import projection_record
 from settlement import settle_pending
 
@@ -790,7 +791,17 @@ def _public_user(u: dict) -> dict:
             # WHICH IS WHY TRIAL ELIGIBILITY READS THIS INSTEAD. The two used to be the
             # same field, and splitting them is what stops somebody who opened checkout
             # and thought better of it being refused the free week they never used.
-            "had_subscription": bool(u.get("had_subscription"))}
+            "had_subscription": bool(u.get("had_subscription")),
+            # HAS THIS MEMBER ACTUALLY GOT INTO THE CHANNEL. Set when they walk through an
+            # issued invite — see record_channel_join, the one moment both identities are
+            # visible together.
+            #
+            # It is here because paying and arriving are different events and the site was
+            # treating them as one. A subscriber who never returned to /account after
+            # Stripe had bought the channel and never been handed it, and nothing anywhere
+            # knew to say so. Now the difference is a fact the UI can act on.
+            "vip_joined": bool(u.get("vip_joined_at")),
+            "vip_invited": bool(u.get("vip_invite_link"))}
 
 
 # ----------------------------- Billing -----------------------------
@@ -5810,14 +5821,28 @@ async def public_results(weeks: int = RESULTS_WEEKS, token: Optional[str] = None
             out.append(e)
         return out
 
-    weeks_out, everything = [], []
-    for s in snaps:
-        rows = _grade_entries(_fresh(s.get("entries") or []), teams)
+    # ONE BLOCK PER WEEK, NOT PER SNAPSHOT. The snapshot went daily and each one became its
+    # own section, so a month of football arrived as thirty blocks under a heading that
+    # still said "week". See record_view.
+    weeks_out, everything, held_rows = [], [], []
+    for block in record_view.group_by_week(snaps):
+        rows, held, tags = [], [], []
+        for s in block["days"]:
+            fresh = _fresh(s.get("entries") or [])
+            # WHAT THE SITE STOOD BEHIND, counted under the rule in force when it was
+            # frozen. A quiet Tuesday freezes the whole board because 25 is a quota, not a
+            # bar — and the site published none of it. Counting those as claims would
+            # record picks it declined to make; re-judging the older rows by today's bar
+            # would score them under a rule they were never made under.
+            pub, unpublished = record_view.split(fresh)
+            rows.extend(_grade_entries(pub, teams))
+            held.extend(_grade_entries(unpublished, teams))
+            tags.append(s.get("tag"))
         everything.extend(rows)
-        weeks_out.append({
-            "tag": s.get("tag"), "created_at": s.get("created_at"), "days": s.get("days"),
-            **_tally(rows),
-            "rows": [{
+        held_rows.extend(held)
+
+        def _row(r):
+            return {
                 "name": r["name"], "league_id": r["league_id"],
                 "line": r["line"], "direction": r["direction"],
                 # Built here rather than in the browser so the page cannot label an under
@@ -5827,7 +5852,18 @@ async def public_results(weeks: int = RESULTS_WEEKS, token: Optional[str] = None
                 "is_home": r.get("is_home"), "kickoff": r.get("kickoff"),
                 "result": r["result"], "value": r.get("value"),
                 "price": r.get("price"), "stake": r.get("stake"),
-            } for r in rows],
+            }
+
+        weeks_out.append({
+            "tag": block["week"], "week": block["week"],
+            "label": record_view.label(block["week"]),
+            "days": len(block["days"]), "tags": tags,
+            **_tally(rows),
+            # Shown, never counted. The gap between these two numbers is the most
+            # interesting thing on a quiet midweek: what was on the board, and what the
+            # site was willing to put its name to.
+            "held": {**_tally(held), "rows": [_row(r) for r in held]},
+            "rows": [_row(r) for r in rows],
         })
 
     # ANGLES POSTED BY HAND, split by whether they were logged while still a prediction.

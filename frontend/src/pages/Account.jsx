@@ -55,9 +55,12 @@ export default function Account() {
   const { user, ready, member, signOut, renderButton, clientId, setMember } = useAuth();
   const [params] = useSearchParams();
   const [busy, setBusy] = useState(false);
-  // The member's channel invite. Fetched on demand rather than on page load: it is a
-  // write (it mints a link on Telegram the first time) and every visit to this page is
-  // not a request for one.
+  // The member's channel invite. Fetched automatically for a member who has not yet
+  // arrived in the channel — see the effect below. It was on-demand, on the reasoning that
+  // minting a link is a write and not every visit is a request for one; that reasoning was
+  // right about Telegram and wrong about people. The endpoint is idempotent (it stores the
+  // link and returns the same one forever), so the write happens once either way, and the
+  // cost of the old behaviour was a subscriber who never found the thing they paid for.
   const [invite, setInvite] = useState(null);
   const [inviteBusy, setInviteBusy] = useState(false);
   // Cancelling is two steps, not one. A single click that ends a paid subscription is
@@ -100,7 +103,11 @@ export default function Account() {
   // banner below.
   const [stalled, setStalled] = useState(false);
 
-  const getInvite = async () => {
+  // `silent` for the automatic fetch below. A toast is the right answer to a button that
+  // failed and the wrong one to a background call the member never made: an error they
+  // cannot connect to an action of theirs reads as the site being broken. The button below
+  // still shows, so the failure is recoverable by pressing it and getting told properly.
+  const getInvite = async ({ silent = false } = {}) => {
     if (inviteBusy) return;
     setInviteBusy(true);
     try {
@@ -109,11 +116,27 @@ export default function Account() {
     } catch (e) {
       // The detail is written to be read by whoever is standing in front of it — a 503
       // names the missing setting, a 502 names the bot's channel permission.
-      toast.error(e?.response?.data?.detail || "Couldn't create your channel invite");
+      if (!silent) {
+        toast.error(e?.response?.data?.detail || "Couldn't create your channel invite");
+      }
     } finally {
       setInviteBusy(false);
     }
   };
+  // FETCHED, NOT WAITED FOR. The invite used to appear only when a member pressed a
+  // button, so somebody who paid and closed the tab — or who read this page and did not
+  // press the thing — had bought the channel and never been handed it. One did. The link
+  // is theirs the moment they are a member, so it is on screen the moment they are.
+  //
+  // Only when they have not already arrived: a member who is in the channel does not need
+  // a live invite minted at them every time they open their account page.
+  useEffect(() => {
+    if (!member || invite || inviteBusy) return;
+    if (user?.vip_joined) return;
+    getInvite({ silent: true });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [member, user?.vip_joined]);
+
   useEffect(() => {
     if (!justPaid || member) return;
     let alive = true;
@@ -344,7 +367,7 @@ export default function Account() {
               </a>
             ) : (
               <button
-                onClick={getInvite}
+                onClick={() => getInvite()}
                 disabled={inviteBusy}
                 data-testid="vip-invite-button"
                 className="w-full inline-flex items-center justify-center gap-2 px-4 py-3 rounded-md bg-primary text-black font-semibold hover:opacity-90 transition-opacity disabled:opacity-50">

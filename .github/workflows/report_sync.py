@@ -36,6 +36,11 @@ def _cup_ids():
 
 STILL_GOING = ("running",)
 BAD = ("failed", "error")
+# A run still `running` after this long is worth a second look. NOT an error: a first-ever
+# sync, or one after STATS_CAP is raised, legitimately runs for hours because every
+# uncached fixture costs a statistics call. The number that settles it is the progress
+# count below — compare it between two checks, and if it has not moved the process is gone.
+STUCK_AFTER_MINUTES = 45
 # If the newest run is older than this, the data is stale and nothing is fixing it.
 # This is the check that was missing: the site sat two days behind, twice, with no
 # signal anywhere. A warning in a scheduled run is that signal.
@@ -63,6 +68,45 @@ def _failures(run):
             out.setdefault(str(lg.get("error") or "(no message recorded)"),
                            []).append(str(lg.get("league_id", "?")))
     return out
+
+
+def _report_progress(run):
+    """How far through the competition list this run has got.
+
+    THE ONE NUMBER THAT SEPARATES "WORKING" FROM "DEAD", and it was the one thing this
+    report could not say. Every line here describes FAILURES, so a run with twenty
+    successful leagues behind it and nothing wrong prints nothing at all — identical, in
+    the log, to a run whose process was killed thirty seconds in.
+
+    That matters because `status` cannot tell them apart either: it is set to
+    success/failed/partial only at the END of main(), so a sync whose process dies stays
+    `running` for ever and this script keeps saying "still running (expected)" — with
+    nothing else alarming for a day, because the staleness check is 26 hours.
+
+    `targets` is the full list and `leagues` is written incrementally as the sync walks
+    it, so the two together give a position. Printed on every run, finished or not: the
+    reader compares it between two checks, and a count that has not moved is a dead
+    process, whatever `status` claims.
+    """
+    targets = run.get("targets") or []
+    done = run.get("leagues") or []
+    if not targets:
+        return                              # older run documents predate the field
+    last = ""
+    if done:
+        entry = done[-1]
+        if isinstance(entry, dict) and entry.get("league_id"):
+            last = f" · last {entry['league_id']}"
+    print(f"progress: {len(done)}/{len(targets)} competitions{last}")
+
+    if str(run.get("status", "")).lower() not in STILL_GOING:
+        return
+    age = _age_hours(run.get("started_at"))
+    if age is not None and age * 60 > STUCK_AFTER_MINUTES:
+        print(f"::warning::still running after {age * 60:.0f} minutes. That is normal for "
+              f"a first sync or a raised STATS_CAP. Re-run this workflow and compare the "
+              f"progress count above — if it has not moved, the sync process is gone and "
+              f"the run will sit on 'running' for ever.")
 
 
 def _report_cups(run):
@@ -146,6 +190,7 @@ def main() -> int:
     for msg, lids in sorted(_failures(newest).items(), key=lambda kv: -len(kv[1])):
         where = ", ".join(lids[:4]) + (f" +{len(lids) - 4} more" if len(lids) > 4 else "")
         print(f"  {len(lids):>2} league(s) [{where}]: {msg}")
+    _report_progress(newest)
     _report_cups(newest)
     status = str(newest.get("status", "")).lower()
 

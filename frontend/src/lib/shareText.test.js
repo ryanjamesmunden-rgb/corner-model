@@ -143,19 +143,33 @@ describe("the other two boards", () => {
       rows: [{ name: "Celtic", league_id: "sco-pl", won_avg: 8.123 }],
       side: "overall", windowLabel: "Season",
     })(4);
-    const row = out.split("\n")[1];
-    expect(row).toBe("\u{1F3F4}\u{E0067}\u{E0062}\u{E0073}\u{E0063}\u{E0074}\u{E007F} Celtic 8.12");
+    const row = out.split("\n")[2];
+    expect(row).toBe("\u{1F3F4}\u{E0067}\u{E0062}\u{E0073}\u{E0063}\u{E0074}\u{E007F} Celtic 8.1");
     // The unit belongs in the heading once, not after every team — 18 characters a row
     // saying the same thing eight times is what pushed the post over the limit.
     expect(row).not.toMatch(/corners|game/);
-    expect(out.split("\n")[0]).toContain("avg corners won");
+    expect(out.split("\n")[1]).toBe("AVG won · Season:");
+  });
+
+  test("a one-league board names the league with its flag", () => {
+    const rows = [
+      { name: "Arsenal", league_id: "eng-pl", league_name: "Premier League", won_avg: 5.6 },
+      { name: "Chelsea", league_id: "eng-pl", league_name: "Premier League", won_avg: 5.25 },
+    ];
+    const out = bestTeamsShare({ rows, side: "overall", windowLabel: "Last 5" })(8);
+    const ENGLAND = "\u{1F3F4}\u{E0067}\u{E0062}\u{E0065}\u{E006E}\u{E0067}\u{E007F}";
+    expect(out.split("\n").slice(0, 3)).toEqual([
+      `Best corner teams — Premier League ${ENGLAND}`,
+      "AVG won · last 5:",
+      `${ENGLAND} Arsenal 5.6`,
+    ]);
   });
 
   test("all eight teams fit one X post in the compact format", () => {
     const rows = Array.from({ length: 8 }, (_, i) =>
       ({ name: `Team ${i}`, league_id: "eng-pl", won_avg: 7 - i * 0.1 }));
     const out = bestTeamsShare({ rows, side: "overall", windowLabel: "Season" })(8);
-    expect(out.split("\n").filter((l) => /\d\.\d\d$/.test(l))).toHaveLength(8);
+    expect(out.split("\n").filter((l) => /\d\.\d$/.test(l))).toHaveLength(8);
     expect(out).not.toContain("more on the site");
   });
 });

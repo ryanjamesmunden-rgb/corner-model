@@ -13,7 +13,7 @@
 // an X post means rebuilding at fewer rows, not truncating — the "+N more on the site"
 // tail has to keep matching the list above it at every size. See lib/xLimit.
 
-import { flagBullet, withFlag } from "./countryFlag.js";
+import { flagBullet, flagFor, withFlag } from "./countryFlag.js";
 import { kickoffLabel, timesFooter } from "./kickoff.js";
 
 const more = (total, limit) => (total > limit ? `\n+${total - limit} more on the site` : "");
@@ -95,11 +95,17 @@ export const fixtureShare = ({ fixtures = [], days = "3" }) => (limit) => {
  */
 export const bestTeamsShare = ({ rows = [], side, windowLabel = "" }) => (limit) => {
   if (!rows.length) return "";
-  const scope = side === "overall" ? "" : ` ${side}`;
-  const window = windowLabel ? ` · ${windowLabel}` : "";
-  return `Best corner teams${scope} — avg corners won${window}:\n`
+  // A board from one league names it, flag after the name; a mixed board names nothing.
+  const first = rows[0];
+  const oneLeague = first.league_name && rows.every((r) => r.league_id === first.league_id);
+  const flag = oneLeague ? flagFor(first.league_id) : "";
+  const league = oneLeague ? ` — ${first.league_name}${flag ? ` ${flag}` : ""}` : "";
+  const scope = side === "overall" || !side ? "" : ` (${side})`;
+  // "Last 5" reads as "last 5" mid-sentence; "Season" keeps its capital.
+  const window = windowLabel ? ` · ${windowLabel.replace(/^Last\b/, "last")}` : "";
+  return `Best corner teams${league}\nAVG won${scope}${window}:\n`
     + rows.slice(0, limit).map((r) =>
-        `${flagBullet(r.league_id)} ${r.name} ${r.won_avg.toFixed(2)}`).join("\n")
+        `${flagBullet(r.league_id)} ${r.name} ${r.won_avg.toFixed(1)}`).join("\n")
     + more(rows.length, limit);
 };
 

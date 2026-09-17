@@ -9,8 +9,30 @@ Exit codes: 0 for running / success / partial / unknown, 1 only for an outright 
 A sync started 90 seconds ago is usually still `running` — that is normal, not a problem.
 """
 import json
+import os
 import sys
 from datetime import datetime, timezone
+
+
+def _cup_ids():
+    """The cup ids, from leagues_meta — the same list the sync dispatches on.
+
+    Imported rather than typed out here for the reason the whole file exists: a
+    hand-copied duplicate of that list drifts, and the way it would drift is this script
+    quietly saying nothing about a competition that had just been added. The file has no
+    imports and no env vars of its own, so this is safe from here.
+
+    Returns () if it cannot be found, and the report simply omits the cup section rather
+    than failing — this is a reporter, and it must not turn a working sync red.
+    """
+    try:
+        sys.path.insert(0, os.path.join(
+            os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+            "backend"))
+        from leagues_meta import CUP_IDS
+        return tuple(sorted(CUP_IDS))
+    except Exception:                                        # noqa: BLE001
+        return ()
 
 STILL_GOING = ("running",)
 BAD = ("failed", "error")
@@ -41,6 +63,47 @@ def _failures(run):
             out.setdefault(str(lg.get("error") or "(no message recorded)"),
                            []).append(str(lg.get("league_id", "?")))
     return out
+
+
+def _report_cups(run):
+    """What the cups did, called out on their own line.
+
+    A CUP CAN SUCCEED AND STORE NOTHING, which is the state no other part of this report
+    can describe. Its sides have to resolve to teams from leagues the app syncs and clear
+    a games bar, so a run that answers `ok` with `fixtures: 0` is a real outcome — every
+    tie in the window involved a side this app has no record of — and in every existing
+    line of this report it is indistinguishable from a competition that synced fine.
+
+    "Where are the European games" is then unanswerable from the log, which is exactly
+    the position this workflow's own history says not to be in. So the count is printed
+    whatever it is, and a zero says so in words.
+    """
+    ids = _cup_ids()
+    if not ids:
+        return
+    rows = {str(lg.get("league_id")): lg for lg in (run.get("leagues") or [])
+            if str(lg.get("league_id")) in ids}
+    if not rows:
+        # Not an error: a run that predates the cups, or one still working through the
+        # leagues, legitimately has no cup entries yet. Cups sync LAST, on purpose.
+        print(f"cups: none of {', '.join(ids)} in this run yet (they sync last)")
+        return
+    for cid in ids:
+        lg = rows.get(cid)
+        if lg is None:
+            print(f"  {cid:5} not reached yet")
+            continue
+        if str(lg.get("status", "")).lower() == "error":
+            continue                       # already printed, with its message, above
+        n = lg.get("fixtures", 0)
+        skipped = lg.get("skipped") or {}
+        why = ("  skipped: " + ", ".join(f"{k}={v}" for k, v in sorted(skipped.items()))
+               if skipped else "")
+        print(f"  {cid:5} {n} fixture(s) stored{why}")
+        if not n:
+            print(f"::warning::{cid} stored no fixtures — every tie in the window had a "
+                  f"side from a league this app does not sync, or too little history. "
+                  f"That is the coverage bar working, not a failure.")
 
 
 def main() -> int:
@@ -83,6 +146,7 @@ def main() -> int:
     for msg, lids in sorted(_failures(newest).items(), key=lambda kv: -len(kv[1])):
         where = ", ".join(lids[:4]) + (f" +{len(lids) - 4} more" if len(lids) > 4 else "")
         print(f"  {len(lids):>2} league(s) [{where}]: {msg}")
+    _report_cups(newest)
     status = str(newest.get("status", "")).lower()
 
     age = _age_hours(newest.get("started_at"))

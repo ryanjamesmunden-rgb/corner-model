@@ -126,3 +126,75 @@ def test_the_bare_list_shape_the_endpoint_actually_returns_is_understood():
 
 def test_no_runs_at_all_is_a_failure():
     assert _run([])[0] == 1
+
+
+# --- the cups, which can succeed and store nothing ---------------------------------
+#
+# A cup's sides have to resolve to teams from leagues the app syncs and clear a games
+# bar, so `status: ok` with `fixtures: 0` is a real outcome — every tie in the window
+# involved a side this app has no record of. In every other line of this report that is
+# indistinguishable from a competition that synced perfectly, which leaves "where are the
+# European games" unanswerable from the log. These pin that it is answerable.
+
+def _cup(cid, fixtures=6, skipped=None, status="ok"):
+    row = {"league_id": cid, "status": status, "teams": 0, "fixtures": fixtures}
+    if skipped is not None:
+        row["skipped"] = skipped
+    return row
+
+
+def test_a_cup_reports_how_many_fixtures_it_stored():
+    _, out = _run([_run_doc(status="success", leagues=[_cup("ucl", 8)])])
+    assert "ucl" in out and "8 fixture(s) stored" in out
+
+
+def test_a_cup_that_stored_nothing_says_so_loudly():
+    """The state no other line in this report can describe."""
+    _, out = _run([_run_doc(status="success", leagues=[_cup("uecl", 0)])])
+    assert "::warning::" in out
+    assert "uecl" in out
+    # And it says the bar worked rather than implying a fault, because it is not one.
+    assert "not a failure" in out
+
+
+def test_the_skip_reasons_are_printed():
+    """"thirty-two ties, eleven stored" is a sentence somebody will need explained."""
+    _, out = _run([_run_doc(status="success",
+                            leagues=[_cup("uel", 11, {"unknown_side": 18, "thin_history": 3})])])
+    assert "unknown_side=18" in out and "thin_history=3" in out
+
+
+def test_a_cup_still_working_through_the_list_is_not_reported_as_empty():
+    """Cups sync LAST, so a run caught mid-flight legitimately has no cup entry yet —
+    and calling that zero fixtures would be an alarm about a sync that is going fine."""
+    _, out = _run([_run_doc(status="running",
+                            leagues=[{"league_id": "eng-pl", "status": "ok", "teams": 20}])])
+    assert "they sync last" in out
+    assert "::warning::" not in out
+
+
+def test_a_cup_that_errored_is_not_also_reported_as_empty():
+    """It already has a line, with the provider's reason on it. A second one saying
+    "0 fixtures" would read as a different problem."""
+    leagues = [{"league_id": "ucl", "status": "error",
+                "error": "api id 2 is 'CONMEBOL Libertadores', which is not 'Champions League'"}]
+    code, out = _run([_run_doc(status="failed", leagues=leagues, error_count=1)])
+    assert "Libertadores" in out
+    assert "0 fixture(s) stored" not in out
+
+
+def test_the_cup_list_comes_from_leagues_meta_not_a_copy():
+    """A hand-copied list would drift, and the way it would drift is this script saying
+    nothing about a competition that had just been added."""
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    from leagues_meta import CUP_IDS
+    assert set(report_sync._cup_ids()) == set(CUP_IDS)
+
+
+def test_the_report_survives_not_finding_leagues_meta(monkeypatch):
+    """It is a reporter. A missing import must drop the cup section, never turn a
+    working sync red."""
+    monkeypatch.setattr(report_sync, "_cup_ids", lambda: ())
+    code, out = _run([_run_doc(status="success", leagues=[_cup("ucl", 8)])])
+    assert code == 0
+    assert "fixture(s) stored" not in out

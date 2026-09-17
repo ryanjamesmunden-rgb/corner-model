@@ -55,6 +55,26 @@ on:
         type: boolean
         default: false
         required: false
+      leagues:
+        # THE NARROW VERSION OF `force`, and the half of the escape hatch that was
+        # missing. The endpoint behind it was fixed to accept a competition that has
+        # never synced — that used to 404, which meant the one case needing it was the
+        # one case refused — but nothing could actually call it, so the only way to get a
+        # new competition in was a FULL refresh of all 31.
+        #
+        # That matters more than it sounds. A full refresh takes hours and runs as a
+        # detached subprocess on Render, so anything that restarts the instance — a
+        # deploy, most obviously — kills it partway and the run sits on `running` for
+        # ever. Merging two pull requests during one is enough to lose it, which is
+        # exactly how the first cup sync died at league 7 of 31.
+        #
+        # A single competition is seconds, so the window where a restart can kill it is
+        # tiny. Space-separated, because adding a set of competitions at once (three
+        # European cups, say) is the situation this exists for.
+        description: "Space-separated competition ids to sync alone, e.g. 'ucl uel uecl'"
+        type: string
+        default: ""
+        required: false
 
 concurrency:
   group: corner-sync
@@ -97,7 +117,34 @@ jobs:
           # twice-daily path must keep working with no secret configured at all.
           TOOLS_TOKEN: ${{ secrets.TOOLS_TOKEN }}
           FORCE: ${{ inputs.force }}
+          LEAGUES: ${{ inputs.leagues }}
         run: |
+          if [ -n "$LEAGUES" ]; then
+            if [ -z "$TOOLS_TOKEN" ]; then
+              echo "::error::syncing named competitions needs TOOLS_TOKEN as a repo secret"
+              exit 1
+            fi
+            # ONE AT A TIME, AND EVERY FAILURE IS FATAL. A loop that carried on past a
+            # 404 would report success having synced two of the three competitions asked
+            # for, and the missing one would look like a competition with no games on.
+            fail=0
+            for lid in $LEAGUES; do
+              out=$(curl -s --max-time 120 -X POST \
+                "$BACKEND/api/leagues/$lid/refresh?token=$TOOLS_TOKEN" || true)
+              echo "$lid: $out"
+              case "$out" in
+                *'"syncing"'*|*'"already_syncing"'*) ;;
+                *'Bad or missing token'*)
+                  echo "::error::TOOLS_TOKEN is wrong or stale"; fail=1 ;;
+                *'not a competition this app manages'*)
+                  echo "::error::$lid is in neither LEAGUE_META nor CUP_META"; fail=1 ;;
+                *) echo "::error::$lid did not start (backend down, or on an older build)"; fail=1 ;;
+              esac
+            done
+            [ "$fail" = "0" ] || exit 1
+            echo "named competitions started — see the report below for what they stored"
+            exit 0
+          fi
           if [ "$FORCE" = "true" ]; then
             if [ -z "$TOOLS_TOKEN" ]; then
               echo "::error::force needs TOOLS_TOKEN as a repo secret — add it, or run without force"

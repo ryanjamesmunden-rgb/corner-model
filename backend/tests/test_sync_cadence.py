@@ -76,3 +76,53 @@ def test_the_lock_is_shorter_than_the_gap_it_guards():
     """The lock exists to stop two syncs stacking, not to become a second staleness rule.
     Longer than the gap and it would start swallowing scheduled runs itself."""
     assert SYNC_LOCK_MINUTES < _min_gap_hours() * 60
+
+
+# --- the manual escape hatches ------------------------------------------------------
+#
+# Two dispatch inputs, and the thing that makes them worth pinning is that BOTH failure
+# modes are silent. A `force` that called the self-limiting endpoint would print
+# "already current" and exit green having done nothing — which is what it did. And a
+# per-competition URL that no longer matches the server's route 404s into a curl whose
+# output nobody reads unless the case statement happens to catch it.
+
+def _workflow_text():
+    return open(WORKFLOW, encoding="utf-8").read()
+
+
+def test_force_calls_the_endpoint_that_ignores_staleness():
+    """if-stale cannot see a competition that is not in the database yet, so forcing
+    through it is a no-op dressed as a button."""
+    src = _workflow_text()
+    assert "inputs.force" in src
+    assert "sync/refresh-all" in src
+
+
+def test_the_open_path_is_still_the_self_limiting_one():
+    """The scheduled run must keep working with NO secret configured — that is why
+    if-stale is ungated, and it stays the default."""
+    assert "sync/if-stale" in _workflow_text()
+
+
+def test_a_named_competition_uses_the_route_the_server_actually_serves():
+    """The half of the hatch that was missing: the endpoint was fixed to accept a
+    competition that has never synced, and nothing could call it. A path that drifts from
+    the server's route turns into a 404 inside a curl."""
+    import re
+
+    import server
+    src = _workflow_text()
+    assert "inputs.leagues" in src
+    assert "/api/leagues/$lid/refresh" in src
+    # The route as FastAPI has it, so a rename on either side fails here rather than live.
+    routes = {r.path for r in server.app.routes if hasattr(r, "path")}
+    assert "/api/leagues/{league_id}/refresh" in routes
+
+
+def test_a_failed_competition_fails_the_whole_step():
+    """Carrying on past a 404 would report success having synced two of three, and the
+    missing one reads as a competition with no games on."""
+    src = _workflow_text()
+    block = src[src.index('if [ -n "$LEAGUES" ]'):src.index('if [ "$FORCE" = "true" ]')]
+    assert "fail=1" in block
+    assert 'exit 1' in block

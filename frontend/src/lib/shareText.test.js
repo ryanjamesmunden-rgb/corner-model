@@ -148,7 +148,8 @@ describe("the other two boards", () => {
     // The unit belongs in the heading once, not after every team — 18 characters a row
     // saying the same thing eight times is what pushed the post over the limit.
     expect(row).not.toMatch(/corners|game/);
-    expect(out.split("\n")[1]).toBe("AVG won · Season:");
+    expect(out.split("\n")[0]).toBe("🔥 Best corner teams");
+    expect(out.split("\n")[1]).toBe("Average won / Season");
   });
 
   test("a one-league board names the league with its flag", () => {
@@ -159,8 +160,8 @@ describe("the other two boards", () => {
     const out = bestTeamsShare({ rows, side: "overall", windowLabel: "Last 5" })(8);
     const ENGLAND = "\u{1F3F4}\u{E0067}\u{E0062}\u{E0065}\u{E006E}\u{E0067}\u{E007F}";
     expect(out.split("\n").slice(0, 3)).toEqual([
-      `Best corner teams — Premier League ${ENGLAND}`,
-      "AVG won · last 5:",
+      `🔥 Best corner teams - Premier League ${ENGLAND}`,
+      "Average won / Last 5",
       `${ENGLAND} Arsenal 5.6`,
     ]);
   });

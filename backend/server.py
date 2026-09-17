@@ -4364,6 +4364,17 @@ async def trends(league_id: Optional[str] = None, window: int = 5, metric: str =
                     "recent_total": rec_total, "season_total": season_total,
                     "recent_won": rec_won, "season_won": season_won,
                     "delta": delta, "real_samples": t.get("real_samples", 0),
+                    # The games the recent average is made of, newest first. A "+2.4" with
+                    # nothing under it is an assertion; the opponents and scorelines are
+                    # what let a reader tell a genuine surge from three games against
+                    # sides that ship corners to everyone.
+                    "recent": [{"date": m.get("date"), "opponent": m.get("opponent"),
+                                "home": m.get("home"),
+                                "corners_for": m["corners_for"],
+                                "corners_against": m["corners_against"],
+                                "goals_for": m.get("goals_for"),
+                                "goals_against": m.get("goals_against")}
+                               for m in reversed(recent)],
                     "next_fixture": next_fx.get(t["team_id"])})
     out.sort(key=lambda x: x["delta"], reverse=True)
     return _preview(out, user, response)

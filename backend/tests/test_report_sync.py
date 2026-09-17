@@ -198,3 +198,66 @@ def test_the_report_survives_not_finding_leagues_meta(monkeypatch):
     code, out = _run([_run_doc(status="success", leagues=[_cup("ucl", 8)])])
     assert code == 0
     assert "fixture(s) stored" not in out
+
+
+# --- progress, which is what separates "working" from "dead" ------------------------
+#
+# Every other line in this report describes FAILURES, so a run with twenty successful
+# leagues behind it prints nothing — identical, in the log, to one whose process was
+# killed thirty seconds in. `status` cannot tell them apart either: it is set only at the
+# END of main(), so a dead sync sits on `running` for ever while this script says
+# "still running (expected)" and nothing else alarms for 26 hours.
+
+def _progressing(done, total=30, status="running", started=None):
+    leagues = [{"league_id": f"lg-{i}", "status": "ok"} for i in range(done)]
+    return _run_doc(status=status, started=started,
+                    leagues=leagues, targets=[f"lg-{i}" for i in range(total)])
+
+
+def test_a_running_sync_reports_how_far_it_has_got():
+    _, out = _run([_progressing(18)])
+    assert "18/30 competitions" in out
+
+
+def test_it_names_the_last_competition_reached():
+    """So two checks can be compared at a glance rather than by counting."""
+    _, out = _run([_progressing(18)])
+    assert "last lg-17" in out
+
+
+def test_a_finished_run_reports_progress_too():
+    """A completed run that covered 4 of 30 is a truncated sync wearing a success."""
+    _, out = _run([_progressing(4, status="success")])
+    assert "4/30 competitions" in out
+
+
+def test_a_sync_running_far_too_long_gets_a_warning():
+    _, out = _run([_progressing(3, started=_now(hours_ago=2))])
+    assert "::warning::" in out
+    assert "progress count" in out
+
+
+def test_but_a_young_running_sync_does_not():
+    """A sync that started two minutes ago is just a sync that started two minutes ago."""
+    _, out = _run([_progressing(3, started=_now(hours_ago=0.03))])
+    assert "::warning::" not in out
+
+
+def test_a_long_finished_run_is_not_warned_about():
+    """The warning is about a process that may be gone. A finished one cannot be."""
+    _, out = _run([_progressing(30, status="success", started=_now(hours_ago=2))])
+    assert "::warning::" not in out
+
+
+def test_a_run_with_no_targets_recorded_is_skipped_silently():
+    """Run documents written before `targets` existed. A reporter must not turn a working
+    sync red over a field it did not use to store."""
+    code, out = _run([_run_doc(status="success", leagues=[{"league_id": "x", "status": "ok"}])])
+    assert code == 0
+    assert "competitions" not in out
+
+
+def test_nothing_started_yet_still_reports_a_position():
+    """0/30 is the most useful reading there is — the sync launched and did nothing."""
+    _, out = _run([_progressing(0)])
+    assert "0/30 competitions" in out

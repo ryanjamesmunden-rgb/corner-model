@@ -891,11 +891,14 @@ const buildMenu = ({ streaks = [], mismatches = [], chase = [], value = [],
   const valueEmpty = typed.length
     ? "every price you typed in is shorter than the model's — no edge on the board today"
     : fakeEdge
+      // POINTS AT A FIXTURE PAGE, NOT AT /prices. The bulk paste page is gone, and a
+      // post telling a reader to go somewhere that 404s is worse than saying nothing —
+      // it reads as the site being broken rather than as a job not yet done.
       ? "the only prices stored are seeded demo numbers, which are the model's own with "
-        + "noise on them. An edge against one of those is not an edge. Paste real prices at "
-        + `${where || "the site"}/prices`
-      : "nothing is priced yet, so nothing here can be called value. Paste prices at "
-        + `${where || "the site"}/prices`;
+        + "noise on them. An edge against one of those is not an edge. Enter real prices "
+        + `on a game's own page${where ? ` at ${where}` : ""}`
+      : "nothing is priced yet, so nothing here can be called value. Enter prices on a "
+        + `game's own page${where ? ` at ${where}` : ""}`;
 
   const parts = [
     section("🔥", "Streaks", "a run, and nothing about the opponent",

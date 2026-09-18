@@ -998,7 +998,11 @@ describe("the menu of angles", () => {
     expect(text).toContain("CHASE BOARD");
     expect(text).toContain("VALUE");
     expect(text).toContain("nothing is priced yet");
-    expect(text).toContain("/prices");
+    // Points at a game's own page. It used to name /prices, which no longer exists — and
+    // a post sending a reader to a 404 reads as the site being broken rather than as a
+    // job not yet done.
+    expect(text).toContain("game's own page");
+    expect(text).not.toContain("/prices");
   });
 
   test("priced with no edge is a DIFFERENT empty from not priced at all", () => {

@@ -2,7 +2,7 @@ import { useState, useEffect } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import MobileNav from "@/components/MobileNav";
 import { CornerDownRight, LayoutDashboard, Radar, Flame, Zap, Star, Sparkles, Receipt, Trophy,
-         TrendingUp, ClipboardPaste } from "lucide-react";
+         TrendingUp } from "lucide-react";
 import { LeagueContext } from "@/context/LeagueContext";
 import ExportMenu from "@/components/ExportMenu";
 import { api } from "@/lib/api";
@@ -63,10 +63,9 @@ export default function Layout({ children }) {
     // the trade was made anyway, because the record is a list of the picks this site made
     // and the picks are the product. Signing in is free, so the ask is small.
     ...(user ? [{ to: "/results", label: "Results", icon: Trophy }] : []),
-    // MEMBERS ONLY, and not because the page is precious — because it WRITES. Every other
-    // entry here reads. Putting a data-entry page in front of every visitor invites
-    // strangers to type prices into the board the site's own posts are chosen from.
-    ...(member ? [{ to: "/prices", label: "Prices", icon: ClipboardPaste }] : []),
+    // NO PRICES ENTRY, and no member-only entry at all now. The bulk paste page was
+    // removed because it was not being used; prices are still entered per fixture, on the
+    // fixture's own page, which is where you are when you have a price in front of you.
   ];
 
   // WHICH SCREENS THE LEAGUE ACTUALLY FILTERS. It drove four of them and sat on all

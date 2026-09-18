@@ -33,7 +33,8 @@
 # the way it usually does.
 #
 # NO BOOK ODDS AND THEREFORE NO EV. The model's fair price is here; a bookmaker's is not,
-# except on the few fixtures where a price has been entered by hand on /prices. That half
+# except on the few fixtures where a price has been entered by hand on the fixture's own
+# page (the bulk paste screen was removed — it was not being used). That half
 # of the sheet stays manual, and the table says so rather than printing a blank column
 # that reads as "no edge".
 name: Today's board
@@ -280,7 +281,7 @@ jobs:
           else:
               print("_No spreadsheet this run — see the build step above for why._\n")
           print("_λ is the model's expected corner count. **Fair** is the model's price; "
-                "**Book** and **EV** appear only where a price has been entered on "
-                "/prices, so most rows carry none — those are leads to price up, not "
-                "bets. Lines are the model's, not a bookmaker's._")
+                "**Book** and **EV** appear only where a price has been entered on that "
+                "game's own page, so most rows carry none — those are leads to price up, "
+                "not bets. Lines are the model's, not a bookmaker's._")
           PY

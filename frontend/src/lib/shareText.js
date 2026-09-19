@@ -288,23 +288,33 @@ export const postDayTime = (iso) => {
 };
 
 /**
- * The whole weekend, sent to the paid channel on Friday.
+ * A card, sent to the paid channel on the day it is published.
+ *
+ * TWO A WEEK, WHICH IS WHY THIS IS NO LONGER CALLED weekendCard. Monday publishes the
+ * midweek card (Tue-Thu) and Wednesday the weekend one (Fri-Mon). The name said weekend
+ * because for a while that was the only one that existed — and it was still the only one
+ * being SENT long after the second card was being computed, frozen and graded, which is
+ * exactly the kind of drift a stale name stops you noticing.
  *
  * WHY THIS EXISTS SEPARATELY FROM THE DAILY POST. The public post goes out on the day of
  * the game, which is the worst moment to be told about it: by Saturday lunchtime the
  * market has had all week to find the same game and the price has gone. Someone paying
- * monthly should be looking at Sunday's card on Friday, while it is still there to take.
- * That is the product — not better information, EARLIER information.
+ * monthly should be looking at Sunday's card on Wednesday, while it is still there to
+ * take. That is the product — not better information, EARLIER information.
  *
  * SO THIS CARRIES THE MODEL'S NUMBERS and the public posts do not. It goes to the people
  * who have bought exactly that number.
+ *
+ * `label` NAMES THE CARD and comes from the backend rather than being inferred here, so
+ * the heading in the channel and the heading on the site cannot disagree about which card
+ * a reader is looking at.
  *
  * NOT TRIMMED TO 280. Telegram has no limit, and this is a card to work from rather than
  * an advert, so every qualifying game goes in — ordered by KICK-OFF, which is the order
  * someone actually placing them needs, rather than by how good they are.
  */
-export const weekendCard = ({ rows = [], generatedAt = null, site = "",
-                              max = CARD_MAX_ROWS, minRun = CARD_MIN_RUN } = {}) => {
+export const cardPost = ({ rows = [], generatedAt = null, site = "", label = "Weekend",
+                           max = CARD_MAX_ROWS, minRun = CARD_MIN_RUN } = {}) => {
   const run = (r) => Number(r?.streak?.length) || 0;
   const prob = (r) => Number(r?.projection?.prob ?? 0);
   const live = (rows || []).filter((r) => r?.next_fixture?.date && run(r) >= minRun);
@@ -344,7 +354,7 @@ export const weekendCard = ({ rows = [], generatedAt = null, site = "",
   });
 
   const stamp = generatedAt ? postDayTime(generatedAt) : "";
-  return `🗓 Weekend corner card — ${sorted.length} angle${sorted.length === 1 ? "" : "s"}\n\n`
+  return `🗓 ${label} corner card — ${sorted.length} angle${sorted.length === 1 ? "" : "s"}\n\n`
     + `${lines.join("\n\n")}\n\n`
     // THE FAIR PRICE IS A BAR, NOT A TIP. Said outright, because a card of percentages
     // read without it looks like a list of bets rather than a list of prices to beat.

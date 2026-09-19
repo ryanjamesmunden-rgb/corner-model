@@ -10,6 +10,7 @@ import logging
 import math
 import random
 import re
+import time
 import uuid
 
 import auth
@@ -7016,28 +7017,53 @@ async def share_rows(days: int = 3, limit: int = 12, token: Optional[str] = None
         "boards": sorted(want),
     }
 
+    # HOW LONG EACH BOARD TOOK, because this endpoint stopped answering inside the
+    # caller's 60-second timeout and nothing anywhere could say which part was slow.
+    #
+    # The docstring above already warns that each board walks the whole team collection,
+    # so "it is heavy" was known and useless: the question is WHICH pass, and the
+    # difference matters because `fixtures` alone runs a chase scan plus one full streak
+    # scan per grid entry, while `streaks` is a single pass. Guessing between them means
+    # optimising the wrong one and finding out a day later, from a post that did not go.
+    #
+    # Measured here rather than in the caller: the caller sees one number for the whole
+    # request and cannot break it down, and the request is the thing that times out — so
+    # when it does, the caller has nothing to report but the timeout it already knew about.
+    timings: Dict[str, int] = {}
+
+    async def timed(name, coro):
+        t0 = time.perf_counter()
+        try:
+            return await coro
+        finally:
+            timings[name] = round((time.perf_counter() - t0) * 1000)
+
     if "streaks" in want:
         # The same grid the Streak Finder opens on, so the draft matches the screen the
         # numbers would be checked against.
-        streaks_rows = await streaks(league_id="all", side="overall", window=5, min_hits=5,
-                                     threshold=None, min_line=3, within_days=days,
-                                     direction="over", subject="team", user={})
+        streaks_rows = await timed("streaks", streaks(
+            league_id="all", side="overall", window=5, min_hits=5,
+            threshold=None, min_line=3, within_days=days,
+            direction="over", subject="team", user={}))
         out["streaks"] = streaks_rows[:limit]
     if "fixtures" in want:
-        board = await _fixture_board(days=days, per_day=5, league_id="all", user={})
+        board = await timed("fixtures", _fixture_board(
+            days=days, per_day=5, league_id="all", user={}))
         out["fixtures"] = [f for d in (board.get("days") or [])
                            for f in (d.get("fixtures") or [])][:limit]
     if "mismatches" in want:
-        out["mismatches"] = await _all_mismatches(days, limit)
+        out["mismatches"] = await timed("mismatches", _all_mismatches(days, limit))
     if "chase" in want:
-        out["chase"] = await _chase_board(days, limit)
+        out["chase"] = await timed("chase", _chase_board(days, limit))
     if "value" in want:
         # ONLY THE ROWS THAT ARE ACTUALLY BETS. The board deliberately keeps every price as
         # a row so nothing vanishes unexplained, and those `status` rows are the right
         # answer on a screen someone is debugging. In a menu of angles to post, a price on
         # a game that has kicked off is not an angle.
-        rows = await value_board(within_days=days, min_ev=0.0, limit=limit, user={})
+        rows = await timed("value", value_board(
+            within_days=days, min_ev=0.0, limit=limit, user={}))
         out["value"] = [r for r in rows if r.get("status") == "ok"]
+    out["timings_ms"] = timings
     return out
 
 

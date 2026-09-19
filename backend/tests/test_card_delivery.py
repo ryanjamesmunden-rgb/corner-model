@@ -219,3 +219,38 @@ class TestACardCanBeBuiltOffSchedule:
         block = src[src.index('if (BOARD === "card")'):]
         block = block[:block.index("process.exit(0)")]
         assert 'arg("count", null)' in block
+
+
+class TestSendFalseMeansNothingIsSent:
+    """The flag governed one of the TWO places this workflow sends.
+
+    `board: card` was also picked up by the draft path, which builds whatever board it is
+    given and delivers it unconditionally. So a manual run asking to SEE a card posted
+    one: the card step said "built, NOT sent" in the same job that had already sent it
+    thirty seconds earlier. A flag that covers half the sends is worse than no flag,
+    because it is believed.
+    """
+
+    def test_the_draft_path_does_not_build_a_card(self):
+        assert "inputs.board != 'card'" in step("Build the day's draft")
+
+    def test_and_does_not_send_one(self):
+        assert "inputs.board != 'card'" in step("Send it to Telegram")
+
+    def test_exactly_one_step_sends_the_card(self):
+        """Two steps that can both deliver a card is the shape of the bug, whatever the
+        conditions on them say today."""
+        src = workflow()
+        senders = [n for n in ("Build the day's draft", "Send it to Telegram",
+                               "Send the card to the channel")
+                   if "--board card" in step(n) or "card.json" in step(n)]
+        assert senders == ["Send the card to the channel"], senders
+
+    def test_the_card_reaches_the_job_log_not_only_the_summary(self):
+        """The step summary is a separate artefact the job log does not contain, so a card
+        'built but not sent' was unreadable from the place anyone actually looks."""
+        block = step("Send the card to the channel")
+        assert "cat card.md" in block
+        assert "GITHUB_STEP_SUMMARY" in block
+        # ...and to stdout, which is what lands in the log.
+        assert "----- card -----" in block

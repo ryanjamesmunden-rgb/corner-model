@@ -64,8 +64,31 @@ class TestBothCardsAreSent:
         freeze = step("Freeze the card")
 
         def gate(block):
-            m = re.search(r"^\s*if:\s*(.+)$", block, re.M)
-            return m.group(1).strip() if m else ""
+            """The step's `if:`, including the folded form.
+
+            Parsed rather than pulled out with one regex because `if: >-` puts the
+            condition on the NEXT line, and a regex that stops at the end of the `if:`
+            line returns ">-" — which contains none of the strings this asserts on, so
+            the test fails while the workflow is correct.
+
+            Deliberately NOT done with PyYAML: it is not in requirements.txt, so a test
+            importing it passes here and does something else entirely in CI. This repo
+            has already lost 27 tests to exactly that.
+            """
+            m = re.search(r"^(\s*)if:[ \t]*(.*)$", block, re.M)
+            if not m:
+                return ""
+            indent, val = len(m.group(1)), m.group(2).strip()
+            if val not in (">", ">-", "|", "|-"):
+                return val
+            out = []
+            for line in block[m.end():].splitlines():
+                if not line.strip():
+                    continue
+                if len(line) - len(line.lstrip()) <= indent:
+                    break                      # dedented: this is the next key
+                out.append(line.strip())
+            return " ".join(out)
 
         assert "steps.when.outputs.card != ''" in gate(send)
         assert "steps.when.outputs.card != ''" in gate(freeze)
@@ -159,3 +182,40 @@ class TestTheCallerSurvivesOneSlowAnswer:
         for code in ("503", "403"):
             i = block.index(f"res.status === {code}")
             assert "fail(" in block[i:i + 400], f"{code} must be fatal immediately"
+
+
+class TestACardCanBeBuiltOffSchedule:
+    """The schedule publishes on two days. Wanting the card on a third — because the games
+    are tonight and Monday's drop is no use — had no route at all, and a card is exactly
+    the thing somebody asks for at short notice."""
+
+    def test_a_manual_card_run_reaches_the_step(self):
+        block = step("Send the card to the channel")
+        assert "inputs.board == 'card'" in block
+
+    def test_the_scheduled_gate_still_stands_on_its_own(self):
+        """Adding the manual route must not have replaced the schedule with it."""
+        block = step("Send the card to the channel")
+        assert "steps.when.outputs.card != ''" in block
+
+    def test_a_manual_run_does_not_publish_unless_asked(self):
+        """A card posted to the paid channel cannot be unposted, and 'I want to see it' and
+        'send it to everyone who pays' are different requests. The scheduled run is
+        untouched — this only governs one somebody started by hand."""
+        code = "\n".join(l for l in step("Send the card to the channel").splitlines()
+                         if not l.strip().startswith("#"))
+        assert 'inputs.send' in code
+        assert "exit 0" in code
+
+    def test_the_card_is_readable_without_being_sent(self):
+        """Otherwise 'build but do not publish' produces nothing anyone can read, which is
+        the same as not running it."""
+        assert "GITHUB_STEP_SUMMARY" in step("Send the card to the channel")
+
+    def test_the_size_is_not_redefined_in_the_tool(self):
+        """Blank means the backend's COUNT — the number the schedule publishes and the site
+        shows. A default here would be a second opinion about how big a card is."""
+        src = open(TOOL, encoding="utf-8").read()
+        block = src[src.index('if (BOARD === "card")'):]
+        block = block[:block.index("process.exit(0)")]
+        assert 'arg("count", null)' in block

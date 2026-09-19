@@ -268,7 +268,12 @@ ${full}
 // IT IS ALSO MUCH CHEAPER. /api/angles/card serves a precomputed screen; share/rows walks
 // every team in the database and is the call that has been timing out.
 if (BOARD === "card") {
-  const a = await get(`/api/angles/card?token=${encodeURIComponent(TOKEN)}`, "angles");
+  // `--count` is optional and deliberately not defaulted here: blank means the backend's
+  // own COUNT, which is what the schedule publishes and what the site shows. Putting a
+  // number in this file would be a second opinion about how big a card is.
+  const n = arg("count", null);
+  const a = await get(`/api/angles/card?token=${encodeURIComponent(TOKEN)}`
+    + (n ? `&count=${encodeURIComponent(n)}` : ""), "angles");
   if (!a) fail("backend has no /api/angles/card — it is running an older build");
   // The backend decides whether today has a card worth publishing, including refusing on
   // stale data. Repeating that judgement here would be a second opinion that can differ.

@@ -96,6 +96,25 @@ on:
         required: false
         type: choice
         options: ["", "picks", "game", "streaks", "fixtures", "results", "card", "menu"]
+      count:
+        # HOW MANY GAMES ON THE CARD. Blank uses angle_of_day.COUNT, which is what the
+        # schedule publishes and what the site shows; the backend caps it at 10.
+        description: "Card size (blank = the usual 8, max 10)"
+        required: false
+        default: ""
+        type: string
+      send:
+        # BUILDING A CARD AND PUBLISHING ONE ARE DIFFERENT ACTS, and a manual run should
+        # not have to be one to be the other. A card posted to the paid channel cannot be
+        # unposted, so an off-schedule run builds it and writes it to this run's summary,
+        # where it can be read before anyone decides to send it.
+        #
+        # The SCHEDULED run is unaffected: on a card day it sends, as it always did. This
+        # only governs a run somebody started by hand.
+        description: "Also post it to the channel (manual card runs only)"
+        required: false
+        default: false
+        type: boolean
 
 concurrency:
   group: corner-social-draft
@@ -586,14 +605,32 @@ jobs:
         # NO --days. The tool asks the backend which card is live and what it covers —
         # see the note above the `card` board in social_draft.mjs for why passing a window
         # from here is what made the channel and the site disagree.
-        if: steps.when.outputs.card != '' && env.TG_TOKEN != ''
+        #
+        # ALSO RUNS ON A MANUAL `board: card`, which is the only way to get a card on a day
+        # the schedule does not publish one. Whether it POSTS is a separate question — see
+        # the `send` input.
+        if: >-
+          (steps.when.outputs.card != '' || inputs.board == 'card') && env.TG_TOKEN != ''
         run: |
-          node tools/social_draft.mjs --board card --out card.md --json-out card.json
+          node tools/social_draft.mjs --board card --out card.md --json-out card.json \
+            ${COUNT:+--count "$COUNT"}
           if [ ! -s card.md ]; then
             # The tool prints its own reason on the way out — a dead card says WHICH of
             # "no fixtures", "nothing qualified" and "data too stale to publish" it was,
             # and those are three different things to do about it.
             echo "::notice::no ${{ steps.when.outputs.card }} card today — see the SKIP line above"
+            exit 0
+          fi
+          # READABLE WITHOUT BEING PUBLISHED. A card posted to the paid channel cannot
+          # be unposted, so it is written here first and sent only if asked.
+          {
+            echo "### ${{ steps.when.outputs.card || 'card' }}"
+            echo '```'
+            cat card.md
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ -n "${{ inputs.board }}" ] && [ "${{ inputs.send }}" != "true" ]; then
+            echo "::notice::card built, NOT sent — re-run with send: true to post it"
             exit 0
           fi
           python3 - <<'PY' > card_payload.json
@@ -618,6 +655,7 @@ jobs:
           TOOLS_TOKEN: ${{ secrets.TOOLS_TOKEN }}
           TG_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TG_CHAT: ${{ secrets.TELEGRAM_CHAT_ID }}
+          COUNT: ${{ inputs.count }}
 
       - name: Freeze the card
         # TWO DROPS A WEEK, ON THE DAYS THE CARDS GO OUT.

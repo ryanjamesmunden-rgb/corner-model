@@ -12,10 +12,11 @@
 # day. The week it produces:
 #
 #   Mon  picks     how the angles posted to the channel actually landed
+#                  — AND the midweek card (Tue-Thu) to the paid channel
 #   Tue  game      the midweek fixture with the strongest angle on it
-#   Wed  streaks   what is trending — AND the weekend card to the paid channel
+#   Wed  streaks   what is trending — AND the weekend card (Fri-Mon) to the paid channel
 #   Thu  —         nothing published. A day off, deliberately
-#   Fri  game      the best game of the weekend, and freeze the streaks
+#   Fri  game      the best game of the weekend
 #   Sat  game      what is on today
 #   Sun  game      what is on today
 #
@@ -35,9 +36,13 @@
 # and the week's own description of Thursday is "scan the weekend" — which needs something
 # to scan. So Thursday drafts nothing and still tells you what is coming.
 #
-# THE WEEKEND IS PREPPED WEDNESDAY AND POSTED FRIDAY. Wednesday is roughly when the
-# weekend's prices appear, so that is when the channel gets the card — two clear days
-# before anything public names those games. That gap is the product.
+# TWO CARDS A WEEK, AND EACH LANDS BEFORE THE GAMES IT COVERS. Monday sends the midweek
+# card (Tue-Thu) and Wednesday the weekend one (Fri-Mon) — Wednesday being roughly when
+# the weekend's prices appear, so the channel has them two clear days before anything
+# public names those games. That gap is the product.
+#
+# The midweek card was frozen and graded from the day the second card existed and was
+# never actually SENT, because only one send step was ever written. See the step itself.
 #
 # "One game" is a single fixture across three lines — when, who, and why — rather than a
 # list. The board format fits six rows in a post by cramping each into one line, which
@@ -69,13 +74,13 @@
 # which no reader will notice, and which is a far smaller price than a daily poster that
 # silently skips days.
 #
-# FRIDAY FREEZES THE WEEKEND'S STREAKS. A streak row only exists while the run is alive —
+# THE CARD DAYS FREEZE THEIR OWN STREAKS. A streak row only exists while the run is alive —
 # a team that misses drops off the board — so grading "how the streaks did" against
 # Monday's board would count only the survivors and report a near-perfect week every week.
 # The snapshot writes down what was claimed BEFORE kick-off, which is the only point at
 # which it can be written down honestly. It runs AFTER the draft is delivered so a
-# snapshot failure cannot cost you the post, and it fails loudly, because a missing Friday
-# snapshot is a weekend that can never be graded.
+# snapshot failure cannot cost you the post, and it fails loudly, because a missing
+# snapshot is a set of days that can never be graded.
 #
 # COST: one call to a cached backend endpoint. No API-Football credits, no X API credits.
 name: Draft the X post
@@ -90,7 +95,7 @@ on:
         description: "Which board (blank = whatever this weekday calls for)"
         required: false
         type: choice
-        options: ["", "picks", "game", "streaks", "fixtures", "results", "weekend", "menu"]
+        options: ["", "picks", "game", "streaks", "fixtures", "results", "card", "menu"]
 
 concurrency:
   group: corner-social-draft
@@ -556,20 +561,39 @@ jobs:
           TG_CHAT: ${{ secrets.TELEGRAM_CHAT_ID }}
           PRETTY: ${{ steps.when.outputs.pretty }}
 
-      - name: Send the weekend card to the channel
-        # WEDNESDAY, and separate from the public post on purpose. The daily post goes
-        # out on the DAY of the game, which is the worst moment to hear about it — by
-        # Saturday lunchtime the market has found the same game and the price has gone.
-        # This gets Sunday's card in front of a paying member on Friday, while it is still
-        # there to take. The product is earlier information, not different information.
+      - name: Send the card to the channel
+        # BOTH CARD DAYS, and it used to be only one of them.
+        #
+        # This was gated on weekday == 3, so the WEEKEND card went out on Wednesday and
+        # the midweek card — published on Monday, frozen on Monday, and graded in the
+        # record ever since — was never sent to anybody. It was computed, it was on the
+        # site, and members got one card a week in the channel rather than two. Nothing
+        # failed: there was simply no step for it.
+        #
+        # The gate is now `card != ''`, which is the same condition the freeze step below
+        # uses, so a card cannot be frozen and graded without also being sent. Those two
+        # drifting apart is exactly what happened.
+        #
+        # SEPARATE FROM THE PUBLIC POST on purpose. The daily post goes out on the DAY of
+        # the game, which is the worst moment to hear about it — by Saturday lunchtime the
+        # market has found the same game and the price has gone. This gets Sunday's card
+        # in front of a paying member on Wednesday, while it is still there to take. The
+        # product is earlier information, not different information.
         #
         # It carries the model's numbers, which no public post does. Never sent to X: it
         # has no intent link and is far past 280 characters by design.
-        if: steps.when.outputs.weekday == '3' && env.TG_TOKEN != ''
+        #
+        # NO --days. The tool asks the backend which card is live and what it covers —
+        # see the note above the `card` board in social_draft.mjs for why passing a window
+        # from here is what made the channel and the site disagree.
+        if: steps.when.outputs.card != '' && env.TG_TOKEN != ''
         run: |
-          node tools/social_draft.mjs --board weekend --days 3 --out card.md --json-out card.json
+          node tools/social_draft.mjs --board card --out card.md --json-out card.json
           if [ ! -s card.md ]; then
-            echo "::notice::nothing with a live run kicks off this weekend"
+            # The tool prints its own reason on the way out — a dead card says WHICH of
+            # "no fixtures", "nothing qualified" and "data too stale to publish" it was,
+            # and those are three different things to do about it.
+            echo "::notice::no ${{ steps.when.outputs.card }} card today — see the SKIP line above"
             exit 0
           fi
           python3 - <<'PY' > card_payload.json
@@ -582,11 +606,11 @@ jobs:
             -X POST "https://api.telegram.org/bot$TG_TOKEN/sendMessage" \
             -H 'content-type: application/json' --data-binary @card_payload.json || true)
           if [ "$code" = "200" ]; then
-            echo "::notice::weekend card sent to Telegram"
+            echo "::notice::${{ steps.when.outputs.card }} card sent to Telegram"
           else
             # Not fatal. The public post has already gone; losing the card costs a nudge,
             # not the day, and failing here would make a green run look red for it.
-            echo "::warning::weekend card send failed (HTTP $code)"
+            echo "::warning::${{ steps.when.outputs.card }} card send failed (HTTP $code)"
           fi
         env:
           BACKEND_URL: ${{ vars.BACKEND_URL || 'https://corner-model.onrender.com' }}

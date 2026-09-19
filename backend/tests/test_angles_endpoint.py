@@ -37,14 +37,32 @@ TODAY = datetime.now(timezone.utc).astimezone(ZoneInfo(aod.TZ)).date()
 CARD, PUBLISHED = aod.live_card(TODAY)
 FIRST, LAST = aod.card_window(CARD, PUBLISHED)
 
+# THE FIRST DAY OF THE WINDOW THAT HAS NOT HAPPENED YET, which is not FIRST once the card
+# is partway through.
+#
+# This used to anchor on FIRST with a docstring claiming it was "always in the future — the
+# window opens at least a day after the drop". That is true ON THE DROP DAY and false every
+# day after it: the weekend card is published on Wednesday and covers Friday to Monday, so
+# by Saturday its FIRST is yesterday. Every fixture these tests placed was then in the past,
+# `upcoming` dropped them all, and six tests failed with empty lists — on Saturday, Sunday
+# and Monday, every week, having passed on Wednesday when they were written.
+#
+# That is the worst shape a test failure can take: it is not about the code, it is about
+# the day the suite happens to run, so it reads as a real regression and trains people to
+# re-run and shrug.
+CARD_START = max(FIRST, TODAY + timedelta(days=1))
+assert CARD_START <= LAST, (
+    f"no day left inside the {CARD} card ({FIRST}..{LAST}) is still in the future on "
+    f"{TODAY} — these tests need a kick-off that is both on the card and unplayed")
+
 
 def in_card(day_offset=0, hour=15):
     """Noon-ish on a day inside the card's window, as UTC ISO.
 
-    Always in the future — the window opens at least a day after the drop — so `upcoming`
-    keeps it, and always inside the window, so the card keeps it.
+    In the future, so `upcoming` keeps it, and inside the window, so the card keeps it.
+    Anchored on CARD_START rather than FIRST — see the note above.
     """
-    d = FIRST + timedelta(days=day_offset)
+    d = CARD_START + timedelta(days=day_offset)
     return datetime(d.year, d.month, d.day, hour, tzinfo=timezone.utc) \
         .isoformat().replace("+00:00", "Z")
 

@@ -7,7 +7,7 @@
  */
 import { streakShare, fixtureShare, bestTeamsShare, streakResultShare,
          fixtureStreakShare, telegramPick, wonLadder, openGameCase, postHeader,
-         pickGame, pickGameDetailed, gameShare, weekendCard, picksReview, moreVia,
+         pickGame, pickGameDetailed, gameShare, cardPost, picksReview, moreVia,
          postDate, postTime, pickLabel, angleMenu } from "./shareText";
 
 const NORWAY = "\u{1F1F3}\u{1F1F4}";
@@ -654,7 +654,7 @@ describe("the weekend card", () => {
     R("Club Brugge KV", "bel-pl", "Jupiler", "5+", 9, 79.4, 1.26, "Antwerp", true, "2026-09-13T11:30:00Z"),
     R("Grimsby", "eng-l2", "League Two", "6+", 5, 51.1, 1.96, "Bristol Rovers", true, "2026-09-12T11:30:00Z"),
   ];
-  const card = weekendCard({ rows, generatedAt: "2026-09-11T11:00:00Z" });
+  const card = cardPost({ rows, generatedAt: "2026-09-11T11:00:00Z" });
 
   test("is ordered by kick-off, not by how good the angle is", () => {
     // Someone placing these works down the card in time order. Club Brugge is the best
@@ -691,15 +691,15 @@ describe("the weekend card", () => {
   });
 
   test("an unpriced row still lists, without inventing a number", () => {
-    const bare = weekendCard({ rows: [{ ...rows[1], projection: {} }] });
+    const bare = cardPost({ rows: [{ ...rows[1], projection: {} }] });
     expect(bare).toContain("Club Brugge KV");
     expect(bare).toContain("9 in a row");
     expect(bare).not.toContain("%");
   });
 
   test("a weekend with nothing running into it sends nothing", () => {
-    expect(weekendCard({ rows: [] })).toBe("");
-    expect(weekendCard({ rows: [{ name: "X", streak: { length: 9 } }] })).toBe("");
+    expect(cardPost({ rows: [] })).toBe("");
+    expect(cardPost({ rows: [{ name: "X", streak: { length: 9 } }] })).toBe("");
   });
 });
 
@@ -869,19 +869,19 @@ describe("the weekend card as a to-do list", () => {
   });
 
   test("every row links to the fixture it is about", () => {
-    const out = weekendCard({ rows: [R("bel-pl-1558631")], site: "https://thecornermodel.com" });
+    const out = cardPost({ rows: [R("bel-pl-1558631")], site: "https://thecornermodel.com" });
     expect(out).toContain("↳ thecornermodel.com/fixture/bel-pl-1558631");
   });
 
   test("and says why the link is there", () => {
-    const out = weekendCard({ rows: [R("f1")], site: "https://thecornermodel.com" });
+    const out = cardPost({ rows: [R("f1")], site: "https://thecornermodel.com" });
     expect(out).toContain("until one is in, nothing can be called value");
   });
 
   test("no site, or no fixture id, means no dangling arrow", () => {
-    expect(weekendCard({ rows: [R("f1")] })).not.toContain("↳");
+    expect(cardPost({ rows: [R("f1")] })).not.toContain("↳");
     const noId = { ...R("f1"), next_fixture: { ...R("f1").next_fixture, fixture_id: null } };
-    expect(weekendCard({ rows: [noId], site: "https://thecornermodel.com" })).not.toContain("↳");
+    expect(cardPost({ rows: [noId], site: "https://thecornermodel.com" })).not.toContain("↳");
   });
 });
 
@@ -902,7 +902,7 @@ describe("the weekend card fits in a Telegram message", () => {
 
   test("thirty qualifying games still produce a message that can be sent", () => {
     const rows = Array.from({ length: 30 }, (_, i) => R(i, 5 + (i % 6), 40 + (i % 45)));
-    const out = weekendCard({ rows, site: "https://thecornermodel.com",
+    const out = cardPost({ rows, site: "https://thecornermodel.com",
                               generatedAt: "2026-09-11T11:00:00Z" });
     expect(out.length).toBeLessThan(TELEGRAM_MAX);
   });
@@ -913,14 +913,14 @@ describe("the weekend card fits in a Telegram message", () => {
       R(5, 5, 45), R(6, 5, 46), R(7, 5, 47), R(8, 5, 48),
       R(9, 9, 88),          // the best row on the board, listed last
     ];
-    const out = weekendCard({ rows, site: "https://thecornermodel.com" });
+    const out = cardPost({ rows, site: "https://thecornermodel.com" });
     expect(out).toContain("Team 9");
     expect(out).toContain("88%");
   });
 
   test("but still reads in kick-off order, which is how they get placed", () => {
     const rows = [R(8, 9, 90), R(2, 8, 85), R(5, 7, 80)];
-    const out = weekendCard({ rows, site: "https://thecornermodel.com" });
+    const out = cardPost({ rows, site: "https://thecornermodel.com" });
     const at = (n) => out.indexOf(`Team ${n} `);
     expect(at(2)).toBeLessThan(at(5));      // 12:30 before 15:30
     expect(at(5)).toBeLessThan(at(8));      // 15:30 before 18:30
@@ -929,18 +929,18 @@ describe("the weekend card fits in a Telegram message", () => {
   test("a four-game run does not make the paid card", () => {
     // The tail of the unbounded card was runs of four the model gave 55%. Padding the
     // product with the weakest rows on the board makes it worth less, not more.
-    const out = weekendCard({ rows: [R(1, 4, 70)], site: "https://thecornermodel.com" });
+    const out = cardPost({ rows: [R(1, 4, 70)], site: "https://thecornermodel.com" });
     expect(out).toBe("");
   });
 
   test("what it left out is declared, not quietly dropped", () => {
     const rows = Array.from({ length: 12 }, (_, i) => R(i, 6, 60));
-    const out = weekendCard({ rows, site: "https://thecornermodel.com" });
+    const out = cardPost({ rows, site: "https://thecornermodel.com" });
     expect(out).toContain("Showing the 8 strongest; 4 more on the site.");
   });
 
   test("a card inside the cap says nothing about a remainder", () => {
-    const out = weekendCard({ rows: [R(1, 9, 80)], site: "https://thecornermodel.com" });
+    const out = cardPost({ rows: [R(1, 9, 80)], site: "https://thecornermodel.com" });
     expect(out).not.toContain("strongest");
   });
 });
@@ -1111,5 +1111,45 @@ describe("the menu of angles", () => {
     // The whole reason the menu exists. Offering four kinds and staying silent about why
     // would leave the reader picking the top row, which is a streak.
     expect(menu({ streaks: [S("Viking", 8)] }).text).toContain("weakest");
+  });
+});
+
+
+// --- the card's label, which is what makes one renderer serve both cards ------------
+//
+// The midweek card was frozen and graded from the day it existed and was never sent,
+// because there was only ever a "weekend" send. With one renderer doing both, the heading
+// has to come from the backend — a card headed "Weekend" on a Monday is a card telling a
+// paying member the wrong three days are covered.
+
+describe("the card heading", () => {
+  const row = (run = 9) => ({
+    name: "Viking", league_id: "nor-el", line_label: "5+",
+    streak: { length: run }, projection: { prob: 71, fair_odds: 1.4 },
+    next_fixture: { is_home: true, opponent: "Bodø", date: soon(), fixture_id: "f1" },
+  });
+
+  test("names the card it was given", () => {
+    expect(cardPost({ rows: [row()], label: "Midweek" })).toContain("Midweek corner card");
+    expect(cardPost({ rows: [row()], label: "Weekend" })).toContain("Weekend corner card");
+  });
+
+  test("a midweek card never calls itself the weekend", () => {
+    // The specific wrong outcome: a member reads "Weekend" on Monday and waits.
+    expect(cardPost({ rows: [row()], label: "Midweek" })).not.toContain("Weekend");
+  });
+
+  test("still says what it is when no label is given", () => {
+    // Every existing caller passed no label, and a card headed " corner card" would be a
+    // formatting bug shipped to the channel.
+    const out = cardPost({ rows: [row()] });
+    expect(out).toContain("corner card");
+    expect(out).not.toContain("  corner card");
+  });
+
+  test("the rest of the card is unchanged by the label", () => {
+    const mid = cardPost({ rows: [row()], label: "Midweek" });
+    const end = cardPost({ rows: [row()], label: "Weekend" });
+    expect(mid.replace("Midweek", "X")).toBe(end.replace("Weekend", "X"));
   });
 });

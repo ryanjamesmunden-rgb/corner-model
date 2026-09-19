@@ -29,7 +29,7 @@ const LIB = resolve(HERE, "..", "frontend", "src", "lib");
 
 // The lib modules import each other by relative path and use no bundler features, so
 // they load as-is. `shareText.js` pulls in countryFlag and kickoff itself.
-const { streakShare, fixtureShare, streakResultShare, pickGame, pickGameDetailed, gameShare, weekendCard,
+const { streakShare, fixtureShare, streakResultShare, pickGame, pickGameDetailed, gameShare, cardPost,
         picksReview, angleMenu, PUBLIC_STREAK_ROWS } = await import(resolve(LIB, "shareText.js"));
 const { fixtureStoryMarkets } = await import(resolve(LIB, "storyImage.js"));
 const { kickoffLabel } = await import(resolve(LIB, "kickoff.js"));
@@ -69,26 +69,63 @@ const TOKEN = process.env.TOOLS_TOKEN;
 const MAX_DATA_AGE_HOURS = 14;   // a little over the 12h sync cadence
 const MIN_ROWS = 3;              // fewer than this is a quiet day, not a post
 
+// TWO ATTEMPTS, AND A LONGER ONE SECOND.
+//
+// This had a single 60-second try, and when the backend crept past it the daily post
+// simply stopped — two days running, with "timed out after 60s" as the only evidence and
+// no way to tell a slow instance from a dead one. One attempt is a coin toss on a
+// free-tier host whose own docstring says these boards walk every team in the database.
+//
+// The retry is NOT the fix for a slow endpoint: it buys the post while the cause is
+// measured (see `timings_ms`, printed below). A second attempt also costs nothing on the
+// common path, because it only happens after a failure.
+const FETCH_MS = [60000, 120000];
+
 const get = async (path, label) => {
-  try {
-    const res = await fetch(`${BACKEND}${path}`, { signal: AbortSignal.timeout(60000) });
-    if (res.status === 404) return null;      // the caller decides whether that is fatal
-    if (!res.ok) {
-      // 503 from a gated endpoint is a CONFIG error, not an outage: _check_tools_token
-      // raises it when the backend has no TOOLS_TOKEN at all. Left as a bare status it
-      // reads as "Render is down" and sends you to the wrong dashboard.
-      if (res.status === 503) {
-        fail("backend has no TOOLS_TOKEN set in its own environment — set it on Render, "
-             + "then set the matching GitHub repo secret");
-      }
-      fail(res.status === 403
-        ? "backend rejected the token — the TOOLS_TOKEN repo secret does not match the backend env"
-        : `${label} returned ${res.status} ${res.statusText}`);
+  for (let i = 0; i < FETCH_MS.length; i++) {
+    const last = i === FETCH_MS.length - 1;
+    try {
+      return await getOnce(path, label, FETCH_MS[i], last);
+    } catch (err) {
+      if (last) throw err;
+      console.error(`social_draft: attempt ${i + 1} failed (${err.message}) — retrying `
+                    + `with ${FETCH_MS[i + 1] / 1000}s`);
     }
-    return await res.json();
-  } catch (err) {
-    fail(`could not reach ${BACKEND} — ${err.name === "TimeoutError" ? "timed out after 60s" : err.message}`);
   }
+};
+
+const getOnce = async (path, label, ms, fatal) => {
+  let res;
+  try {
+    res = await fetch(`${BACKEND}${path}`, { signal: AbortSignal.timeout(ms) });
+  } catch (err) {
+    // Timeout or network. Worth another go with a longer rope — unless this was the
+    // last one, in which case say so with the limit that was actually applied rather
+    // than a hardcoded 60 that stops being true the moment the retry widens it.
+    const what = err.name === "TimeoutError"
+      ? `timed out after ${ms / 1000}s` : err.message;
+    if (!fatal) throw new Error(what);
+    fail(`could not reach ${BACKEND} — ${what}`);
+  }
+  if (res.status === 404) return null;        // the caller decides whether that is fatal
+
+  // CONFIG ERRORS ARE FATAL ON THE FIRST ATTEMPT, never retried. A bad or missing token
+  // answers identically however many times it is asked, so retrying only doubles the wait
+  // before the same message — and buries it under a "retrying" line that implies the
+  // problem might be transient. It is not; it needs a person to change a secret.
+  if (res.status === 503) {
+    fail("backend has no TOOLS_TOKEN set in its own environment — set it on Render, "
+         + "then set the matching GitHub repo secret");
+  }
+  if (res.status === 403) {
+    fail("backend rejected the token — the TOOLS_TOKEN repo secret does not match the backend env");
+  }
+  if (!res.ok) {
+    const what = `${label} returned ${res.status} ${res.statusText}`;
+    if (!fatal) throw new Error(what);        // a 5xx may well be the instance struggling
+    fail(what);
+  }
+  return await res.json();
 };
 
 /** Like get, but a failure is NOT fatal.
@@ -214,6 +251,42 @@ ${full}
   process.exit(0);
 }
 
+// ---- the card, built from the SAME endpoint the site's panel renders.
+//
+// IT USED TO BE BUILT FROM /api/share/rows AND A --days WINDOW, and that is how the card
+// in the channel and the card on the site drifted into being different cards. The site
+// asks angle_of_day which card is live and what dates it covers; the channel post scanned
+// "three days from now" and rendered whatever came back. On a Wednesday those are not the
+// same set: the weekend card covers Friday to Monday, so a three-day scan could not reach
+// Sunday or Monday at all, while Thursday's games — which belong to the MIDWEEK card —
+// were eligible for it.
+//
+// Keeping two windows in step by hand is the bug, not the fix. This asks the one place
+// that already knows, so the channel cannot disagree with the site about which games are
+// on the card or what the card is called.
+//
+// IT IS ALSO MUCH CHEAPER. /api/angles/card serves a precomputed screen; share/rows walks
+// every team in the database and is the call that has been timing out.
+if (BOARD === "card") {
+  const a = await get(`/api/angles/card?token=${encodeURIComponent(TOKEN)}`, "angles");
+  if (!a) fail("backend has no /api/angles/card — it is running an older build");
+  // The backend decides whether today has a card worth publishing, including refusing on
+  // stale data. Repeating that judgement here would be a second opinion that can differ.
+  if (a.dead) skip(`${a.label || "card"}: ${a.note || a.reason || "nothing qualifies"}`);
+  const card = cardPost({ rows: a.angles || [], generatedAt: new Date().toISOString(),
+                          site: SITE, label: a.label || "" });
+  if (!card) skip(`${a.label || "card"}: nothing cleared the bar`);
+  emit(`${a.label} card for the channel — not for X.
+
+\`\`\`
+${card}
+\`\`\`
+`, { empty: false, board: "card", post: card, intent: "", weight: card.length, full: card,
+     note: `${(a.angles || []).length} angles · covers ${a.covers?.first} to ${a.covers?.last}`
+           + `${a.data_age_hours != null ? ` · data ${a.data_age_hours}h old` : ""}` });
+  process.exit(0);
+}
+
 // ---- the live boards.
 // Render sleeps the free instance, so the first call after a quiet spell can take a
 // while or fail outright. A crash here would surface in CI as a raw stack trace with
@@ -230,6 +303,20 @@ const BOARDS = BOARD === "menu" ? "streaks,mismatches,chase,value"
 const data = await get(`/api/share/rows?days=${DAYS}&limit=60&boards=${BOARDS}`
   + `&token=${encodeURIComponent(TOKEN)}`, "backend");
 if (!data) fail("backend has no /api/share/rows — it is running an older build");
+
+// WHERE THE TIME WENT, printed on every run rather than only on a slow one.
+//
+// This endpoint began exceeding the fetch timeout and the log could say nothing except
+// that it had. Printing the breakdown only past some threshold would mean the run that
+// finally fails is the first one with no baseline to compare against — so it goes out
+// every time, and the number that matters is the one that grew.
+if (data.timings_ms && Object.keys(data.timings_ms).length) {
+  const parts = Object.entries(data.timings_ms)
+    .sort((a, b) => b[1] - a[1])
+    .map(([k, v]) => `${k} ${(v / 1000).toFixed(1)}s`);
+  const total = Object.values(data.timings_ms).reduce((a, b) => a + b, 0);
+  console.error(`social_draft: backend spent ${(total / 1000).toFixed(1)}s — ${parts.join(", ")}`);
+}
 // FastAPI ignores a query parameter it does not know, so an older backend answers a menu
 // request with streaks and fixtures and nothing else — and the menu would render with three
 // empty sections, looking exactly like a quiet day. `boards` comes back only on a build that
@@ -405,9 +492,9 @@ ${text}
 
 // ---- the weekend card. Goes to the PAID channel on a Friday, carrying the model's own
 // numbers, so a member sees Sunday's games while the price is still there rather than on
-// Sunday morning when it is not. Never trimmed and never posted to X — see weekendCard.
+// Sunday morning when it is not. Never trimmed and never posted to X — see cardPost.
 if (BOARD === "weekend") {
-  const card = weekendCard({ rows: data.streaks || [], generatedAt: data.generated_at,
+  const card = cardPost({ rows: data.streaks || [], generatedAt: data.generated_at,
                              site: SITE });
   if (!card) skip("nothing with a live run kicks off this weekend");
   emit(`Weekend card for the channel — not for X.

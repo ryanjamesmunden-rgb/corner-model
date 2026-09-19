@@ -201,7 +201,13 @@ jobs:
 
       - name: Build the day's draft
         id: build
-        if: steps.when.outputs.quiet != 'true'
+        # `card` IS NOT A DRAFT BOARD. It has its own step below, which is the one that
+        # knows whether this run is allowed to publish. Letting the draft path build a
+        # card too meant `send: false` was a guard on one of the two places that send:
+        # the card step honoured it, and the draft step delivered anyway, so asking to
+        # SEE a card posted one. A flag that governs half the sends is worse than none,
+        # because it is believed.
+        if: steps.when.outputs.quiet != 'true' && inputs.board != 'card'
         # --board auto asks postPlan.js what this weekday is for, and takes its day window
         # too. A board named by hand on a manual run overrides both.
         #
@@ -301,7 +307,9 @@ jobs:
           fi
 
       - name: Send it to Telegram
-        if: steps.when.outputs.quiet != 'true' && steps.build.outputs.empty != 'true' && env.TG_TOKEN != ''
+        if: >-
+          steps.when.outputs.quiet != 'true' && steps.build.outputs.empty != 'true'
+          && inputs.board != 'card' && env.TG_TOKEN != ''
         id: telegram
         # THE POST TEXT GOES IN THE MESSAGE BODY, not only behind the button. A button is
         # one tap when it works, and when it doesn't — a URL Telegram won't accept, an
@@ -629,6 +637,12 @@ jobs:
             cat card.md
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
+          # AND TO THE LOG. The step summary is a separate artefact that the job log does
+          # not contain, so a card "built but not sent" was unreadable from the one place
+          # anybody looks when they want to know what a run did.
+          echo "----- card -----"
+          cat card.md
+          echo "----- end -----"
           if [ -n "${{ inputs.board }}" ] && [ "${{ inputs.send }}" != "true" ]; then
             echo "::notice::card built, NOT sent — re-run with send: true to post it"
             exit 0

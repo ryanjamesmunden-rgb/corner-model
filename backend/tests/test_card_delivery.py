@@ -254,3 +254,24 @@ class TestSendFalseMeansNothingIsSent:
         assert "GITHUB_STEP_SUMMARY" in block
         # ...and to stdout, which is what lands in the log.
         assert "----- card -----" in block
+
+
+class TestTheIssueFallbackNeedsADraftToRescue:
+    """It exists to catch a draft Telegram would not take. It was gated only on "Telegram
+    did not send" — and a SKIPPED Telegram step passes that test exactly as a failed one
+    does. On a card run the draft is skipped, nothing is written, and the fallback fired
+    anyway and died on `--body-file draft.md: no such file`.
+
+    A rescue step that fails the run when there was nothing to rescue turns a working card
+    into a red job, which is worse than the loss it was written to prevent.
+    """
+
+    def test_both_fallback_steps_require_the_build_to_have_run(self):
+        for name in ("Make sure the label exists", "File it as an issue instead"):
+            assert "steps.build.outcome == 'success'" in step(name), name
+
+    def test_they_still_require_telegram_to_have_missed_it(self):
+        """The widening must not have turned the fallback into a second delivery that
+        files an issue for every draft Telegram took."""
+        for name in ("Make sure the label exists", "File it as an issue instead"):
+            assert "steps.telegram.outputs.sent != 'true'" in step(name), name

@@ -403,7 +403,16 @@ jobs:
 
       - name: Make sure the label exists
         # Only needed when an issue is actually going to be filed.
-        if: steps.when.outputs.quiet != 'true' && steps.build.outputs.empty != 'true' && steps.telegram.outputs.sent != 'true'
+        # `steps.build.outcome == 'success'` IS THE CONDITION THAT MATTERS, and it was
+        # missing. This fallback rescues a draft Telegram would not take — so it needs a
+        # draft to exist. It was gated only on "Telegram did not send", and a SKIPPED
+        # Telegram step is indistinguishable from a failed one by that test: on a card run
+        # the build is skipped, nothing is drafted, and this fired anyway and died on
+        # `--body-file draft.md: no such file`. A rescue step that fails the run when there
+        # was nothing to rescue turns a working card into a red job.
+        if: >-
+          steps.when.outputs.quiet != 'true' && steps.build.outcome == 'success'
+          && steps.build.outputs.empty != 'true' && steps.telegram.outputs.sent != 'true'
         # Created here rather than by hand, so it is not a piece of setup that can be
         # missing. `gh label create` exits non-zero when the label already exists, which is
         # the normal case from the second run onward, so that is not an error.
@@ -421,7 +430,16 @@ jobs:
       - name: File it as an issue instead
         # Only when Telegram is not configured, or did not take it. Never both — two copies
         # of the same draft is two things to check and one of them to forget.
-        if: steps.when.outputs.quiet != 'true' && steps.build.outputs.empty != 'true' && steps.telegram.outputs.sent != 'true'
+        # `steps.build.outcome == 'success'` IS THE CONDITION THAT MATTERS, and it was
+        # missing. This fallback rescues a draft Telegram would not take — so it needs a
+        # draft to exist. It was gated only on "Telegram did not send", and a SKIPPED
+        # Telegram step is indistinguishable from a failed one by that test: on a card run
+        # the build is skipped, nothing is drafted, and this fired anyway and died on
+        # `--body-file draft.md: no such file`. A rescue step that fails the run when there
+        # was nothing to rescue turns a working card into a red job.
+        if: >-
+          steps.when.outputs.quiet != 'true' && steps.build.outcome == 'success'
+          && steps.build.outputs.empty != 'true' && steps.telegram.outputs.sent != 'true'
         run: |
           gh issue create \
             --title "X draft — ${{ steps.when.outputs.pretty }}" \

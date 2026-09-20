@@ -275,3 +275,36 @@ class TestTheIssueFallbackNeedsADraftToRescue:
         files an issue for every draft Telegram took."""
         for name in ("Make sure the label exists", "File it as an issue instead"):
             assert "steps.telegram.outputs.sent != 'true'" in step(name), name
+
+
+SLATE = os.path.join(ROOT, ".github", "workflows", "daily_slip.yml")
+
+
+def slate_step(name):
+    src = open(SLATE, encoding="utf-8").read()
+    start = src.index(f"- name: {name}")
+    rest = src[start + 1:]
+    nxt = rest.find("\n      - name:")
+    return rest[:nxt] if nxt != -1 else rest
+
+
+class TestThePreviewDoesNotPublish:
+    """`day` exists to preview TOMORROW. Posting tomorrow's board today hands members a
+    slate headed with a date that has not happened, and then the 07:00 run posts it again
+    in the morning — two messages, one of them early and neither explaining the other."""
+
+    def test_a_manual_run_does_not_send_unless_asked(self):
+        assert "inputs.send" in slate_step("Send it")
+
+    def test_the_schedule_still_sends_every_morning(self):
+        """The guard must key on the run being MANUAL. Gating the send on an input alone
+        would silence the 07:00 job, where that input is never set."""
+        assert "github.event_name != 'workflow_dispatch'" in slate_step("Send it")
+
+    def test_the_slate_reaches_the_job_log(self):
+        """It went only to the step summary, a separate artefact the log does not carry —
+        so on a preview run, which sends nothing by design, the board was readable
+        nowhere at all."""
+        block = slate_step("Build today's slate")
+        assert "GITHUB_STEP_SUMMARY" in block
+        assert "----- slate -----" in block

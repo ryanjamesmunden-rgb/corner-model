@@ -40,6 +40,19 @@ on:
         required: false
         default: ""
         type: string
+      send:
+        # A PREVIEW IS NOT A PUBLICATION, and `day` exists to preview tomorrow. Posting
+        # tomorrow's board today hands members a slate headed with a date that has not
+        # happened, and then the 07:00 run posts it again in the morning — two messages,
+        # one of them early and neither explaining the other.
+        #
+        # The SCHEDULE is untouched: it sends every morning as it always has. This only
+        # governs a run somebody started by hand, where "let me look at it" and "put it in
+        # front of everyone who pays" are different requests.
+        description: "Also post it to the channel (manual runs only)"
+        required: false
+        default: false
+        type: boolean
 
 concurrency:
   group: corner-morning-slate
@@ -105,6 +118,12 @@ jobs:
             python3 -c "import json;print(json.load(open('slate.json'))['post'])"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
+          # AND TO THE LOG. The summary is a separate artefact the job log does not carry,
+          # so the board itself was only ever readable in a browser or in Telegram — and on
+          # a preview run, which deliberately sends nothing, that left it readable nowhere.
+          echo "----- slate -----"
+          python3 -c "import json;print(json.load(open('slate.json'))['post'])"
+          echo "----- end -----"
 
       - name: Draw the card
         id: card
@@ -126,7 +145,9 @@ jobs:
           fi
 
       - name: Send it
-        if: steps.build.outputs.empty != 'true' && env.TG_TOKEN != ''
+        if: >-
+          steps.build.outputs.empty != 'true' && env.TG_TOKEN != ''
+          && (github.event_name != 'workflow_dispatch' || inputs.send)
         env:
           TG_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           # The seam described in the header: a dedicated channel when one exists, and the

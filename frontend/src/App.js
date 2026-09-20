@@ -29,6 +29,7 @@ const RouteFallback = () => (
 
 // Suspense sits inside Layout, not around the router: the header, nav and league
 // picker stay painted while a route chunk loads, and only the content area swaps.
+import Prices from "@/pages/Prices";
 const page = (Component) => (
   <Layout>
     <Suspense fallback={<RouteFallback />}>
@@ -52,6 +53,7 @@ function AppRouter() {
       <Route path="/bets" element={page(Bets)} />
       <Route path="/results" element={page(Results)} />
       <Route path="/fixture/:id" element={page(FixtureDetail)} />
+      <Route path="/prices" element={page(Prices)} />
       <Route path="/projections" element={page(Projections)} />
       <Route path="/account" element={page(Account)} />
       {/* Deliberately OUTSIDE page(): the subscription page is for people who are not

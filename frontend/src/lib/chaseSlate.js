@@ -207,7 +207,8 @@ export const recordLine = (rec = null) => {
  * with spots that failed it would defeat the whole point." A card that always shows ten
  * rows is a card whose bottom rows mean nothing, and nobody reading it can tell which.
  */
-export const slateFrom = ({ rows = [], ledger = null, day = null, max = MAX_SLATE_ROWS } = {}) => {
+export const slateFrom = ({ rows = [], ledger = null, day = null, max = MAX_SLATE_ROWS,
+                            min = MIN_SLATE_ROWS } = {}) => {
   const key = day || dayKeyOf();
   const limit = Math.max(1, Math.min(MAX_SLATE_ROWS, Number(max) || MAX_SLATE_ROWS));
   const picked = (rows || [])
@@ -218,7 +219,12 @@ export const slateFrom = ({ rows = [], ledger = null, day = null, max = MAX_SLAT
     // The backend's order: the model's own confidence, nothing cleverer.
     .sort((a, b) => (b.prob || 0) - (a.prob || 0))
     .slice(0, limit);
-  if (picked.length < MIN_SLATE_ROWS) return null;
+  // `min` IS A CALLER'S FLOOR, NOT A LOOSENING OF THE BAR. Every row here has already
+  // cleared `qualifies`; this only says how many of them make a post worth sending. Three
+  // is right for a card that is nothing but this board — one row is not a board. The day
+  // card passes 1, because there the chase section sits above mismatches, streaks and
+  // prices, and dropping a spot that cleared the bar for want of company would hide it.
+  if (picked.length < Math.max(1, Number(min) || MIN_SLATE_ROWS)) return null;
 
   const priced = picked.filter((r) => r.priceKind === "book").length;
   return {

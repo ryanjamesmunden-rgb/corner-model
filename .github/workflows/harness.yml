@@ -34,6 +34,7 @@ on:
           - state_bias      # where the model is wrong, by half-time game state
           - goal_scores     # SPENDS CREDITS — fill half-time scores, needed by state_bias
           - chase_board     # does the chase board's ranking find underrated spots
+          - calibration     # is the printed probability honest — ledger, then replay
           - sweep           # model weight sweep
       file_issue:
         description: "Keep the result as a GitHub issue"
@@ -86,6 +87,10 @@ jobs:
               team_r)      SCRIPT="tune_model" ;;
               state_bias)  SCRIPT="measure_game_state" ;;
               chase_board) SCRIPT="measure_chase_board" ;;
+              calibration) SCRIPT="measure_calibration" ;;
+              # The fallback is measure_features because `sweep` is a mode OF it. A new
+              # harness with its own script that is not added above polls this script,
+              # finds someone else's last run, and reports THAT output as its result.
               *)           SCRIPT="measure_features" ;;
             esac
           fi

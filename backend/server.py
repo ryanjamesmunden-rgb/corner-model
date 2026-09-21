@@ -2183,6 +2183,7 @@ TOOL_SCRIPTS = {"backfill_shots": "backfill_shots.py", "measure_features": "meas
                 "measure_chase_board": "measure_chase_board.py",
                 "measure_calibration": "measure_calibration.py",
                 "audit_settlement": "audit_settlement.py",
+                "audit_pick_lines": "audit_pick_lines.py",
                 "backfill_fh": "backfill_fh.py",
                 "backfill_goal_events": "backfill_goal_events.py",
                 "probe_corner_halves": "probe_corner_halves.py",
@@ -2197,7 +2198,7 @@ TOOL_SCRIPTS = {"backfill_shots": "backfill_shots.py", "measure_features": "meas
                 "measure_game_state": "measure_game_state.py"}
 TOOL_COOLDOWN = {"backfill_shots": 600, "measure_features": 120,
                  "measure_chase_board": 120, "measure_calibration": 120,
-                 "audit_settlement": 120,
+                 "audit_settlement": 120, "audit_pick_lines": 120,
                  "backfill_fh": 120,
                  "backfill_goal_events": 600,
                  "probe_corner_halves": 600,
@@ -2228,6 +2229,12 @@ MEASURE_MODES = {
     # matching — so it can catch a pick recorded with the opponent's corner count, which
     # settles cleanly and looks like a confident loss. Reads only; it never writes.
     "settlement_audit": ("audit_settlement", [], True),
+    # WAS LAMBDA RIGHT FOR THE PICKS ACTUALLY PUBLISHED. Inverts each pick's
+    # frozen probability back to the lambda that produced it and compares that
+    # with the corners the team really won — the error in CORNERS rather than in
+    # percentage points, which is what distinguishes a bad input from a bad line
+    # rule. Reads db.picks only.
+    "pick_line_audit": ("audit_pick_lines", [], True),
     "backfill_fh": ("backfill_fh", [], False),
     # WHICH DISTRIBUTION SHOULD PRICE A MATCH TOTAL. Team lines use a Negative Binomial
     # chosen on a recorded Brier; match totals use a Poisson that nothing in the repo

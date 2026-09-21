@@ -36,6 +36,7 @@ on:
           - chase_board     # does the chase board's ranking find underrated spots
           - calibration     # is the printed probability honest — ledger, then replay
           - settlement_audit  # was each settled pick graded against the right team
+          - pick_line_audit   # was lambda right for the picks actually published
           - sweep           # model weight sweep
       file_issue:
         description: "Keep the result as a GitHub issue"
@@ -94,6 +95,7 @@ jobs:
               chase_board) SCRIPT="measure_chase_board" ;;
               calibration) SCRIPT="measure_calibration" ;;
               settlement_audit) SCRIPT="audit_settlement" ;;
+              pick_line_audit)  SCRIPT="audit_pick_lines" ;;
               # The fallback is measure_features because `sweep` is a mode OF it. A new
               # harness with its own script that is not added above polls this script,
               # finds someone else's last run, and reports THAT output as its result.

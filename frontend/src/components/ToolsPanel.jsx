@@ -12,6 +12,7 @@ const MEASURES = [
   { mode: "sweep", label: "Weight sweep", hint: "try several blocked-shots intent weights" },
   { mode: "game_state", label: "Game state", hint: "the chase thesis — corners by half-time state" },
   { mode: "chase_board", label: "Chase board rank", hint: "does the board's ranking pick better spots?" },
+  { mode: "calibration", label: "Calibration", hint: "when the card says 77%, does it happen 77% of the time? — scores the published ledger, then replays the model to separate an overconfident model from an unlucky run" },
   { mode: "backfill_fh", label: "Backfill half-time goals", hint: "fills fh_goals_against onto team history — needed for the corners-by-state splits" },
 ];
 

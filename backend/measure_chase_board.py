@@ -185,6 +185,11 @@ async def build_spots(league_id=None, window=WINDOW, min_games=MIN_GAMES):
                 "date": m["date"][:10], "team": team, "line": line, "lambda": lam,
                 "prob": nb_ge(line, lam) * 100, "hit": 1 if actual >= line else 0,
                 "opp_fh": opp_fh, "consistency": consistency,
+                # How many venue games that fraction is out of. Not used for ranking —
+                # measure_calibration needs it to apply the Daily 2's quality bar
+                # (DAILY_MIN_VENUE_GAMES) to the replay, which a bare fraction cannot do:
+                # 3 of 3 and 4 of 5 are both "high" and only one of them clears the bar.
+                "consistency_of": len(vpool),
                 "chase_score": lam * (1 + 0.4 * opp_fh) * (0.6 + 0.4 * consistency),
                 "lambda_only": lam,
                 "no_opp_fh": lam * (0.6 + 0.4 * consistency),

@@ -2181,6 +2181,7 @@ def _backtest_summary(stats: dict, lines: List[int]) -> dict:
 TOOLS_TOKEN = os.environ.get("TOOLS_TOKEN")
 TOOL_SCRIPTS = {"backfill_shots": "backfill_shots.py", "measure_features": "measure_features.py",
                 "measure_chase_board": "measure_chase_board.py",
+                "measure_calibration": "measure_calibration.py",
                 "backfill_fh": "backfill_fh.py",
                 "backfill_goal_events": "backfill_goal_events.py",
                 "probe_corner_halves": "probe_corner_halves.py",
@@ -2194,7 +2195,8 @@ TOOL_SCRIPTS = {"backfill_shots": "backfill_shots.py", "measure_features": "meas
                 "tune_totals": "tune_totals.py",
                 "measure_game_state": "measure_game_state.py"}
 TOOL_COOLDOWN = {"backfill_shots": 600, "measure_features": 120,
-                 "measure_chase_board": 120, "backfill_fh": 120,
+                 "measure_chase_board": 120, "measure_calibration": 120,
+                 "backfill_fh": 120,
                  "backfill_goal_events": 600,
                  "probe_corner_halves": 600,
                  "probe_stat_types": 600, "probe_leagues": 120,
@@ -2212,6 +2214,13 @@ MEASURE_MODES = {
     "sweep": ("measure_features", ["--sweep"], True),
     "game_state": ("measure_features", ["--game-state"], True),
     "chase_board": ("measure_chase_board", [], True),
+    # IS THE PRINTED PROBABILITY HONEST. Distinct from `chase_board` above, which asks
+    # whether the ORDER finds better spots; this asks whether the NUMBER is true. It
+    # scores the published ledger against the model_prob frozen into each pick before
+    # kick-off, then replays the same model over every cached fixture at three levels of
+    # selection — so an overconfident model and an unlucky 44 games can be told apart,
+    # which the ledger alone cannot do.
+    "calibration": ("measure_calibration", [], True),
     "backfill_fh": ("backfill_fh", [], False),
     # WHICH DISTRIBUTION SHOULD PRICE A MATCH TOTAL. Team lines use a Negative Binomial
     # chosen on a recorded Brier; match totals use a Poisson that nothing in the repo

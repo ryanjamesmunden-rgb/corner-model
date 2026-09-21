@@ -35,7 +35,7 @@ on:
           - goal_scores     # SPENDS CREDITS — fill half-time scores, needed by state_bias
           - chase_board     # does the chase board's ranking find underrated spots
           - calibration     # is the printed probability honest — ledger, then replay
-          - settle_audit    # was each settled pick graded against the right team
+          - settlement_audit  # was each settled pick graded against the right team
           - sweep           # model weight sweep
       file_issue:
         description: "Keep the result as a GitHub issue"
@@ -82,6 +82,10 @@ jobs:
             URL="$BACKEND/api/tools/backfill-goal-scores?token=$TOOLS_TOKEN"
             SCRIPT="backfill_goals"
           else
+            # THE OPTION NAME IS THE MODE. It goes into the URL as `mode=$H`, so every
+            # choice above must be spelled exactly as its key in MEASURE_MODES — the case
+            # below only picks the SCRIPT to poll for the output. Naming an option for
+            # readability instead costs a 400 that says "mode must be one of ...".
             URL="$BACKEND/api/tools/measure?mode=$H&token=$TOOLS_TOKEN"
             case "$H" in
               totals)      SCRIPT="tune_totals" ;;
@@ -89,7 +93,7 @@ jobs:
               state_bias)  SCRIPT="measure_game_state" ;;
               chase_board) SCRIPT="measure_chase_board" ;;
               calibration) SCRIPT="measure_calibration" ;;
-              settle_audit) SCRIPT="audit_settlement" ;;
+              settlement_audit) SCRIPT="audit_settlement" ;;
               # The fallback is measure_features because `sweep` is a mode OF it. A new
               # harness with its own script that is not added above polls this script,
               # finds someone else's last run, and reports THAT output as its result.

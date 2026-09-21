@@ -142,11 +142,7 @@ def readme(wb, data, generated):
         f"Source: corner-model board, {generated:%Y-%m-%d %H:%M} UTC, next "
         f"{data.get('within_days', '?')} days. Data was "
         f"{age if age is not None else 'of unknown age'} hours old when this was built.",
-        # NAMES A PAGE THAT EXISTS. This said "/prices", which was the bulk paste screen
-        # and has been removed — and this line is not a comment, it is written into the
-        # workbook somebody downloads. A legend pointing at a 404 reads as the site being
-        # broken rather than as a column nobody has filled in yet.
-        "Book prices that are already filled in were entered on that game's own page;",
+        "Book prices that are already filled in came from prices entered on /prices;",
         "every other Book cell is blank because no price has been recorded.",
     ]
     for i, line in enumerate(lines, start=2):
@@ -239,8 +235,8 @@ def chase_sheet(wb, rows):
         ws.cell(row=r, column=10).font = BLACK
         ws.cell(row=r, column=11, value=row.get("fair_odds")).number_format = "0.00"
         ws.cell(row=r, column=11).font = BLACK
-        # A price already entered on the fixture's own page is written in, so the sheet
-        # arrives with the few rows that CAN be judged already judged.
+        # A price already entered on /prices is written in, so the sheet arrives with the
+        # few rows that CAN be judged already judged.
         if row.get("book_odds") is not None:
             ws.cell(row=r, column=12, value=row["book_odds"])
     wire(ws, 2, len(rows) + 1, "L", "J", "M", "N")

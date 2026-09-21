@@ -272,7 +272,7 @@ class TestTheColumnsSayWhatTheyHold:
             f"{sheet}: the Book column is not marked as an input"
 
     def test_a_price_already_entered_is_written_in(self, wb):
-        # Fixture pages hold real book odds for a handful of fixtures. Leaving those blank would
+        # /prices holds real book odds for a handful of fixtures. Leaving those blank would
         # ask for a number the site already has.
         ws = wb["Chase"]
         assert ws[f"{columns(ws)['Book']}2"].value == 1.83

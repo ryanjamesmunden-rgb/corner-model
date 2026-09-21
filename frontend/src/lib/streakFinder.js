@@ -112,6 +112,87 @@ export const finderOrder = (rows = [], minRun = FINDER_MIN_RUN) =>
   rows.filter((r) => eligible(r, minRun))
     .sort((a, b) => (num(b.line) - num(a.line)) || (runOf(b) - runOf(a)));
 
+// ---------------------------------------------------------------------------------------
+// WHEN IT GOES OUT, AND WHAT EACH DROP COVERS.
+//
+// Monday puts out the weekend (Friday to Monday); Thursday puts out the midweek (Tuesday to
+// Thursday). Between them every day of the week belongs to exactly ONE drop — a day covered
+// twice is a fixture claimed twice, and a day covered by neither is a night this site never
+// had a view on. Worked through from a Monday post: Fri is +4 and Mon is +7, so the weekend
+// window is 4–7; from Thursday, Tue is +5 and Thu is +7, so midweek is 5–7. Nothing
+// overlaps and nothing is missed.
+//
+// BOTH DROPS LAND 4–7 DAYS AHEAD, which is further out than the angle-of-day card in
+// angle_of_day.py (1–5 days) and deliberately so — this post carries MODEL prices, which
+// exist the moment the fixture does, so it does not have to wait for a bookmaker to put
+// the game up. The cost is that a fixture can still move; the link at the end is the
+// version of record.
+//
+// SEPARATE FROM angle_of_day.CARDS, not an edit to it. That drives a different post on
+// different windows (Monday→midweek, Wednesday→weekend); folding two schedules into one
+// table would silently repoint the other card.
+//
+// weekday is JavaScript's: Sunday=0, Monday=1 … Thursday=4.
+export const FINDER_DROPS = {
+  weekend: { weekday: 1, label: "Weekend", first: 4, last: 7 },
+  midweek: { weekday: 4, label: "Midweek", first: 5, last: 7 },
+};
+
+/** A kick-off's calendar day in London, as YYYY-MM-DD. */
+export const londonDay = (iso, tz = FINDER_TZ) => {
+  if (!iso) return null;
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return null;
+  try {
+    // en-CA renders as YYYY-MM-DD, which sorts as a string — the property the window
+    // comparison below relies on.
+    return new Intl.DateTimeFormat("en-CA", {
+      timeZone: tz, year: "numeric", month: "2-digit", day: "2-digit",
+    }).format(d);
+  } catch {
+    return null;
+  }
+};
+
+// Noon UTC, so adding days cannot cross a DST boundary into the previous or next date.
+const atNoon = (isoDay) => new Date(`${isoDay}T12:00:00Z`);
+const asDay = (d) => d.toISOString().slice(0, 10);
+
+export const addDays = (isoDay, n) => {
+  const d = atNoon(isoDay);
+  d.setUTCDate(d.getUTCDate() + n);
+  return asDay(d);
+};
+
+/** Which drop, if any, publishes on this date. */
+export const dropOn = (isoDay) => {
+  const wd = atNoon(isoDay).getUTCDay();
+  return Object.keys(FINDER_DROPS).find((k) => FINDER_DROPS[k].weekday === wd) || null;
+};
+
+/** `{ first, last, label }` — the days a drop covers, inclusive. */
+export const finderWindow = (drop, publishedOn) => {
+  const spec = FINDER_DROPS[drop];
+  if (!spec || !publishedOn) return null;
+  return { first: addDays(publishedOn, spec.first),
+           last: addDays(publishedOn, spec.last),
+           label: spec.label };
+};
+
+/**
+ * The rows kicking off inside the window. Board order preserved.
+ *
+ * Re-sorting here would become a second ranking competing with finderOrder's, and whichever
+ * won would be undocumented.
+ */
+export const inWindow = (rows = [], first = null, last = null, tz = FINDER_TZ) => {
+  if (!first || !last) return rows;
+  return rows.filter((r) => {
+    const day = londonDay(r?.next_fixture?.date, tz);
+    return day && day >= first && day <= last;
+  });
+};
+
 /** One row: flag, line, team, run, model price, kick-off. */
 export const finderRow = (r = {}, tz = FINDER_TZ) => {
   const run = runOf(r);
@@ -136,8 +217,13 @@ export const finderRow = (r = {}, tz = FINDER_TZ) => {
  * and a broken one are the same empty post otherwise.
  */
 export const buildFinder = ({ rows = [], site = "", max = FINDER_MAX_ROWS,
-                              minRun = FINDER_MIN_RUN, tz = FINDER_TZ } = {}) => {
-  const picked = finderOrder(rows, minRun).slice(0, Math.max(1, Number(max) || FINDER_MAX_ROWS));
+                              minRun = FINDER_MIN_RUN, tz = FINDER_TZ,
+                              first = null, last = null } = {}) => {
+  // Windowed BEFORE ordering and before the cap, so a drop shows the best rows of ITS days
+  // rather than the best twenty of the week trimmed down to whichever happen to fall in
+  // range. The latter silently posts three rows on a full weekend.
+  const picked = finderOrder(inWindow(rows, first, last, tz), minRun)
+    .slice(0, Math.max(1, Number(max) || FINDER_MAX_ROWS));
   if (!picked.length) return { text: "", n: 0 };
   const where = String(site || "").replace(/\/$/, "");
   const body = picked.map((r) => finderRow(r, tz)).join("\n");

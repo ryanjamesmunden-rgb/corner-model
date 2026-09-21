@@ -12,7 +12,8 @@
 //     labelled "Model price" and a quoted price in it is an offer nobody made.
 //   - A post over Telegram's 4,096 limit: HTTP 400 and nothing else.
 import {
-  buildFinder, eligible, finderOrder, finderRow, finderTime, streakFinder,
+  addDays, buildFinder, dropOn, eligible, finderOrder, finderRow, finderTime,
+  finderWindow, londonDay, streakFinder,
   FINDER_HEAD, FINDER_KEY, FINDER_MIN_RUN,
 } from "./streakFinder.js";
 import { TELEGRAM_MAX } from "./shareText.js";
@@ -173,5 +174,80 @@ describe("what Telegram will deliver", () => {
 
   test("a quiet board is no post at all", () => {
     expect(streakFinder({ rows: [], site: SITE })).toEqual({ text: "", n: 0 });
+  });
+});
+
+
+describe("when it goes out and what it covers", () => {
+  // Week of Mon 2026-09-21. Monday's drop takes the weekend; Thursday's takes the midweek.
+  const MON = "2026-09-21";
+  const THU = "2026-09-24";
+
+  test("Monday publishes the weekend, Thursday the midweek", () => {
+    expect(dropOn(MON)).toBe("weekend");
+    expect(dropOn(THU)).toBe("midweek");
+  });
+
+  test("no other day publishes", () => {
+    for (const d of ["2026-09-22", "2026-09-23", "2026-09-25", "2026-09-26", "2026-09-27"]) {
+      expect(dropOn(d)).toBeNull();
+    }
+  });
+
+  test("Monday's window is Friday to Monday", () => {
+    expect(finderWindow("weekend", MON))
+      .toEqual({ first: "2026-09-25", last: "2026-09-28", label: "Weekend" });
+  });
+
+  test("Thursday's window is Tuesday to Thursday", () => {
+    expect(finderWindow("midweek", THU))
+      .toEqual({ first: "2026-09-29", last: "2026-10-01", label: "Midweek" });
+  });
+
+  test("every day of the week belongs to exactly one drop", () => {
+    // A day covered twice is a fixture claimed twice; a day covered by neither is a night
+    // this site never had a view on. This is the whole reason the windows are what they are.
+    const w = finderWindow("weekend", MON);
+    const m = finderWindow("midweek", THU);
+    const days = [];
+    for (let d = w.first; d <= w.last; d = addDays(d, 1)) days.push(d);
+    for (let d = m.first; d <= m.last; d = addDays(d, 1)) days.push(d);
+    expect(days.length).toBe(7);
+    expect(new Set(days).size).toBe(7);
+    // Contiguous: Fri 25th through Thu 1st, no gap.
+    expect(days.sort()).toEqual([
+      "2026-09-25", "2026-09-26", "2026-09-27", "2026-09-28",
+      "2026-09-29", "2026-09-30", "2026-10-01",
+    ]);
+  });
+
+  test("a row outside the window does not reach the post", () => {
+    const w = finderWindow("weekend", MON);
+    const inside = row("Grimsby", "eng-l2", 7, 6, 3.79, "2026-09-26T14:00:00Z");
+    const outside = row("Elsewhere", "eng-l2", 7, 9, 3.79, "2026-09-30T14:00:00Z");
+    const { text, n } = buildFinder({ rows: [outside, inside], ...w });
+    expect(n).toBe(1);
+    expect(text).toContain("Grimsby");
+    expect(text).not.toContain("Elsewhere");
+  });
+
+  test("the window is applied before the cap, not after", () => {
+    // Trimming to twenty first and windowing second posts three rows on a full weekend.
+    const w = finderWindow("weekend", MON);
+    const far = Array.from({ length: 30 }, (_, i) =>
+      row(`Far ${i}`, "eng-pl", 9, 20, 5.0, "2026-09-30T14:00:00Z"));
+    const near = Array.from({ length: 5 }, (_, i) =>
+      row(`Near ${i}`, "eng-pl", 4, 6, 1.3, "2026-09-26T14:00:00Z"));
+    expect(buildFinder({ rows: [...far, ...near], max: 20, ...w }).n).toBe(5);
+  });
+
+  test("no window means no filtering, for an ad-hoc post", () => {
+    expect(buildFinder({ rows: SAMPLE }).n).toBe(SAMPLE.length);
+  });
+
+  test("a kick-off is placed by its London day, not its UTC one", () => {
+    // A 23:30 UTC Friday kick-off in Brazil is Saturday 00:30 in London, and the window is
+    // stated in London days — the same clock the post prints.
+    expect(londonDay("2026-09-25T23:30:00Z")).toBe("2026-09-26");
   });
 });

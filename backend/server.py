@@ -2182,6 +2182,7 @@ TOOLS_TOKEN = os.environ.get("TOOLS_TOKEN")
 TOOL_SCRIPTS = {"backfill_shots": "backfill_shots.py", "measure_features": "measure_features.py",
                 "measure_chase_board": "measure_chase_board.py",
                 "measure_calibration": "measure_calibration.py",
+                "audit_settlement": "audit_settlement.py",
                 "backfill_fh": "backfill_fh.py",
                 "backfill_goal_events": "backfill_goal_events.py",
                 "probe_corner_halves": "probe_corner_halves.py",
@@ -2196,6 +2197,7 @@ TOOL_SCRIPTS = {"backfill_shots": "backfill_shots.py", "measure_features": "meas
                 "measure_game_state": "measure_game_state.py"}
 TOOL_COOLDOWN = {"backfill_shots": 600, "measure_features": 120,
                  "measure_chase_board": 120, "measure_calibration": 120,
+                 "audit_settlement": 120,
                  "backfill_fh": 120,
                  "backfill_goal_events": 600,
                  "probe_corner_halves": 600,
@@ -2221,6 +2223,11 @@ MEASURE_MODES = {
     # selection — so an overconfident model and an unlucky 44 games can be told apart,
     # which the ledger alone cannot do.
     "calibration": ("measure_calibration", [], True),
+    # WAS EACH SETTLED PICK GRADED AGAINST THE RIGHT TEAM. Re-derives every pick's side
+    # from TEAM IDS, which is an independent path from settlement._pick_side's name
+    # matching — so it can catch a pick recorded with the opponent's corner count, which
+    # settles cleanly and looks like a confident loss. Reads only; it never writes.
+    "settlement_audit": ("audit_settlement", [], True),
     "backfill_fh": ("backfill_fh", [], False),
     # WHICH DISTRIBUTION SHOULD PRICE A MATCH TOTAL. Team lines use a Negative Binomial
     # chosen on a recorded Brier; match totals use a Poisson that nothing in the repo

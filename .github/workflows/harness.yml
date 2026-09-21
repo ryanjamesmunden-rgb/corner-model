@@ -15,9 +15,11 @@
 # because a measurement worth running is worth keeping — a GitHub issue. A harness result
 # that lives only in a workflow log is one nobody reads twice.
 #
-# COST. `totals` and `state_bias` touch the database only and cost nothing. `goal_scores`
-# spends API credits — roughly three calls per managed league — and is here because
-# state_bias cannot bucket anything without it. It is a separate choice for that reason.
+# COST. Everything on /tools/measure touches the database only and costs nothing — that is
+# that endpoint's whole promise. Two options here are not measurements and DO spend API
+# credits, so they have their own endpoints and are named as such in the list below:
+# `goal_scores` (~3 calls per managed league, and state_bias cannot bucket anything
+# without it) and `country_leagues` (1 call).
 name: Run a harness
 
 on:
@@ -38,6 +40,12 @@ on:
           - settlement_audit  # was each settled pick graded against the right team
           - pick_line_audit   # was lambda right for the picks actually published
           - sweep           # model weight sweep
+          - country_leagues # SPENDS CREDITS (1 call) — what competitions exist for a country
+      country:
+        description: "Country for `country_leagues` only, e.g. World, Norway. Ignored otherwise"
+        required: false
+        type: string
+        default: "World"
       file_issue:
         description: "Keep the result as a GitHub issue"
         required: false
@@ -76,13 +84,33 @@ jobs:
         id: start
         run: |
           H='${{ inputs.harness }}'
-          # goal_scores is the one that is not a measurement, so it is the one that is not
-          # on /tools/measure — that endpoint's promise is that everything it offers is
-          # free, and this spends credits.
-          if [ "$H" = "goal_scores" ]; then
+          # TWO OF THESE ARE NOT MEASUREMENTS, which is exactly why they are not on
+          # /tools/measure: that endpoint's promise is that everything it offers is free,
+          # and both of these spend API credits. Each has its own endpoint so the promise
+          # stays true, and each says so in its option comment above.
+          case "$H" in
+          goal_scores)
             URL="$BACKEND/api/tools/backfill-goal-scores?token=$TOOLS_TOKEN"
-            SCRIPT="backfill_goals"
-          else
+            SCRIPT="backfill_goals" ;;
+          country_leagues)
+            # One call. Lists every competition the provider files under a country, with
+            # ids — how you find the right id after a MISMATCH, and how you establish a
+            # competition exists AND carries corners before spending 250 statistics calls
+            # discovering it does not.
+            #
+            # COUNTRY COMES THROUGH env, NOT THROUGH A TEMPLATE EXPRESSION. It is the
+            # only free-text input this workflow takes, and an expression spliced into a
+            # run: block is executed as shell by whoever dispatches it. The backend
+            # validates the name again on arrival.
+            #
+            # And do not write that expression syntax out in a comment here either: it is
+            # evaluated everywhere in this file, comments in run: blocks included, so an
+            # empty one fails the whole workflow to parse with "An expression was
+            # expected" — which is how this comment got written twice.
+            C=$(python3 -c 'import sys,urllib.parse;print(urllib.parse.quote(sys.argv[1]))' "$COUNTRY")
+            URL="$BACKEND/api/tools/probe-leagues?token=$TOOLS_TOKEN&country=$C"
+            SCRIPT="probe_leagues" ;;
+          *)
             # THE OPTION NAME IS THE MODE. It goes into the URL as `mode=$H`, so every
             # choice above must be spelled exactly as its key in MEASURE_MODES — the case
             # below only picks the SCRIPT to poll for the output. Naming an option for
@@ -100,8 +128,8 @@ jobs:
               # harness with its own script that is not added above polls this script,
               # finds someone else's last run, and reports THAT output as its result.
               *)           SCRIPT="measure_features" ;;
-            esac
-          fi
+            esac ;;
+          esac
           echo "script=$SCRIPT" >> "$GITHUB_OUTPUT"
 
           code=$(curl -s -o start.json -w '%{http_code}' --max-time 120 -X POST "$URL" || true)
@@ -118,6 +146,7 @@ jobs:
         env:
           BACKEND: ${{ vars.BACKEND_URL || 'https://corner-model.onrender.com' }}
           TOOLS_TOKEN: ${{ secrets.TOOLS_TOKEN }}
+          COUNTRY: ${{ inputs.country }}
 
       - name: Wait for it, then read what it said
         id: result

@@ -51,7 +51,21 @@ const WEEKDAY = arg("weekday", null);
 const planned = WEEKDAY ? boardForDay(WEEKDAY) : null;
 const BOARD = arg("board", "streaks") === "auto" ? (planned?.board ?? "streaks") : arg("board", "streaks");
 const TAG = arg("tag", null);
-const DAYS = Number(arg("days", null) ?? planned?.days ?? 3);
+// THE FINDER ASKS FOR ITS OWN WINDOW, because the fetch happens before any board runs.
+//
+// FOUND ON THE FIRST REAL RUN, and it is the quietest failure in this file: at the default
+// of 3 the backend returns streaks kicking off within three days, the finder then filters
+// those to its Friday-to-Monday window, and the result is an empty post on a board full of
+// runs — reported as "no streaks clear the bar", which is indistinguishable from a genuinely
+// quiet week. A window the CALLER applies has to be reflected in what is ASKED FOR.
+//
+// 8 is the furthest any drop reaches (+7) plus today. The limit goes up with it: over eight
+// days the backend's own top 60 can be spent on games outside the window before the
+// finder's twenty are reached.
+const FINDER_DAYS = 8;
+const FINDER_LIMIT = 200;
+const DEFAULT_DAYS = BOARD === "finder" ? FINDER_DAYS : (planned?.days ?? 3);
+const DAYS = Number(arg("days", null) ?? DEFAULT_DAYS);
 const OUT = arg("out", null);
 // The post on its own, as JSON, for a caller that is going to deliver it somewhere other
 // than a GitHub issue — the daily job sends it to Telegram with a one-tap post button.
@@ -310,7 +324,8 @@ const BOARDS = BOARD === "menu" ? "streaks,mismatches,chase,value"
   // between a post and a timeout.
   : BOARD === "finder" ? "streaks"
   : "streaks,fixtures";
-const data = await get(`/api/share/rows?days=${DAYS}&limit=60&boards=${BOARDS}`
+const data = await get(`/api/share/rows?days=${DAYS}`
+  + `&limit=${BOARD === "finder" ? FINDER_LIMIT : 60}&boards=${BOARDS}`
   + `&token=${encodeURIComponent(TOKEN)}`, "backend");
 if (!data) fail("backend has no /api/share/rows — it is running an older build");
 

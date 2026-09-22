@@ -36,6 +36,16 @@ import { TELEGRAM_MAX } from "./shareText.js";
 export const FINDER_TZ = "Europe/London";
 /** A run of one or two is not a streak, and "2 in a row" reads as a mistake even when true. */
 export const FINDER_MIN_RUN = 3;
+/**
+ * The lowest line worth printing.
+ *
+ * 3+ IS TOO EASY TO BE NEWS. A side fails to win three corners in roughly one match in
+ * five, so a long run at 3+ is mostly a statement that the team turns up — Plymouth were
+ * 18 from 18 and Salford 17 from 17 on the first real board, which is exactly the point:
+ * they top the run column while saying the least, and at the bottom of a list sorted by
+ * line they are the last thing the reader sees. The prices say it too, at 1.16 and 1.44.
+ */
+export const FINDER_MIN_LINE = 4;
 export const FINDER_MAX_ROWS = 20;
 export const FINDER_HEAD = "🔥 Corner streak finder (highest stats overall)";
 export const FINDER_KEY = "🚩 Line & team / Streak / Model price / Date";
@@ -89,9 +99,10 @@ const plus = (line) => `${Math.ceil(Number(line))}+`;
  * A KICK-OFF IS REQUIRED because the date column is half the post's usefulness, and a row
  * with a blank there is a team the reader cannot act on.
  */
-export const eligible = (r = {}, minRun = FINDER_MIN_RUN) =>
+export const eligible = (r = {}, minRun = FINDER_MIN_RUN, minLine = FINDER_MIN_LINE) =>
   (r.direction || "over") === "over"
   && num(r.line) !== null
+  && num(r.line) >= minLine
   && runOf(r) >= minRun
   && !!r.next_fixture?.date;
 
@@ -108,8 +119,8 @@ export const eligible = (r = {}, minRun = FINDER_MIN_RUN) =>
  * shuffled control and could not separate them — so inventing one here would be dressing
  * the backend's arbitrary order up as a judgement.
  */
-export const finderOrder = (rows = [], minRun = FINDER_MIN_RUN) =>
-  rows.filter((r) => eligible(r, minRun))
+export const finderOrder = (rows = [], minRun = FINDER_MIN_RUN, minLine = FINDER_MIN_LINE) =>
+  rows.filter((r) => eligible(r, minRun, minLine))
     .sort((a, b) => (num(b.line) - num(a.line)) || (runOf(b) - runOf(a)));
 
 // ---------------------------------------------------------------------------------------
@@ -237,12 +248,12 @@ export const finderRow = (r = {}, tz = FINDER_TZ) => {
  * and a broken one are the same empty post otherwise.
  */
 export const buildFinder = ({ rows = [], site = "", max = FINDER_MAX_ROWS,
-                              minRun = FINDER_MIN_RUN, tz = FINDER_TZ,
-                              first = null, last = null } = {}) => {
+                              minRun = FINDER_MIN_RUN, minLine = FINDER_MIN_LINE,
+                              tz = FINDER_TZ, first = null, last = null } = {}) => {
   // Windowed BEFORE ordering and before the cap, so a drop shows the best rows of ITS days
   // rather than the best twenty of the week trimmed down to whichever happen to fall in
   // range. The latter silently posts three rows on a full weekend.
-  const picked = finderOrder(inWindow(rows, first, last, tz), minRun)
+  const picked = finderOrder(inWindow(rows, first, last, tz), minRun, minLine)
     .slice(0, Math.max(1, Number(max) || FINDER_MAX_ROWS));
   if (!picked.length) return { text: "", n: 0 };
   const where = String(site || "").replace(/\/$/, "");

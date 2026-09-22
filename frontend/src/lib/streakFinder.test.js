@@ -14,7 +14,7 @@
 import {
   addDays, buildFinder, dropOn, eligible, finderOrder, finderRow, finderTime,
   finderWindow, liveDrop, londonDay, streakFinder,
-  FINDER_HEAD, FINDER_KEY, FINDER_MIN_RUN,
+  FINDER_HEAD, FINDER_KEY, FINDER_MIN_LINE, FINDER_MIN_RUN,
 } from "./streakFinder.js";
 import { TELEGRAM_MAX } from "./shareText.js";
 
@@ -112,6 +112,32 @@ describe("what may not appear", () => {
                       { direction: "under", line_label: "under 9" });
     expect(eligible(under)).toBe(false);
     expect(buildFinder({ rows: [under] }).n).toBe(0);
+  });
+
+  test("3+ is too easy to be news", () => {
+    // A side fails to win three corners in about one match in five, so a long run at 3+
+    // mostly says the team turned up — and it tops the run column while saying the least.
+    // The first real board had Plymouth 18/18 and Salford 17/17 at 1.16 and 1.44.
+    const easy = row("Plymouth", "eng-ch", 3, 18, 1.16, "2026-09-26T14:00:00Z");
+    expect(eligible(easy)).toBe(false);
+    expect(buildFinder({ rows: [easy] }).n).toBe(0);
+  });
+
+  test("the floor is 4+, and 4+ itself is kept", () => {
+    expect(FINDER_MIN_LINE).toBe(4);
+    expect(eligible(row("X", "eng-pl", 4, 9, 1.2, "2026-09-26T14:00:00Z"))).toBe(true);
+  });
+
+  test("a longer run at 3+ cannot displace a shorter one at 4+", () => {
+    // The floor is absolute, not a tiebreak — an 18-game run is exactly the row that
+    // would win on any ordering that let it in at all.
+    const { text, n } = buildFinder({ rows: [
+      row("Plymouth", "eng-ch", 3, 18, 1.16, "2026-09-26T14:00:00Z"),
+      row("Walsall", "eng-l2", 4, 4, 1.36, "2026-09-26T14:00:00Z"),
+    ]});
+    expect(n).toBe(1);
+    expect(text).toContain("Walsall");
+    expect(text).not.toContain("Plymouth");
   });
 
   test("a run of two is not a streak", () => {

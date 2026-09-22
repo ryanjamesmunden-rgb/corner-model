@@ -2184,6 +2184,7 @@ TOOL_SCRIPTS = {"backfill_shots": "backfill_shots.py", "measure_features": "meas
                 "measure_calibration": "measure_calibration.py",
                 "audit_settlement": "audit_settlement.py",
                 "audit_pick_lines": "audit_pick_lines.py",
+                "watchlist": "watchlist.py",
                 "backfill_fh": "backfill_fh.py",
                 "backfill_goal_events": "backfill_goal_events.py",
                 "probe_corner_halves": "probe_corner_halves.py",
@@ -2199,6 +2200,7 @@ TOOL_SCRIPTS = {"backfill_shots": "backfill_shots.py", "measure_features": "meas
 TOOL_COOLDOWN = {"backfill_shots": 600, "measure_features": 120,
                  "measure_chase_board": 120, "measure_calibration": 120,
                  "audit_settlement": 120, "audit_pick_lines": 120,
+                 "watchlist": 120,
                  "backfill_fh": 120,
                  "backfill_goal_events": 600,
                  "probe_corner_halves": 600,
@@ -2235,6 +2237,12 @@ MEASURE_MODES = {
     # percentage points, which is what distinguishes a bad input from a bad line
     # rule. Reads db.picks only.
     "pick_line_audit": ("audit_pick_lines", [], True),
+    # WHICH FIXTURES TO WATCH WHEN FOOTBALL COMES BACK. Looks past an international
+    # break and ranks the restart's games by mismatch — not by streak, which is one
+    # result from ending and so the wrong signal at three weeks' range. Produces a
+    # watchlist for setting price alerts, never a card: nothing in the window is
+    # priced yet, which is the whole premise.
+    "watchlist": ("watchlist", [], True),
     "backfill_fh": ("backfill_fh", [], False),
     # WHICH DISTRIBUTION SHOULD PRICE A MATCH TOTAL. Team lines use a Negative Binomial
     # chosen on a recorded Brier; match totals use a Poisson that nothing in the repo

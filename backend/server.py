@@ -5419,6 +5419,12 @@ async def projections(days: int = 7, league_id: Optional[str] = None,
     if sort not in PROJECTION_SORTS:
         raise HTTPException(status_code=400,
                             detail=f"sort must be one of: {', '.join(PROJECTION_SORTS)}")
+    # CLAMPED, WHICH IT WAS NOT. `days` went straight into _fixture_projections, which
+    # walks every team and every fixture in the window — so `?days=3650` was an open
+    # invitation to scan the whole collection on a free-tier instance. The fixture board
+    # has enforced this ceiling since it was written; this endpoint reaches the same
+    # function and never did. Found when the Projected page gained 21- and 28-day options.
+    days = max(1, min(int(days), BOARD_MAX_DAYS))
     rows = await _fixture_projections(days, league_id)
     keep = [r for r in rows.values()
             if min(r["home_games"], r["away_games"]) >= max(0, int(min_games))]

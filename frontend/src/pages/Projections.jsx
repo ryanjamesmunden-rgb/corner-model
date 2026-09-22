@@ -30,7 +30,18 @@ const SORTS = [
     hint: "The projection over what this league normally produces. Is it busy FOR ITS LEAGUE?" },
 ];
 
-const DAYS = [3, 7, 14];
+// 21 and 28 ARE FOR LOOKING PAST AN INTERNATIONAL BREAK. A break empties the board for
+// ten days, and the question then is which games to watch for when the leagues come back —
+// which cannot be answered inside a fortnight's window.
+//
+// THEY ARE CUMULATIVE, NOT A SLICE. "28 days" includes everything from tomorrow, so the
+// restart week is read off the dates rather than filtered to. Sort by `vs league par` for
+// this: at 28 days a raw-total sort is mostly a ranking of which competitions play soonest.
+//
+// Nothing here is priced. A projection four weeks out is a lead to set a price alert on,
+// not a bet — and more rounds get played before then, so the streak half of any row will
+// have moved even where the matchup half has not.
+const DAYS = [3, 7, 14, 21, 28];
 
 // A FREE ACCOUNT IS THE PRICE OF LOOKING. This board is the model's projection for games
 // that have not been played, which is the product rather than an advert for it — so a

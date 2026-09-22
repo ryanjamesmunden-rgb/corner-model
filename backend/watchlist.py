@@ -36,9 +36,15 @@ a fact about the calendar rather than about this data. A fixture-count histogram
 printed for the whole run-up so the gap is visible and the window can be corrected in one
 re-run rather than guessed at twice.
 
-SAMPLE SIZES ARE PRINTED ON EVERY ROW. A fixture whose sides have eight games between
-them projects as confidently as one with sixty and means far less, and at this range the
-newly promoted and the recently synced are exactly the rows that look most exciting.
+WELL-SAMPLED FIXTURES RANK FIRST; THIN ONES HAVE THEIR OWN SECTION UNDERNEATH. Marking
+them in place was the first design and the first real run showed it was wrong for the job:
+a five-game average is EXTREME by construction, so thin rows do not merely appear in the
+ranking, they lead it. Four of the top ten were thin, one of them asserting an opponent
+who concedes 12.0 corners per away game over eight games — not a rate, a small sample —
+and the fixtures actually worth watching were pushed off the end of the list.
+
+They are still printed, because a silent omission reads as the list being broken rather
+than as the row being weak. They are just no longer allowed to crowd out the rest.
 
 Reads the database only. No API calls, no writes.
 
@@ -63,9 +69,19 @@ load_dotenv(ROOT / ".env")
 DEFAULT_FROM = 14
 DEFAULT_TO = 28
 DEFAULT_TOP = 15
-# Below this the projection is arithmetic on a handful of games. Not a filter — the row is
-# still printed, marked — because at this range a thin side is often the eye-catching one.
-THIN_GAMES = 8
+# Below this the projection is arithmetic on a handful of games.
+#
+# WELL-SAMPLED ROWS RANK FIRST, AND THIN ONES GO IN THEIR OWN SECTION. Marking them in
+# place was the first design and it was wrong for the job: a five-game average is EXTREME
+# by construction, so thin rows do not merely appear in the ranking, they dominate the top
+# of it. The first real run put four of them in the top ten, and one claimed an opponent
+# conceding 12.0 corners per away game over eight games — which is not a rate, it is a
+# small sample. That pushed the usable fixtures off the end of a fifteen-row list.
+#
+# They are still PRINTED, below, because the original reason for not dropping them holds:
+# at this range a newly promoted side is often the game a reader expects to see, and a
+# silent omission reads as the list being broken rather than as the row being weak.
+THIN_GAMES = 10
 
 
 def day_of(iso):
@@ -94,6 +110,12 @@ def rank(rows):
     """Fixtures carrying at least one mismatch, strongest projection first."""
     return sorted([r for r in rows if best_angle(r)],
                   key=lambda r: r.get("corner_edge") or 0, reverse=True)
+
+
+def split_by_sample(rows):
+    """(well_sampled, thin) — both ranked, kept apart. See THIN_GAMES."""
+    ranked = rank(rows)
+    return [r for r in ranked if not thin(r)], [r for r in ranked if thin(r)]
 
 
 def histogram(rows):
@@ -130,24 +152,37 @@ async def run(days_from=DEFAULT_FROM, days_to=DEFAULT_TO, top=DEFAULT_TOP, leagu
         print("with --from / --to.")
         return
 
-    ranked = rank(window)
-    if not ranked:
+    solid, thin_rows = split_by_sample(window)
+    if not solid and not thin_rows:
         print("\nFixtures are on file but none carries a mismatch. That is a real answer:")
         print("no side in the window is projecting unusually against its opponent.")
         return
 
-    print(f"\ntop {min(top, len(ranked))} by projected corners against the league's own average\n")
-    for i, r in enumerate(ranked[:top], 1):
-        a = best_angle(r)
-        games = f"{r.get('home_games')}/{r.get('away_games')} games"
-        flag = "  ⚠ THIN" if thin(r) else ""
-        print(f"{i:2}. {day_of(r['date'])}  {r['home']} v {r['away']}   [{r.get('league_name')}]")
-        print(f"     projected {r.get('lambda_total')} corners vs league {r.get('league_avg_total')}"
-              f"  (edge {r.get('corner_edge')})   {games}{flag}")
-        print(f"     watch: {a.get('team')} {a.get('label')}"
-              f"  — wins {a.get('team_for')} {'home' if a.get('team') == r['home'] else 'away'},"
-              f" opponent concedes {a.get('opp_conceded')}"
-              f"  · model {a.get('prob')}% (fair {a.get('fair_odds')})")
+    def show(rows, start=1):
+        for i, r in enumerate(rows, start):
+            a = best_angle(r)
+            games = f"{r.get('home_games')}/{r.get('away_games')} games"
+            print(f"{i:2}. {day_of(r['date'])}  {r['home']} v {r['away']}   [{r.get('league_name')}]")
+            print(f"     projected {r.get('lambda_total')} corners vs league "
+                  f"{r.get('league_avg_total')}  (edge {r.get('corner_edge')})   {games}")
+            print(f"     watch: {a.get('team')} {a.get('label')}"
+                  f"  — wins {a.get('team_for')} {'home' if a.get('team') == r['home'] else 'away'},"
+                  f" opponent concedes {a.get('opp_conceded')}"
+                  f"  · model {a.get('prob')}% (fair {a.get('fair_odds')})")
+
+    print(f"\ntop {min(top, len(solid))} by projected corners against the league's own average")
+    print(f"(both sides have {THIN_GAMES}+ games on file)\n")
+    if solid:
+        show(solid[:top])
+    else:
+        print("  None. Every mismatch in this window rests on a thin sample — see below.")
+
+    if thin_rows:
+        print(f"\n{'-' * 78}")
+        print(f"THIN — fewer than {THIN_GAMES} games behind one side. Listed so nothing is")
+        print("missing, ranked below the rest because a short sample produces EXTREME")
+        print("averages: these rows do not merely appear in a ranking, they lead it.\n")
+        show(thin_rows[:max(3, top // 3)])
 
     print(f"\n{'=' * 78}")
     print("HOW TO USE IT. These are fixtures to set a price alert on, not selections.")
@@ -155,10 +190,8 @@ async def run(days_from=DEFAULT_FROM, days_to=DEFAULT_TO, top=DEFAULT_TOP, leagu
     print("more rounds will be played before then — so re-run this in the week itself and")
     print("bet off THAT, not off this. What this list is for is knowing where to look when")
     print("the odds drop, which is the part that cannot be done at the last minute.")
-    if any(thin(r) for r in ranked[:top]):
-        print("\nRows marked THIN have fewer than "
-              f"{THIN_GAMES} games behind one side. They project as confidently as any other")
-        print("row and mean considerably less.")
+    print(f"\n{len(solid)} well-sampled and {len(thin_rows)} thin fixtures carry a mismatch "
+          f"in this window.")
 
 
 def main():

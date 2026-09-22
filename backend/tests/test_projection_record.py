@@ -139,3 +139,46 @@ class TestTheWholeRecord:
     def test_an_empty_record_does_not_divide_by_zero(self):
         s = summarise([])
         assert s["games"] == 0 and s["bias"] is None and s["mean_abs_error"] is None
+
+
+# ---------------------------------------------------------------------------
+# The window the Projected page may ask for
+# ---------------------------------------------------------------------------
+# 21 and 28 exist so an international break can be looked past: the break empties the board
+# for ten days, and "which games to watch when it comes back" cannot be answered inside a
+# fortnight. They are cumulative windows, not slices — the restart week is read off the
+# dates.
+#
+# THE CLAMP IS THE POINT OF THIS BLOCK. `days` went straight into _fixture_projections,
+# which walks every team and every fixture in the window, so `?days=3650` scanned the whole
+# collection on a free-tier instance. The fixture board has enforced a ceiling since it was
+# written and this endpoint reached the same function without one.
+
+def test_the_page_offers_a_window_past_an_international_break():
+    import json
+    import pathlib
+    src = pathlib.Path(__file__).resolve().parents[2] / "frontend/src/pages/Projections.jsx"
+    line = next(l for l in src.read_text().splitlines() if l.startswith("const DAYS"))
+    days = json.loads(line.split("=", 1)[1].strip().rstrip(";"))
+    assert max(days) >= 21, "no window reaches past a ten-day break"
+
+
+def test_every_offered_window_survives_the_clamp():
+    """A day option the backend would silently shrink is a page that lies about its window.
+
+    The picker would read 28 while the board answered 30-day-capped — or worse, a future
+    option beyond the cap would show fewer games than the button promised, with nothing
+    saying so.
+    """
+    import json
+    import os
+    import pathlib
+    # This module tests pure grading and so never imports server; the clamp lives there.
+    os.environ.setdefault("MONGO_URL", "mongodb://localhost:27017")
+    os.environ.setdefault("DB_NAME", "test_corner_model")
+    import server
+    src = pathlib.Path(__file__).resolve().parents[2] / "frontend/src/pages/Projections.jsx"
+    line = next(l for l in src.read_text().splitlines() if l.startswith("const DAYS"))
+    days = json.loads(line.split("=", 1)[1].strip().rstrip(";"))
+    for d in days:
+        assert d <= server.BOARD_MAX_DAYS, f"{d}-day option exceeds BOARD_MAX_DAYS"

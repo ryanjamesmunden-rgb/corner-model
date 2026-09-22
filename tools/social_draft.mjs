@@ -37,6 +37,7 @@ const { fitToPost, weightedLength, URL_WEIGHT, X_SHARE_ROWS } = await import(res
 const { boardForDay } = await import(resolve(LIB, "postPlan.js"));
 const { slipFrom, slipPost, dayKey } = await import(resolve(LIB, "dailySlip.js"));
 const { slateFrom, slatePost } = await import(resolve(LIB, "chaseSlate.js"));
+const { streakFinder, liveDrop, finderWindow } = await import(resolve(LIB, "streakFinder.js"));
 
 const arg = (name, fallback = null) => {
   const i = process.argv.indexOf(`--${name}`);
@@ -50,7 +51,21 @@ const WEEKDAY = arg("weekday", null);
 const planned = WEEKDAY ? boardForDay(WEEKDAY) : null;
 const BOARD = arg("board", "streaks") === "auto" ? (planned?.board ?? "streaks") : arg("board", "streaks");
 const TAG = arg("tag", null);
-const DAYS = Number(arg("days", null) ?? planned?.days ?? 3);
+// THE FINDER ASKS FOR ITS OWN WINDOW, because the fetch happens before any board runs.
+//
+// FOUND ON THE FIRST REAL RUN, and it is the quietest failure in this file: at the default
+// of 3 the backend returns streaks kicking off within three days, the finder then filters
+// those to its Friday-to-Monday window, and the result is an empty post on a board full of
+// runs — reported as "no streaks clear the bar", which is indistinguishable from a genuinely
+// quiet week. A window the CALLER applies has to be reflected in what is ASKED FOR.
+//
+// 8 is the furthest any drop reaches (+7) plus today. The limit goes up with it: over eight
+// days the backend's own top 60 can be spent on games outside the window before the
+// finder's twenty are reached.
+const FINDER_DAYS = 8;
+const FINDER_LIMIT = 200;
+const DEFAULT_DAYS = BOARD === "finder" ? FINDER_DAYS : (planned?.days ?? 3);
+const DAYS = Number(arg("days", null) ?? DEFAULT_DAYS);
 const OUT = arg("out", null);
 // The post on its own, as JSON, for a caller that is going to deliver it somewhere other
 // than a GitHub issue — the daily job sends it to Telegram with a one-tap post button.
@@ -304,8 +319,13 @@ ${card}
 // never reads — on a free-tier backend that is the difference between a post and a timeout.
 const BOARDS = BOARD === "menu" ? "streaks,mismatches,chase,value"
   : BOARD === "chase" ? "chase"
+  // The finder is streaks and nothing else. Asking for `fixtures` alongside would make it
+  // pay for a board it never reads, and on a free-tier backend that is the difference
+  // between a post and a timeout.
+  : BOARD === "finder" ? "streaks"
   : "streaks,fixtures";
-const data = await get(`/api/share/rows?days=${DAYS}&limit=60&boards=${BOARDS}`
+const data = await get(`/api/share/rows?days=${DAYS}`
+  + `&limit=${BOARD === "finder" ? FINDER_LIMIT : 60}&boards=${BOARDS}`
   + `&token=${encodeURIComponent(TOKEN)}`, "backend");
 if (!data) fail("backend has no /api/share/rows — it is running an older build");
 
@@ -374,6 +394,51 @@ ${slate.priced} of ${slate.n} rows carry a real price; the rest show the model's
      note: `${slate.n} chase spots on ${day}`
        + (slate.priced ? `, ${slate.priced} priced` : ", none priced")
        + (rec ? ` · section ${rec.won}/${rec.settled}` : "")
+       + (data.data_age_hours != null ? ` · data ${data.data_age_hours}h old` : "") });
+  process.exit(0);
+}
+
+// ---- the streak finder: one line per team, sorted by line then by run.
+//
+// TWO DROPS A WEEK, AND EACH COVERS DAYS THE OTHER DOES NOT. Monday posts Friday to
+// Monday; Thursday posts Tuesday to Thursday. Every day of the week belongs to exactly one
+// of them — a day covered twice is a fixture claimed twice, and a day covered by neither is
+// a night this channel never had a view on. The arithmetic lives in streakFinder.js so the
+// windows cannot drift from the tests that check they tile the week.
+//
+// THE WINDOW IS TAKEN FROM THE DROP IN FORCE, WALKING BACK. Fired by hand on a Wednesday
+// this carries Monday's weekend list, which is the one the channel is already expecting —
+// not Thursday's midweek, for games that have not been selected yet. `--drop` overrides it
+// for a deliberate off-schedule post.
+//
+// IT CARRIES MODEL PRICES, WHICH IS WHY IT CAN GO OUT DAYS AHEAD. A fair price exists the
+// moment the fixture does, so this post does not wait for a book to put the game up — which
+// is the whole point of a list you read to know where to look when the odds drop.
+if (BOARD === "finder") {
+  const today = TAG || dayKey();
+  const live = liveDrop(today);
+  const drop = arg("drop", null) || live?.drop;
+  const publishedOn = arg("drop", null) ? today : live?.publishedOn;
+  const w = finderWindow(drop, publishedOn);
+  if (!w) fail(`no such drop ${drop} — expected weekend or midweek`);
+  const built = streakFinder({ rows: data.streaks || [], site: SITE,
+                               first: w.first, last: w.last,
+                               max: Number(arg("rows", "20")) });
+  // Not a failure. A window with no qualifying run is a quiet week, and the honest answer
+  // is no post — the same card on an empty board teaches the reader to skim the next one.
+  if (!built.text) {
+    skip(`no streaks of ${w.first} to ${w.last} clear the bar — nothing worth posting`);
+  }
+  emit(`${w.label} streak finder — ${built.n} rows, ${w.first} to ${w.last}.
+
+\`\`\`
+${built.text}
+\`\`\`
+
+Model prices, not offers: these games are days away and no book has them up yet.
+`, { empty: false, board: "finder", post: built.text, intent: "",
+     weight: built.text.length, full: built.text,
+     note: `${built.n} streak rows for ${w.label.toLowerCase()} (${w.first} to ${w.last})`
        + (data.data_age_hours != null ? ` · data ${data.data_age_hours}h old` : "") });
   process.exit(0);
 }

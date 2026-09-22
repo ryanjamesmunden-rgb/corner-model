@@ -13,8 +13,8 @@
 //   - A post over Telegram's 4,096 limit: HTTP 400 and nothing else.
 import {
   addDays, buildFinder, dropOn, eligible, finderOrder, finderRow, finderTime,
-  finderWindow, londonDay, streakFinder,
-  FINDER_HEAD, FINDER_KEY, FINDER_MIN_RUN,
+  finderWindow, liveDrop, londonDay, streakFinder,
+  FINDER_HEAD, FINDER_KEY, FINDER_MIN_LINE, FINDER_MIN_RUN,
 } from "./streakFinder.js";
 import { TELEGRAM_MAX } from "./shareText.js";
 
@@ -112,6 +112,32 @@ describe("what may not appear", () => {
                       { direction: "under", line_label: "under 9" });
     expect(eligible(under)).toBe(false);
     expect(buildFinder({ rows: [under] }).n).toBe(0);
+  });
+
+  test("3+ is too easy to be news", () => {
+    // A side fails to win three corners in about one match in five, so a long run at 3+
+    // mostly says the team turned up — and it tops the run column while saying the least.
+    // The first real board had Plymouth 18/18 and Salford 17/17 at 1.16 and 1.44.
+    const easy = row("Plymouth", "eng-ch", 3, 18, 1.16, "2026-09-26T14:00:00Z");
+    expect(eligible(easy)).toBe(false);
+    expect(buildFinder({ rows: [easy] }).n).toBe(0);
+  });
+
+  test("the floor is 4+, and 4+ itself is kept", () => {
+    expect(FINDER_MIN_LINE).toBe(4);
+    expect(eligible(row("X", "eng-pl", 4, 9, 1.2, "2026-09-26T14:00:00Z"))).toBe(true);
+  });
+
+  test("a longer run at 3+ cannot displace a shorter one at 4+", () => {
+    // The floor is absolute, not a tiebreak — an 18-game run is exactly the row that
+    // would win on any ordering that let it in at all.
+    const { text, n } = buildFinder({ rows: [
+      row("Plymouth", "eng-ch", 3, 18, 1.16, "2026-09-26T14:00:00Z"),
+      row("Walsall", "eng-l2", 4, 4, 1.36, "2026-09-26T14:00:00Z"),
+    ]});
+    expect(n).toBe(1);
+    expect(text).toContain("Walsall");
+    expect(text).not.toContain("Plymouth");
   });
 
   test("a run of two is not a streak", () => {
@@ -243,6 +269,27 @@ describe("when it goes out and what it covers", () => {
 
   test("no window means no filtering, for an ad-hoc post", () => {
     expect(buildFinder({ rows: SAMPLE }).n).toBe(SAMPLE.length);
+  });
+
+  test("on a publishing day, that day's drop is the live one", () => {
+    expect(liveDrop(MON)).toEqual({ drop: "weekend", publishedOn: MON });
+    expect(liveDrop(THU)).toEqual({ drop: "midweek", publishedOn: THU });
+  });
+
+  test("between drops it walks BACK to the last one, never forward", () => {
+    // On a Tuesday the live list is Monday's weekend. Looking forward would hand the
+    // reader Thursday's midweek for games that have not been selected yet — and it is
+    // what makes an off-schedule send carry the window the channel is already expecting.
+    expect(liveDrop("2026-09-22")).toEqual({ drop: "weekend", publishedOn: MON });
+    expect(liveDrop("2026-09-23")).toEqual({ drop: "weekend", publishedOn: MON });
+    expect(liveDrop("2026-09-25")).toEqual({ drop: "midweek", publishedOn: THU });
+    expect(liveDrop("2026-09-27")).toEqual({ drop: "midweek", publishedOn: THU });
+  });
+
+  test("every day of the week has a live drop", () => {
+    for (let i = 0; i < 7; i += 1) {
+      expect(liveDrop(addDays(MON, i))).not.toBeNull();
+    }
   });
 
   test("a kick-off is placed by its London day, not its UTC one", () => {

@@ -95,7 +95,7 @@ on:
         description: "Which board (blank = whatever this weekday calls for)"
         required: false
         type: choice
-        options: ["", "picks", "game", "streaks", "fixtures", "results", "card", "menu"]
+        options: ["", "picks", "game", "streaks", "fixtures", "results", "card", "menu", "finder"]
       count:
         # HOW MANY GAMES ON THE CARD. Blank uses angle_of_day.COUNT, which is what the
         # schedule publishes and what the site shows; the backend caps it at 10.
@@ -171,6 +171,15 @@ jobs:
             3) echo "card=weekend" >> "$GITHUB_OUTPUT"; echo "carddays=6" >> "$GITHUB_OUTPUT" ;;
             *) echo "card=" >> "$GITHUB_OUTPUT"; echo "carddays=0" >> "$GITHUB_OUTPUT" ;;
           esac
+          # THE STREAK FINDER'S OWN DAYS, which are NOT the card's. Monday publishes the
+          # weekend (Fri-Mon) and Thursday the midweek (Tue-Thu); between them every day of
+          # the week belongs to exactly one drop. The card above runs Monday and Wednesday
+          # on different windows entirely, so the two schedules are kept apart rather than
+          # folded together — sharing one would silently repoint whichever was edited second.
+          case "$weekday" in
+            1|4) echo "finder=1" >> "$GITHUB_OUTPUT" ;;
+            *)   echo "finder=" >> "$GITHUB_OUTPUT" ;;
+          esac
           # Monday grades the Friday just gone — three days back, in London, so the tag
           # matches the one that run wrote rather than a UTC day that may differ.
           echo "friday=$(TZ=Europe/London date -d '3 days ago' +%F)" >> "$GITHUB_OUTPUT"
@@ -201,13 +210,16 @@ jobs:
 
       - name: Build the day's draft
         id: build
-        # `card` IS NOT A DRAFT BOARD. It has its own step below, which is the one that
-        # knows whether this run is allowed to publish. Letting the draft path build a
-        # card too meant `send: false` was a guard on one of the two places that send:
-        # the card step honoured it, and the draft step delivered anyway, so asking to
-        # SEE a card posted one. A flag that governs half the sends is worse than none,
-        # because it is believed.
-        if: steps.when.outputs.quiet != 'true' && inputs.board != 'card'
+        # `card` IS NOT A DRAFT BOARD, and neither is `finder`. Each has its own step
+        # below, which is the one that knows whether this run is allowed to publish.
+        # Letting the draft path build a card too meant `send: false` was a guard on one
+        # of the two places that send: the card step honoured it, and the draft step
+        # delivered anyway, so asking to SEE a card posted one. A flag that governs half
+        # the sends is worse than none, because it is believed. The finder is excluded
+        # here and from the generic Telegram step for exactly that reason, not by analogy.
+        if: >-
+          steps.when.outputs.quiet != 'true' && inputs.board != 'card'
+          && inputs.board != 'finder'
         # --board auto asks postPlan.js what this weekday is for, and takes its day window
         # too. A board named by hand on a manual run overrides both.
         #
@@ -309,7 +321,7 @@ jobs:
       - name: Send it to Telegram
         if: >-
           steps.when.outputs.quiet != 'true' && steps.build.outputs.empty != 'true'
-          && inputs.board != 'card' && env.TG_TOKEN != ''
+          && inputs.board != 'card' && inputs.board != 'finder' && env.TG_TOKEN != ''
         id: telegram
         # THE POST TEXT GOES IN THE MESSAGE BODY, not only behind the button. A button is
         # one tap when it works, and when it doesn't — a URL Telegram won't accept, an
@@ -688,6 +700,69 @@ jobs:
           TG_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TG_CHAT: ${{ secrets.TELEGRAM_CHAT_ID }}
           COUNT: ${{ inputs.count }}
+
+      - name: Send the streak finder to the channel
+        # MONDAY AND THURSDAY, on its own schedule — not the card's. Monday posts the
+        # weekend (Fri-Mon), Thursday the midweek (Tue-Thu), and between them every day
+        # belongs to exactly one drop. The card above runs Monday and Wednesday on
+        # different windows; the two are deliberately not folded together.
+        #
+        # ALSO RUNS ON A MANUAL `board: finder`, which is the only way to get one on a day
+        # the schedule does not publish. Whether it POSTS is the `send` input, exactly as
+        # for the card — and the finder is excluded from the draft step and the generic
+        # Telegram step above so that flag governs the ONLY place this can send. That is
+        # the bug the card note describes, and repeating it here would be repeating it
+        # knowingly.
+        if: >-
+          (steps.when.outputs.finder != '' || inputs.board == 'finder')
+          && env.TG_TOKEN != ''
+        run: |
+          node tools/social_draft.mjs --board finder --out finder.md --json-out finder.json
+          if [ ! -s finder.md ]; then
+            # The tool prints its own reason — "no streaks clear the bar" and "data too
+            # stale to publish" are different things to do something about.
+            echo "::notice::no streak finder today — see the SKIP line above"
+            exit 0
+          fi
+          # READABLE WITHOUT BEING PUBLISHED, and in BOTH places: the step summary is a
+          # separate artefact the job log does not contain, so a post "built but not sent"
+          # was unreadable from the one place anybody looks.
+          {
+            echo "### streak finder"
+            echo '```'
+            cat finder.md
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "----- finder -----"
+          cat finder.md
+          echo "----- end -----"
+          if [ -n "${{ inputs.board }}" ] && [ "${{ inputs.send }}" != "true" ]; then
+            echo "::notice::finder built, NOT sent — re-run with send: true to post it"
+            exit 0
+          fi
+          python3 - <<'PY' > finder_payload.json
+          import json, os
+          d = json.load(open("finder.json"))
+          print(json.dumps({"chat_id": os.environ["TG_CHAT"],
+                            "text": d["post"], "disable_web_page_preview": True}))
+          PY
+          code=$(curl -s -o tgf.json -w '%{http_code}' --max-time 30 \
+            -X POST "https://api.telegram.org/bot$TG_TOKEN/sendMessage" \
+            -H 'content-type: application/json' --data-binary @finder_payload.json || true)
+          if [ "$code" = "200" ]; then
+            echo "::notice::streak finder sent to Telegram"
+          else
+            # Not fatal, same as the card: the text is in the log and the summary above,
+            # and failing here would make an otherwise good run look red.
+            echo "::warning::streak finder send failed (HTTP $code)"
+            cat tgf.json || true
+          fi
+        env:
+          BACKEND_URL: ${{ vars.BACKEND_URL || 'https://corner-model.onrender.com' }}
+          SITE_URL: ${{ vars.SITE_URL || 'https://thecornermodel.com' }}
+          TOOLS_TOKEN: ${{ secrets.TOOLS_TOKEN }}
+          TG_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TG_CHAT: ${{ secrets.TELEGRAM_CHAT_ID }}
 
       - name: Freeze the card
         # TWO DROPS A WEEK, ON THE DAYS THE CARDS GO OUT.

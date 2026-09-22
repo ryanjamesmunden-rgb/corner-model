@@ -20,7 +20,7 @@ os.environ.setdefault("DB_NAME", "test_corner_model")
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from watchlist import (  # noqa: E402
-    THIN_GAMES, best_angle, day_of, histogram, in_window, rank, thin,
+    THIN_GAMES, best_angle, day_of, histogram, in_window, rank, split_by_sample, thin,
 )
 
 
@@ -116,8 +116,37 @@ class TestThinRows:
     def test_a_well_sampled_fixture_is_not(self):
         assert thin(fixture(1, "2026-10-17T14:00:00Z")) is False
 
-    def test_a_thin_row_is_marked_rather_than_dropped(self):
+    def test_a_thin_row_is_kept_rather_than_dropped(self):
         # At this range the newly promoted side is often the eye-catching row, and
         # hiding it would leave the reader wondering why a game they expected is absent.
         r = [fixture(1, "2026-10-17T14:00:00Z", edge=1.9, home_games=3)]
         assert len(rank(r)) == 1
+
+    def test_a_thin_row_cannot_outrank_a_well_sampled_one(self):
+        # THE REASON THIS SECTION EXISTS. A five-game average is extreme by construction,
+        # so thin rows do not merely appear in the ranking — they lead it. The first real
+        # run put four in the top ten and pushed the usable fixtures off the end.
+        rows = [fixture(1, "2026-10-17T14:00:00Z", edge=1.9, home_games=3),
+                fixture(2, "2026-10-17T14:00:00Z", edge=1.2)]
+        solid, thin_rows = split_by_sample(rows)
+        assert [f["fixture_id"] for f in solid] == [2]
+        assert [f["fixture_id"] for f in thin_rows] == [1]
+
+    def test_both_sections_stay_ranked_within_themselves(self):
+        rows = [fixture(1, "2026-10-17T14:00:00Z", edge=1.1),
+                fixture(2, "2026-10-17T14:00:00Z", edge=1.6),
+                fixture(3, "2026-10-17T14:00:00Z", edge=1.9, home_games=3),
+                fixture(4, "2026-10-17T14:00:00Z", edge=1.4, home_games=2)]
+        solid, thin_rows = split_by_sample(rows)
+        assert [f["fixture_id"] for f in solid] == [2, 1]
+        assert [f["fixture_id"] for f in thin_rows] == [3, 4]
+
+    def test_a_fixture_with_no_mismatch_is_in_neither_section(self):
+        solid, thin_rows = split_by_sample(
+            [fixture(1, "2026-10-17T14:00:00Z", edge=2.0, angles=[])])
+        assert solid == [] and thin_rows == []
+
+    def test_the_bar_is_ten_games(self):
+        # Eight let through a side claiming 12.0 conceded per away game. Stated here so a
+        # later change to the constant has to come past this test and its reason.
+        assert THIN_GAMES == 10

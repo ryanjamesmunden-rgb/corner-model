@@ -22,6 +22,7 @@ account and a legacy account can never be revoked by a Stripe event, however tha
 is shaped — because the alternative is a bad webhook silently locking out people who
 paid you, and they would have no way to tell you what happened.
 """
+import asyncio
 import logging
 import os
 from datetime import datetime, timezone
@@ -400,6 +401,55 @@ def has_prior_subscription(customer_id: Optional[str]) -> bool:
     return bool(page.get("data"))
 
 
+def active_subscriptions(customer_id: Optional[str], exclude_id: Optional[str] = None) -> list:
+    """This customer's still-active subscriptions, other than `exclude_id`.
+
+    EXISTS BECAUSE ONE ACCOUNT CAN HOLD TWO. Nothing stops a member subscribing twice —
+    a second checkout on the same account is an ordinary Stripe subscription — and this
+    module stores a single `stripe_subscription_id`, so it cannot represent the pair. The
+    damage is on cancellation: the dead subscription's event arrives, and without this
+    check the account is revoked while the live one is still being charged.
+
+    `status="all"` then filtered by `is_active`, rather than asking Stripe for
+    `status="active"`: ACTIVE_STATUSES also counts `trialing` and `past_due`, and a
+    sibling in either of those is still a subscription keeping somebody in. Asking Stripe
+    for the narrow list would revoke a member whose other card payment is retrying.
+    """
+    if not customer_id:
+        return []
+    page = _as_dict(_stripe().Subscription.list(customer=customer_id, status="all", limit=100))
+    out = []
+    for raw in (page.get("data") or []):
+        s = _as_dict(raw)
+        if s.get("id") != exclude_id and is_active(s.get("status")):
+            out.append(s)
+    return out
+
+
+async def _surviving_subscription(customer_id: Optional[str], exclude_id: Optional[str]):
+    """(subscription, checked). `checked` is False when Stripe could not be asked at all.
+
+    THE TWO ARE NOT THE SAME ANSWER and the caller must not collapse them. "Asked, and
+    there is no other subscription" is a revocation. "Could not ask" is not — see the
+    revocation rule in apply_subscription: granting is safe in a way revoking is not, so
+    an outage must not lock out a paying member. The reconcile sweep retries every fifteen
+    minutes, which is what makes erring this way self-correcting rather than permanent.
+    """
+    # NOT CONFIGURED IS A REAL ANSWER, not a failed check. With no Stripe there is no
+    # second subscription to find, so "none" is true rather than unknown — and treating it
+    # as unknown would mean no Stripe member could ever be revoked in a deployment that had
+    # billing turned off, which is the opposite of what that state means.
+    if not customer_id or not configured():
+        return None, True
+    try:
+        others = await asyncio.to_thread(active_subscriptions, customer_id, exclude_id)
+    except Exception:                                   # noqa: BLE001 - reported, not raised
+        logger.exception("stripe: could not check for other subscriptions on customer %s "
+                         "— leaving access alone", customer_id)
+        return None, False
+    return (others[0] if others else None), True
+
+
 def create_customer(user: dict) -> str:
     """Create the Stripe customer for an account that has none, and return its id.
 
@@ -656,9 +706,30 @@ async def apply_subscription(db, sub: dict, user_id: Optional[str] = None) -> di
         logger.info("stripe: subscription %s ended but %s is grandfathered — access kept",
                     sub.get("id"), account["user_id"])
     elif account.get("member_source") == MEMBER_SOURCE_STRIPE:
-        # Their access came from this subscription, and the subscription has ended.
-        fields["member"] = False
-        fields["member_ended_at"] = datetime.now(timezone.utc).isoformat()
+        # Their access came from a Stripe subscription and THIS one has ended — but this
+        # account may hold more than one. A member who subscribed twice, or who cancelled
+        # and immediately resubscribed, has a live subscription and a dead one, and
+        # revoking on the dead one's event cuts off someone who is still being charged.
+        survivor, checked = await _surviving_subscription(customer_id, sub.get("id"))
+        if survivor:
+            # The account describes the subscription KEEPING THEM IN, not the one that
+            # ended. Leaving the dead one's id and "canceled" status on the record would
+            # show a cancelled subscription on the account page of an active member, and
+            # would hand the next cancellation the wrong id to exclude.
+            fields.update(_sub_fields(survivor))
+            fields["member"] = True
+            logger.info("stripe: subscription %s ended but %s still holds active %s "
+                        "— access kept", sub.get("id"), account["user_id"], survivor.get("id"))
+        elif not checked:
+            # Stripe could not be asked. Not a revocation — see _surviving_subscription.
+            # The subscription fields still record that THIS one ended, which is true; the
+            # quarter-hourly reconcile settles the membership question on its next pass.
+            logger.warning("stripe: subscription %s ended for %s but the other-subscription "
+                           "check failed — access left as it was, pending reconcile",
+                           sub.get("id"), account["user_id"])
+        else:
+            fields["member"] = False
+            fields["member_ended_at"] = datetime.now(timezone.utc).isoformat()
     else:
         # A comp that also happens to have a lapsed subscription. Record the subscription
         # state, change nothing about their access.

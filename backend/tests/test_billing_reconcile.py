@@ -123,6 +123,11 @@ class TestApplyingWhatStripeSays:
 
     def test_a_cancelled_subscription_revokes_a_stripe_member(self):
         b = _billing()
+        # STATED, because it is now load-bearing: revocation requires knowing the account
+        # holds no OTHER live subscription. Without this the sweep asks the real Stripe,
+        # cannot get an answer, and correctly declines to revoke — see
+        # billing._surviving_subscription.
+        b.active_subscriptions = lambda cid, exclude_id=None: []
         db = FakeDb([{"user_id": "u1", "member": True, "member_source": "stripe"}])
         res = run(b.apply_subscription(db, b._as_dict(sub("canceled")), user_id="u1"))
         assert res["member"] is False

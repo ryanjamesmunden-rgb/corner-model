@@ -226,3 +226,136 @@ def test_a_grandfathered_member_who_subscribes_then_cancels_keeps_their_old_acce
     assert rows[0]["grandfathered"] is True, "the mark was cleared by subscribing"
     run(billing.apply_subscription(db, sub("canceled")))
     assert rows[0]["member"] is True, "a grandfathered member lost access after cancelling"
+
+
+# ---------------------------------------------------------------------------
+# One account, two subscriptions
+# ---------------------------------------------------------------------------
+# FOUND WHILE REFUNDING A DOUBLE CHARGE. Nothing stops a member subscribing twice — a
+# second checkout on the same account is an ordinary Stripe subscription — but this module
+# stores a single `stripe_subscription_id` and so cannot represent the pair. The damage
+# lands on cancellation: the dead subscription's event arrives and revokes an account that
+# is still being charged on the live one.
+#
+# It is not only the double-subscribe case. Cancel and immediately resubscribe produces the
+# same two subscriptions, and there the old one's deletion event wipes the new membership.
+#
+# These pin the asymmetry this file exists for, one level further out: it is not enough to
+# refuse to revoke comps and grandfathered accounts. A Stripe member with another live
+# subscription must not be revoked either.
+
+def sub2(status, sub_id="sub_2", user_id="u1", customer="cus_1"):
+    return {"id": sub_id, "status": status, "customer": customer,
+            "current_period_end": 1893456000, "cancel_at_period_end": False,
+            "metadata": {"user_id": user_id}}
+
+
+def with_other_subs(monkeypatch, others, configured=True):
+    """Pretend Stripe holds `others` for the customer.
+
+    Mirrors the real active_subscriptions, is_active filter included — a stub that
+    returned cancelled siblings would let every revocation test pass by accident.
+    """
+    monkeypatch.setattr(billing, "configured", lambda: configured)
+    monkeypatch.setattr(billing, "active_subscriptions",
+                        lambda cid, exclude_id=None: [
+                            s for s in others
+                            if s.get("id") != exclude_id and billing.is_active(s.get("status"))])
+
+
+def test_cancelling_one_of_two_subscriptions_keeps_access(monkeypatch):
+    """The double-charge case. They are still paying on the other one."""
+    live = sub2("active", "sub_live")
+    with_other_subs(monkeypatch, [live])
+    rows = [{"user_id": "u1", "member": True, "member_source": "stripe",
+             "stripe_subscription_id": "sub_dead"}]
+    run(billing.apply_subscription(FakeDb(rows), sub2("canceled", "sub_dead")))
+    assert rows[0]["member"] is True
+
+
+def test_the_account_then_describes_the_subscription_keeping_them_in(monkeypatch):
+    """Not the one that ended.
+
+    Leaving the dead id on the record shows a cancelled subscription on the account page of
+    an active member — and hands the NEXT cancellation the wrong id to exclude itself by,
+    so the check would compare the live subscription against itself and find no survivor.
+    """
+    live = sub2("active", "sub_live")
+    with_other_subs(monkeypatch, [live])
+    rows = [{"user_id": "u1", "member": True, "member_source": "stripe"}]
+    run(billing.apply_subscription(FakeDb(rows), sub2("canceled", "sub_dead")))
+    assert rows[0]["stripe_subscription_id"] == "sub_live"
+    assert rows[0]["subscription_status"] == "active"
+
+
+def test_a_past_due_sibling_still_counts(monkeypatch):
+    """A card retrying is not a cancelled subscription.
+
+    ACTIVE_STATUSES covers trialing and past_due, so asking Stripe for status="active"
+    would revoke a member whose other payment is mid-retry.
+    """
+    with_other_subs(monkeypatch, [sub2("past_due", "sub_live")])
+    rows = [{"user_id": "u1", "member": True, "member_source": "stripe"}]
+    run(billing.apply_subscription(FakeDb(rows), sub2("canceled", "sub_dead")))
+    assert rows[0]["member"] is True
+
+
+def test_a_cancelled_sibling_does_not_rescue_them(monkeypatch):
+    """Both ended. This is a genuine revocation and must still happen."""
+    with_other_subs(monkeypatch, [sub2("canceled", "sub_older")])
+    rows = [{"user_id": "u1", "member": True, "member_source": "stripe"}]
+    run(billing.apply_subscription(FakeDb(rows), sub2("canceled", "sub_dead")))
+    assert rows[0]["member"] is False
+    assert rows[0]["member_ended_at"]
+
+
+def test_the_ending_subscription_cannot_rescue_itself(monkeypatch):
+    """It must be excluded from its own survivor check.
+
+    Stripe lists a just-cancelled subscription among the customer's subscriptions. Without
+    the exclusion the lookup finds it, reads its own status, and nobody is ever revoked.
+    """
+    dead = sub2("canceled", "sub_dead")
+    with_other_subs(monkeypatch, [dead])
+    rows = [{"user_id": "u1", "member": True, "member_source": "stripe"}]
+    run(billing.apply_subscription(FakeDb(rows), dead))
+    assert rows[0]["member"] is False
+
+
+def test_stripe_being_unreachable_is_not_a_revocation(monkeypatch):
+    """Granting is safe in a way revoking is not — the rule this file exists for.
+
+    "Asked, and there is no other subscription" is a revocation. "Could not ask" is not.
+    The quarter-hourly reconcile retries, so erring toward access self-corrects; erring
+    the other way locks out someone who paid, during an outage they did not cause.
+    """
+    monkeypatch.setattr(billing, "configured", lambda: True)
+
+    def boom(cid, exclude_id=None):
+        raise RuntimeError("stripe is down")
+
+    monkeypatch.setattr(billing, "active_subscriptions", boom)
+    rows = [{"user_id": "u1", "member": True, "member_source": "stripe"}]
+    run(billing.apply_subscription(FakeDb(rows), sub2("canceled", "sub_dead")))
+    assert rows[0]["member"] is True
+    assert "member_ended_at" not in rows[0]
+
+
+def test_billing_switched_off_still_revokes(monkeypatch):
+    """Not-configured is a real answer, not a failed check.
+
+    With no Stripe there is no second subscription to find. Treating that as "unknown"
+    would mean no Stripe member could ever be revoked in a deployment with billing off.
+    """
+    with_other_subs(monkeypatch, [], configured=False)
+    rows = [{"user_id": "u1", "member": True, "member_source": "stripe"}]
+    run(billing.apply_subscription(FakeDb(rows), sub2("canceled", "sub_dead")))
+    assert rows[0]["member"] is False
+
+
+def test_a_comp_with_two_subscriptions_is_still_never_revoked(monkeypatch):
+    """The original asymmetry outranks all of this, and is checked first."""
+    with_other_subs(monkeypatch, [])
+    rows = [{"user_id": "u1", "member": True, "member_source": "comp"}]
+    run(billing.apply_subscription(FakeDb(rows), sub2("canceled", "sub_dead")))
+    assert rows[0]["member"] is True

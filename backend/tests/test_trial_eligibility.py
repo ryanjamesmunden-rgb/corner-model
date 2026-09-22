@@ -176,6 +176,8 @@ class TestTheMarkThatBlocksASecondTrial:
         # The case the flag exists for. A lapsed subscription has to leave the mark, or
         # cancelling is how you earn another free week.
         b = _billing()
+        # No other live subscription — see the note in test_billing_reconcile.
+        b.active_subscriptions = lambda cid, exclude_id=None: []
         db = FakeDb([{"user_id": "u1", "member": True, "member_source": "stripe"}])
         run(b.apply_subscription(db, {"id": "sub_1", "status": "canceled",
                                       "customer": "cus_1",

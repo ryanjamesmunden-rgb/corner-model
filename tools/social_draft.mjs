@@ -37,6 +37,7 @@ const { fitToPost, weightedLength, URL_WEIGHT, X_SHARE_ROWS } = await import(res
 const { boardForDay } = await import(resolve(LIB, "postPlan.js"));
 const { slipFrom, slipPost, dayKey } = await import(resolve(LIB, "dailySlip.js"));
 const { slateFrom, slatePost } = await import(resolve(LIB, "chaseSlate.js"));
+const { streakFinder, liveDrop, finderWindow } = await import(resolve(LIB, "streakFinder.js"));
 
 const arg = (name, fallback = null) => {
   const i = process.argv.indexOf(`--${name}`);
@@ -304,6 +305,10 @@ ${card}
 // never reads — on a free-tier backend that is the difference between a post and a timeout.
 const BOARDS = BOARD === "menu" ? "streaks,mismatches,chase,value"
   : BOARD === "chase" ? "chase"
+  // The finder is streaks and nothing else. Asking for `fixtures` alongside would make it
+  // pay for a board it never reads, and on a free-tier backend that is the difference
+  // between a post and a timeout.
+  : BOARD === "finder" ? "streaks"
   : "streaks,fixtures";
 const data = await get(`/api/share/rows?days=${DAYS}&limit=60&boards=${BOARDS}`
   + `&token=${encodeURIComponent(TOKEN)}`, "backend");
@@ -374,6 +379,51 @@ ${slate.priced} of ${slate.n} rows carry a real price; the rest show the model's
      note: `${slate.n} chase spots on ${day}`
        + (slate.priced ? `, ${slate.priced} priced` : ", none priced")
        + (rec ? ` · section ${rec.won}/${rec.settled}` : "")
+       + (data.data_age_hours != null ? ` · data ${data.data_age_hours}h old` : "") });
+  process.exit(0);
+}
+
+// ---- the streak finder: one line per team, sorted by line then by run.
+//
+// TWO DROPS A WEEK, AND EACH COVERS DAYS THE OTHER DOES NOT. Monday posts Friday to
+// Monday; Thursday posts Tuesday to Thursday. Every day of the week belongs to exactly one
+// of them — a day covered twice is a fixture claimed twice, and a day covered by neither is
+// a night this channel never had a view on. The arithmetic lives in streakFinder.js so the
+// windows cannot drift from the tests that check they tile the week.
+//
+// THE WINDOW IS TAKEN FROM THE DROP IN FORCE, WALKING BACK. Fired by hand on a Wednesday
+// this carries Monday's weekend list, which is the one the channel is already expecting —
+// not Thursday's midweek, for games that have not been selected yet. `--drop` overrides it
+// for a deliberate off-schedule post.
+//
+// IT CARRIES MODEL PRICES, WHICH IS WHY IT CAN GO OUT DAYS AHEAD. A fair price exists the
+// moment the fixture does, so this post does not wait for a book to put the game up — which
+// is the whole point of a list you read to know where to look when the odds drop.
+if (BOARD === "finder") {
+  const today = TAG || dayKey();
+  const live = liveDrop(today);
+  const drop = arg("drop", null) || live?.drop;
+  const publishedOn = arg("drop", null) ? today : live?.publishedOn;
+  const w = finderWindow(drop, publishedOn);
+  if (!w) fail(`no such drop ${drop} — expected weekend or midweek`);
+  const built = streakFinder({ rows: data.streaks || [], site: SITE,
+                               first: w.first, last: w.last,
+                               max: Number(arg("rows", "20")) });
+  // Not a failure. A window with no qualifying run is a quiet week, and the honest answer
+  // is no post — the same card on an empty board teaches the reader to skim the next one.
+  if (!built.text) {
+    skip(`no streaks of ${w.first} to ${w.last} clear the bar — nothing worth posting`);
+  }
+  emit(`${w.label} streak finder — ${built.n} rows, ${w.first} to ${w.last}.
+
+\`\`\`
+${built.text}
+\`\`\`
+
+Model prices, not offers: these games are days away and no book has them up yet.
+`, { empty: false, board: "finder", post: built.text, intent: "",
+     weight: built.text.length, full: built.text,
+     note: `${built.n} streak rows for ${w.label.toLowerCase()} (${w.first} to ${w.last})`
        + (data.data_age_hours != null ? ` · data ${data.data_age_hours}h old` : "") });
   process.exit(0);
 }

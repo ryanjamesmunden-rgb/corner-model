@@ -170,6 +170,26 @@ export const dropOn = (isoDay) => {
   return Object.keys(FINDER_DROPS).find((k) => FINDER_DROPS[k].weekday === wd) || null;
 };
 
+/**
+ * `{ drop, publishedOn }` — the drop currently in force on `isoDay`.
+ *
+ * WALKS BACK, NOT FORWARD. On a Tuesday the drop that is live is Monday's weekend list;
+ * looking forward would hand the reader Thursday's midweek list for games that have not
+ * been selected yet. Same reasoning as angle_of_day.live_card, and the same direction.
+ *
+ * This is what makes an off-schedule send sane: a post fired by hand on a Wednesday
+ * carries the weekend the channel is already expecting, rather than a window chosen by
+ * whichever day somebody happened to press the button.
+ */
+export const liveDrop = (isoDay) => {
+  for (let back = 0; back < 7; back += 1) {
+    const day = addDays(isoDay, -back);
+    const drop = dropOn(day);
+    if (drop) return { drop, publishedOn: day };
+  }
+  return null;        // unreachable: every day is within 7 of a Monday
+};
+
 /** `{ first, last, label }` — the days a drop covers, inclusive. */
 export const finderWindow = (drop, publishedOn) => {
   const spec = FINDER_DROPS[drop];

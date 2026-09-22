@@ -13,7 +13,7 @@
 //   - A post over Telegram's 4,096 limit: HTTP 400 and nothing else.
 import {
   addDays, buildFinder, dropOn, eligible, finderOrder, finderRow, finderTime,
-  finderWindow, londonDay, streakFinder,
+  finderWindow, liveDrop, londonDay, streakFinder,
   FINDER_HEAD, FINDER_KEY, FINDER_MIN_RUN,
 } from "./streakFinder.js";
 import { TELEGRAM_MAX } from "./shareText.js";
@@ -243,6 +243,27 @@ describe("when it goes out and what it covers", () => {
 
   test("no window means no filtering, for an ad-hoc post", () => {
     expect(buildFinder({ rows: SAMPLE }).n).toBe(SAMPLE.length);
+  });
+
+  test("on a publishing day, that day's drop is the live one", () => {
+    expect(liveDrop(MON)).toEqual({ drop: "weekend", publishedOn: MON });
+    expect(liveDrop(THU)).toEqual({ drop: "midweek", publishedOn: THU });
+  });
+
+  test("between drops it walks BACK to the last one, never forward", () => {
+    // On a Tuesday the live list is Monday's weekend. Looking forward would hand the
+    // reader Thursday's midweek for games that have not been selected yet — and it is
+    // what makes an off-schedule send carry the window the channel is already expecting.
+    expect(liveDrop("2026-09-22")).toEqual({ drop: "weekend", publishedOn: MON });
+    expect(liveDrop("2026-09-23")).toEqual({ drop: "weekend", publishedOn: MON });
+    expect(liveDrop("2026-09-25")).toEqual({ drop: "midweek", publishedOn: THU });
+    expect(liveDrop("2026-09-27")).toEqual({ drop: "midweek", publishedOn: THU });
+  });
+
+  test("every day of the week has a live drop", () => {
+    for (let i = 0; i < 7; i += 1) {
+      expect(liveDrop(addDays(MON, i))).not.toBeNull();
+    }
   });
 
   test("a kick-off is placed by its London day, not its UTC one", () => {

@@ -713,6 +713,13 @@ jobs:
         # Telegram step above so that flag governs the ONLY place this can send. That is
         # the bug the card note describes, and repeating it here would be repeating it
         # knowingly.
+        #
+        # THURSDAY IS A QUIET DAY AND THIS STEP POSTS ANYWAY, DELIBERATELY. `quiet` silences
+        # the X draft — postPlan.js says the week has nothing to SAY on a Thursday — and the
+        # finder is not that. It is the paid channel's midweek list, and Thursday is the day
+        # it covers Tuesday to Thursday. So `steps.when.outputs.quiet` is absent from this
+        # condition ON PURPOSE. Adding it to "respect the quiet day" would delete half the
+        # schedule and leave a workflow that still looked correct.
         if: >-
           (steps.when.outputs.finder != '' || inputs.board == 'finder')
           && env.TG_TOKEN != ''

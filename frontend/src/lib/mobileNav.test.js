@@ -21,7 +21,12 @@ const SIGNED_IN = [
   item("/projections", "Projected"), item("/saved", "Saved"),
   item("/bets", "Bets"), item("/results", "Results"),
 ];
-const MEMBER = [...SIGNED_IN, item("/prices", "Prices")];
+// A NINTH ITEM, NOT A REAL ROUTE. Members used to have one extra screen (/prices, the
+// bulk price paste), and that page is gone. The property this guards is about the SHAPE of
+// the list rather than about any particular page: a list longer than the bar must overflow
+// into More instead of pushing a daily screen out of it. So the extra item is a stand-in,
+// and stays one, for whenever a ninth screen is next added.
+const WITH_EXTRA = [...SIGNED_IN, item("/extra", "Extra")];
 
 const paths = (rows) => rows.map((r) => r.to);
 
@@ -38,10 +43,10 @@ describe("what reaches the bar", () => {
       .toEqual(["/dashboard", "/saved", "/bets", "/results"]);
   });
 
-  test("a member's extra screen lands in More rather than displacing a daily one", () => {
-    const { bar, rest } = splitNav(MEMBER);
+  test("a ninth screen lands in More rather than displacing a daily one", () => {
+    const { bar, rest } = splitNav(WITH_EXTRA);
     expect(paths(bar)).toEqual(["/scanner", "/quick-scan", "/streaks", "/projections"]);
-    expect(paths(rest)).toContain("/prices");
+    expect(paths(rest)).toContain("/extra");
   });
 });
 
@@ -57,14 +62,14 @@ describe("when a primary destination is not there at all", () => {
   test("nothing is lost between the two", () => {
     // Every destination is reachable from one place or the other. A route that appears in
     // neither is unreachable on a phone, and nothing would say so.
-    for (const nav of [SIGNED_OUT, SIGNED_IN, MEMBER]) {
+    for (const nav of [SIGNED_OUT, SIGNED_IN, WITH_EXTRA]) {
       const { bar, rest } = splitNav(nav);
       expect([...paths(bar), ...paths(rest)].sort()).toEqual(paths(nav).sort());
     }
   });
 
   test("and nothing is in both", () => {
-    for (const nav of [SIGNED_OUT, SIGNED_IN, MEMBER]) {
+    for (const nav of [SIGNED_OUT, SIGNED_IN, WITH_EXTRA]) {
       const { bar, rest } = splitNav(nav);
       expect(paths(bar).filter((p) => paths(rest).includes(p))).toEqual([]);
     }

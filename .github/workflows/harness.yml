@@ -39,6 +39,7 @@ on:
           - calibration     # is the printed probability honest — ledger, then replay
           - settlement_audit  # was each settled pick graded against the right team
           - pick_line_audit   # was lambda right for the picks actually published
+          - bet_audit         # why is each pending slip on the Bets page still pending
           - watchlist         # which games to watch when football returns after a break
           - sweep           # model weight sweep
           - country_leagues # SPENDS CREDITS (1 call) — what competitions exist for a country
@@ -125,6 +126,7 @@ jobs:
               calibration) SCRIPT="measure_calibration" ;;
               settlement_audit) SCRIPT="audit_settlement" ;;
               pick_line_audit)  SCRIPT="audit_pick_lines" ;;
+              bet_audit)        SCRIPT="audit_bets" ;;
               watchlist)        SCRIPT="watchlist" ;;
               # The fallback is measure_features because `sweep` is a mode OF it. A new
               # harness with its own script that is not added above polls this script,

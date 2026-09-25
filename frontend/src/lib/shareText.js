@@ -898,14 +898,17 @@ const buildMenu = ({ streaks = [], mismatches = [], chase = [], value = [],
   // menu. Collapsing the three into one blank section loses the only one that can mislead.
   const typed = value.filter((v) => v.odds_source === "manual");
   const fakeEdge = value.some((v) => v.odds_source !== "manual" && Number(v.best?.ev) > 0);
+  // WHERE TO SEND SOMEBODY TO PRICE A GAME. It used to be /prices, the bulk paste screen,
+  // which has been removed — a card telling a reader to visit a page that 404s is worse
+  // than one that says nothing. Prices go in on the fixture page, which is also where the
+  // model's own number sits, so it is the honest destination as well as the only one.
+  const priceAt = `Open a game on ${where || "the site"} and paste its prices`;
   const valueEmpty = typed.length
     ? "every price you typed in is shorter than the model's — no edge on the board today"
     : fakeEdge
       ? "the only prices stored are seeded demo numbers, which are the model's own with "
-        + "noise on them. An edge against one of those is not an edge. Paste real prices at "
-        + `${where || "the site"}/prices`
-      : "nothing is priced yet, so nothing here can be called value. Paste prices at "
-        + `${where || "the site"}/prices`;
+        + `noise on them. An edge against one of those is not an edge. ${priceAt}`
+      : `nothing is priced yet, so nothing here can be called value. ${priceAt}`;
 
   const parts = [
     section("🔥", "Streaks", "a run, and nothing about the opponent",

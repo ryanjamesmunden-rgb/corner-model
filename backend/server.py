@@ -2237,6 +2237,13 @@ MEASURE_MODES = {
     # percentage points, which is what distinguishes a bad input from a bad line
     # rule. Reads db.picks only.
     "pick_line_audit": ("audit_pick_lines", [], True),
+    # WHY IS EACH PENDING SLIP STILL PENDING. "Pending" on the Bets page covers a match not
+    # played yet and a match played that the settler could not grade, and the page shows
+    # them identically — so a wall of pending rows carries no information about whether the
+    # site is working. Names a reason for every one, and separates a bug in our own join
+    # (a string fixture id against an int-keyed cache) from corner data we simply do not
+    # have. Reads db.bets and db.fixture_stats; runs across all users.
+    "bet_audit": ("audit_bets", [], False),
     # WHICH FIXTURES TO WATCH WHEN FOOTBALL COMES BACK. Looks past an international
     # break and ranks the restart's games by mismatch — not by streak, which is one
     # result from ending and so the wrong signal at three weeks' range. Produces a
@@ -7398,23 +7405,50 @@ def bet_outcome(bet: dict, home_corners: Optional[int], away_corners: Optional[i
     return {WIN: "won", LOSS: "lost", VOID: "void"}[settled]
 
 
-def _api_fixture_id(bet: dict) -> Optional[str]:
-    """The provider's fixture id for a bet, from the bet itself.
+def _stats_key(value):
+    """A fixture id as db.fixture_stats is actually keyed by it: the provider's int.
+
+    THE TYPE IS THE BUG THIS EXISTS TO STOP. sync_real writes `_id: f["fixture"]["id"]`,
+    and the provider sends that as a JSON number, so every cached fixture is keyed by an
+    INT. Mongo's `$in` does not equate "12345" with 12345, so a string id matches nothing —
+    silently, and in a place where "no match" is indistinguishable from "not played yet".
+
+    A non-numeric id passes through unchanged. A synthesized fallback fixture has one, and
+    it is supposed to match nothing: that is an invented pairing, not a real match.
+    """
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    s = str(value).strip()
+    if not s:
+        return None
+    return int(s) if s.isdigit() else s
+
+
+def _api_fixture_id(bet: dict):
+    """The provider's fixture id for a bet, from the bet itself, typed to match the cache.
 
     NEW BETS CARRY IT. Older ones do not, and they are recoverable because `fixture_id` is
     built as f"{league_id}-{api_id}" — so stripping the league prefix gives it back. Doing
     that here rather than in a migration keeps every slip gradeable without a one-off
     script that has to be remembered and run.
 
+    AND THE RECOVERED ID IS NORMALISED, WHICH IS THE OTHER HALF OF THAT FIX. Stripping a
+    prefix off a string leaves a STRING, while fixture_stats is keyed by an int — so the
+    recovery path returned an id that could never match anything and every slip it applied
+    to stayed pending for ever. The digits were right and the type was wrong, which looked
+    exactly like the bug it was meant to have fixed. See _stats_key.
+
     Returns None rather than guessing when the shape does not match, and a synthesized
     fallback fixture's string id settles nothing, which is correct: those are invented
     pairings, not real matches.
     """
     if bet.get("api_fixture_id"):
-        return bet["api_fixture_id"]
+        return _stats_key(bet["api_fixture_id"])
     fid, lid = str(bet.get("fixture_id") or ""), str(bet.get("league_id") or "")
     if lid and fid.startswith(lid + "-"):
-        return fid[len(lid) + 1:] or None
+        return _stats_key(fid[len(lid) + 1:])
     return None
 
 
@@ -7439,9 +7473,15 @@ async def settle_pending_bets(user_id: Optional[str] = None) -> dict:
     # Results live on fixture_stats, keyed by the provider's fixture id. Straight from the
     # bets, so a fixture the sync has since removed settles exactly as well as a live one.
     by_bet = {b["bet_id"]: _api_fixture_id(b) for b in pending}
-    api_ids = [i for i in set(by_bet.values()) if i]
-    stats = {c["_id"]: c for c in
-             await db.fixture_stats.find({"_id": {"$in": api_ids}}, {}).to_list(4000)} if api_ids else {}
+    api_ids = [i for i in set(by_bet.values()) if i is not None]
+    # BOTH TYPES ARE ASKED FOR, AND THE LOOKUP IS NORMALISED. _api_fixture_id now returns
+    # the int the cache is keyed by, which fixes the recovery path — but any document
+    # written with a string _id by an older writer would then be the one that no longer
+    # matches. Asking for both forms and keying the result through _stats_key costs one
+    # longer $in list and makes the join independent of how either side was stored.
+    wanted = api_ids + [str(i) for i in api_ids if isinstance(i, int)]
+    stats = {_stats_key(c["_id"]): c for c in
+             await db.fixture_stats.find({"_id": {"$in": wanted}}, {}).to_list(4000)} if wanted else {}
     settled = 0
     for b in pending:
         st = stats.get(by_bet.get(b["bet_id"])) or {}

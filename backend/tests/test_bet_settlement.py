@@ -10,6 +10,18 @@ joined through that collection to find the provider's id, found nothing, returne
 the outcome, and skipped. Nothing logged, nothing failed, and the bet was never graded.
 
 So the provider's id now rides on the bet, and settlement reads nothing but fixture_stats.
+
+AND THEN THE SAME BUG SURVIVED THE FIX, IN THE TYPE. The recovery path strips the league
+prefix off `fixture_id`, which leaves a STRING, while fixture_stats is keyed by the
+provider's id as the provider sends it — a JSON number, so an int. Mongo's `$in` does not
+equate "12345" with 12345, so every slip that had to recover its id matched nothing, for
+ever, and looked exactly like a match that had not kicked off. The digits were right and
+the type was wrong.
+
+The tests below had asserted the string, which is how it survived: they checked the value
+the function returned without ever checking it against the thing it is used to look up.
+They now assert the int, and TestTheKeyTypeMatchesTheCache checks the round trip against
+the type sync_real actually writes.
 """
 import os
 import sys
@@ -30,28 +42,86 @@ def bet(**kw):
 
 class TestFindingTheFixtureId:
     def test_a_new_bet_carries_it(self):
-        assert server._api_fixture_id(bet(api_fixture_id="998877")) == "998877"
+        # sync_real copies the provider's int onto the fixture and create_bet copies it
+        # onto the slip, so this is the ordinary case and it arrives already an int.
+        assert server._api_fixture_id(bet(api_fixture_id=998877)) == 998877
 
     def test_an_older_bet_recovers_it_from_the_fixture_id(self):
         # Every bet placed before this was stored with no api id, and they are the ones
         # sitting pending. fixture_id is "{league_id}-{api_id}", so it is recoverable —
         # here rather than in a one-off migration somebody has to remember to run.
-        assert server._api_fixture_id(bet()) == "12345"
+        assert server._api_fixture_id(bet()) == 12345
 
     def test_a_league_id_containing_a_hyphen_is_handled(self):
         # "ned-ed" is the common case and naive splitting on "-" gets it wrong.
         assert server._api_fixture_id(
-            bet(fixture_id="ned-ed-777", league_id="ned-ed")) == "777"
+            bet(fixture_id="ned-ed-777", league_id="ned-ed")) == 777
 
     def test_the_stored_id_wins_over_the_derived_one(self):
         assert server._api_fixture_id(
-            bet(api_fixture_id="real", fixture_id="ned-ed-999")) == "real"
+            bet(api_fixture_id=4242, fixture_id="ned-ed-999")) == 4242
+
+    def test_a_numeric_string_stored_on_an_old_slip_is_normalised(self):
+        # Belt and braces: if anything ever wrote the id as a string, it must still match.
+        assert server._api_fixture_id(bet(api_fixture_id="998877")) == 998877
 
     def test_nothing_recoverable_is_none_rather_than_a_guess(self):
         # A synthesized fallback fixture is an invented pairing, not a real match, and
         # must settle nothing.
         assert server._api_fixture_id(bet(fixture_id="other-1", league_id="ned-ed")) is None
         assert server._api_fixture_id(bet(fixture_id="", league_id="")) is None
+
+    def test_a_synthesized_fixtures_non_numeric_id_is_left_alone(self):
+        # It must not become None (that would hide it) and must not become a number
+        # (there isn't one). Passing it through means it matches no cached fixture, which
+        # is the intended outcome.
+        assert server._api_fixture_id(bet(api_fixture_id="fallback-abc")) == "fallback-abc"
+
+
+class TestTheKeyTypeMatchesTheCache:
+    """The second half of the same bug, and the reason the first fix did not work.
+
+    db.fixture_stats is keyed by `f["fixture"]["id"]` straight from the provider — a JSON
+    number, so an int. A string id matches no document and Mongo reports nothing wrong.
+    """
+
+    def test_the_recovered_id_is_the_type_the_cache_is_keyed_by(self):
+        # THE REGRESSION GUARD. This is the assertion whose absence let the bug ship: the
+        # old test checked the digits and never the type.
+        recovered = server._api_fixture_id(bet())
+        cache_key = 12345          # what sync_real writes as fixture_stats._id
+        assert recovered == cache_key
+        assert isinstance(recovered, int)
+        assert recovered is not False       # bool is an int; make sure that is not the path
+
+    def test_a_recovered_id_and_a_carried_id_agree(self):
+        # The same real match, one slip carrying the id and one having to recover it, must
+        # resolve to the same key — otherwise half the slips on a fixture settle and half
+        # do not, which is worse than none settling because it looks like bad luck.
+        carried = server._api_fixture_id(bet(api_fixture_id=12345))
+        recovered = server._api_fixture_id(bet(fixture_id="ned-ed-12345"))
+        assert carried == recovered
+
+    def test_stats_key_normalises_only_what_it_should(self):
+        assert server._stats_key(12345) == 12345
+        assert server._stats_key("12345") == 12345
+        assert server._stats_key("  12345  ") == 12345
+        assert server._stats_key("fallback-abc") == "fallback-abc"
+        assert server._stats_key("") is None
+        assert server._stats_key(None) is None
+        # True == 1 in Python, and a bool reaching a fixture id means something upstream is
+        # broken; returning 1 would silently grade the slip against fixture 1.
+        assert server._stats_key(True) is None
+
+    def test_the_settler_normalises_both_sides_of_the_join(self):
+        # A document written with a string _id by an older writer must not become the new
+        # thing that fails to match. The source asks for both forms and keys through
+        # _stats_key, so neither storage shape can break the join.
+        import inspect
+        src = inspect.getsource(server.settle_pending_bets)
+        assert "_stats_key(c[\"_id\"])" in src, \
+            "the settler keys fixture_stats by its raw _id again — a string-keyed document " \
+            "will silently match nothing"
 
 
 class TestGradingASlip:

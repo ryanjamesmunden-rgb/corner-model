@@ -998,7 +998,11 @@ describe("the menu of angles", () => {
     expect(text).toContain("CHASE BOARD");
     expect(text).toContain("VALUE");
     expect(text).toContain("nothing is priced yet");
-    expect(text).toContain("/prices");
+    // It tells the reader HOW to fix it, which is the point of keeping the empty section.
+    // Not "/prices": that bulk-paste page was removed, and a card sending somebody to a
+    // URL that 404s is worse than one that says nothing. Prices go in on a fixture page.
+    expect(text).toContain("Open a game on");
+    expect(text).not.toContain("/prices");
   });
 
   test("priced with no edge is a DIFFERENT empty from not priced at all", () => {

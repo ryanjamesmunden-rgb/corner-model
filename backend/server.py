@@ -2184,6 +2184,7 @@ TOOL_SCRIPTS = {"backfill_shots": "backfill_shots.py", "measure_features": "meas
                 "measure_calibration": "measure_calibration.py",
                 "audit_settlement": "audit_settlement.py",
                 "audit_pick_lines": "audit_pick_lines.py",
+                "audit_bets": "audit_bets.py",
                 "watchlist": "watchlist.py",
                 "backfill_fh": "backfill_fh.py",
                 "backfill_goal_events": "backfill_goal_events.py",

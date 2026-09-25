@@ -54,6 +54,17 @@ ALSO CHECKED: that `line == max(3, round(implied_lambda) - 1)` still holds. It m
 construction — so if it ever fails, something rewrote a pick after it was priced and
 every conclusion above is void. It is here as a tripwire, not as a hypothesis.
 
+AND THAT CHECK IS DONE ON A BAND, NOT A POINT, BECAUSE THE STORED PROBABILITY IS ROUNDED.
+Every writer stores `round(p * 100, 1)` — one decimal place. Inverting that recovers lambda
+only to within the preimage of the rounding bucket, and near the rule's own boundary the
+bucket STRADDLES it: a stored 77.6% at line 3 is any lambda in [4.4988, 4.5081], and
+round() turns the lower half into line 3 and the upper half into line 4. The first version
+inverted the midpoint and compared that, which fired on two correctly-priced picks and
+declared the whole audit void — a tripwire strictly more precise than the data it reads
+reports its own arithmetic as tampering. So the band is inverted at both ends and the rule
+counts as holding if ANY lambda consistent with the stored probability produces the stored
+line. line_for is non-decreasing in lambda, so the two endpoints bracket every case.
+
 NO WRITES, NO API CALLS. It reads db.picks and nothing else.
 
 Run: python audit_pick_lines.py
@@ -77,6 +88,11 @@ db = AsyncIOMotorClient(os.environ["MONGO_URL"])[os.environ["DB_NAME"]]
 LAM_LO, LAM_HI = 0.05, 30.0     # the bracket the inversion searches
 LAM_STEPS = 60                  # bisection depth; 60 halvings is far past float precision
 MIN_BUCKET = 10
+# Half the width of the rounding bucket every writer stores: `round(p * 100, 1)`. A stored
+# 77.6 means the real probability was somewhere in [77.55, 77.65], and that is the whole
+# reason the rule check below works on a band. Not a tolerance to be widened when something
+# fails — it is the storage precision, and changing it makes the tripwire lie.
+PROB_HALF_STEP = 0.05
 
 
 # --------------------------------------------------------------------------
@@ -113,8 +129,43 @@ def implied_lambda(line, prob_pct, r=NB_R):
 
 
 def line_for(lam):
-    """The board's own rule, restated: line = max(3, round(lam) - 1)."""
+    """The board's own rule, restated: line = max(3, round(lam) - 1).
+
+    Python's round() is banker's — round(4.5) is 4, not 5 — and that is deliberate here,
+    because it is the same round() every writer in server.py calls. A restatement that
+    rounded half up would disagree with production at exactly the boundary this file is
+    checking.
+    """
     return max(3, round(lam) - 1)
+
+
+def implied_band(line, prob_pct, half=PROB_HALF_STEP, r=NB_R):
+    """(lam_lo, lam_hi): every lambda consistent with a probability stored to 1dp.
+
+    See the note at the top. Inverting the stored number as if it were exact makes the
+    check finer than the data, and near the rule's boundary that manufactures violations.
+    """
+    if prob_pct is None:
+        return None
+    try:
+        p = float(prob_pct)
+    except (TypeError, ValueError):
+        return None
+    lo = implied_lambda(line, p - half, r)
+    hi = implied_lambda(line, p + half, r)
+    return (lo, hi) if lo is not None and hi is not None else None
+
+
+def rule_holds(line, prob_pct):
+    """Whether ANY lambda behind that stored probability yields the stored line.
+
+    line_for is non-decreasing in lambda, so the band's endpoints bracket every line it
+    could produce and no search between them is needed.
+    """
+    band = implied_band(line, prob_pct)
+    if band is None:
+        return True      # unusable pair — row_for drops it; do not call it tampering
+    return line_for(band[0]) <= int(line) <= line_for(band[1])
 
 
 def row_for(pick):
@@ -129,7 +180,7 @@ def row_for(pick):
     return {"line": int(line), "prob": float(prob), "lam": lam,
             "corners": float(corners), "gap": lam - float(corners),
             "hit": 1 if corners >= line else 0,
-            "rule_ok": line_for(lam) == int(line),
+            "rule_ok": rule_holds(line, prob),
             "venue": pick.get("venue"), "league_id": pick.get("league_id"),
             "team": pick.get("team"), "date": pick.get("date")}
 
@@ -222,8 +273,16 @@ async def run(league_id=None):
               f"impossible\n  !! at write time. Something rewrote them after pricing — every "
               f"number here is void\n  !! until that is explained.")
         for r in broken[:10]:
-            print(f"      {r['date']}  {r['team']} {r['line']}+  implied λ {r['lam']:.2f} "
-                  f"-> rule says {line_for(r['lam'])}+")
+            # The BAND, not the midpoint: the stored probability is rounded to 1dp, so a
+            # single number here would leave a reader unable to see whether the violation
+            # is real or a boundary artefact. Printing both ends makes that checkable.
+            band = implied_band(r["line"], r["prob"])
+            head = f"      {r['date']}  {r['team']} {r['line']}+"
+            if band:
+                print(f"{head}  λ in {band[0]:.3f}-{band[1]:.3f}  -> rule says "
+                      f"{line_for(band[0])}+ to {line_for(band[1])}+")
+            else:
+                print(f"{head}  λ unrecoverable from a stored {r['prob']:.1f}%")
 
     by_line = group(rows, lambda r: r["line"])
     print_table("by line", by_line)

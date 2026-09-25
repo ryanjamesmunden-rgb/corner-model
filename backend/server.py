@@ -2201,6 +2201,7 @@ TOOL_SCRIPTS = {"backfill_shots": "backfill_shots.py", "measure_features": "meas
 TOOL_COOLDOWN = {"backfill_shots": 600, "measure_features": 120,
                  "measure_chase_board": 120, "measure_calibration": 120,
                  "audit_settlement": 120, "audit_pick_lines": 120,
+                 "audit_bets": 120,
                  "watchlist": 120,
                  "backfill_fh": 120,
                  "backfill_goal_events": 600,
@@ -2211,6 +2212,16 @@ TOOL_COOLDOWN = {"backfill_shots": 600, "measure_features": 120,
                  # again is new matches, which arrive twice a day at most.
                  "tune_model": 900, "tune_totals": 900, "measure_game_state": 600,
                  "backfill_goals": 1800}    # seconds
+# What a script with no entry above gets. It exists because a MISSING entry used to raise a
+# bare KeyError inside the guard, which FastAPI served as a 500 — and the guard only reaches
+# that line once a PREVIOUS run exists, so a newly added tool worked exactly once and then
+# returned "Internal Server Error" for ever. The failure named nothing and pointed nowhere.
+#
+# A default is the safe degradation, not the answer: test_tool_registry requires every
+# registered script to have an explicit cooldown, so nothing reaches production relying on
+# this. It is here so the consequence of forgetting is a conservative wait rather than an
+# endpoint that 500s.
+TOOL_COOLDOWN_DEFAULT = 600
 # mode -> (script, fixed argv, accepts --league). Modes are an enum precisely so
 # nothing user-supplied ever reaches argv; --league is appended only after validation
 # AND only for the scripts that actually take it — backfill_fh.py does not, and passing
@@ -2310,7 +2321,7 @@ async def _tool_guard(script: str):
                    - datetime.fromisoformat(last[0]["started_at"])).total_seconds()
         except Exception:
             age = 1e9
-        cd = TOOL_COOLDOWN[script]
+        cd = TOOL_COOLDOWN.get(script, TOOL_COOLDOWN_DEFAULT)
         if age < cd:
             raise HTTPException(status_code=429,
                                 detail=f"{script} ran {int(age)}s ago — wait {int(cd - age)}s")

@@ -95,7 +95,7 @@ on:
         description: "Which board (blank = whatever this weekday calls for)"
         required: false
         type: choice
-        options: ["", "picks", "game", "streaks", "fixtures", "results", "card", "menu", "finder"]
+        options: ["", "picks", "game", "streaks", "fixtures", "results", "card", "menu", "finder", "stat"]
       count:
         # HOW MANY GAMES ON THE CARD. Blank uses angle_of_day.COUNT, which is what the
         # schedule publishes and what the site shows; the backend caps it at 10.
@@ -217,9 +217,12 @@ jobs:
         # delivered anyway, so asking to SEE a card posted one. A flag that governs half
         # the sends is worse than none, because it is believed. The finder is excluded
         # here and from the generic Telegram step for exactly that reason, not by analogy.
+        # `stat` is excluded on the same grounds: it has its own step, it runs EVERY day
+        # including the quiet one, and letting this step build it too would give it two
+        # publishers again.
         if: >-
           steps.when.outputs.quiet != 'true' && inputs.board != 'card'
-          && inputs.board != 'finder'
+          && inputs.board != 'finder' && inputs.board != 'stat'
         # --board auto asks postPlan.js what this weekday is for, and takes its day window
         # too. A board named by hand on a manual run overrides both.
         #
@@ -321,7 +324,8 @@ jobs:
       - name: Send it to Telegram
         if: >-
           steps.when.outputs.quiet != 'true' && steps.build.outputs.empty != 'true'
-          && inputs.board != 'card' && inputs.board != 'finder' && env.TG_TOKEN != ''
+          && inputs.board != 'card' && inputs.board != 'finder'
+          && inputs.board != 'stat' && env.TG_TOKEN != ''
         id: telegram
         # THE POST TEXT GOES IN THE MESSAGE BODY, not only behind the button. A button is
         # one tap when it works, and when it doesn't — a URL Telegram won't accept, an
@@ -763,6 +767,98 @@ jobs:
             # and failing here would make an otherwise good run look red.
             echo "::warning::streak finder send failed (HTTP $code)"
             cat tgf.json || true
+          fi
+        env:
+          BACKEND_URL: ${{ vars.BACKEND_URL || 'https://corner-model.onrender.com' }}
+          SITE_URL: ${{ vars.SITE_URL || 'https://thecornermodel.com' }}
+          TOOLS_TOKEN: ${{ secrets.TOOLS_TOKEN }}
+          TG_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TG_CHAT: ${{ secrets.TELEGRAM_CHAT_ID }}
+
+      - name: Send you the daily statistic to post
+        # EVERY DAY, INCLUDING THE QUIET ONE, and that is the difference between this and
+        # everything else in this file. The rotation above publishes a different board each
+        # weekday and deliberately says nothing on Thursday, because it posts ROWS — angles,
+        # games, results — and there is not a fresh set of those every single day.
+        #
+        # This posts ONE NUMBER ABOUT THE WHOLE BOARD ("23 teams playing in the next 3 days
+        # have won 4+ corners in each of their last 5 or more"), which is true on a Thursday
+        # exactly as it is on a Saturday. A daily account needs something daily, and this is
+        # the only thing here that qualifies. So `steps.when.outputs.quiet` is absent from
+        # this condition on purpose — the same deliberate omission as the finder's, and for
+        # the same reason: quiet means nothing to SAY to an audience about the week's games.
+        #
+        # IT IS A DRAFT, NOT A POST. X ended its free tier and every post through the API is
+        # billed, so this goes to your phone with the text and a one-tap Post button, the
+        # same route the rotation uses. Nothing here publishes by itself.
+        #
+        # A QUIET BOARD SENDS NOTHING AT ALL. tweetStat returns an empty string below
+        # STAT_MIN_TEAMS rather than a loosened bar, because a daily statistic that drops
+        # its threshold to keep the number up stops being a statistic. A day with no post is
+        # the honest output and it is logged as one.
+        if: env.TG_TOKEN != '' && (inputs.board == '' || inputs.board == 'stat')
+        run: |
+          node tools/social_draft.mjs --board stat --out stat.md --json-out stat.json
+          if [ ! -s stat.md ]; then
+            echo "::notice::no daily statistic today — the board is below the bar, see the SKIP line above"
+            exit 0
+          fi
+          {
+            echo "### daily statistic"
+            echo '```'
+            cat stat.md
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "----- stat -----"
+          cat stat.md
+          echo "----- end -----"
+          if [ "${{ inputs.board }}" = "stat" ] && [ "${{ inputs.send }}" != "true" ]; then
+            echo "::notice::statistic built, NOT sent — re-run with send: true to receive it"
+            exit 0
+          fi
+          # THE TEXT IS IN THE BODY AS WELL AS BEHIND THE BUTTON. A button is one tap when
+          # it works; when it does not — a URL X will not accept, a composer that opens
+          # empty — the text still has to be there to copy, or the day's post is lost.
+          # Plain text, no parse_mode: the post contains characters both Markdown and HTML
+          # treat as syntax, and a message that fails to parse never arrives.
+          python3 - <<'PY' > stat_payload.json
+          import json, os
+          d = json.load(open("stat.json"))
+          post = d["post"]
+          # THE TOOL'S OWN INTENT LINK, not one rebuilt here. social_draft.mjs already
+          # encodes it and its form is covered by tests; a second encoder in this file
+          # would be a second definition of the same URL, free to drift from the first.
+          intent = d["intent"]
+          weight = d.get("weight")
+          head = f"Daily statistic — {weight}/280\n\n" if weight else "Daily statistic\n\n"
+          print(json.dumps({
+              "chat_id": os.environ["TG_CHAT"], "text": head + post,
+              "disable_web_page_preview": True,
+              "reply_markup": {"inline_keyboard": [[{"text": "Post it", "url": intent}]]}}))
+          PY
+          code=$(curl -s -o tgs.json -w '%{http_code}' --max-time 30 \
+            -X POST "https://api.telegram.org/bot$TG_TOKEN/sendMessage" \
+            -H 'content-type: application/json' --data-binary @stat_payload.json || true)
+          if [ "$code" = "200" ]; then
+            echo "::notice::daily statistic sent to Telegram"
+          else
+            # NOT FATAL, and it falls back to the text alone. An inline button needs a URL
+            # Telegram will accept, and a long post makes a long intent link — so losing the
+            # button must not lose the post with it.
+            echo "::warning::statistic send with button failed (HTTP $code) — retrying as plain text"
+            cat tgs.json || true
+            python3 - <<'PY' > stat_plain.json
+          import json, os
+          d = json.load(open("stat.json"))
+          print(json.dumps({"chat_id": os.environ["TG_CHAT"], "text": d["post"],
+                            "disable_web_page_preview": True}))
+          PY
+            code=$(curl -s -o tgs2.json -w '%{http_code}' --max-time 30 \
+              -X POST "https://api.telegram.org/bot$TG_TOKEN/sendMessage" \
+              -H 'content-type: application/json' --data-binary @stat_plain.json || true)
+            [ "$code" = "200" ] \
+              && echo "::notice::daily statistic sent without the button" \
+              || echo "::warning::daily statistic send failed (HTTP $code)"
           fi
         env:
           BACKEND_URL: ${{ vars.BACKEND_URL || 'https://corner-model.onrender.com' }}

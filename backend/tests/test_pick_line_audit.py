@@ -213,12 +213,36 @@ class TestTheVerdictNamesTheRightCause:
         out = verdict(by_line, summarise(rows))
         assert "Lambda is RIGHT" in out and "unlucky" in out
 
-    def test_a_gap_only_at_three_blames_the_floor(self):
+    def test_a_gap_at_three_does_not_blame_the_floor_unless_the_floor_fired(self):
+        # THE CORRECTION. This test previously asserted the opposite, and that is how the
+        # wrong conclusion survived: a 3+ line is what `max(3, round(lam) - 1)` produces
+        # UNAIDED for any lambda in [3.5, 4.5), and only lambda below 3.5 is clamped. At
+        # 75.3% the implied lambda is 4.30 — nothing here was floored at all.
         rows = bucket(15, 3, 75.3, 2) + bucket(20, 5, 66.1, 6)
+        assert not any(r["floored"] for r in rows)
         out = verdict(group(rows, lambda r: r["line"]), summarise(rows))
         assert "THE GAP IS AT THE 3+ LINE" in out
-        assert "floor" in out.lower()
-        assert "do not retune lambda" in out
+        assert "THE FLOOR DID NOT CAUSE IT" in out
+        assert "Do not touch the floor" in out
+
+    def test_it_does_blame_the_floor_when_the_floor_really_did_fire(self):
+        # 55% at a 3+ line inverts to lambda 3.0, which round()s to 3 — so `round(lam) - 1`
+        # is 2 and the floor lifts it. This is the case the branch is actually for, and it
+        # has to still fire or the correction has just disabled a real finding.
+        rows = bucket(15, 3, 55.0, 1) + bucket(20, 5, 66.1, 6)
+        assert all(r["floored"] for r in rows if r["line"] == 3)
+        out = verdict(group(rows, lambda r: r["line"]), summarise(rows))
+        assert "WERE clamped by the max(3, ...) floor" in out
+        assert "15 of 15" in out
+
+    def test_a_floored_pick_cannot_promise_a_high_probability(self):
+        # The arithmetic that makes the whole distinction checkable at a glance: a floored
+        # pick has lambda under 3.5, and nb_ge(3, 3.5) is 64.1%. So a 3+ bucket averaging
+        # anything above 64% contains few floored picks or none — which is why the live
+        # bucket, at 75.3%, could never have been a floor problem.
+        assert nb_ge(3, 3.5) * 100 < 65.0
+        assert row_for(pick(line=3, prob=64.0, corners=3))["floored"] is True
+        assert row_for(pick(line=3, prob=66.0, corners=3))["floored"] is False
 
     def test_a_gap_everywhere_blames_the_inputs(self):
         rows = bucket(15, 3, 75.3, 2) + bucket(20, 5, 66.1, 3)

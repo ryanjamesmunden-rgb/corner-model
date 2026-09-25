@@ -168,6 +168,21 @@ def rule_holds(line, prob_pct):
     return line_for(band[0]) <= int(line) <= line_for(band[1])
 
 
+def floored(lam):
+    """Did the max(3, ...) floor actually LIFT this line, or was 3 the natural answer?
+
+    THE DISTINCTION THE VERDICT WAS MISSING. `line = max(3, round(lam) - 1)` only clamps
+    when round(lam) - 1 is below 3, i.e. when lam < 3.5. Above that, a 3+ line is what the
+    rule produces unaided — for lam anywhere in [3.5, 4.5).
+
+    And a floored pick cannot promise much: nb_ge(3, 3.5) is 64.1%, so 64% is the CEILING
+    on a floored 3+ pick's stated probability. A 3+ bucket averaging 75.3% therefore
+    contains few floored picks or none, and blaming its gap on the floor names a mechanism
+    that never fired. That is exactly what the first verdict did.
+    """
+    return round(lam) - 1 < 3
+
+
 def row_for(pick):
     """One pick reduced to what the gap needs. None when it cannot contribute."""
     line, prob = pick.get("line"), pick.get("model_prob")
@@ -181,6 +196,10 @@ def row_for(pick):
             "corners": float(corners), "gap": lam - float(corners),
             "hit": 1 if corners >= line else 0,
             "rule_ok": rule_holds(line, prob),
+            # Whether the FLOOR lifted this line, rather than whether the line is 3. The
+            # two are not the same and conflating them is how the floor got blamed for a
+            # gap it had no part in.
+            "floored": floored(lam),
             "venue": pick.get("venue"), "league_id": pick.get("league_id"),
             "team": pick.get("team"), "date": pick.get("date")}
 
@@ -195,7 +214,8 @@ def summarise(rows):
             "corners": sum(r["corners"] for r in rows) / n,
             "gap": sum(r["gap"] for r in rows) / n,
             "actual": sum(r["hit"] for r in rows) / n * 100,
-            "broken": sum(1 for r in rows if not r["rule_ok"])}
+            "broken": sum(1 for r in rows if not r["rule_ok"]),
+            "floored": sum(1 for r in rows if r["floored"])}
 
 
 def group(rows, key):
@@ -217,11 +237,34 @@ def verdict(by_line, overall, tolerance=0.5):
                 f"is then an unlucky {low_s['n'] if low_s else 0} games, not a broken "
                 f"estimate — and nothing here justifies changing the model.")
     if low_s and rest_s and low_s["gap"] > rest_s["gap"] + tolerance:
+        # THE FLOOR IS ONLY THE ANSWER IF THE FLOOR FIRED. The first version of this
+        # branch went straight from "the gap is at 3+" to "it is the max(3, ...) floor",
+        # which does not follow: a 3+ line is what the rule produces unaided for any lambda
+        # in [3.5, 4.5), and only lambda below 3.5 is clamped. Naming a mechanism without
+        # checking it ran is the same error as the tripwire's — a conclusion more specific
+        # than the evidence carries — and this one would have sent someone to rewrite a
+        # line rule that was working.
+        n_floor = low_s["floored"]
+        if not n_floor:
+            return (f"THE GAP IS AT THE 3+ LINE: {low_s['gap']:+.2f} corners there against "
+                    f"{rest_s['gap']:+.2f} elsewhere — AND THE FLOOR DID NOT CAUSE IT. None "
+                    f"of the {low_s['n']} picks at 3+ was clamped by max(3, ...); every one "
+                    f"is a lambda in [3.5, 4.5) that produced a 3+ line unaided. So the line "
+                    f"rule is doing its job and lambda is running "
+                    f"{low_s['gap']:+.2f} corners high at the BOTTOM of its own range. Do not "
+                    f"touch the floor. The selection is the thing to look at: the board sorts "
+                    f"by highest model probability, and at a 3+ line the highest probability "
+                    f"is the highest lambda in the bucket — so it picks precisely the spots "
+                    f"where a short estimation window ran hot.")
+        floored_share = n_floor / low_s["n"] * 100
         return (f"THE GAP IS AT THE 3+ LINE: {low_s['gap']:+.2f} corners there against "
-                f"{rest_s['gap']:+.2f} elsewhere. That is the max(3, ...) FLOOR — it fires "
-                f"for low-lambda teams, putting the line AT the mean instead of one below "
-                f"it, so a 3+ pick is not the same bet as the rest of the board. Fix the "
-                f"floor or stop publishing spots that hit it; do not retune lambda on this.")
+                f"{rest_s['gap']:+.2f} elsewhere, and {n_floor} of {low_s['n']} of those "
+                f"picks ({floored_share:.0f}%) WERE clamped by the max(3, ...) floor — it "
+                f"fires for low-lambda teams, putting the line AT the mean instead of one "
+                f"below it, so a floored pick is not the same bet as the rest of the board. "
+                f"Split the floored rows out before concluding: if the gap sits on them, fix "
+                f"the floor or stop publishing them; if it does not, the floor is incidental "
+                f"and the cause is lambda at the bottom of its range.")
     return (f"Lambda runs {overall['gap']:+.2f} corners high ACROSS THE BOARD, not just at "
             f"3+. That is an input problem, not the line rule — read the venue split below "
             f"before touching anything.")
@@ -232,7 +275,7 @@ def verdict(by_line, overall, tolerance=0.5):
 # --------------------------------------------------------------------------
 
 HEAD = (f"  {'bucket':>10} {'n':>5} {'promised':>9} {'implied λ':>10} {'actual':>8} "
-        f"{'gap':>8} {'hit %':>7}")
+        f"{'gap':>8} {'hit %':>7} {'floored':>8}")
 
 
 def print_table(title, buckets, order=None):
@@ -243,8 +286,12 @@ def print_table(title, buckets, order=None):
         if not s:
             continue
         thin = "  (thin)" if s["n"] < MIN_BUCKET else ""
+        # HOW MANY ROWS THE max(3, ...) FLOOR ACTUALLY LIFTED. Printed on every table so
+        # the verdict's claim about the floor can be checked against a number rather than
+        # taken on trust — the first version asserted the floor without ever counting it.
         print(f"  {str(k):>10} {s['n']:5} {s['prob']:8.1f}% {s['lam']:10.2f} "
-              f"{s['corners']:8.2f} {s['gap']:+8.2f} {s['actual']:6.1f}%{thin}")
+              f"{s['corners']:8.2f} {s['gap']:+8.2f} {s['actual']:6.1f}% {s['floored']:8}"
+              f"{thin}")
 
 
 async def run(league_id=None):
@@ -266,6 +313,14 @@ async def run(league_id=None):
     print(f"  actually won {overall['corners']:.2f} corners  ->  gap {overall['gap']:+.2f}")
     print("  (gap = what the model expected minus what happened, in corners.")
     print("   Positive means lambda was too high and the price was never achievable.)")
+
+    # THE FLOOR, COUNTED RATHER THAN ASSUMED. `line = max(3, round(lam) - 1)` clamps only
+    # when lam < 3.5, and nb_ge(3, 3.5) is 64.1% — so a floored pick can never promise more
+    # than 64%. Any 3+ bucket averaging above that contains few floored picks or none, and
+    # the first version of this audit blamed the floor for a gap without checking.
+    n_floor = overall["floored"]
+    print(f"\n  floored by max(3, ...): {n_floor} of {len(rows)} picks"
+          + ("  — the floor cannot explain anything here" if not n_floor else ""))
 
     broken = [r for r in rows if not r["rule_ok"]]
     if broken:

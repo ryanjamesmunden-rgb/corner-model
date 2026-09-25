@@ -29,7 +29,7 @@
 // count matches an earlier one's — otherwise a board where every run is long produces
 // "20 teams..." and "20 of them are on 10 or more", which reads as padding.
 import { countryCodeFor } from "./countryFlag.js";
-import { fitToPost, weightedLength } from "./xLimit.js";
+import { fitToPost, xWeight } from "./xLimit.js";
 import { STAT_DAYS, STAT_MIN_LINE, STAT_MIN_RUN, STAT_MIN_TEAMS, counted, statsFrom }
   from "./tweetStat.js";
 
@@ -77,14 +77,17 @@ const build = (sentences, site, path) => {
   const where = host(site);
   const body = sentences.filter(Boolean);
   if (!body.length) return "";
+  // appendUrl: false — the link is IN the text below, so xWeight charges it once at its
+  // flat t.co cost. Leaving the default on would reserve room for a second copy and drop a
+  // sentence that fitted.
   return fitToPost((n) => {
     const text = body.slice(0, n).join(" ");
     return where ? `${text}\n\n${where}${path}` : text;
-  }, body.length);
+  }, body.length, { appendUrl: false });
 };
 
 const candidate = (key, text, stats) =>
-  (text ? { key, text, stats, weight: weightedLength(text) } : null);
+  (text ? { key, text, stats, weight: xWeight(text) } : null);
 
 
 // --------------------------------------------------------------------------

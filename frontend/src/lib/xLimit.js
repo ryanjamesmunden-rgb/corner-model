@@ -45,6 +45,49 @@ const graphemes = (text) => {
   return [...text];
 };
 
+// A LINK INSIDE THE TEXT COSTS 23, NOT ITS OWN LENGTH, and counting it character by
+// character is what made the number shown beside a draft wrong.
+//
+// X replaces every link with a t.co of fixed length before counting, so
+// "thecornermodel.com/streaks" — 26 characters — costs 23. weightedLength does not know
+// that: it is a pure character weigher, and it charged 26. Every draft that ends on its own
+// link therefore reported a few characters more than X would, and the fitting was
+// conservative by a whole URL on top of that, because fitsInAPost ALSO added URL_WEIGHT to a
+// text that already contained the address.
+//
+// Both errors ran the same way — over-counting — so nothing was ever posted too long. But
+// the figure printed next to a post is read by a person deciding whether they have room to
+// edit it, and "142/280" for a post X counts as 138 is a number that cannot be checked
+// against X's own composer. So the two jobs are now separate: weightedLength weighs
+// characters, xWeight answers "what will X say this costs".
+//
+// IT NEVER UNDER-COUNTS. A link the pattern fails to recognise is weighed as ordinary text,
+// which for any address long enough to matter is more than 23 — so a miss keeps a post
+// inside the limit rather than pushing it over.
+const URL_RE = /\bhttps?:\/\/\S+|\b(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+(?:com|net|org|io|co|uk|ai|app|dev|me|tv|gg)\b(?:\/\S*)?/gi;
+
+/**
+ * What X will actually count for a finished post, links included.
+ *
+ * Use this for anything shown to a person or compared against X_MAX_WEIGHT. Use
+ * weightedLength only when you specifically want the character weight of text with no
+ * links in it.
+ */
+export const xWeight = (text) => {
+  const s = String(text || "");
+  let total = 0;
+  let last = 0;
+  URL_RE.lastIndex = 0;
+  for (let m = URL_RE.exec(s); m; m = URL_RE.exec(s)) {
+    total += weightedLength(s.slice(last, m.index));
+    // A link the pattern found but which is SHORTER than a t.co still costs 23: X swaps it
+    // for one either way, so the max is wrong here and the flat charge is right.
+    total += URL_WEIGHT;
+    last = m.index + m[0].length;
+  }
+  return total + weightedLength(s.slice(last));
+};
+
 /** What X will say this text costs, before any link is added. */
 export const weightedLength = (text) => {
   let total = 0;
@@ -57,9 +100,17 @@ export const weightedLength = (text) => {
   return total;
 };
 
-/** Does this body still fit once X appends the link (and the space before it)? */
-export const fitsInAPost = (text, { url = true } = {}) =>
-  weightedLength(text) + (url ? URL_WEIGHT + 1 : 0) <= X_MAX_WEIGHT;
+/**
+ * Does this fit in one post?
+ *
+ * `appendUrl` is about whether a link is still to be ADDED — the share buttons and the X
+ * draft hand the composer a body and let the intent's `&url=` put the address underneath,
+ * so those bodies have to leave room for it. A post that already ends on its own link
+ * passes false, and xWeight charges the link it can see. Getting this backwards double-
+ * counts an address and drops a sentence that would have fitted.
+ */
+export const fitsInAPost = (text, { appendUrl = true } = {}) =>
+  xWeight(text) + (appendUrl ? URL_WEIGHT + 1 : 0) <= X_MAX_WEIGHT;
 
 /**
  * The longest version of a board that fits in one post: `build(n)` is called with
@@ -70,11 +121,11 @@ export const fitsInAPost = (text, { url = true } = {}) =>
  * something the user can edit. Being over the limit is visible in X's own composer;
  * silently sharing nothing is not.
  */
-export const fitToPost = (build, maxRows) => {
+export const fitToPost = (build, maxRows, opts = {}) => {
   let last = "";
   for (let n = maxRows; n >= 1; n--) {
     last = build(n) || "";
-    if (!last || fitsInAPost(last)) return last;
+    if (!last || fitsInAPost(last, opts)) return last;
   }
   return last;
 };

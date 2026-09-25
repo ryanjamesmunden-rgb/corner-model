@@ -26,7 +26,7 @@
 // bar, in the stated window, and nothing else — so a quiet day produces a small number or
 // no post at all rather than a loosened threshold that keeps the number up.
 import { countryCodeFor } from "./countryFlag.js";
-import { fitToPost, weightedLength } from "./xLimit.js";
+import { fitToPost, xWeight } from "./xLimit.js";
 
 /** The bar the post claims. Kept at the finder's, so the two cannot describe different boards. */
 export const STAT_MIN_LINE = 4;
@@ -122,7 +122,8 @@ export const tweetStat = ({ rows = [], days = STAT_DAYS, site = "",
   const text = fitToPost((n) => {
     const body = sentences.slice(0, n).join(" ");
     return where ? `${body}\n\n${where}/streaks` : body;
-  }, sentences.length);
+    // appendUrl: false — the link is in the text, and xWeight charges it at 23 once.
+  }, sentences.length, { appendUrl: false });
 
-  return { text, stats: s, weight: weightedLength(text) };
+  return { text, stats: s, weight: xWeight(text) };
 };

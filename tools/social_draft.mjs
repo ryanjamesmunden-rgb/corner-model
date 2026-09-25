@@ -33,7 +33,7 @@ const { streakShare, fixtureShare, streakResultShare, pickGame, pickGameDetailed
         picksReview, angleMenu, PUBLIC_STREAK_ROWS } = await import(resolve(LIB, "shareText.js"));
 const { fixtureStoryMarkets } = await import(resolve(LIB, "storyImage.js"));
 const { kickoffLabel } = await import(resolve(LIB, "kickoff.js"));
-const { fitToPost, weightedLength, URL_WEIGHT, X_SHARE_ROWS } = await import(resolve(LIB, "xLimit.js"));
+const { fitToPost, weightedLength, xWeight, URL_WEIGHT, X_SHARE_ROWS } = await import(resolve(LIB, "xLimit.js"));
 const { boardForDay } = await import(resolve(LIB, "postPlan.js"));
 const { slipFrom, slipPost, dayKey } = await import(resolve(LIB, "dailySlip.js"));
 const { slateFrom, slatePost } = await import(resolve(LIB, "chaseSlate.js"));
@@ -677,9 +677,14 @@ if (BOARD === "game") {
     }
   }
   // NO &url= HERE. The post already ends on the link, and the intent parameter would put
-  // a second copy of the same address underneath it. The URL still costs its flat t.co
-  // weight inside the text, which is what weightedLength already charges for it.
-  const weight = weightedLength(post);
+  // a second copy of the same address underneath it.
+  //
+  // xWeight, NOT weightedLength, and the old comment here had it backwards: it claimed
+  // weightedLength "already charges the flat t.co weight", which it does not — it is a
+  // character weigher and charged this address its full 26. The figure printed beside a
+  // draft was a few over what X counts, which is exactly the number somebody checks against
+  // X's own composer before editing.
+  const weight = xWeight(post);
   const intent = `https://x.com/intent/tweet?text=${encodeURIComponent(post)}`;
   const prob = row.projection?.prob;
   emit(`**[Post this on X](${intent})** — opens the composer already filled in. Nothing is posted until you hit Post.

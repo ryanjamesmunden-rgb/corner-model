@@ -17,7 +17,7 @@
 import {
   counted, statsFrom, tweetStat, STAT_MIN_LINE, STAT_MIN_RUN, STAT_MIN_TEAMS,
 } from "./tweetStat.js";
-import { weightedLength, URL_WEIGHT, X_MAX_WEIGHT } from "./xLimit.js";
+import { xWeight, X_MAX_WEIGHT } from "./xLimit.js";
 
 const row = (name, leagueId, line, run) => ({
   name, league_id: leagueId, line, direction: "over",
@@ -161,7 +161,7 @@ describe("a quiet board", () => {
 describe("what X will accept", () => {
   test("an ordinary board fits once the link is counted", () => {
     const { text } = tweetStat({ rows: board(23), days: 3, site: SITE });
-    expect(weightedLength(text) + URL_WEIGHT + 1).toBeLessThanOrEqual(X_MAX_WEIGHT);
+    expect(xWeight(text)).toBeLessThanOrEqual(X_MAX_WEIGHT);
   });
 
   test("a board of many countries still fits", () => {
@@ -170,7 +170,7 @@ describe("what X will accept", () => {
       .flatMap((lid) => board(3, lid, 5, 14));
     const { text, stats } = tweetStat({ rows: many, days: 3, site: SITE });
     expect(stats.countries).toBe(12);
-    expect(weightedLength(text) + URL_WEIGHT + 1).toBeLessThanOrEqual(X_MAX_WEIGHT);
+    expect(xWeight(text)).toBeLessThanOrEqual(X_MAX_WEIGHT);
     // Sentences are dropped from the END, so the count survives whatever else does not.
     expect(text.startsWith(`${stats.teams} teams`)).toBe(true);
   });

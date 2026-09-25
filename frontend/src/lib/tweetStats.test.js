@@ -11,22 +11,27 @@
 //     produce "20 teams on 4+" and "20 of them on 10+" — padding, and it looks like it.
 //   - OVER 280 by X's weighted count, with the link counted.
 import {
-  BUILDERS, DEEP_RUN, HIGH_LINE, MIN_SUBJECTS, MISMATCH_BAR, breadthStat, dedupe,
-  deepRunStat, highLineStat, mismatchStat, todayStat, tweetStats, ukDay,
-  STAT_MIN_LINE, STAT_MIN_RUN,
+  BUILDERS, DEEP_RUN, EXAMPLES, HIGH_LINE, MIN_SUBJECTS, MISMATCH_BAR, breadthStat, dedupe,
+  deepRunStat, examplesLine, highLineStat, mismatchStat, pickExamples, todayStat,
+  tweetStats, ukDay, STAT_MIN_LINE, STAT_MIN_RUN,
 } from "./tweetStats.js";
-import { weightedLength, URL_WEIGHT, X_MAX_WEIGHT } from "./xLimit.js";
+import { xWeight, X_MAX_WEIGHT } from "./xLimit.js";
 
 const SITE = "https://thecornermodel.com";
 const NOW = new Date("2026-09-26T09:00:00Z");
 const TODAY = "2026-09-26T14:00:00Z";
 const TOMORROW = "2026-09-27T14:00:00Z";
 
-const row = (name, leagueId, line, run, date = TOMORROW) => ({
+let nextId = 1;
+const row = (name, leagueId, line, run, date = TOMORROW, opp = null, home = true) => ({
   name, league_id: leagueId, line, direction: "over",
   streak: { length: run },
   projection: { fair_odds: 1.4 },
-  next_fixture: { fixture_id: 1, opponent: "Someone", is_home: true, date },
+  // A DISTINCT FIXTURE PER ROW. Sharing one id made every row the same tie, and the
+  // examples would collapse to one — which is a property worth testing, not a fixture bug
+  // to leave lying around. See the dedupe test below for the shared-tie case.
+  next_fixture: { fixture_id: (nextId += 1), opponent: opp || `Rival ${name}`,
+                  is_home: home, date },
 });
 
 const board = (n, leagueId = "eng-l2", line = 4, run = 6, date = TOMORROW) =>
@@ -35,7 +40,8 @@ const board = (n, leagueId = "eng-l2", line = 4, run = 6, date = TOMORROW) =>
 const mm = (name, leagueId, teamFor, oppConceded) => ({
   name, league_id: leagueId, team_for: teamFor, opp_conceded: oppConceded,
   lambda: 11.2, line: 10, prob: 62.0,
-  next_fixture: { fixture_id: 2, opponent: "Someone", is_home: true, date: TOMORROW },
+  next_fixture: { fixture_id: (nextId += 1), opponent: `Rival ${name}`,
+                  is_home: true, date: TOMORROW },
 });
 
 const mmBoard = (n, teamFor = 6.4, oppConceded = 6.8) =>
@@ -68,14 +74,36 @@ describe("the rules every candidate obeys", () => {
     }
   });
 
-  test("none of them names a team", () => {
+  test("each names exactly two games, not the list", () => {
+    // A DELIBERATE REVERSAL. These posts named nobody, on the reasoning that the names are
+    // the reason to click and a post answering its own hook has given the product away.
+    // Two of twenty does the opposite: an aggregate nobody can check reads like a claim,
+    // and the same aggregate with two games attached reads like a fact. The eighteen others
+    // still need the link.
+    //
+    // WHAT THIS GUARDS IS THE CEILING. "Two examples" becoming "here is the board" is the
+    // failure, and it would happen one row at a time.
     const named = tweetStats({
-      rows: board(20).map((r, i) => ({ ...r, name: `Distinctive${i}` })),
-      mismatches: mmBoard(8).map((m, i) => ({ ...m, name: `Peculiar${i}` })),
+      rows: board(20).map((r, i) => ({ ...r, name: `Distinctive${i}`,
+        next_fixture: { ...r.next_fixture, fixture_id: i, opponent: `Rival${i}` } })),
       days: 3, site: SITE, now: NOW,
     });
-    expect(allText(named)).not.toContain("Distinctive");
-    expect(allText(named)).not.toContain("Peculiar");
+    for (const c of named) {
+      const hits = (c.text.match(/Distinctive/g) || []).length;
+      expect(hits).toBeLessThanOrEqual(EXAMPLES);
+      expect(hits).toBeGreaterThan(0);
+    }
+  });
+
+  test("naming a game does not turn it into a recommendation", () => {
+    // The line that must not move. "Plymouth v Wycombe (18 in a row)" is a record of
+    // eighteen matches already played; it becomes a tip the moment it carries a price, a
+    // probability or an instruction.
+    const text = allText(every).toLowerCase();
+    for (const word of ["back ", "bet on", "watch", "worth a", "@", "odds", "price",
+                        "fair ", "%"]) {
+      expect(text).not.toContain(word);
+    }
   });
 
   test("all of them send the reader to the list", () => {
@@ -84,7 +112,7 @@ describe("the rules every candidate obeys", () => {
 
   test("all of them fit once the link is counted", () => {
     for (const c of every) {
-      expect(weightedLength(c.text) + URL_WEIGHT + 1).toBeLessThanOrEqual(X_MAX_WEIGHT);
+      expect(xWeight(c.text)).toBeLessThanOrEqual(X_MAX_WEIGHT);
     }
   });
 
@@ -222,6 +250,94 @@ describe("two posts that are the same post", () => {
     const b = { key: "b", text: "y", stats: { teams: 9 } };
     const c = { key: "c", text: "z", stats: { teams: 4 } };
     expect(dedupe([a, b, c]).map((x) => x.key)).toEqual(["a", "c"]);
+  });
+});
+
+
+// NAMING TWO OF THEM.
+//
+// Asked for: the aggregate alone reads like a claim, and the same aggregate with two games
+// attached reads like a fact. The failures worth guarding are the ones that turn a sample
+// into the list, print a game twice, or get the fixture the wrong way round.
+describe("the two example games", () => {
+  test("a home run reads with our side first, an away run second", () => {
+    // The fixture as it really is, not always our team first — a reader checking it against
+    // a fixture list has to find the same match.
+    const home = row("Plymouth", "eng-l2", 4, 18, TOMORROW, "Wycombe", true);
+    const away = row("Salford", "eng-l2", 4, 17, TOMORROW, "Barrow", false);
+    expect(examplesLine([home, away])).toBe(
+      "Two of them: Plymouth v Wycombe (18 in a row), Barrow v Salford (17).");
+  });
+
+  test("the longest runs are the ones named", () => {
+    const rows = [...board(10, "eng-l2", 4, 6),
+                  row("Long", "ned-ed", 4, 19, TOMORROW, "Opp", true),
+                  row("Longer", "ned-ed", 4, 21, TOMORROW, "Opp2", true)];
+    expect(pickExamples(rows).map((e) => e.run)).toEqual([21, 19]);
+  });
+
+  test("one game is named once, however many of its sides are on a run", () => {
+    // Both teams in a tie can be running. The same fixture printed twice is one example
+    // and a mistake the reader will spot before we do.
+    const a = { ...row("A", "eng-l2", 4, 9, TOMORROW, "B", true) };
+    const b = { ...row("B", "eng-l2", 4, 8, TOMORROW, "A", false),
+                next_fixture: { ...a.next_fixture, opponent: "A", is_home: false } };
+    expect(pickExamples([a, b])).toHaveLength(1);
+  });
+
+  test("a row with no opponent still names the team rather than 'undefined'", () => {
+    const bare = { name: "Solo", league_id: "eng-l2", line: 4, direction: "over",
+                   streak: { length: 12 }, next_fixture: { date: TOMORROW } };
+    expect(examplesLine([bare])).toBe("One of them: Solo (12 in a row).");
+  });
+
+  test("'in a row' is spelled out once, then the bracket is just the number", () => {
+    // By the second the reader knows what the bracket means, and saying it again costs
+    // characters the post does not have.
+    const line = examplesLine([row("A", "eng-l2", 4, 9, TOMORROW, "X", true),
+                               row("B", "eng-l2", 4, 8, TOMORROW, "Y", true)]);
+    expect(line.match(/in a row/g)).toHaveLength(1);
+    expect(line).toContain("(8)");
+  });
+
+  test("an empty board names nothing rather than an empty sentence", () => {
+    expect(examplesLine([])).toBe("");
+  });
+
+  test("the mismatch post names games without a run in brackets", () => {
+    // Those rows carry averages, not runs. "(0 in a row)" would be a different quantity
+    // wearing the same notation.
+    const c = mismatchStat({ mismatches: mmBoard(9), days: 3, site: SITE });
+    expect(c.text).toMatch(/Two of them: [^(]+ v [^(]+, /);
+    expect(c.text).not.toContain("in a row");
+  });
+
+  test("the examples come before the context, so a long day does not drop them", () => {
+    // fitToPost drops from the tail. These were asked for; the spread and the total are
+    // context and give way first.
+    // Two leagues, so the "They span N countries" sentence actually exists to sit after.
+    const rows = [...board(12, "eng-l2"), ...board(8, "ned-ed")];
+    const c = breadthStat({ rows, days: 3, site: SITE });
+    expect(c.text).toContain("They span");
+    expect(c.text.indexOf("Two of them")).toBeLessThan(c.text.indexOf("They span"));
+  });
+
+  test("the named pair is not also quoted as 'the longest run is'", () => {
+    // The examples ARE the longest two, so both would print the same numbers twice.
+    const rows = [...board(10, "eng-l2", 4, 6),
+                  row("L", "ned-ed", 4, 20, TOMORROW, "O", true),
+                  row("M", "ned-ed", 4, 19, TOMORROW, "P", true)];
+    const c = breadthStat({ rows, days: 3, site: SITE });
+    expect(c.text).toContain("(20 in a row)");
+    expect(c.text).not.toContain("The longest run is");
+  });
+
+  test("they are carried on the stats too, not only in the prose", () => {
+    // So a caller can render them differently without re-deriving which two we chose.
+    const c = breadthStat({ rows: board(20), days: 3, site: SITE });
+    expect(c.stats.examples).toHaveLength(EXAMPLES);
+    expect(c.stats.examples[0]).toHaveProperty("label");
+    expect(c.stats.examples[0]).toHaveProperty("run");
   });
 });
 

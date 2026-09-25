@@ -3,6 +3,7 @@ import { useParams, useNavigate } from "react-router-dom";
 import { toast } from "sonner";
 import {
   ArrowLeft, TrendingUp, TrendingDown, ClipboardPaste, Flame, Shield, MapPin, Swords, Eye,
+  Lock,
 } from "lucide-react";
 import StarButton from "@/components/StarButton";
 import ShareButtons from "@/components/ShareButtons";
@@ -123,6 +124,11 @@ export default function FixtureDetail() {
 
   const { fixture, model, home_team, away_team } = data;
   const keyFactors = data.key_factors || {};
+  // THE SERVER DECIDES THIS, NOT THE PAGE. `blurred` is set by _blur_model when the reader
+  // is not a member, and the numbers it refers to are already gone from the payload — so
+  // this only chooses how to DRAW an absence, never whether to reveal something. A
+  // client-side check would be a lock with the values sitting in the network tab.
+  const blurred = !!model.blurred;
   // Every market — totals included — now carries fair odds, your price and the EV
   // between them. See TotalCorners for why totals were the exception and no longer are.
   const groups = [
@@ -188,9 +194,28 @@ export default function FixtureDetail() {
       {/* The headline answer, drawn. This leads the page on purpose: it is the one thing a
           visitor who has never used the site can read, and everything below is the detail
           behind it rather than the other way round. */}
-      <ProbabilityChart distribution={model.distribution} lambdas={model.lambdas}
-        markets={model.markets} leagueId={fixture.league_id} kickoff={fixture.date}
-        homeName={fixture.home_name} awayName={fixture.away_name} />
+      {/* THE CURVE IS THE MODEL, so it goes with the rest of its numbers. A reader can
+          hold a ruler to a probability mass function and recover the percentages the
+          columns below now withhold, which would make the lock decorative. What replaces
+          it says so plainly rather than leaving a gap where the page's headline was. */}
+      {blurred ? (
+        <div className="bg-card border border-border rounded-lg px-4 py-5 text-center"
+          data-testid="chart-locked">
+          <div className="flex items-center justify-center gap-2 text-muted-foreground">
+            <Lock className="h-3.5 w-3.5" />
+            <span className="text-sm">The projection curve is for members.</span>
+          </div>
+          <p className="mt-1.5 text-xs text-muted-foreground max-w-md mx-auto leading-relaxed">
+            Everything below is the record this game is built on — both sides' corner
+            ladders, the runs going into it and the form splits. What a subscription adds is
+            the model's own line: the probability, the fair price and the edge against yours.
+          </p>
+        </div>
+      ) : (
+        <ProbabilityChart distribution={model.distribution} lambdas={model.lambdas}
+          markets={model.markets} leagueId={fixture.league_id} kickoff={fixture.date}
+          homeName={fixture.home_name} awayName={fixture.away_name} />
+      )}
 
       {/* Who is playing, in words. */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-3 sm:gap-4">
@@ -294,8 +319,15 @@ export default function FixtureDetail() {
                           </div>
                         )}
                       </td>
-                      <td className="px-3 py-2 text-right text-muted-foreground">{m.prob.toFixed(1)}%</td>
-                      <td className="px-3 py-2 text-right text-foreground">{m.fair_odds?.toFixed(2)}</td>
+                      {/* m.prob.toFixed(1) was unguarded, and a blurred model has no
+                          `prob` — so withholding it would have thrown here and taken the
+                          whole fixture page down rather than hiding a column. */}
+                      <td className="px-3 py-2 text-right text-muted-foreground">
+                        {modelNum(m.prob, (v) => `${v.toFixed(1)}%`, blurred)}
+                      </td>
+                      <td className="px-3 py-2 text-right text-foreground">
+                        {modelNum(m.fair_odds, (v) => v.toFixed(2), blurred)}
+                      </td>
                       <td className="px-3 py-2 text-right">
                         <input
                           data-testid={`odds-input-${m.key}`}
@@ -308,7 +340,7 @@ export default function FixtureDetail() {
                         />
                       </td>
                       <td className={`px-3 py-2 text-right font-semibold ${t ? t.text : "text-muted-foreground"}`}>
-                        {m.ev != null ? `${m.ev > 0 ? "+" : ""}${m.ev.toFixed(1)}%` : "—"}
+                        {modelNum(m.ev, (v) => `${v > 0 ? "+" : ""}${v.toFixed(1)}%`, blurred)}
                       </td>
                       {/* BACK IT, only where there is a price to back it AT. The server
                           refuses a bet on a market with no book odds, so offering the
@@ -343,6 +375,7 @@ export default function FixtureDetail() {
           is a market with one more assumption in it, and the page should not present the
           two as interchangeable just because they sit on the same fixture. */}
       <TotalCorners
+        blurred={blurred}
         markets={model.markets}
         home={home_team}
         away={away_team}
@@ -379,6 +412,26 @@ export default function FixtureDetail() {
 
 // The key for the bands above. Colour is only useful if its meaning is stated — the
 // fixture board learned the same lesson.
+// A MODEL NUMBER A NON-MEMBER DOES NOT GET.
+//
+// `undefined` in one of these columns is the SERVER having removed it — see _blur_model —
+// and it has to read differently from "you have not typed a price yet", which is also a
+// blank. A dash for both would make a locked board look like an empty one, and the visitor
+// would conclude the site has nothing rather than that it is holding something back.
+function Locked() {
+  return (
+    <span className="text-muted-foreground/70" title="The model's price and edge are for members">
+      <Lock className="inline h-3 w-3 align-[-1px]" />
+    </span>
+  );
+}
+
+/** Render a model number, or the lock when the server withheld it. */
+const modelNum = (v, render, blurred) => {
+  if (v != null) return render(v);
+  return blurred ? <Locked /> : "\u2014";
+};
+
 function BandKey({ note }) {
   return (
     <div className="px-3 py-2 border-t border-border flex items-center gap-2 flex-wrap text-[10px] text-muted-foreground">
@@ -479,7 +532,7 @@ function PastePrices({ value, onChange, target, onTarget, onSubmit, homeName, aw
 
 function TotalCorners({ markets, home, away, homeName, awayName,
                         odds, setOdds, submitOdds, flash,
-                        fixtureId, backing, onBacking }) {
+                        fixtureId, backing, onBacking, blurred }) {
   // Straight off the model's own total ladder, so the prices and the hit rates cannot
   // drift onto different lines. Over 9.5 is displayed as "10+", which is how it is said.
   const rows = (markets || [])
@@ -593,7 +646,7 @@ function TotalCorners({ markets, home, away, homeName, awayName,
                   )}
                 </td>
                 <td className="px-3 py-2 text-right text-foreground leading-tight">
-                  {m.fair_odds?.toFixed(2) ?? "—"}
+                  {modelNum(m.fair_odds, (v) => v.toFixed(2), blurred)}
                   <span className="block text-[10px] text-muted-foreground font-sans">
                     {m.prob != null ? `${Math.round(m.prob)}%` : ""}
                   </span>
@@ -618,7 +671,7 @@ function TotalCorners({ markets, home, away, homeName, awayName,
                   {gap == null ? "—" : `${gap > 0 ? "+" : ""}${gap.toFixed(2)}`}
                 </td>
                 <td className={`px-3 py-2 text-right font-semibold ${t ? t.text : "text-muted-foreground"}`}>
-                  {m.ev != null ? `${m.ev > 0 ? "+" : ""}${m.ev.toFixed(1)}%` : "—"}
+                  {modelNum(m.ev, (v) => `${v > 0 ? "+" : ""}${v.toFixed(1)}%`, blurred)}
                 </td>
                 {/* The totals table could be priced but never backed — the button existed
                     only on the team tables, so the market at the top of the page was the

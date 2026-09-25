@@ -3289,7 +3289,12 @@ async def fixture_detail(fixture_id: str, user: dict = Depends(get_current_user)
                     for side in ("for", "against")}}
                 for m in reversed(rms)]
 
-    return {"fixture": fx, "model": model, "league_avg_corners": round(lg_avg, 2),
+    # THE MODEL'S NUMBERS ARE FOR MEMBERS; EVERYTHING ELSE ON THIS PAGE IS NOT. `user` was
+    # a dependency here that nothing read, which is how the priced angle on every fixture
+    # went out to anyone with the URL. See _blur_model.
+    return {"fixture": fx,
+            "model": model if user.get("member") else _blur_model(model),
+            "league_avg_corners": round(lg_avg, 2),
             # WHAT IS ALREADY RUNNING INTO THIS GAME. Rides along on the fixture payload
             # rather than a second endpoint: the page has to load this anyway to show it,
             # and a separate call would just be a second thing to keep in step.
@@ -3790,9 +3795,24 @@ MIN_STREAK_LEN = 2
 # THREE TIERS, NOT TWO. A signed-out visitor and someone who has made an account are not
 # the same person: the first has given nothing and the second has given you an identity and
 # a way to reach them. Rewarding that costs little and is the whole reason anyone bothers.
-PREVIEW_ROWS = 3          # signed out
-FREE_ROWS = 6             # signed in, not subscribed
-                          # a member gets the lot
+#
+# AND THE ROW LIMIT IS NOW ZERO FOR EVERYONE WHO HAS NOT PAID, which reverses the numbers
+# above rather than tuning them. It used to be three readable rows signed out and six signed
+# in, with the rest blurred. Every row now comes back, and every row a non-member sees has
+# the model's numbers stripped.
+#
+# THE SPLIT IS NO LONGER HOW MANY ROWS, IT IS WHICH COLUMNS. The whole board — the teams,
+# the lines, the runs, the records, the counts — is public, because that is the evidence a
+# visitor needs to judge whether any of this works, and a board they can check is a better
+# advert than three rows they cannot. What stays behind the subscription is the model's
+# opinion: the probability, the fair price, the edge and the tier.
+#
+# THE OLD SHAPE GAVE AWAY THE WRONG HALF. Three fully readable rows meant the three best
+# spots on the board — priced, with an edge attached — went out free every day, while the
+# other forty teams' RECORDS, which cost nothing to show, were the part held back. That is
+# backwards on both counts.
+READABLE_ROWS = 0         # anyone who has not paid: every row, no model numbers
+                          # a member gets the lot, numbers included
 
 # What gets taken OFF a row that is shown but not readable. These are the model's own
 # numbers, which are the product — see the note on gameShare for why a probability and a
@@ -3802,10 +3822,14 @@ BLURRED_FIELDS = ("prob", "fair_odds", "ev", "tier", "lambda", "lambda_total",
 
 
 def _row_limit(user: dict) -> Optional[int]:
-    """How many rows this reader may read in full. None means all of them."""
-    if user.get("member"):
-        return None
-    return PREVIEW_ROWS if user.get("user_id") == PUBLIC_USER_ID else FREE_ROWS
+    """How many rows this reader may read WITH the model's numbers. None means all of them.
+
+    Signed out and signed in are no longer different here, and that is deliberate: the
+    stats are public either way, so there is nothing left for an account alone to unlock.
+    What an account still buys is everything else it always did — saved fixtures, your own
+    slips, the group board.
+    """
+    return None if user.get("member") else READABLE_ROWS
 
 
 def _blur(row):
@@ -3827,6 +3851,46 @@ def _blur(row):
     if isinstance(row.get("angles"), list):
         out["angles"] = [{k: v for k, v in a.items() if k not in BLURRED_FIELDS}
                          if isinstance(a, dict) else a for a in row["angles"]]
+    out["blurred"] = True
+    return out
+
+
+# A FIXTURE PAGE IS A BOARD ROW TURNED INSIDE OUT, and it was handing the whole model to
+# anyone who opened it.
+#
+# FOUND WHILE OPENING THE BOARDS UP. `fixture_detail` took `user` as a dependency and never
+# read it, so every signed-out visitor got the complete `model` for any fixture — every
+# market's probability, fair price, edge and tier. The boards were being carefully trimmed
+# to three rows while a URL one click away gave away the priced angle on the same games, one
+# fixture at a time and without a login.
+#
+# So it is the same rule here as everywhere else now: the stats are public, the model's
+# opinion is not.
+#
+# THE CURVE GOES TOO, and that is a judgement rather than an oversight. `distribution` is
+# the probability mass function the markets are priced off — a reader can hold a ruler to it
+# and recover the numbers this strips out, so leaving the chart while removing the column
+# would be a lock with the key beside it. `lambdas` is the same fact in one number.
+#
+# WHAT STAYS IS EVERYTHING THAT DESCRIBES WHAT HAPPENED: the streak panel, the form splits,
+# the corner ladders, the recent games, the league averages. That is the half a visitor can
+# check, and it is the half worth showing.
+FIXTURE_BLURRED = BLURRED_FIELDS + ("distribution", "lambdas")
+
+
+def _blur_model(model):
+    """The fixture's model with its own numbers taken out, shape otherwise intact.
+
+    The page still renders every market row — the label, the line, the record against it —
+    so a reader sees what is priced and what they are not being told, rather than a shorter
+    table that looks like a thinner model.
+    """
+    if not isinstance(model, dict):
+        return model
+    out = {k: v for k, v in model.items() if k not in FIXTURE_BLURRED}
+    if isinstance(model.get("markets"), list):
+        out["markets"] = [{k: v for k, v in m.items() if k not in FIXTURE_BLURRED}
+                          if isinstance(m, dict) else m for m in model["markets"]]
     out["blurred"] = True
     return out
 
@@ -5473,8 +5537,9 @@ async def projections(days: int = 7, league_id: Optional[str] = None,
         response.headers["X-Total-Rows"] = str(len(keep))
     return {"sort": sort, "within_days": days, "scanned": len(rows),
             "returned": len(out), "total": len(keep),
-            # No explicit limit: the tier decides — 3 signed out, 6 signed in, all for a
-            # member. Pinning PREVIEW_ROWS here would have capped a member at three.
+            # No explicit limit: the tier decides — every row for everyone, with the
+            # model's numbers on them only for a member. Pinning a number here would have
+            # capped a member too, which is the bug the note originally warned about.
             "rows": _preview(out, user, response)}
 
 

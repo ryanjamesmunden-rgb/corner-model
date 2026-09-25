@@ -367,9 +367,13 @@ class TestTheFixturePage:
     both sides disappears. No error, no empty state: a fixture page that mysteriously has
     nothing to say about either team."""
 
-    def detail(self, monkeypatch, teams, fixtures, fid):
+    def detail(self, monkeypatch, teams, fixtures, fid, member=True):
         monkeypatch.setattr(server, "db", FakeDB(teams, fixtures))
-        return run(server.fixture_detail(fid, user={"user_id": "u1"}))
+        # A MEMBER, BECAUSE THESE TESTS ARE ABOUT THE MODEL. The page now withholds the
+        # model's own numbers from anyone who has not paid — see _blur_model — so reading
+        # `lambdas` off a non-member's payload asserts the gating rather than the pricing.
+        # `member=False` is here for the test that checks the gating itself.
+        return run(server.fixture_detail(fid, user={"user_id": "u1", "member": member}))
 
     def test_a_cup_tie_still_has_a_league_average_to_measure_against(self, monkeypatch):
         d = self.detail(monkeypatch, [BUSY, QUIET],

@@ -280,11 +280,58 @@ const CARD_MAX_ROWS = 8;
 // Same floor the public share uses. A run of four is not a run worth a member's morning.
 const CARD_MIN_RUN = 5;
 
-/** "Sat 11:30am" — inside a weekend card the month is noise; the day is not. */
-export const postDayTime = (iso) => {
+// EVERY TIME IN A POST IS UK TIME, STATED IN UK TIME, AND THAT HAS TO BE EXPLICIT.
+//
+// FOUND LIVE: every kick-off in the channel's cards was an hour behind the real UK time all
+// summer. These helpers called toLocaleTimeString with NO timeZone, which means "whatever
+// zone the machine is in" — and the machine is a GitHub Actions runner, which is UTC. From
+// late March to late October the UK is BST, one hour ahead, so a 14:00Z kick-off went out
+// as "2:00pm" when the game starts at 3.
+//
+// It could not be seen from a browser. A reader in London opening the site got the right
+// time, because THEIR machine is in London — so the bug was invisible everywhere except in
+// the one place the text is actually composed. It would also have half-fixed itself on
+// 25 October and come back in March, which is the worst way for a bug to behave.
+//
+// THE READER'S OWN CLOCK IS THE WRONG RULE HERE, and that was the original comment's
+// mistake rather than an oversight in the code. It is right for the SITE, where each
+// visitor renders their own page — kickoff.js does exactly that, deliberately, and is not
+// touched. It is wrong for a POST, whose text is composed once, by a machine, and read by
+// a whole channel: there is no "the reader" to be local to. Pinning it also means the card
+// says the same thing whoever built it, which the shared-header note below already argues
+// for on different grounds.
+//
+// Europe/London rather than a fixed +1, so it is still correct in winter. Same constant
+// and same reasoning as FINDER_TZ, SLATE_TZ and SLIP_TZ — the streak finder has always
+// pinned it, which is why the finder's times were right while the cards' were not.
+export const POST_TZ = "Europe/London";
+
+const inZone = (iso, opts, tz = POST_TZ) => {
+  const d = iso ? new Date(iso) : null;
+  if (!d || Number.isNaN(d.getTime())) return null;
+  try {
+    return new Intl.DateTimeFormat("en-GB", { ...opts, timeZone: tz }).formatToParts(d);
+  } catch {
+    return null;
+  }
+};
+
+const partOf = (parts, type) => (parts.find((p) => p.type === type) || {}).value || "";
+
+
+/** "Sat 11:30am" — inside a weekend card the month is noise; the day is not. UK time. */
+export const postDayTime = (iso, tz = POST_TZ) => {
   const d = iso ? new Date(iso) : null;
   if (!d || Number.isNaN(d.getTime())) return "";
-  return `${d.toLocaleDateString("en-GB", { weekday: "short" })} ${postTime(iso)}`;
+  let weekday = "";
+  try {
+    // The WEEKDAY has to be read in the same zone as the clock beside it. Taken from the
+    // machine's zone it could say "Sat" next to a time that is Sunday in London.
+    weekday = new Intl.DateTimeFormat("en-GB", { timeZone: tz, weekday: "short" }).format(d);
+  } catch {
+    return "";
+  }
+  return `${weekday} ${postTime(iso, tz)}`;
 };
 
 /**
@@ -536,20 +583,31 @@ const ORDINAL = (n) => {
   return `${n}${({ 1: "st", 2: "nd", 3: "rd" })[n % 10] || "th"}`;
 };
 
-/** "Thursday 10th September" — the date line a pick opens with. */
-export const postDate = (iso) => {
-  const d = iso ? new Date(iso) : null;
-  if (!d || Number.isNaN(d.getTime())) return "";
-  return `${d.toLocaleDateString("en-GB", { weekday: "long" })} `
-    + `${ORDINAL(d.getDate())} ${d.toLocaleDateString("en-GB", { month: "long" })}`;
+/** "Thursday 10th September" — the date line a pick opens with, in UK time. */
+export const postDate = (iso, tz = POST_TZ) => {
+  // THE DAY COMES FROM THE FORMATTER, NOT FROM getDate(). The old version read the
+  // day-of-month off the Date in the machine's own zone, so a 23:30Z kick-off — which is
+  // half past midnight the NEXT day in London — was printed with yesterday's date. That is
+  // the same bug as the hour, one unit up, and it is the one a reader acts on.
+  const parts = inZone(iso, { weekday: "long", day: "numeric", month: "long" }, tz);
+  if (!parts) return "";
+  const day = Number(partOf(parts, "day"));
+  if (!Number.isFinite(day)) return "";
+  return `${partOf(parts, "weekday")} ${ORDINAL(day)} ${partOf(parts, "month")}`;
 };
 
-/** "12:30am" — the reader's own clock, same as everywhere else on the site. */
-export const postTime = (iso) => {
-  const d = iso ? new Date(iso) : null;
-  if (!d || Number.isNaN(d.getTime())) return "";
-  return d.toLocaleTimeString("en-GB", { hour: "numeric", minute: "2-digit", hour12: true })
-    .replace(/\s/g, "").toLowerCase();
+/** "12:30am" — UK time, because a post is read by a channel and not by one machine. */
+export const postTime = (iso, tz = POST_TZ) => {
+  const parts = inZone(iso, { hour: "numeric", minute: "2-digit", hour12: true }, tz);
+  if (!parts) return "";
+  const hour = partOf(parts, "hour");
+  const minute = partOf(parts, "minute");
+  if (!hour || !minute) return "";
+  // dayPeriod rather than reformatting the whole string: Intl spells it "am", "AM" or
+  // "a.m." depending on the ICU build, and stripping spaces off a full render was how the
+  // old one coped. Reading the part is the same answer without depending on the spelling.
+  const ampm = partOf(parts, "dayPeriod").toLowerCase().replace(/[^a-z]/g, "");
+  return `${hour}:${minute}${ampm}`;
 };
 
 /**

@@ -39,6 +39,7 @@ const { slipFrom, slipPost, dayKey } = await import(resolve(LIB, "dailySlip.js")
 const { slateFrom, slatePost } = await import(resolve(LIB, "chaseSlate.js"));
 const { streakFinder, liveDrop, finderWindow } = await import(resolve(LIB, "streakFinder.js"));
 const { tweetStat } = await import(resolve(LIB, "tweetStat.js"));
+const { tweetStats } = await import(resolve(LIB, "tweetStats.js"));
 
 const arg = (name, fallback = null) => {
   const i = process.argv.indexOf(`--${name}`);
@@ -324,8 +325,11 @@ const BOARDS = BOARD === "menu" ? "streaks,mismatches,chase,value"
   // pay for a board it never reads, and on a free-tier backend that is the difference
   // between a post and a timeout.
   : BOARD === "finder" ? "streaks"
-  // Same as the finder: one statistic about the streak board, and nothing else read.
-  : BOARD === "stat" ? "streaks"
+  // THE STAT BOARD NOW READS TWO. It was `streaks` alone when it produced one post about
+  // one board; it offers several candidates now, and the mismatch one is the only angle
+  // here that is not another cut of the same rows. Still not `fixtures` or `value`: it
+  // reads neither, and every extra board walks the whole team collection.
+  : BOARD === "stat" ? "streaks,mismatches"
   : "streaks,fixtures";
 const data = await get(`/api/share/rows?days=${DAYS}`
   + `&limit=${BOARD === "finder" ? FINDER_LIMIT : 60}&boards=${BOARDS}`
@@ -401,36 +405,52 @@ ${slate.priced} of ${slate.n} rows carry a real price; the rest show the model's
   process.exit(0);
 }
 
-// ---- the daily X post: ONE STATISTIC about the board, not a list of rows.
+// ---- the daily X post: SEVERAL statistics about the boards, not a list of rows.
 //
 // EVERY OTHER BOARD HERE HANDS OVER ROWS, because rows are what a member wants — they are
 // the product. A public post has a different job: be interesting to somebody who has never
-// heard of the site, in one screen, without giving away what people pay for. So this leads
-// on a number about the whole board and sends the reader to the page for the names.
+// heard of the site, in one screen, without giving away what people pay for. So these lead
+// on numbers about the boards as a whole and send the reader to the page for the names.
 //
-// IT GOES OUT AS AN INTENT LINK, not an automatic post. Posting through X's API needs a
-// paid tier; the composer link is free, is one tap, and — the part that matters more — puts
-// a human between a generated sentence and the account's own timeline. See tweetStat.js for
-// what the wording is and is not allowed to claim.
+// SEVERAL A DAY, NOT ONE. One post a day off one board is the same sentence with a
+// different number in it, which is what people learn to scroll past. tweetStats builds a
+// candidate per angle — the board's breadth, today's slice of it, the deep runs, the
+// higher line, and the mismatch board — and every one of them is dropped rather than
+// loosened when it cannot clear its own bar. So a quiet day costs candidates, not honesty.
+//
+// THE CHOICE STAYS WITH A PERSON. They all go out together with a Post button each; none
+// of them posts by itself. Posting through X's API needs a paid tier, and the composer link
+// is free, is one tap, and puts a human between a generated sentence and the timeline.
+// See tweetStats.js for what the wording is and is not allowed to claim.
 if (BOARD === "stat") {
-  const built = tweetStat({ rows: data.streaks || [], days: DAYS, site: SITE });
+  const built = tweetStats({ rows: data.streaks || [], mismatches: data.mismatches || [],
+                             days: DAYS, site: SITE });
   // Not a failure. A board too quiet to be worth a statistic is a real answer, and the
   // alternative — loosening the bar until the number looks good — is how a daily post
   // stops meaning anything. See STAT_MIN_TEAMS.
-  if (!built.text) {
-    skip(`fewer than the minimum qualifying teams in ${DAYS} days — no statistic worth posting`);
+  if (!built.length) {
+    skip(`no board clears its own bar over ${DAYS} days — no statistic worth posting`);
   }
-  const intent = `https://x.com/intent/tweet?text=${encodeURIComponent(built.text)}`;
-  emit(`**[Post this on X](${intent})** — opens the composer already filled in. Nothing is posted until you hit Post.
+  const withIntent = built.map((c) => ({
+    ...c, intent: `https://x.com/intent/tweet?text=${encodeURIComponent(c.text)}`,
+  }));
+  const md = withIntent.map((c, i) => `**${i + 1}. [Post this on X](${c.intent})** — \`${c.key}\`, ${c.weight}/280
 
 \`\`\`
-${built.text}
+${c.text}
 \`\`\`
+`).join("\n");
+  emit(`${withIntent.length} statistic${withIntent.length === 1 ? "" : "s"} today. Each link opens the composer already filled in; nothing is posted until you hit Post.
 
-${built.weight}/280 by X's own weighting. ${built.stats.teams} teams, ${built.stats.countries} countries, longest run ${built.stats.longest}.
-`, { empty: false, board: "stat", post: built.text, intent,
-     weight: built.weight, full: built.text,
-     note: `${built.stats.teams} teams over ${DAYS}d, ${built.stats.countries} countries`
+${md}`, { empty: false, board: "stat",
+     // `post` and `intent` stay singular and point at the FIRST candidate, because the
+     // Telegram step and the issue fallback both read those fields and neither should
+     // silently start sending nothing when the shape changes underneath them.
+     post: withIntent[0].text, intent: withIntent[0].intent,
+     weight: withIntent[0].weight, full: withIntent[0].text,
+     stats: withIntent.map(({ key, text, weight, intent, stats }) =>
+       ({ key, text, weight, intent, stats })),
+     note: `${withIntent.length} statistics over ${DAYS}d`
        + (data.data_age_hours != null ? ` \u00b7 data ${data.data_age_hours}h old` : "") });
   process.exit(0);
 }

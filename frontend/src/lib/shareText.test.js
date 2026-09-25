@@ -8,7 +8,7 @@
 import { streakShare, fixtureShare, bestTeamsShare, streakResultShare,
          fixtureStreakShare, telegramPick, wonLadder, openGameCase, postHeader,
          pickGame, pickGameDetailed, gameShare, cardPost, picksReview, moreVia,
-         postDate, postTime, pickLabel, angleMenu } from "./shareText";
+         postDate, postTime, postDayTime, POST_TZ, pickLabel, angleMenu } from "./shareText";
 
 const NORWAY = "\u{1F1F3}\u{1F1F4}";
 const soon = () => {
@@ -472,6 +472,64 @@ test("the date line carries an ordinal, including the teens", () => {
 
 test("the kick-off reads as a clock time, not a 24-hour stamp", () => {
   expect(postTime("2026-09-10T12:30:00Z")).toMatch(/^\d{1,2}:\d{2}(am|pm)$/);
+});
+
+
+// EVERY TIME IN A POST IS UK TIME.
+//
+// FOUND LIVE: every kick-off in the channel's cards was an hour behind all summer. These
+// helpers called toLocaleTimeString with no timeZone — "whatever zone the machine is in" —
+// and the machine that composes a post is a GitHub Actions runner, which is UTC. Through
+// BST that is an hour behind the ground truth.
+//
+// THE TESTS ABOVE PASSED THROUGHOUT, and that is the part worth fixing. They asserted the
+// SHAPE of a time (`/^\d{1,2}:\d{2}(am|pm)$/`) and never a value, and every date they
+// checked was at noon — the one hour of the day when no offset in Europe can move the
+// calendar day. A suite can be green on a function that is wrong by an hour every day of
+// the year, so these assert clock faces and a boundary instead.
+describe("a post states UK time, wherever it was built", () => {
+  test("a BST kick-off is an hour ahead of UTC, not equal to it", () => {
+    // THE REGRESSION. 14:00Z is a 3pm kick-off in September. Rendered in the runner's own
+    // zone it read "2:00pm", and a reader planning around the card was an hour early.
+    expect(postTime("2026-09-27T14:00:00Z")).toBe("3:00pm");
+    expect(postDayTime("2026-09-27T14:00:00Z")).toBe("Sun 3:00pm");
+  });
+
+  test("a GMT kick-off is NOT shifted", () => {
+    // Which is why this is Europe/London and not a hard-coded +1. A fixed offset would
+    // swap one silent hour of error for another every winter.
+    expect(postTime("2026-12-27T14:00:00Z")).toBe("2:00pm");
+  });
+
+  test("a late kick-off rolls the DATE, not just the clock", () => {
+    // 23:30Z is half past midnight the next day in London. The old postDate read the
+    // day-of-month straight off the Date in the machine's zone, so it printed yesterday —
+    // the same bug one unit up, and the one a reader actually acts on.
+    expect(postDate("2026-09-27T23:30:00Z")).toBe("Monday 28th September");
+    expect(postDayTime("2026-09-27T23:30:00Z")).toBe("Mon 12:30am");
+  });
+
+  test("the weekday and the clock beside it come from the same zone", () => {
+    // Taken from different zones this says "Sun" next to a time that is Monday.
+    const [day, time] = postDayTime("2026-09-27T23:30:00Z").split(" ");
+    expect(day).toBe("Mon");
+    expect(time).toBe("12:30am");
+  });
+
+  test("the zone is explicit rather than inherited", () => {
+    // The whole failure was an implicit default. If POST_TZ is ever dropped back to the
+    // machine's zone this is what says so.
+    expect(POST_TZ).toBe("Europe/London");
+    expect(postTime("2026-09-27T14:00:00Z", "UTC")).toBe("2:00pm");
+  });
+
+  test("junk is empty rather than an Invalid Date in a card", () => {
+    for (const bad of ["", null, undefined, "nonsense"]) {
+      expect(postTime(bad)).toBe("");
+      expect(postDate(bad)).toBe("");
+      expect(postDayTime(bad)).toBe("");
+    }
+  });
 });
 
 // ONE OPENING, BOTH DESTINATIONS. The channel post and the X post are about the same game

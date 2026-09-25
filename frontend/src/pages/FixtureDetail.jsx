@@ -8,6 +8,7 @@ import StarButton from "@/components/StarButton";
 import ShareButtons from "@/components/ShareButtons";
 import PostPick from "@/components/PostPick";
 import { fixtureStreakShare } from "@/lib/shareText";
+import { fixtureStreaks, streakDetail, streakHeadline } from "@/lib/fixtureStreaks";
 import { useAuth } from "@/context/AuthContext";
 import ProbabilityChart from "@/components/ProbabilityChart";
 import { api, tierMeta, confMeta } from "@/lib/api";
@@ -197,24 +198,16 @@ export default function FixtureDetail() {
         <TeamRead name={fixture.away_name} profile={away_team.profile} where="away" />
       </div>
 
-      {/* POST THE GAME, NOT THE BOARD. A fixture is worth sharing when something is
-          already running into it, so the text is the live streaks both sides bring —
-          a few suggested lines and how long each has been landing. The model's price
-          stays on the site, same as every other public post. */}
-      {(data.streaks || []).length > 0 && (
-        <div className="flex items-center gap-2 flex-wrap" data-testid="fixture-streak-share">
-          <span className="text-xs text-muted-foreground">
-            {data.streaks.length} streak{data.streaks.length === 1 ? "" : "s"} running into this game
-          </span>
-          <ShareButtons
-            buildX={fixtureStreakShare({ fixture, streaks: data.streaks, form: data.form || [],
-                                 leagueName: data.league_name })}
-            xRows={4}
-            text={fixtureStreakShare({ fixture, streaks: data.streaks, form: data.form || [],
-                                 leagueName: data.league_name })(4)}
-          />
-        </div>
-      )}
+      {/* THE RUN THAT BROUGHT THEM HERE. /streaks advertises it, and clicking the fixture
+          used to lose it: this payload was already on the page and went only to the share
+          button, so the one thing that made the reader click was the one thing the
+          destination never said. The share button stays, inside the panel now — POST THE
+          GAME, NOT THE BOARD, and the model's price stays on the site as ever. */}
+      <RunningStreaks
+        streaks={data.streaks || []}
+        share={fixtureStreakShare({ fixture, streaks: data.streaks || [],
+                                    form: data.form || [], leagueName: data.league_name })}
+      />
 
       <KeyFactors factors={keyFactors} homeName={fixture.home_name} awayName={fixture.away_name} />
 
@@ -1080,6 +1073,58 @@ const FACTOR_META = {
   boost: { icon: TrendingUp, cls: "text-tone-strong-fg border-tone-strong/40 bg-tone-strong/10", word: "Helps" },
   watch: { icon: Eye, cls: "text-tone-streak-fg border-tone-streak/40 bg-tone-streak/10", word: "Watch" },
 };
+
+/**
+ * The runs going into this game, biggest first.
+ *
+ * WHAT THE FIRE MEANS, AND WHAT IT DOES NOT. It marks a run of FIRE_RUN or more — the same
+ * threshold the share text and the angle menu use, so one emoji means one thing across the
+ * site. It is not a recommendation: measure_chase_board.py replayed four orderings
+ * walk-forward and could not separate any from a shuffled control, so a run says what has
+ * happened, not what will. The projection and the matchup beside it carry the argument;
+ * this panel carries the evidence the reader came for.
+ *
+ * THE RUN AND THE RECORD ARE BOTH PRINTED because they are different numbers — "9 in a row"
+ * is the current run, "9 of 9 settled" is how the window closed — and they diverge exactly
+ * when it matters.
+ */
+function RunningStreaks({ streaks, share }) {
+  const rows = fixtureStreaks(streaks);
+  if (!rows.length) return null;
+  return (
+    <section className="bg-card border border-border rounded-lg p-3.5 sm:p-4 space-y-3"
+             data-testid="fixture-streak-share">
+      <div className="flex items-center gap-2 flex-wrap justify-between">
+        <span className="text-sm font-medium">{streakHeadline(rows)}</span>
+        <ShareButtons buildX={share} xRows={4} text={share(4)} />
+      </div>
+      <div className="space-y-2">
+        {rows.map((r) => (
+          <div key={r.key} data-testid={`fixture-streak-${r.key}`}
+               className="rounded border border-border/70 bg-secondary/40 px-3 py-2">
+            <div className="flex items-baseline gap-2 flex-wrap">
+              <span aria-hidden="true">{r.mark}</span>
+              <span className="font-medium text-sm">{r.team}</span>
+              <span className="font-mono-data text-sm">{r.label}</span>
+              <span className={`text-sm ${r.hot ? "text-tone-streak-fg" : "text-muted-foreground"}`}>
+                — {r.run} in a row
+              </span>
+            </div>
+            {/* WHOSE corners, and where. "5+" alone is a team line and a match total at
+                once, and the match number is about twice the team one. */}
+            <div className="text-[11px] text-muted-foreground mt-0.5 font-mono-data">
+              {streakDetail(r)}
+            </div>
+          </div>
+        ))}
+      </div>
+      {/* Said once, on the panel that most invites the opposite reading. */}
+      <p className="text-[11px] text-muted-foreground">
+        A run is what has already happened, not a forecast. The projection above is the model's view.
+      </p>
+    </section>
+  );
+}
 
 function KeyFactors({ factors, homeName, awayName }) {
   const sides = [["home", homeName], ["away", awayName]].filter(([k]) => (factors[k] || []).length);

@@ -25,6 +25,11 @@ export default function PreviewWall({ total, shown, locked, noun = "rows", class
   // server began sending the blurred rows too — `shown` is now the whole list.
   const hidden = Number.isFinite(locked) ? locked
     : (Number.isFinite(total) && Number.isFinite(shown) ? total - shown : null);
+  // EVERY ROW LOCKED IS THE NORMAL CASE NOW, not an edge one: the board is public and the
+  // model's columns are not, so `locked` equals `shown`. Detected rather than passed in, so
+  // no caller has to be told about it and none can forget.
+  const allLocked = Number.isFinite(locked) && Number.isFinite(shown)
+    && shown > 0 && locked >= shown;
 
   return (
     <div className={`border-t border-border bg-secondary/30 px-4 py-4 text-center ${className}`}
@@ -32,18 +37,30 @@ export default function PreviewWall({ total, shown, locked, noun = "rows", class
       <div className="flex items-center justify-center gap-2 text-muted-foreground">
         <Lock className="h-3.5 w-3.5" />
         <span className="text-sm">
-          {hidden && hidden > 0
-            ? <>{Number.isFinite(locked) ? <>Readable: {shown - locked} of {shown}.</> : <>Showing {shown} of {total}.</>}{" "}
-                <span className="text-foreground">{hidden} more {noun}</span>
-                {Number.isFinite(locked) ? " are blurred." : " for members."}</>
-            : <>You're seeing a sample. <span className="text-foreground">The full board</span> is for members.</>}
+          {/* EVERY ROW IS HERE NOW, so the old copy is the wrong sentence. It counted rows
+              withheld — "Readable: 3 of 46, 43 more are blurred" — and with the whole board
+              public that reads "Readable: 0 of 46", which announces a wall where there is
+              none and undersells the thing the visitor is looking at.
+              What is held back is COLUMNS, and that is what this says. */}
+          {allLocked
+            ? <>Every {noun.replace(/s$/, "")} is here.{" "}
+                <span className="text-foreground">The model's price and edge</span> are for members.</>
+            : hidden && hidden > 0
+              ? <>{Number.isFinite(locked) ? <>Readable: {shown - locked} of {shown}.</> : <>Showing {shown} of {total}.</>}{" "}
+                  <span className="text-foreground">{hidden} more {noun}</span>
+                  {Number.isFinite(locked) ? " are blurred." : " for members."}</>
+              : <>You're seeing a sample. <span className="text-foreground">The full board</span> is for members.</>}
         </span>
       </div>
 
       <p className="mt-1.5 text-xs text-muted-foreground max-w-md mx-auto leading-relaxed">
-        {user
-          ? "Your account is set up — subscribing unlocks every board on the site, and you can cancel from your account page any time."
-          : "Sign in with Google at the top right to create a free account, then subscribe to see the lot."}
+        {allLocked
+          ? (user
+            ? "The records, the runs and the lines are all public. Subscribing adds the model's own numbers on top of them, and you can cancel from your account page any time."
+            : "The records, the runs and the lines are all public — no account needed. Subscribing adds the model's own numbers on top of them.")
+          : (user
+            ? "Your account is set up — subscribing unlocks every board on the site, and you can cancel from your account page any time."
+            : "Sign in with Google at the top right to create a free account, then subscribe to see the lot.")}
       </p>
 
       <Link to="/join" data-testid="preview-wall-join"

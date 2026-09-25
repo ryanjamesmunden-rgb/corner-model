@@ -43,6 +43,8 @@ export const HIGH_LINE = STAT_MIN_LINE + 1;
 export const MISMATCH_BAR = 6.0;
 /** Below this a count is not a story, whatever it is counting. */
 export const MIN_SUBJECTS = 4;
+/** How many games each post names as examples of the number it just quoted. */
+export const EXAMPLES = 2;
 
 const num = (v) => {
   const n = Number(v);
@@ -91,24 +93,112 @@ const candidate = (key, text, stats) =>
 
 
 // --------------------------------------------------------------------------
+// Naming two of them
+// --------------------------------------------------------------------------
+//
+// THE POST NAMED NOBODY UNTIL NOW, AND THAT WAS DELIBERATE — so this is a decision being
+// reversed rather than a gap being filled, and the reason for the old rule is worth keeping
+// written down. The argument was that the names are the reason to click and a post which
+// answers its own hook has given the product away.
+//
+// TWO OF TWENTY DOES NOT ANSWER THE HOOK, WHICH IS WHY THIS IS FINE. It does the opposite:
+// an aggregate nobody can check reads like a claim, and the same aggregate with two games
+// attached reads like a fact. A reader who wants the other eighteen still has to follow the
+// link, and now has a reason to believe there are eighteen.
+//
+// THEY ARE STILL NOT RECOMMENDATIONS, and that is the line that must not move. "Plymouth v
+// Wycombe (18 in a row)" is a record of eighteen matches already played. It becomes a tip
+// the moment it is phrased as one — so the wording stays in the past tense and carries no
+// price, no probability and no "watch this", exactly like the number it illustrates.
+//
+// THE GAME, NOT THE TEAM, because a fixture is what a reader can actually go and look at.
+// `is_home` decides which way round the pair reads, so the text matches the real fixture
+// rather than always putting our side first.
+//
+// ONE GAME APPEARS ONCE. Both sides of a fixture can be on a run, and the same tie printed
+// twice as two examples is one example and an error the reader will spot.
+
+const fixtureOf = (r) => {
+  const team = String(r?.name || "").trim();
+  const opp = String(r?.next_fixture?.opponent || "").trim();
+  if (!team) return null;
+  if (!opp) return team;            // better a bare name than an "undefined" in a post
+  return r?.next_fixture?.is_home ? `${team} v ${opp}` : `${opp} v ${team}`;
+};
+
+/** A stable id for the tie, so the same game cannot be named twice. */
+const tieKey = (r) => {
+  const id = r?.next_fixture?.fixture_id;
+  if (id != null) return `f:${id}`;
+  const pair = [String(r?.name || ""), String(r?.next_fixture?.opponent || "")].sort();
+  return `p:${pair.join("|")}`;
+};
+
+/** The n most striking rows, one per fixture, longest run first. */
+export const pickExamples = (rows = [], n = EXAMPLES) => {
+  const seen = new Set();
+  const out = [];
+  // Sort is stable, so equal runs keep the order the backend sent — the same tie-break
+  // every other board here uses.
+  for (const r of [...rows].sort((a, b) => runOf(b) - runOf(a))) {
+    const key = tieKey(r);
+    if (seen.has(key)) continue;
+    const label = fixtureOf(r);
+    if (!label) continue;
+    seen.add(key);
+    out.push({ label, run: runOf(r) });
+    if (out.length >= n) break;
+  }
+  return out;
+};
+
+/**
+ * "Two of them: Plymouth v Wycombe (18 in a row), Salford v Barrow (17)."
+ *
+ * `withRuns` is off for the mismatch post, whose number is an average rather than a run —
+ * printing "(0 in a row)" there would be worse than printing nothing.
+ */
+export const examplesLine = (rows = [], n = EXAMPLES, withRuns = true) => {
+  const picked = pickExamples(rows, n);
+  if (!picked.length) return "";
+  const lead = picked.length === 1 ? "One of them" : `${picked.length === 2 ? "Two" : picked.length} of them`;
+  const parts = picked.map(({ label, run }, i) => {
+    if (!withRuns || !run) return label;
+    // "in a row" is spelled out on the FIRST only. By the second the reader knows what the
+    // bracket means, and "(17)" says it in a fifth of the characters. Keyed on the index
+    // rather than on the label, so two identically named rows cannot both claim to be first.
+    return `${label} (${run}${i === 0 ? " in a row" : ""})`;
+  });
+  return `${lead}: ${parts.join(", ")}.`;
+};
+
+
+// --------------------------------------------------------------------------
 // The candidates
 // --------------------------------------------------------------------------
 
 /** The board as a whole — the post tweetStat already wrote, kept as the lead candidate. */
 export const breadthStat = ({ rows = [], days = STAT_DAYS, site = "",
-                              minTeams = STAT_MIN_TEAMS } = {}) => {
+                              minTeams = STAT_MIN_TEAMS, examples = EXAMPLES } = {}) => {
   const s = statsFrom(rows);
   if (!s || s.teams < minTeams) return null;
   const when = days === 1 ? "today" : `in the next ${days} days`;
+  // EXAMPLES GO SECOND, NOT LAST, and that is the whole reason they survive. fitToPost drops
+  // from the tail, so a sentence at the end is the first thing a long day loses — and these
+  // were asked for. What gives way instead is the spread and the total, which are context.
+  const shown = examplesLine(counted(rows), examples);
   return candidate("breadth", build([
     `${plural(s.teams, "team", "teams")} playing ${when} have won ${s.minLine}+ corners `
     + `in each of their last ${s.minRun} or more.`,
+    shown,
     s.countries > 1 ? `They span ${plural(s.countries, "country", "countries")}.` : "",
     `Between them that is ${s.clears} straight clears.`,
-    s.longest >= s.minRun * 2
+    // ONLY WHEN NOTHING WAS NAMED. The examples are ordered by run, so they already ARE the
+    // longest two — printing this as well would quote the same pair of numbers twice.
+    !shown && s.longest >= s.minRun * 2
       ? `The longest run is ${s.longest}${s.second ? `, then ${s.second}` : ""}.`
       : "",
-  ], site, "/streaks"), s);
+  ], site, "/streaks"), { ...s, examples: pickExamples(counted(rows), examples) });
 };
 
 /**
@@ -125,14 +215,18 @@ export const deepRunStat = ({ rows = [], days = STAT_DAYS, site = "",
   if (deepOnes.length < minSubjects) return null;
   const runs = deepOnes.map(runOf).sort((a, b) => b - a);
   const when = days === 1 ? "today" : `in the next ${days} days`;
+  const shown = examplesLine(deepOnes);
   const stats = { teams: deepOnes.length, of: picked.length, deep,
-                  longest: runs[0], clears: runs.reduce((a, b) => a + b, 0) };
+                  longest: runs[0], clears: runs.reduce((a, b) => a + b, 0),
+                  examples: pickExamples(deepOnes) };
   return candidate("deep", build([
     `${plural(deepOnes.length, "team", "teams")} playing ${when} have won `
     + `${STAT_MIN_LINE}+ corners in each of their last ${deep} games or more.`,
+    shown,
     `That is ${stats.clears} consecutive clears between them, and not one of them has `
     + `missed since.`,
-    `The longest is ${stats.longest} in a row.`,
+    // The examples lead on the longest, so this repeats them when they are present.
+    !shown ? `The longest is ${stats.longest} in a row.` : "",
   ], site, "/streaks"), stats);
 };
 
@@ -152,17 +246,21 @@ export const highLineStat = ({ rows = [], days = STAT_DAYS, site = "",
   const codes = new Set();
   for (const r of picked) codes.add(countryCodeFor(r.league_id) || `cup:${r.league_id}`);
   const when = days === 1 ? "today" : `in the next ${days} days`;
+  const shown = examplesLine(picked);
   const stats = { teams: picked.length, of: all.length, line,
-                  countries: codes.size, longest: runs[0] };
+                  countries: codes.size, longest: runs[0],
+                  examples: pickExamples(picked) };
   return candidate("high", build([
     `${plural(picked.length, "team", "teams")} playing ${when} have won ${line}+ corners `
     + `in each of their last ${STAT_MIN_RUN} or more.`,
+    shown,
     // The denominator is what makes the number readable: 6 of 20 and 6 of 200 are
     // different boards and the same headline.
     all.length > picked.length
       ? `That is ${picked.length} of the ${all.length} on ${STAT_MIN_LINE}+.`
       : "",
-    stats.longest >= STAT_MIN_RUN * 2 ? `The longest is ${stats.longest} in a row.` : "",
+    !shown && stats.longest >= STAT_MIN_RUN * 2
+      ? `The longest is ${stats.longest} in a row.` : "",
   ], site, "/streaks"), stats);
 };
 
@@ -184,13 +282,16 @@ export const todayStat = ({ rows = [], days = STAT_DAYS, site = "", now = new Da
   const runs = picked.map(runOf).sort((a, b) => b - a);
   const codes = new Set();
   for (const r of picked) codes.add(countryCodeFor(r.league_id) || `cup:${r.league_id}`);
+  const shown = examplesLine(picked);
   const stats = { teams: picked.length, countries: codes.size, longest: runs[0],
-                  clears: runs.reduce((a, b) => a + b, 0) };
+                  clears: runs.reduce((a, b) => a + b, 0),
+                  examples: pickExamples(picked) };
   return candidate("today", build([
     `${plural(picked.length, "team", "teams")} playing today have won ${STAT_MIN_LINE}+ `
     + `corners in each of their last ${STAT_MIN_RUN} or more.`,
+    shown,
     stats.countries > 1 ? `Across ${plural(stats.countries, "country", "countries")}.` : "",
-    `The longest run is ${stats.longest}.`,
+    !shown ? `The longest run is ${stats.longest}.` : "",
   ], site, "/streaks"), stats);
 };
 
@@ -214,11 +315,16 @@ export const mismatchStat = ({ mismatches = [], days = STAT_DAYS, site = "",
   const best = picked.reduce((a, b) =>
     (num(b.opp_conceded) > num(a.opp_conceded) ? b : a));
   const when = days === 1 ? "today" : `in the next ${days} days`;
+  // withRuns: false — these rows carry averages, not runs, so a bracketed number here
+  // would either be blank or be a different quantity wearing the same notation.
+  const shown = examplesLine(picked, EXAMPLES, false);
   const stats = { teams: picked.length, countries: codes.size,
-                  bar, mostLeaked: Number(num(best.opp_conceded).toFixed(1)) };
+                  bar, mostLeaked: Number(num(best.opp_conceded).toFixed(1)),
+                  examples: pickExamples(picked) };
   return candidate("mismatch", build([
     `${plural(picked.length, "side", "sides")} playing ${when} average ${bar}+ corners a `
     + `game, against opponents who concede ${bar}+.`,
+    shown,
     stats.countries > 1 ? `In ${plural(stats.countries, "country", "countries")}.` : "",
     `The leakiest of those opponents has shipped ${stats.mostLeaked} a game.`,
   ], site, "/streaks"), stats);

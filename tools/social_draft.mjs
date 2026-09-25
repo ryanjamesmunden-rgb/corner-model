@@ -38,6 +38,7 @@ const { boardForDay } = await import(resolve(LIB, "postPlan.js"));
 const { slipFrom, slipPost, dayKey } = await import(resolve(LIB, "dailySlip.js"));
 const { slateFrom, slatePost } = await import(resolve(LIB, "chaseSlate.js"));
 const { streakFinder, liveDrop, finderWindow } = await import(resolve(LIB, "streakFinder.js"));
+const { tweetStat } = await import(resolve(LIB, "tweetStat.js"));
 
 const arg = (name, fallback = null) => {
   const i = process.argv.indexOf(`--${name}`);
@@ -323,6 +324,8 @@ const BOARDS = BOARD === "menu" ? "streaks,mismatches,chase,value"
   // pay for a board it never reads, and on a free-tier backend that is the difference
   // between a post and a timeout.
   : BOARD === "finder" ? "streaks"
+  // Same as the finder: one statistic about the streak board, and nothing else read.
+  : BOARD === "stat" ? "streaks"
   : "streaks,fixtures";
 const data = await get(`/api/share/rows?days=${DAYS}`
   + `&limit=${BOARD === "finder" ? FINDER_LIMIT : 60}&boards=${BOARDS}`
@@ -395,6 +398,40 @@ ${slate.priced} of ${slate.n} rows carry a real price; the rest show the model's
        + (slate.priced ? `, ${slate.priced} priced` : ", none priced")
        + (rec ? ` · section ${rec.won}/${rec.settled}` : "")
        + (data.data_age_hours != null ? ` · data ${data.data_age_hours}h old` : "") });
+  process.exit(0);
+}
+
+// ---- the daily X post: ONE STATISTIC about the board, not a list of rows.
+//
+// EVERY OTHER BOARD HERE HANDS OVER ROWS, because rows are what a member wants — they are
+// the product. A public post has a different job: be interesting to somebody who has never
+// heard of the site, in one screen, without giving away what people pay for. So this leads
+// on a number about the whole board and sends the reader to the page for the names.
+//
+// IT GOES OUT AS AN INTENT LINK, not an automatic post. Posting through X's API needs a
+// paid tier; the composer link is free, is one tap, and — the part that matters more — puts
+// a human between a generated sentence and the account's own timeline. See tweetStat.js for
+// what the wording is and is not allowed to claim.
+if (BOARD === "stat") {
+  const built = tweetStat({ rows: data.streaks || [], days: DAYS, site: SITE });
+  // Not a failure. A board too quiet to be worth a statistic is a real answer, and the
+  // alternative — loosening the bar until the number looks good — is how a daily post
+  // stops meaning anything. See STAT_MIN_TEAMS.
+  if (!built.text) {
+    skip(`fewer than the minimum qualifying teams in ${DAYS} days — no statistic worth posting`);
+  }
+  const intent = `https://x.com/intent/tweet?text=${encodeURIComponent(built.text)}`;
+  emit(`**[Post this on X](${intent})** — opens the composer already filled in. Nothing is posted until you hit Post.
+
+\`\`\`
+${built.text}
+\`\`\`
+
+${built.weight}/280 by X's own weighting. ${built.stats.teams} teams, ${built.stats.countries} countries, longest run ${built.stats.longest}.
+`, { empty: false, board: "stat", post: built.text, intent,
+     weight: built.weight, full: built.text,
+     note: `${built.stats.teams} teams over ${DAYS}d, ${built.stats.countries} countries`
+       + (data.data_age_hours != null ? ` \u00b7 data ${data.data_age_hours}h old` : "") });
   process.exit(0);
 }
 

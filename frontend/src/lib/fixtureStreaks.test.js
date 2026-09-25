@@ -1,40 +1,77 @@
 // The runs shown on a fixture page.
 //
-// WHY IT EXISTS AT ALL: /streaks advertises a run, and clicking the fixture used to lose
-// it. The payload was there the whole time and went to a share button, so the one thing
-// that made the reader click was the one thing the destination did not say.
+// THE BUG THIS FILE NOW EXISTS TO PREVENT. The first version was written against the
+// STREAK BOARD's row shape — everything nested under `streak`, with a settled record and
+// the last legs. `data.streaks` does not come from there: it comes from fixture_streaks,
+// which is flat and carries none of that. The filter dropped every row and the panel
+// rendered nothing on every fixture, which is indistinguishable from a quiet page. So
+// these fixtures are built from the ENDPOINT's shape, and one of them asserts the wrong
+// shape produces nothing — because that was the failure, and it was silent.
 //
-// WHAT THESE GUARD:
-//   - The fire meaning something different here from everywhere else. Three marks wearing
-//     one emoji is worse than no emoji.
-//   - "9 in a row" and "9 of 9" being conflated. They are different numbers and diverge
-//     exactly when it matters — a void mid-window, or a run shorter than its window.
-//   - A direction relabelled. An under printed as "5+" costs money in the opposite
-//     direction to the reader's intent.
+// The rest guard what the panel is allowed to claim:
+//   - "5+" means a team's own corners OR the match total, two bets a factor of two apart.
+//   - The fire meaning something different here from everywhere else.
+//   - An under relabelled as an over, which loses in the opposite direction to intent.
 import {
-  FIRE_RUN, fixtureStreaks, markFor, streakDetail, streakHeadline, streakRow, RECENT_SHOWN,
+  FIRE_RUN, MIN_RUN, fixtureStreaks, markFor, streakDetail, streakHeadline, streakRow,
+  subjectLabel,
 } from "./fixtureStreaks.js";
 
-const leg = (corners, result = "won") => ({ corners, result, opponent: "Someone", home: true });
+/** A row exactly as backend fixture_streaks emits it — flat, from live_streak. */
+const row = (team, { line = 5, run = 6, subject = "team", direction = "over",
+                     venue = "home", games = 20, since = "2026-08-12" } = {}) => ({
+  team, subject, direction, line,
+  line_label: direction === "under" ? `under ${line}` : `${line}+`,
+  run, since, venue, games,
+});
 
-const streak = (name, { line = 5, run = 6, hits = 6, settled = 6, voids = 0,
-                        avg = 7.2, min = 5, label, legs } = {}) => ({
-  name, team_id: `eng-pl-${name}`, league_id: "eng-pl",
-  streak: { line, line_label: label ?? `${line}+ corners`, length: run, hits, settled,
-            voids, avg, min_won: min,
-            recent: legs ?? Array.from({ length: 8 }, (_, i) => leg(7 + (i % 3))) },
+
+describe("it reads the endpoint's shape, not the board's", () => {
+  test("a real fixture_streaks row renders", () => {
+    const rows = fixtureStreaks([row("Arsenal", { run: 9 })]);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].team).toBe("Arsenal");
+    expect(rows[0].run).toBe(9);
+  });
+
+  test("the STREAK BOARD's shape yields nothing, which is the bug that shipped", () => {
+    // Nested under `streak`, as /api/streaks returns. Silent when wrong — the panel just
+    // does not appear, on every fixture, and looks like a quiet page.
+    const boardShape = { name: "Arsenal", team_id: "eng-pl-1",
+                         streak: { line: 5, line_label: "5+", length: 9 } };
+    expect(fixtureStreaks([boardShape])).toEqual([]);
+  });
+});
+
+
+describe("whose corners", () => {
+  test("a team line and a match total are told apart", () => {
+    // "5+" is the same two characters for a team's own corners and for the match total,
+    // and the match number is roughly twice the team one.
+    expect(subjectLabel("team")).toBe("their own corners");
+    expect(subjectLabel("match")).toBe("in the match");
+  });
+
+  test("the detail line says which, and where", () => {
+    const [r] = fixtureStreaks([row("Arsenal", { subject: "match", venue: "away" })]);
+    expect(streakDetail(r)).toContain("in the match away");
+  });
+
+  test("the sample sits beside the run", () => {
+    // "9 in a row" with no denominator is a claim with no scale.
+    const [r] = fixtureStreaks([row("Arsenal", { games: 20 })]);
+    expect(streakDetail(r)).toContain("20 games on file");
+  });
 });
 
 
 describe("the mark", () => {
   test("it is the threshold the rest of the site uses", () => {
-    // Not a new number. FIRE_RUN drives the share text and the angle menu too.
     expect(FIRE_RUN).toBe(8);
   });
 
   test("fire at the threshold, flag below it", () => {
     expect(markFor(FIRE_RUN)).toBe("🔥");
-    expect(markFor(FIRE_RUN + 4)).toBe("🔥");
     expect(markFor(FIRE_RUN - 1)).toBe("🚩");
   });
 
@@ -45,63 +82,36 @@ describe("the mark", () => {
 });
 
 
-describe("the run and the record are different numbers", () => {
-  test("both are carried", () => {
-    const r = streakRow(streak("Arsenal", { run: 9, hits: 9, settled: 9 }));
-    expect(r.run).toBe(9);
-    expect(r.hits).toBe(9);
-    expect(r.settled).toBe(9);
-  });
-
-  test("a run shorter than its window does not borrow the window's record", () => {
-    // 4 in a row inside a window that went 8 of 10. Printing "4 of 4" would overstate the
-    // run's own evidence; printing "8 of 10" would overstate the run. Both are shown.
-    const r = streakRow(streak("Chelsea", { run: 4, hits: 8, settled: 10 }));
-    expect(r.run).toBe(4);
-    expect(streakDetail(r)).toContain("8 of 10 settled");
-  });
-
-  test("a void is surfaced rather than folded away", () => {
-    const r = streakRow(streak("Spurs", { voids: 1 }));
-    expect(streakDetail(r)).toContain("1 void");
-  });
-
-  test("missing numbers are omitted, not printed as blanks", () => {
-    const bare = { name: "X", streak: { line_label: "4+ corners", length: 5 } };
-    const d = streakDetail(streakRow(bare));
-    expect(d).not.toContain("undefined");
-    expect(d).not.toContain("null");
-  });
-});
-
-
 describe("what reaches the panel", () => {
   test("the label comes straight from the API", () => {
-    // An under relabelled as an over loses in the opposite direction to the intent.
-    const under = streak("Sunderland", { label: "under 9" });
-    expect(streakRow(under).label).toBe("under 9");
+    const [r] = fixtureStreaks([row("Sunderland", { direction: "under", line: 9 })]);
+    expect(r.label).toBe("under 9");
+    expect(r.direction).toBe("under");
+  });
+
+  test("a row below the backend's own floor is refused", () => {
+    expect(fixtureStreaks([row("X", { run: MIN_RUN - 1 })])).toEqual([]);
   });
 
   test("a row with no label is dropped rather than guessed at", () => {
-    const noLabel = { name: "X", team_id: "t", streak: { length: 9 } };
-    expect(fixtureStreaks([noLabel])).toEqual([]);
-  });
-
-  test("a run of one is not a run", () => {
-    expect(fixtureStreaks([streak("X", { run: 1 })])).toEqual([]);
+    expect(fixtureStreaks([{ team: "X", run: 9 }])).toEqual([]);
   });
 
   test("longest first", () => {
-    const rows = fixtureStreaks([streak("A", { run: 4 }), streak("B", { run: 11 }),
-                                 streak("C", { run: 7 })]);
+    const rows = fixtureStreaks([row("A", { run: 6 }), row("B", { run: 11 }),
+                                 row("C", { run: 8 })]);
     expect(rows.map((r) => r.team)).toEqual(["B", "C", "A"]);
   });
 
-  test("recent legs are capped and newest first", () => {
-    const legs = [leg(9), leg(8), leg(7), leg(6), leg(5), leg(4), leg(3), leg(2)];
-    const r = streakRow(streak("A", { legs }));
-    expect(r.recent).toHaveLength(RECENT_SHOWN);
-    expect(r.recent[0].corners).toBe(9);
+  test("both sides and both directions can coexist", () => {
+    // fixture_streaks emits up to eight rows: two teams x team/match x over/under.
+    const rows = fixtureStreaks([
+      row("Arsenal", { subject: "team", direction: "over", run: 9 }),
+      row("Arsenal", { subject: "match", direction: "over", run: 7, line: 10 }),
+      row("Chelsea", { subject: "team", direction: "under", run: 6, venue: "away" }),
+    ]);
+    expect(rows).toHaveLength(3);
+    expect(new Set(rows.map((r) => r.key)).size).toBe(3);
   });
 
   test("an empty payload is an empty panel, not a crash", () => {
@@ -113,13 +123,13 @@ describe("what reaches the panel", () => {
 
 describe("the header", () => {
   test("it counts the runs and says how many are hot", () => {
-    const rows = fixtureStreaks([streak("A", { run: 11 }), streak("B", { run: 4 })]);
+    const rows = fixtureStreaks([row("A", { run: 11 }), row("B", { run: 6 })]);
     expect(streakHeadline(rows)).toBe("2 streaks running into this game · 1 on 8+");
   });
 
   test("no hot run means no claim about one", () => {
-    const rows = fixtureStreaks([streak("A", { run: 4 })]);
-    expect(streakHeadline(rows)).toBe("1 streak running into this game");
+    expect(streakHeadline(fixtureStreaks([row("A", { run: 6 })])))
+      .toBe("1 streak running into this game");
   });
 
   test("nothing running says nothing", () => {

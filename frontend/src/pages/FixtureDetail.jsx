@@ -1098,9 +1098,9 @@ function RunningStreaks({ streaks, share }) {
         <span className="text-sm font-medium">{streakHeadline(rows)}</span>
         <ShareButtons buildX={share} xRows={4} text={share(4)} />
       </div>
-      <div className="space-y-2.5">
+      <div className="space-y-2">
         {rows.map((r) => (
-          <div key={`${r.teamId}-${r.label}`} data-testid={`fixture-streak-${r.teamId}`}
+          <div key={r.key} data-testid={`fixture-streak-${r.key}`}
                className="rounded border border-border/70 bg-secondary/40 px-3 py-2">
             <div className="flex items-baseline gap-2 flex-wrap">
               <span aria-hidden="true">{r.mark}</span>
@@ -1110,27 +1110,11 @@ function RunningStreaks({ streaks, share }) {
                 — {r.run} in a row
               </span>
             </div>
-            {streakDetail(r) && (
-              <div className="text-[11px] text-muted-foreground mt-0.5 font-mono-data">
-                {streakDetail(r)}
-              </div>
-            )}
-            {r.recent.length > 0 && (
-              <div className="flex items-center gap-1.5 mt-1.5 flex-wrap">
-                <span className="text-[11px] text-muted-foreground">last {r.recent.length}:</span>
-                {r.recent.map((m, i) => (
-                  <span key={i} title={`${m.home ? "v" : "at"} ${m.opponent}`}
-                        className={`text-[11px] font-mono-data px-1.5 py-0.5 rounded border ${
-                          m.result === "won"
-                            ? "border-tone-streak/40 bg-tone-streak/15 text-tone-streak-fg"
-                            : m.result === "void"
-                              ? "border-border text-muted-foreground"
-                              : "border-border/60 text-muted-foreground/70"}`}>
-                    {m.corners}
-                  </span>
-                ))}
-              </div>
-            )}
+            {/* WHOSE corners, and where. "5+" alone is a team line and a match total at
+                once, and the match number is about twice the team one. */}
+            <div className="text-[11px] text-muted-foreground mt-0.5 font-mono-data">
+              {streakDetail(r)}
+            </div>
           </div>
         ))}
       </div>

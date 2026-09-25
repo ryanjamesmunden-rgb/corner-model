@@ -824,17 +824,28 @@ jobs:
           python3 - <<'PY' > stat_payload.json
           import json, os
           d = json.load(open("stat.json"))
-          post = d["post"]
-          # THE TOOL'S OWN INTENT LINK, not one rebuilt here. social_draft.mjs already
-          # encodes it and its form is covered by tests; a second encoder in this file
+          # SEVERAL CANDIDATES, ONE MESSAGE, A BUTTON EACH. `stats` is the list; `post` and
+          # `intent` are the first of them, kept singular so this still works against an
+          # older build of the tool rather than sending nothing.
+          cands = d.get("stats") or [{"key": "stat", "text": d["post"],
+                                      "intent": d["intent"], "weight": d.get("weight")}]
+          # THE TOOL'S OWN INTENT LINKS, not ones rebuilt here. social_draft.mjs already
+          # encodes them and their form is covered by tests; a second encoder in this file
           # would be a second definition of the same URL, free to drift from the first.
-          intent = d["intent"]
-          weight = d.get("weight")
-          head = f"Daily statistic — {weight}/280\n\n" if weight else "Daily statistic\n\n"
+          lines = [f"Daily statistics — {len(cands)} to choose from", ""]
+          for i, c in enumerate(cands, 1):
+              w = f"  ({c['weight']}/280)" if c.get("weight") else ""
+              lines.append(f"{i}.{w}")
+              lines.append(c["text"])
+              lines.append("")
+          # ONE BUTTON PER ROW. Telegram lays a row out horizontally and these labels are
+          # long enough that two per row truncate to "Post 1…" on a phone.
+          keyboard = [[{"text": f"Post {i}", "url": c["intent"]}]
+                      for i, c in enumerate(cands, 1)]
           print(json.dumps({
-              "chat_id": os.environ["TG_CHAT"], "text": head + post,
+              "chat_id": os.environ["TG_CHAT"], "text": "\n".join(lines).strip(),
               "disable_web_page_preview": True,
-              "reply_markup": {"inline_keyboard": [[{"text": "Post it", "url": intent}]]}}))
+              "reply_markup": {"inline_keyboard": keyboard}}))
           PY
           code=$(curl -s -o tgs.json -w '%{http_code}' --max-time 30 \
             -X POST "https://api.telegram.org/bot$TG_TOKEN/sendMessage" \
@@ -850,7 +861,11 @@ jobs:
             python3 - <<'PY' > stat_plain.json
           import json, os
           d = json.load(open("stat.json"))
-          print(json.dumps({"chat_id": os.environ["TG_CHAT"], "text": d["post"],
+          cands = d.get("stats") or [{"text": d["post"]}]
+          # THE TEXTS SURVIVE EVEN WHEN THE BUTTONS DO NOT. Losing the one-tap link is an
+          # inconvenience; losing the posts is the day's output.
+          body = "\n\n".join(f"{i}. {c['text']}" for i, c in enumerate(cands, 1))
+          print(json.dumps({"chat_id": os.environ["TG_CHAT"], "text": body,
                             "disable_web_page_preview": True}))
           PY
             code=$(curl -s -o tgs2.json -w '%{http_code}' --max-time 30 \

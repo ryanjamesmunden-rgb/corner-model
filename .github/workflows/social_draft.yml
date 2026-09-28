@@ -990,6 +990,13 @@ jobs:
           fi
         env:
           SITE_URL: ${{ vars.SITE_URL || 'https://thecornermodel.com' }}
+          # THE LIST NEEDS NEITHER OF THESE; THE PICTURE NEEDS BOTH, and leaving them out is
+          # what cost two rehearsal runs. The locked board is built from the snapshot file and
+          # is deliberately exempt from requiring a token — so with none present it fetched no
+          # curve and reported, correctly and uselessly, that there was no picture. The
+          # exemption is about not FAILING without a token, not about never using one.
+          BACKEND_URL: ${{ vars.BACKEND_URL || 'https://corner-model.onrender.com' }}
+          TOOLS_TOKEN: ${{ secrets.TOOLS_TOKEN }}
           TG_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TG_CHAT: ${{ secrets.TELEGRAM_CHAT_ID }}
 
@@ -1012,8 +1019,11 @@ jobs:
           steps.when.outputs.card != '' && env.TG_TOKEN != ''
           && hashFiles('locked.json') != ''
         run: |
+          # The tool prints WHY on stderr when there is no curve — a failed fetch, a model
+          # withheld despite the token, or a fixture with no curve for that group are three
+          # different problems that used to produce one indistinguishable line here.
           python3 -c "import json,sys; d=json.load(open('locked.json')); sys.exit(0 if d.get('story') else 1)" \
-            || { echo "::notice::no curve for the top locked call — the list went out as text"; exit 0; }
+            || { echo "::notice::no picture for the locked list — see the 'no picture' line above for which reason"; exit 0; }
           python3 -c "import json; d=json.load(open('locked.json')); json.dump(d['story'], open('locked_story.json','w'))"
           can=$(bash tools/install_render.sh | tail -1)
           echo "renderer: $can"

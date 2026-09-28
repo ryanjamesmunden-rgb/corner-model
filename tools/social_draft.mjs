@@ -376,7 +376,18 @@ if (BOARD === "locked") {
   // already recorded by the time this runs.
   let story = null;
   const top = qualified[0];
-  if (top?.fixture_id && TOKEN) {
+  // WHY THERE IS NO PICTURE, SAID OUT LOUD. Every reason this can fail produced the same
+  // silent null and the same log line — "no curve for the top locked call" — which is
+  // indistinguishable from a fixture that genuinely has no curve. Two runs were spent
+  // guessing between a failed fetch, a withheld model and a missing group. It says which now.
+  let whyNoStory = "";
+  if (!top) {
+    whyNoStory = "nothing qualified";
+  } else if (!top.fixture_id) {
+    whyNoStory = "the top call has no fixture id";
+  } else if (!TOKEN) {
+    whyNoStory = "TOOLS_TOKEN is not set, so the model cannot be read";
+  } else {
     const detail = await getSoft(`/api/fixtures/${encodeURIComponent(top.fixture_id)}`
       + `?token=${encodeURIComponent(TOKEN)}`);
     const dists = detail?.model?.distribution;
@@ -384,6 +395,19 @@ if (BOARD === "locked") {
     // would be a picture of a different bet.
     const group = top.subject === "match" ? "total" : (top.is_home ? "home" : "away");
     const dist = dists?.[group] || dists?.total;
+    if (!detail) {
+      whyNoStory = `the fixture endpoint returned nothing for ${top.fixture_id}`;
+    } else if (detail.model?.blurred) {
+      // THE ONE THAT COST TWO RUNS. The endpoint withholds the model from non-members, and
+      // the token is meant to be the way past it — so `blurred: true` coming back WITH a
+      // token means the backend has not deployed that exemption yet, or the token is wrong.
+      whyNoStory = "the model came back blurred despite the token — the backend has not "
+        + "deployed the token exemption, or TOOLS_TOKEN does not match";
+    } else if (!dists) {
+      whyNoStory = "the fixture carries no distribution at all";
+    } else if (!dist?.length) {
+      whyNoStory = `no curve for group "${group}" (have: ${Object.keys(dists).join(", ")})`;
+    }
     if (dist?.length) {
       story = {
         homeName: detail.fixture?.home_name || "",
@@ -396,6 +420,8 @@ if (BOARD === "locked") {
       };
     }
   }
+
+  if (whyNoStory) console.error(`social_draft: no picture — ${whyNoStory}`);
 
   // A SHORT CAPTION, because Telegram caps a media caption at 1024 characters and a full
   // card of eight runs past it. The list goes as its own message; this names the game the

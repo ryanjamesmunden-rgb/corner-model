@@ -931,3 +931,70 @@ jobs:
         env:
           BACKEND: ${{ vars.BACKEND_URL || 'https://corner-model.onrender.com' }}
           TOOLS_TOKEN: ${{ secrets.TOOLS_TOKEN }}
+
+      - name: Send the locked-in list to the channel
+        # AFTER THE FREEZE, AND FROM THE FREEZE'S OWN RESPONSE.
+        #
+        # The snapshot has always been taken and the Results page has always graded it. What
+        # was missing is any message SENT before kick-off, so the record said "18 of 18" with
+        # nothing anywhere proving the list was written down first. That is the one thing that
+        # makes a record worth reading.
+        #
+        # IT READS snap.json RATHER THAN RE-ASKING THE BACKEND, deliberately. Those bytes are
+        # the entries as they went into the database, which is exactly what will be graded. A
+        # second scan an hour later has already lost the rows that broke in between — the same
+        # survivorship argument the snapshot exists for, one step further along — so a post
+        # built that way could disagree with the record it is meant to prove.
+        #
+        # SO IT CANNOT RUN WITHOUT THE FREEZE, which is the right dependency: no freeze means
+        # no claim, and there is nothing honest to send.
+        #
+        # TWICE A WEEK, on the days a card is published: Monday for the midweek (Tue-Thu),
+        # Wednesday for the weekend (Fri-Mon). Every day of the week belongs to exactly one
+        # locked list, the same coverage the freeze already guarantees.
+        #
+        # A SEND FAILURE IS A WARNING, NOT AN ERROR. The freeze above is the part that must
+        # not be lost; if Telegram refuses the message the claim is still recorded and the
+        # text is in this log.
+        if: steps.when.outputs.card != '' && env.TG_TOKEN != ''
+        run: |
+          node tools/social_draft.mjs --board locked --snapshot snap.json \
+            --out locked.md --json-out locked.json
+          if [ ! -s locked.md ]; then
+            # A freeze that qualified nobody is a real answer, and the record will show a
+            # week with no calls in it. The tool prints which.
+            echo "::notice::nothing locked in for the ${{ steps.when.outputs.card }} card — see the SKIP line above"
+            exit 0
+          fi
+          {
+            echo "### locked in — ${{ steps.when.outputs.card }}"
+            echo '```'
+            cat locked.md
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "----- locked -----"
+          cat locked.md
+          echo "----- end -----"
+          if [ -n "${{ inputs.board }}" ] && [ "${{ inputs.send }}" != "true" ]; then
+            echo "::notice::locked list built, NOT sent — re-run with send: true to post it"
+            exit 0
+          fi
+          python3 - <<'PY' > locked_payload.json
+          import json, os
+          d = json.load(open("locked.json"))
+          print(json.dumps({"chat_id": os.environ["TG_CHAT"], "text": d["post"],
+                            "disable_web_page_preview": True}))
+          PY
+          code=$(curl -s -o tgl.json -w '%{http_code}' --max-time 30 \
+            -X POST "https://api.telegram.org/bot$TG_TOKEN/sendMessage" \
+            -H 'content-type: application/json' --data-binary @locked_payload.json || true)
+          if [ "$code" = "200" ]; then
+            echo "::notice::locked-in list sent to Telegram"
+          else
+            echo "::warning::locked list send failed (HTTP $code) — the freeze is still recorded"
+            cat tgl.json || true
+          fi
+        env:
+          SITE_URL: ${{ vars.SITE_URL || 'https://thecornermodel.com' }}
+          TG_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TG_CHAT: ${{ secrets.TELEGRAM_CHAT_ID }}

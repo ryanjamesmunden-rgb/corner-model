@@ -29,14 +29,27 @@ TZ = ZoneInfo("Europe/London")
 
 # 1 = Monday … 7 = Sunday, matching date.isoweekday(). 0 turns the window off entirely.
 #
-# THE DEFAULT IS THE POLICY, for the same reason TRIAL_DAYS defaults to the advertised
-# length: a feature that does nothing until somebody remembers to set a variable is a
-# feature that quietly is not running. Setting SIGNUP_DAY=0 is how you turn it off, and
-# that is a decision somebody makes rather than one they forget to make.
+# THE DEFAULT IS NOW 0: THE DOOR IS OPEN EVERY DAY.
 #
-# A junk value falls back to 0 rather than to a day, because a shop that cannot be opened
-# because of a typo in an environment variable is worse than one with no window at all.
-SIGNUP_DAY = max(0, min(7, int(os.environ.get("SIGNUP_DAY", "1") or 0)))
+# It was 1 (Monday), on the reasoning kept at the top of this file — that a cohort makes the
+# trial measurable and the week's published record match the week a member experienced. That
+# reasoning is still true and the machinery is still here; what changed is the answer to the
+# trade it names in its own second paragraph. "Somebody who reads the pitch on a Tuesday has
+# to come back in six days, and most people do not come back."
+#
+# Six days in seven, a brand-new visitor could not subscribe at all — and not obviously,
+# because trial_days_for offers every new account a trial and they cannot decline one, so
+# scope="trial" caught all of them rather than only the ones choosing a free week. A
+# measurable cohort is worth less than the people who never came back to be measured.
+#
+# SET SIGNUP_DAY=1 TO PUT IT BACK. Nothing below this line changed; the window works exactly
+# as it did and is one environment variable away. That is the right shape for a decision
+# that is about the business rather than about the code, and it is why this is a default
+# rather than a deletion.
+#
+# A junk value falls back to 0 for the same reason it always did: a shop that cannot be
+# opened because of a typo in an environment variable is worse than one with no window.
+SIGNUP_DAY = max(0, min(7, int(os.environ.get("SIGNUP_DAY", "0") or 0)))
 
 # WHAT THE WINDOW APPLIES TO.
 #

@@ -49,16 +49,32 @@ class TestTheDay:
         assert s.is_open(utc(2026, 9, 17)) is True      # Thursday
         assert s.is_open(utc(2026, 9, 14)) is False
 
-    def test_the_default_is_monday_rather_than_off(self):
-        # A feature that does nothing until somebody remembers to set a variable is a
-        # feature that quietly is not running — the same reason TRIAL_DAYS defaults to the
-        # advertised length rather than to zero.
+    def test_the_default_is_OFF_so_anybody_can_join_any_day(self):
+        # REVERSED DELIBERATELY. It defaulted to Monday, on the reasoning that a cohort makes
+        # the trial measurable — which is still true and still documented in signup.py. What
+        # changed is the answer to the trade that file states itself: six days in seven a
+        # brand-new visitor could not subscribe at all, because they are always offered a
+        # trial and cannot decline one, so scope="trial" caught every one of them.
+        #
+        # The machinery is untouched and SIGNUP_DAY=1 puts it back, which is what the next
+        # test checks. This one pins which way it points when nobody has said.
         import importlib
         os.environ.pop("SIGNUP_DAY", None)
         import signup
         s = importlib.reload(signup)
-        assert s.SIGNUP_DAY == MONDAY
-        assert s.day_name() == "Monday"
+        assert s.SIGNUP_DAY == 0
+        assert s.enabled() is False
+        # Every day of a week, to make the claim in the name true rather than implied.
+        for d in range(14, 21):
+            assert s.is_open(utc(2026, 9, d)) is True
+
+    def test_and_the_window_still_works_when_it_is_asked_for(self):
+        # The default is a decision, not a deletion. Anyone reinstating the cohort gets
+        # exactly the behaviour that was there before.
+        s = _signup(day="1")
+        assert s.enabled() is True
+        assert s.is_open(utc(2026, 9, 14)) is True       # Monday
+        assert s.is_open(utc(2026, 9, 15)) is False      # Tuesday
 
     def test_a_junk_setting_does_not_lock_the_door(self):
         # A shop that cannot be opened because of a typo in an env var is worse than one

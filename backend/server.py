@@ -2185,6 +2185,7 @@ TOOL_SCRIPTS = {"backfill_shots": "backfill_shots.py", "measure_features": "meas
                 "audit_settlement": "audit_settlement.py",
                 "audit_pick_lines": "audit_pick_lines.py",
                 "audit_bets": "audit_bets.py",
+                "audit_signups": "audit_signups.py",
                 "watchlist": "watchlist.py",
                 "backfill_fh": "backfill_fh.py",
                 "backfill_goal_events": "backfill_goal_events.py",
@@ -2201,7 +2202,7 @@ TOOL_SCRIPTS = {"backfill_shots": "backfill_shots.py", "measure_features": "meas
 TOOL_COOLDOWN = {"backfill_shots": 600, "measure_features": 120,
                  "measure_chase_board": 120, "measure_calibration": 120,
                  "audit_settlement": 120, "audit_pick_lines": 120,
-                 "audit_bets": 120,
+                 "audit_bets": 120, "audit_signups": 120,
                  "watchlist": 120,
                  "backfill_fh": 120,
                  "backfill_goal_events": 600,
@@ -2256,6 +2257,13 @@ MEASURE_MODES = {
     # (a string fixture id against an int-keyed cache) from corner data we simply do not
     # have. Reads db.bets and db.fixture_stats; runs across all users.
     "bet_audit": ("audit_bets", [], False),
+    # DID ANYBODY TRY TO SUBSCRIBE AND NOT GET THROUGH. Prints the weekly signup window
+    # first, in words, because SIGNUP_DAY defaults to Monday and a new visitor is always
+    # offered a trial — so under the defaults new signups are Monday-only, which is by
+    # design, invisible from outside, and the likeliest answer to the question. Then the
+    # accounts that opened a checkout and never finished, and any Stripe event that failed
+    # to apply. Reads db.users and db.billing_events; no Stripe calls.
+    "signup_audit": ("audit_signups", [], False),
     # WHICH FIXTURES TO WATCH WHEN FOOTBALL COMES BACK. Looks past an international
     # break and ranks the restart's games by mismatch — not by streak, which is one
     # result from ending and so the wrong signal at three weeks' range. Produces a

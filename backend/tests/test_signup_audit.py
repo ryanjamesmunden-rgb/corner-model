@@ -111,10 +111,19 @@ class TestHowLongAgoTheyTried:
 
 
 class TestTheWindowIsExplained:
-    def test_it_names_the_day_and_the_scope(self):
-        lines, _ = audit.window_report()
-        text = " ".join(lines)
-        assert f"SIGNUP_DAY={signup.SIGNUP_DAY}" in text
+    def test_an_open_door_is_reported_as_open(self, monkeypatch):
+        # The shipped default. The audit's first job is to say plainly that nobody is being
+        # turned away, because "is the window shutting people out" is the question it exists
+        # to answer and the expensive wrong answer is a shrug.
+        monkeypatch.setattr(signup, "SIGNUP_DAY", 0)
+        lines, closed = audit.window_report()
+        assert "OFF" in lines[0] and "any day" in lines[0]
+        assert closed is False
+
+    def test_it_names_the_day_and_the_scope_when_there_is_one(self, monkeypatch):
+        monkeypatch.setattr(signup, "SIGNUP_DAY", 1)
+        text = " ".join(audit.window_report()[0])
+        assert "SIGNUP_DAY=1" in text
         assert f"SIGNUP_SCOPE={signup.SIGNUP_SCOPE}" in text
 
     def test_it_says_a_new_visitor_is_limited_to_the_open_day(self, monkeypatch):

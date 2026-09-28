@@ -550,6 +550,17 @@ describe("a post states UK time, wherever it was built", () => {
     expect(postTime("2026-09-27T14:00:00Z", "UTC")).toBe("2:00pm");
   });
 
+  test("midnight is 12, not 0", () => {
+    // FOUND ON A REAL POST. Some ICU builds render the midnight hour as "12" under hour12
+    // and others as "0", so a 00:30 UK kick-off went out as "Thu 0:30am" from the Actions
+    // runner while reading correctly in a browser. It hits after-midnight UK kick-offs,
+    // which is where the MLS and Brazilian games are — the ones most easily misread anyway.
+    expect(postTime("2026-10-01T23:30:00Z")).toBe("12:30am");
+    expect(postDayTime("2026-10-01T23:30:00Z")).toBe("Fri 12:30am");
+    // And noon is not caught by the same rule.
+    expect(postTime("2026-10-01T11:00:00Z")).toBe("12:00pm");
+  });
+
   test("junk is empty rather than an Invalid Date in a card", () => {
     for (const bad of ["", null, undefined, "nonsense"]) {
       expect(postTime(bad)).toBe("");

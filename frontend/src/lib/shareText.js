@@ -620,9 +620,15 @@ export const postDate = (iso, tz = POST_TZ) => {
 export const postTime = (iso, tz = POST_TZ) => {
   const parts = inZone(iso, { hour: "numeric", minute: "2-digit", hour12: true }, tz);
   if (!parts) return "";
-  const hour = partOf(parts, "hour");
+  let hour = partOf(parts, "hour");
   const minute = partOf(parts, "minute");
   if (!hour || !minute) return "";
+  // MIDNIGHT IS 12, NOT 0, AND THE RUNNER DISAGREED. Under hour12 some ICU builds render
+  // the midnight hour as "12" and others as "0", so a 00:30 kick-off went out as "Thu
+  // 0:30am" from the Actions runner while reading correctly in a browser. Seen on a real
+  // MLS post, which is where the after-midnight UK kick-offs live — so it hits the games
+  // most likely to be misread already.
+  if (hour === "0" || hour === "00") hour = "12";
   // dayPeriod rather than reformatting the whole string: Intl spells it "am", "AM" or
   // "a.m." depending on the ICU build, and stripping spaces off a full render was how the
   // old one coped. Reading the part is the same answer without depending on the spelling.

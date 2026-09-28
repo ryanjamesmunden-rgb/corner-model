@@ -948,7 +948,11 @@ jobs:
         # text is in this log.
         if: steps.when.outputs.card != '' && env.TG_TOKEN != ''
         run: |
+          # --card, because the snapshot DOCUMENT does not carry one — only its entries do.
+          # Passing it here means the heading is right even on a freeze whose rows somehow
+          # lack it, and lockedSlate falls back to the rows when this is blank.
           node tools/social_draft.mjs --board locked --snapshot snap.json \
+            --card "${{ steps.when.outputs.card }}" \
             --out locked.md --json-out locked.json
           if [ ! -s locked.md ]; then
             # A freeze that qualified nobody is a real answer, and the record will show a

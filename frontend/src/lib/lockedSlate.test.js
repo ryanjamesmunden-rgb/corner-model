@@ -137,6 +137,28 @@ describe("what the post claims", () => {
     expect(cardLabel("nonsense")).toBe("");
   });
 
+  test("the card is recovered from the rows when the caller has none", () => {
+    // FOUND ON THE FIRST REAL RUN. The snapshot DOCUMENT carries no `card` — only its
+    // entries do — so a caller reading the freeze response has nothing to pass, and the
+    // heading came out as a bare "🔒 LOCKED IN".
+    const out = lockedSlate({ tag: "2026-09-28", site: SITE,
+                              entries: [entry({ card: "midweek" })] });
+    expect(out).toContain("Midweek card");
+  });
+
+  test("an explicit card beats the rows", () => {
+    // The workflow passes one, and it knows which card it is publishing.
+    const out = lockedSlate({ tag: "2026-09-28", card: "weekend", site: SITE,
+                              entries: [entry({ card: "midweek" })] });
+    expect(out).toContain("Weekend card");
+  });
+
+  test("a row with no card at all still produces a heading", () => {
+    const out = lockedSlate({ tag: "2026-09-28", site: SITE,
+                              entries: [entry({ card: undefined })] });
+    expect(out.startsWith("🔒 LOCKED IN")).toBe(true);
+  });
+
   test("it counts the calls it is making", () => {
     const three = slate({ entries: [entry(), entry({ name: "B" }), entry({ name: "C" })] });
     expect(three).toContain("3 calls");

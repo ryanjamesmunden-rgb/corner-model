@@ -137,7 +137,11 @@ export const lockedSlate = ({ tag = "", card = "", entries = [], site = "",
   const picked = lockedEntries(entries);
   if (!picked.length) return "";
 
-  const label = cardLabel(card);
+  // THE CARD COMES OFF AN ENTRY WHEN THE CALLER HAS NONE. The snapshot document stores
+  // `card` on every entry but NOT at the top level, so a caller reading the freeze response
+  // has no card to pass and the heading came out as a bare "🔒 LOCKED IN" on the first real
+  // run. Reading it off the rows is the same fact from the place that actually holds it.
+  const label = cardLabel(card || picked[0]?.card);
   // "Mon 28 Sep" rather than the weekday next to an ISO date, which read as two dates.
   // Noon UTC so the calendar day cannot slip either side of it in any European offset.
   const frozen = frozenLabel(tag, tz);

@@ -1024,6 +1024,12 @@ jobs:
           # different problems that used to produce one indistinguishable line here.
           python3 -c "import json,sys; d=json.load(open('locked.json')); sys.exit(0 if d.get('story') else 1)" \
             || { echo "::notice::no picture for the locked list — see the 'no picture' line above for which reason"; exit 0; }
+          # THE SEND GATE, BEFORE THE RENDER. See the note below on why it exists at all;
+          # checking it here as well means a rehearsal costs no browser install.
+          if [ -n "${{ inputs.board }}" ] && [ "${{ inputs.send }}" != "true" ]; then
+            echo "::notice::a picture would be drawn for this list — re-run with send: true"
+            exit 0
+          fi
           python3 -c "import json; d=json.load(open('locked.json')); json.dump(d['story'], open('locked_story.json','w'))"
           can=$(bash tools/install_render.sh | tail -1)
           echo "renderer: $can"
@@ -1039,6 +1045,20 @@ jobs:
             FILE=locked.png; KIND=photo
           else
             echo "::warning::the render failed — the list went out as text"; exit 0
+          fi
+
+          # THE SAME SEND GATE THE LIST HONOURS, and its absence here posted an animation to
+          # the channel on a `send: false` rehearsal — with no list beside it, because the
+          # list obeyed the flag and this did not.
+          #
+          # THAT IS THE EXACT BUG THE CARD NOTE IN THIS FILE DESCRIBES: "`send: false` was
+          # once a guard on one of two sending paths — the card step honoured it and the draft
+          # step delivered anyway, so asking to SEE a card posted one." A flag that governs
+          # half the sends is worse than none, because it is believed. Checked BEFORE the
+          # render, so a rehearsal does not spend a minute of runner time either.
+          if [ -n "${{ inputs.board }}" ] && [ "${{ inputs.send }}" != "true" ]; then
+            echo "::notice::picture not rendered or sent — re-run with send: true"
+            exit 0
           fi
 
           # THE CAPTION IS SHORT ON PURPOSE. Telegram caps a media caption at 1024

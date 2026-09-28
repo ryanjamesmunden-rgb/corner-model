@@ -11,6 +11,7 @@ import PostPick from "@/components/PostPick";
 import { fixtureStreakShare } from "@/lib/shareText";
 import { fixtureStreaks, streakDetail, streakHeadline } from "@/lib/fixtureStreaks";
 import { useAuth } from "@/context/AuthContext";
+import { canWritePrices } from "@/lib/locked";
 import ProbabilityChart from "@/components/ProbabilityChart";
 import { api, tierMeta, confMeta } from "@/lib/api";
 import { isCrossLeague, transferNote } from "@/lib/cupRow";
@@ -41,6 +42,9 @@ const WINDOW_LABELS = { "3": "L3", "5": "L5", "10": "L10", "0": "Season" };
 const PANEL_CELL = "sticky left-0 max-w-[calc(100vw-2.5rem)] px-3 pb-2.5";
 
 export default function FixtureDetail() {
+  // `member` straight off the context rather than derived from `user`: the provider already
+  // computes it, and two places deciding what "a member" means is how they come to disagree.
+  const { member } = useAuth();
   const { id } = useParams();
   const navigate = useNavigate();
   const [data, setData] = useState(null);
@@ -129,6 +133,10 @@ export default function FixtureDetail() {
   // this only chooses how to DRAW an absence, never whether to reveal something. A
   // client-side check would be a lock with the values sitting in the network tab.
   const blurred = !!model.blurred;
+  // WHO MAY TYPE A PRICE. The rule lives in lib/locked beside the other "what may this
+  // reader see" decisions, where a test can pin it against the server's own gate — jest
+  // here cannot render this page, so anything asserted about it has to live in a module.
+  const canPrice = canWritePrices({ member });
   // Every market — totals included — now carries fair odds, your price and the EV
   // between them. See TotalCorners for why totals were the exception and no longer are.
   const groups = [
@@ -242,7 +250,10 @@ export default function FixtureDetail() {
           this takes them as a block: it reads a team name or the word "total" to route
           each line, understands both "Over 9.5 1.85" and "10+ 1.85", and prices every
           market on the page in one go. */}
-      <PastePrices
+      {/* WRITE CONTROL, SAME GATE. It posts to the same members-only endpoint as the
+          inputs below, so showing it to a reader who cannot write is the same dead end
+          with a bigger box. */}
+      {canPrice && <PastePrices
         value={paste}
         onChange={setPaste}
         target={pasteTarget}
@@ -250,7 +261,7 @@ export default function FixtureDetail() {
         onSubmit={handlePaste}
         homeName={fixture.home_name}
         awayName={fixture.away_name}
-      />
+      />}
 
       {/* TEAM CORNERS FIRST — this used to lead with the match total, and that was the
           wrong way round for the bet rather than for the layout. A team line needs ONE
@@ -329,15 +340,17 @@ export default function FixtureDetail() {
                         {modelNum(m.fair_odds, (v) => v.toFixed(2), blurred)}
                       </td>
                       <td className="px-3 py-2 text-right">
-                        <input
-                          data-testid={`odds-input-${m.key}`}
-                          value={odds[m.key] || ""}
-                          onChange={(e) => setOdds({ ...odds, [m.key]: e.target.value })}
-                          onBlur={() => odds[m.key] && submitOdds(odds)}
-                          onKeyDown={(e) => e.key === "Enter" && submitOdds(odds)}
-                          placeholder="—"
-                          className="w-16 bg-black border border-border rounded px-1.5 py-1 text-right text-xs focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent"
-                        />
+                        {canPrice ? (
+                          <input
+                            data-testid={`odds-input-${m.key}`}
+                            value={odds[m.key] || ""}
+                            onChange={(e) => setOdds({ ...odds, [m.key]: e.target.value })}
+                            onBlur={() => odds[m.key] && submitOdds(odds)}
+                            onKeyDown={(e) => e.key === "Enter" && submitOdds(odds)}
+                            placeholder="—"
+                            className="w-16 bg-black border border-border rounded px-1.5 py-1 text-right text-xs focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent"
+                          />
+                        ) : modelNum(m.book_odds, (v) => v.toFixed(2), blurred)}
                       </td>
                       <td className={`px-3 py-2 text-right font-semibold ${t ? t.text : "text-muted-foreground"}`}>
                         {modelNum(m.ev, (v) => `${v > 0 ? "+" : ""}${v.toFixed(1)}%`, blurred)}
@@ -376,6 +389,7 @@ export default function FixtureDetail() {
           two as interchangeable just because they sit on the same fixture. */}
       <TotalCorners
         blurred={blurred}
+        canPrice={canPrice}
         markets={model.markets}
         home={home_team}
         away={away_team}
@@ -532,7 +546,7 @@ function PastePrices({ value, onChange, target, onTarget, onSubmit, homeName, aw
 
 function TotalCorners({ markets, home, away, homeName, awayName,
                         odds, setOdds, submitOdds, flash,
-                        fixtureId, backing, onBacking, blurred }) {
+                        fixtureId, backing, onBacking, blurred, canPrice }) {
   // Straight off the model's own total ladder, so the prices and the hit rates cannot
   // drift onto different lines. Over 9.5 is displayed as "10+", which is how it is said.
   const rows = (markets || [])
@@ -652,16 +666,18 @@ function TotalCorners({ markets, home, away, homeName, awayName,
                   </span>
                 </td>
                 <td className="px-3 py-2 text-right">
-                  <input
-                    data-testid={`odds-input-${m.key}`}
-                    inputMode="decimal"
-                    value={odds?.[m.key] || ""}
-                    onChange={(e) => setOdds({ ...odds, [m.key]: e.target.value })}
-                    onBlur={() => odds?.[m.key] && submitOdds(odds)}
-                    onKeyDown={(e) => e.key === "Enter" && submitOdds(odds)}
-                    placeholder="—"
-                    className="w-16 bg-black border border-border rounded px-1.5 py-1 text-right text-xs focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent"
-                  />
+                  {canPrice ? (
+                    <input
+                      data-testid={`odds-input-${m.key}`}
+                      inputMode="decimal"
+                      value={odds?.[m.key] || ""}
+                      onChange={(e) => setOdds({ ...odds, [m.key]: e.target.value })}
+                      onBlur={() => odds?.[m.key] && submitOdds(odds)}
+                      onKeyDown={(e) => e.key === "Enter" && submitOdds(odds)}
+                      placeholder="—"
+                      className="w-16 bg-black border border-border rounded px-1.5 py-1 text-right text-xs focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent"
+                    />
+                  ) : modelNum(m.book_odds, (v) => v.toFixed(2), blurred)}
                 </td>
                 <td className={`px-3 py-2 text-right text-xs ${
                   gap == null ? "text-muted-foreground"

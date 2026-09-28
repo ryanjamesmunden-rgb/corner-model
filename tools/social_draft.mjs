@@ -40,6 +40,7 @@ const { slateFrom, slatePost } = await import(resolve(LIB, "chaseSlate.js"));
 const { streakFinder, liveDrop, finderWindow } = await import(resolve(LIB, "streakFinder.js"));
 const { tweetStat } = await import(resolve(LIB, "tweetStat.js"));
 const { tweetStats } = await import(resolve(LIB, "tweetStats.js"));
+const { lockedSlate } = await import(resolve(LIB, "lockedSlate.js"));
 
 const arg = (name, fallback = null) => {
   const i = process.argv.indexOf(`--${name}`);
@@ -179,7 +180,12 @@ function emit(body, payload = null) {
   if (!OUT && !JSON_OUT) console.log(body);
 }
 
-if (!TOKEN) fail("TOOLS_TOKEN is not set — add it as a repo secret");
+// EVERY BOARD BUT ONE NEEDS THE BACKEND. `locked` is built from the snapshot file the
+// freeze step already wrote, deliberately — see the note on that board — so it needs no
+// token, and demanding one would fail a post that has everything it needs on disk.
+if (!TOKEN && BOARD !== "locked") {
+  fail("TOOLS_TOKEN is not set — add it as a repo secret");
+}
 
 // ---- picks: the angles actually posted to the channel, and how they went.
 //
@@ -319,6 +325,45 @@ ${card}
 // The menu is the only board that reads all four. The other three boards walk every team
 // in the database, so asking for them on a Tuesday game post would make it pay for work it
 // never reads — on a free-tier backend that is the difference between a post and a timeout.
+// ---- what the site LOCKED IN before kick-off.
+//
+// READ FROM A FILE, NOT FROM THE BACKEND, and that is the point rather than a shortcut. The
+// freeze step has just POSTed /api/streaks/snapshot and kept the response, which contains the
+// entries exactly as they were written to the database. Those bytes are what the Results page
+// will grade.
+//
+// A SECOND SCAN WOULD BE A DIFFERENT BOARD. A run is alive only until it breaks, so a board
+// re-read an hour later has already lost the rows that failed in between — the same
+// survivorship argument the snapshot exists for, one step further along. Fetching afresh here
+// could produce a post that disagrees with the record it is supposed to prove, and the
+// disagreement would be invisible until somebody checked a losing week by hand.
+//
+// It therefore also needs no token and no network, which is why it sits above the fetch.
+if (BOARD === "locked") {
+  const from = arg("snapshot", "snap.json");
+  let snap = null;
+  try {
+    snap = JSON.parse(readFileSync(from, "utf8"));
+  } catch (err) {
+    fail(`could not read the snapshot at ${from} — ${err.message}. This post is built from `
+         + "the freeze's own response; without it there is nothing to prove.");
+  }
+  const entries = snap?.entries || [];
+  const post = lockedSlate({ tag: snap?.tag || "", card: snap?.card || arg("card", ""),
+                             entries, site: SITE });
+  if (!post) {
+    // A freeze that qualified nobody is a real answer. The record will show a week with no
+    // calls in it, which is the honest outcome of a quiet board.
+    skip(`the ${snap?.tag || "latest"} freeze has no qualified entries — nothing locked in`);
+  }
+  const locked = entries.filter((e) => e?.qualified).length;
+  emit(post, { empty: false, board: "locked", post, intent: "",
+               weight: post.length, full: post,
+               note: `${locked} locked of ${entries.length} frozen`
+                 + (snap?.tag ? ` \u00b7 ${snap.tag}` : "") });
+  process.exit(0);
+}
+
 const BOARDS = BOARD === "menu" ? "streaks,mismatches,chase,value"
   : BOARD === "chase" ? "chase"
   // The finder is streaks and nothing else. Asking for `fixtures` alongside would make it
@@ -653,12 +698,19 @@ if (BOARD === "game") {
   //
   // A separate call, because the board rows carry no probability CURVE — only the single
   // number for their own line. The curve is what makes the image worth looking at, and it
-  // lives on the fixture endpoint, which is public: no token, and a failure here must not
-  // cost the post, so it degrades to text rather than throwing.
+  // lives on the fixture endpoint.
+  //
+  // WITH THE TOKEN, AND IT USED TO SAY "which is public: no token". That stopped being true
+  // the day the fixture page began withholding the model from non-members: `distribution`
+  // and `lambdas` came back stripped, `story` stayed null, and the job logged "no fixture
+  // curve in today's draft — text only" — which reads like a quiet day rather than a broken
+  // picture. A failure here still degrades to text rather than throwing, so the token is
+  // what makes the difference between a picture and a silent absence of one.
   let story = null;
   const fid = row.next_fixture?.fixture_id;
   if (fid) {
-    const detail = await getSoft(`/api/fixtures/${encodeURIComponent(fid)}`);
+    const detail = await getSoft(`/api/fixtures/${encodeURIComponent(fid)}`
+      + `?token=${encodeURIComponent(TOKEN)}`);
     const dists = detail?.model?.distribution;
     // The group the ANGLE is about — a home-corners streak should not draw the match
     // total's curve underneath it.

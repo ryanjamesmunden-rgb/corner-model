@@ -78,6 +78,12 @@ export const fixtureShare = ({ fixtures = [], days = "3" }) => (limit) => {
     + timesFooter(shown.map((f) => f.date));
 };
 
+// The marks on the Best Corner Teams heading. Named constants rather than literals in the
+// template, because they are read at a glance in a post and are easy to lose in a string —
+// and because a test can then assert them by name rather than by pasting an emoji.
+export const BEST_TEAMS_MARK = "\u{1F6A9}";   // 🚩 the board
+export const AVG_MARK = "\u{1F4C8}";          // 📈 the number
+
 /**
  * Best Corner Teams: flag, team, number. Nothing else on the line.
  *
@@ -103,7 +109,21 @@ export const bestTeamsShare = ({ rows = [], side, windowLabel = "" }) => (limit)
   const scope = side === "overall" || !side ? "" : ` (${side})`;
   // "Last 5" reads as "last 5" mid-sentence; "Season" keeps its capital.
   const window = windowLabel ? ` · ${windowLabel.replace(/^Last\b/, "last")}` : "";
-  return `Best corner teams${league}\nAVG won${scope}${window}:\n`
+  // THE TWO MARKS THAT WERE BEING TYPED BY HAND EVERY TIME. A heading with nothing in
+  // front of it is a line of text in a timeline; these give the post a shape a reader
+  // recognises before reading a word of it, which is the whole job of the first line.
+  //
+  // ON EVERY BOARD, NOT ONLY A SINGLE-LEAGUE ONE. The request came from sharing one
+  // league, but the heading is the same sentence either way and a mixed board that
+  // silently lost its marks would look like a different, lesser post. `league` below is
+  // what varies with scope; the marks do not.
+  //
+  // THEY COST 6 OF THE 280 — two graphemes at X's weight of 2 apiece, plus their spaces —
+  // and fitToPost drops a ROW to make room rather than overrunning. That is the trade: a
+  // board of eight can become seven on a day of long club names. Worth it for a heading
+  // that reads as a post, and the reason the rest of this function is written as tightly
+  // as it is.
+  return `${BEST_TEAMS_MARK} Best corner teams${league}\n${AVG_MARK} AVG won${scope}${window}:\n`
     + rows.slice(0, limit).map((r) =>
         `${flagBullet(r.league_id)} ${r.name} ${r.won_avg.toFixed(1)}`).join("\n")
     + more(rows.length, limit);

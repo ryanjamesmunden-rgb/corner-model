@@ -3209,7 +3209,8 @@ def _card_factors(team, opp, venue, team_name, opp_name, league_teams=None) -> L
 
 
 @api_router.get("/fixtures/{fixture_id}")
-async def fixture_detail(fixture_id: str, user: dict = Depends(get_current_user)):
+async def fixture_detail(fixture_id: str, token: Optional[str] = None,
+                         user: dict = Depends(get_current_user)):
     fx = await db.fixtures.find_one({"fixture_id": fixture_id}, {"_id": 0})
     if not fx:
         raise HTTPException(status_code=404, detail="Fixture not found")
@@ -3292,8 +3293,17 @@ async def fixture_detail(fixture_id: str, user: dict = Depends(get_current_user)
     # THE MODEL'S NUMBERS ARE FOR MEMBERS; EVERYTHING ELSE ON THIS PAGE IS NOT. `user` was
     # a dependency here that nothing read, which is how the priced angle on every fixture
     # went out to anyone with the URL. See _blur_model.
+    #
+    # THE TOKEN IS A SECOND WAY IN, and withholding the model without it broke the daily
+    # animation. tools/social_draft.mjs builds the picture from `distribution` and `lambdas`
+    # on this endpoint — its own comment says "which is public: no token" — so blurring
+    # those left `story` null and the job logged "no fixture curve in today's draft — text
+    # only". That reads like a quiet day rather than a break, which is the worst way for a
+    # regression to present. Same pattern and same reasoning as set_odds: the token is
+    # already the credential for every other automation here.
+    full = user.get("member") or _has_tools_token(token)
     return {"fixture": fx,
-            "model": model if user.get("member") else _blur_model(model),
+            "model": model if full else _blur_model(model),
             "league_avg_corners": round(lg_avg, 2),
             # WHAT IS ALREADY RUNNING INTO THIS GAME. Rides along on the fixture payload
             # rather than a second endpoint: the page has to load this anyway to show it,

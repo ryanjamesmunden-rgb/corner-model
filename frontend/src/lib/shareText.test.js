@@ -8,7 +8,8 @@
 import { streakShare, fixtureShare, bestTeamsShare, streakResultShare,
          fixtureStreakShare, telegramPick, wonLadder, openGameCase, postHeader,
          pickGame, pickGameDetailed, gameShare, cardPost, picksReview, moreVia,
-         postDate, postTime, postDayTime, POST_TZ, pickLabel, angleMenu } from "./shareText";
+         postDate, postTime, postDayTime, POST_TZ, pickLabel, angleMenu,
+         BEST_TEAMS_MARK, AVG_MARK } from "./shareText";
 
 const NORWAY = "\u{1F1F3}\u{1F1F4}";
 const soon = () => {
@@ -148,7 +149,7 @@ describe("the other two boards", () => {
     // The unit belongs in the heading once, not after every team — 18 characters a row
     // saying the same thing eight times is what pushed the post over the limit.
     expect(row).not.toMatch(/corners|game/);
-    expect(out.split("\n")[1]).toBe("AVG won · Season:");
+    expect(out.split("\n")[1]).toBe(`${AVG_MARK} AVG won · Season:`);
   });
 
   test("a one-league board names the league with its flag", () => {
@@ -159,10 +160,36 @@ describe("the other two boards", () => {
     const out = bestTeamsShare({ rows, side: "overall", windowLabel: "Last 5" })(8);
     const ENGLAND = "\u{1F3F4}\u{E0067}\u{E0062}\u{E0065}\u{E006E}\u{E0067}\u{E007F}";
     expect(out.split("\n").slice(0, 3)).toEqual([
-      `Best corner teams — Premier League ${ENGLAND}`,
-      "AVG won · last 5:",
+      `${BEST_TEAMS_MARK} Best corner teams — Premier League ${ENGLAND}`,
+      `${AVG_MARK} AVG won · last 5:`,
       `${ENGLAND} Arsenal 5.6`,
     ]);
+  });
+
+  // THE TWO MARKS WERE BEING TYPED BY HAND BEFORE EVERY SHARE. They are part of the post
+  // now, so the thing worth asserting is that they are on BOTH lines, on EVERY board, and
+  // that adding them has not cost a team out of the eight.
+  test("the heading carries its marks whatever the scope", () => {
+    const one = bestTeamsShare({
+      rows: [{ name: "Arsenal", league_id: "eng-pl", league_name: "Premier League", won_avg: 5.6 }],
+      side: "overall", windowLabel: "Last 5" })(8);
+    const mixed = bestTeamsShare({
+      rows: [{ name: "Arsenal", league_id: "eng-pl", league_name: "Premier League", won_avg: 5.6 },
+             { name: "Ajax", league_id: "ned-ed", league_name: "Eredivisie", won_avg: 5.2 }],
+      side: "overall", windowLabel: "Last 5" })(8);
+    for (const out of [one, mixed]) {
+      expect(out.startsWith(`${BEST_TEAMS_MARK} Best corner teams`)).toBe(true);
+      expect(out.split("\n")[1].startsWith(`${AVG_MARK} `)).toBe(true);
+    }
+  });
+
+  test("a mark goes before the words, not after them", () => {
+    // "Best corner teams 🚩" is a different post. The mark is there to be seen first.
+    const out = bestTeamsShare({
+      rows: [{ name: "Arsenal", league_id: "eng-pl", won_avg: 5.6 }],
+      side: "overall", windowLabel: "Season" })(8);
+    expect(out.indexOf(BEST_TEAMS_MARK)).toBe(0);
+    expect(out.indexOf(AVG_MARK)).toBeLessThan(out.indexOf("AVG"));
   });
 
   test("all eight teams fit one X post in the compact format", () => {

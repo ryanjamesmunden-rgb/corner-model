@@ -356,11 +356,62 @@ if (BOARD === "locked") {
     // calls in it, which is the honest outcome of a quiet board.
     skip(`the ${snap?.tag || "latest"} freeze has no qualified entries — nothing locked in`);
   }
-  const locked = entries.filter((e) => e?.qualified).length;
+  const qualified = entries.filter((e) => e?.qualified);
+
+  // THE PICTURE, for the FIRST locked call.
+  //
+  // One image, not one per row: eight browser renders after the freeze would be eight
+  // minutes of runner time for a message that is already complete without any of them.
+  // The first entry is the snapshot's own top row, which is the one the list leads on — so
+  // the picture and the text agree about which game matters without a second ranking.
+  //
+  // THE CURVE IS NOT IN THE SNAPSHOT. It never was: the freeze stores the claim, and a
+  // probability mass function is the model's working. So this is the one thing here that
+  // does reach the backend, and it reaches it WITH the token — the fixture endpoint
+  // withholds `distribution` from non-members now, which is exactly what silently killed
+  // the daily animation.
+  //
+  // A FAILURE COSTS THE PICTURE AND NOTHING ELSE. getSoft returns null rather than
+  // throwing, `story` stays null, and the workflow sends the text on its own. The claim is
+  // already recorded by the time this runs.
+  let story = null;
+  const top = qualified[0];
+  if (top?.fixture_id && TOKEN) {
+    const detail = await getSoft(`/api/fixtures/${encodeURIComponent(top.fixture_id)}`
+      + `?token=${encodeURIComponent(TOKEN)}`);
+    const dists = detail?.model?.distribution;
+    // The group the CALL is about. A team-corners claim drawn over the match total's curve
+    // would be a picture of a different bet.
+    const group = top.subject === "match" ? "total" : (top.is_home ? "home" : "away");
+    const dist = dists?.[group] || dists?.total;
+    if (dist?.length) {
+      story = {
+        homeName: detail.fixture?.home_name || "",
+        awayName: detail.fixture?.away_name || "",
+        leagueId: detail.fixture?.league_id || top.league_id || "",
+        kickoff: kickoffLabel(detail.fixture?.date || top.kickoff),
+        dist, group: dists?.[group] ? group : "total",
+        markets: fixtureStoryMarkets(detail.model?.markets || [], detail.model?.lambdas || {},
+          { homeName: detail.fixture?.home_name, awayName: detail.fixture?.away_name }),
+      };
+    }
+  }
+
+  // A SHORT CAPTION, because Telegram caps a media caption at 1024 characters and a full
+  // card of eight runs past it. The list goes as its own message; this names the game the
+  // picture is of, so the two cannot be read as being about different fixtures.
+  const caption = top
+    ? `🔒 Locked in — ${top.name} ${(top.direction === "under" ? "under " : "")}`
+      + `${top.line}${top.direction === "under" ? "" : "+"} corners`
+      + `${top.opponent ? ` ${top.is_home ? "v" : "at"} ${top.opponent}` : ""}`
+      + `${top.streak_len ? ` · ${top.streak_len} in a row` : ""}`
+    : "";
+
   emit(post, { empty: false, board: "locked", post, intent: "",
-               weight: post.length, full: post,
-               note: `${locked} locked of ${entries.length} frozen`
-                 + (snap?.tag ? ` \u00b7 ${snap.tag}` : "") });
+               weight: post.length, full: post, story, caption,
+               note: `${qualified.length} locked of ${entries.length} frozen`
+                 + (snap?.tag ? ` \u00b7 ${snap.tag}` : "")
+                 + (story ? " \u00b7 with a picture" : " \u00b7 text only") });
   process.exit(0);
 }
 

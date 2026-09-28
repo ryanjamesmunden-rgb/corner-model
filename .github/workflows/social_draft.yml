@@ -95,7 +95,7 @@ on:
         description: "Which board (blank = whatever this weekday calls for)"
         required: false
         type: choice
-        options: ["", "picks", "game", "streaks", "fixtures", "results", "card", "menu", "finder", "stat"]
+        options: ["", "picks", "game", "streaks", "fixtures", "results", "card", "menu", "finder", "stat", "locked"]
       count:
         # HOW MANY GAMES ON THE CARD. Blank uses angle_of_day.COUNT, which is what the
         # schedule publishes and what the site shows; the backend caps it at 10.
@@ -219,10 +219,13 @@ jobs:
         # here and from the generic Telegram step for exactly that reason, not by analogy.
         # `stat` is excluded on the same grounds: it has its own step, it runs EVERY day
         # including the quiet one, and letting this step build it too would give it two
-        # publishers again.
+        # publishers again. `locked` likewise, and it would not even work here: it is built
+        # from the freeze's snapshot file, which does not exist until the last step of the
+        # job has run.
         if: >-
           steps.when.outputs.quiet != 'true' && inputs.board != 'card'
           && inputs.board != 'finder' && inputs.board != 'stat'
+          && inputs.board != 'locked'
         # --board auto asks postPlan.js what this weekday is for, and takes its day window
         # too. A board named by hand on a manual run overrides both.
         #
@@ -283,28 +286,14 @@ jobs:
           python3 -c "import json,sys; d=json.load(open('draft.json')); sys.exit(0 if d.get('story') else 1)" \
             || { echo "::notice::no fixture curve in today's draft — text only"; exit 0; }
           python3 -c "import json; d=json.load(open('draft.json')); json.dump(d['story'], open('story_args.json','w'))"
-          npm i --no-save playwright@1.49.1 >/dev/null 2>&1 || {
-            echo "::warning::could not install playwright — posting text only"; exit 0; }
-          npx playwright install chromium >/dev/null 2>&1 || {
-            echo "::warning::could not install chromium — posting text only"; exit 0; }
-          # THE ANIMATION FIRST. A still is a picture of a chart; the clip counts the
-          # percentage up and grows the bars, which is what stops a thumb on a Story.
-          #
-          # ffmpeg IS NOT ON THE RUNNER. It was assumed to be, and the assumption cost a
-          # run: `command -v ffmpeg` failed silently, the && short-circuited with no output
-          # at all, and the job fell through to the still reporting success. Installed
-          # explicitly now, and the outcome is logged either way so a silent fallback
-          # cannot happen twice.
-          if ! command -v ffmpeg >/dev/null 2>&1; then
-            echo "installing ffmpeg"
-            sudo apt-get update -qq >/dev/null 2>&1 \
-              && sudo apt-get install -y --no-install-recommends ffmpeg >/dev/null 2>&1 \
-              || echo "::warning::could not install ffmpeg"
-          fi
-          if command -v ffmpeg >/dev/null 2>&1; then
-            echo "ffmpeg: $(ffmpeg -version 2>/dev/null | head -1)"
-          else
-            echo "::warning::no ffmpeg — the animation cannot be encoded"
+          # THE INSTALL LIVES IN A SCRIPT because the locked-in post needs the same thing
+          # after the freeze, and two copies of it would be two things to keep in step —
+          # with the one that fell behind failing as a missing picture rather than as an
+          # error. It never fails the job and prints what it managed. See tools/.
+          can=$(bash tools/install_render.sh | tail -1)
+          echo "renderer: $can"
+          if [ "$can" = "none" ]; then
+            echo "::warning::no renderer available — posting text only"; exit 0
           fi
 
           if command -v ffmpeg >/dev/null 2>&1 \
@@ -325,7 +314,8 @@ jobs:
         if: >-
           steps.when.outputs.quiet != 'true' && steps.build.outputs.empty != 'true'
           && inputs.board != 'card' && inputs.board != 'finder'
-          && inputs.board != 'stat' && env.TG_TOKEN != ''
+          && inputs.board != 'stat' && inputs.board != 'locked'
+          && env.TG_TOKEN != ''
         id: telegram
         # THE POST TEXT GOES IN THE MESSAGE BODY, not only behind the button. A button is
         # one tap when it works, and when it doesn't — a URL Telegram won't accept, an
@@ -996,5 +986,60 @@ jobs:
           fi
         env:
           SITE_URL: ${{ vars.SITE_URL || 'https://thecornermodel.com' }}
+          TG_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TG_CHAT: ${{ secrets.TELEGRAM_CHAT_ID }}
+
+      - name: Draw and send the locked-in picture
+        # AFTER THE LIST, NOT INSTEAD OF IT, and that ordering is the safety. By the time
+        # this runs the claim is frozen and the text is delivered, so every way this step can
+        # fail costs a picture and nothing else. A render that took the list down with it
+        # would be a graphic worth less than the thing it decorates.
+        #
+        # ONE PICTURE, FOR THE FIRST LOCKED CALL. Eight browser renders after the freeze
+        # would be eight minutes of runner time for a message that is already complete. The
+        # first entry is the snapshot's own top row — the one the list leads on — so the
+        # picture and the text cannot disagree about which game matters.
+        #
+        # IT INSTALLS THROUGH THE SAME SCRIPT as the daily draft, because the draft's own
+        # render step may well not have run today: it exits early when the day's board has no
+        # fixture curve, which is most days. Relying on its side effects would make this work
+        # only on the days it was least needed.
+        if: >-
+          steps.when.outputs.card != '' && env.TG_TOKEN != ''
+          && hashFiles('locked.json') != ''
+        run: |
+          python3 -c "import json,sys; d=json.load(open('locked.json')); sys.exit(0 if d.get('story') else 1)" \
+            || { echo "::notice::no curve for the top locked call — the list went out as text"; exit 0; }
+          python3 -c "import json; d=json.load(open('locked.json')); json.dump(d['story'], open('locked_story.json','w'))"
+          can=$(bash tools/install_render.sh | tail -1)
+          echo "renderer: $can"
+          [ "$can" = "none" ] && { echo "::warning::no renderer — the list went out as text"; exit 0; }
+
+          FILE=""; KIND=""
+          if [ "$can" = "video" ] \
+             && node tools/render_story.mjs --args locked_story.json --video locked.mp4; then
+            FILE=locked.mp4; KIND=animation
+          elif node tools/render_story.mjs --args locked_story.json --out locked.png; then
+            # A still is most of the value and none of the encoding risk.
+            echo "::warning::could not encode the animation — sending the still"
+            FILE=locked.png; KIND=photo
+          else
+            echo "::warning::the render failed — the list went out as text"; exit 0
+          fi
+
+          # THE CAPTION IS SHORT ON PURPOSE. Telegram caps a media caption at 1024
+          # characters and a full card runs past it, so the list is its own message and this
+          # only names the game the picture is of.
+          CAPTION=$(python3 -c "import json; print(json.load(open('locked.json')).get('caption') or '')")
+          code=$(curl -s -o tgp.json -w '%{http_code}' --max-time 90 \
+            -X POST "https://api.telegram.org/bot$TG_TOKEN/send${KIND^}" \
+            -F "chat_id=$TG_CHAT" -F "caption=$CAPTION" -F "$KIND=@$FILE" || true)
+          if [ "$code" = "200" ]; then
+            echo "::notice::locked-in $KIND sent to Telegram"
+          else
+            echo "::warning::locked $KIND send failed (HTTP $code) — the list is already out"
+            cat tgp.json || true
+          fi
+        env:
           TG_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TG_CHAT: ${{ secrets.TELEGRAM_CHAT_ID }}

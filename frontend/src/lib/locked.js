@@ -37,3 +37,22 @@ export const lockedPitch = ({ locked, signedIn, member }) => {
     : { head: `${locked} more, blurred`,
         body: "A free account shows you more of this board. Subscribing unlocks all of it." };
 };
+
+/**
+ * May this reader type a price?
+ *
+ * MATCHED TO THE SERVER, NOT GUESSED AT. `set_odds` is members-only: 401 for a signed-out
+ * visitor, 402 for one signed in without a subscription. The fixture page rendered the Book
+ * inputs and the bulk paste box to everybody, so the first interactive control a visitor met
+ * was one that rejects them — and opening the stats up is exactly what sends more of them to
+ * that page.
+ *
+ * NOT JUST SIGNED OUT. A signed-in free reader hits the identical dead end one status code
+ * along, so hiding the control from one and not the other would leave the same wart for the
+ * people most likely to be deciding whether to pay.
+ *
+ * THIS IS PRESENTATION, NOT A GATE, exactly like isLocked above. The refusal already exists
+ * on the server and is what actually protects the write; this only stops the page offering
+ * something it knows will be refused. A UI-only check would be no protection at all.
+ */
+export const canWritePrices = ({ member } = {}) => Boolean(member);

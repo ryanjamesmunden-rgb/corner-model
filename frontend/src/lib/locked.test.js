@@ -1,4 +1,4 @@
-import { isLocked, lockClass, lockCounts, lockedPitch } from "./locked";
+import { canWritePrices, isLocked, lockClass, lockCounts, lockedPitch } from "./locked";
 
 const open = { name: "Viking", prob: 74 };
 const shut = { name: "Brann", blurred: true };
@@ -43,5 +43,36 @@ describe("what the strip underneath says", () => {
   test("a member is never pitched, and neither is a full board", () => {
     expect(lockedPitch({ locked: 12, signedIn: true, member: true })).toBeNull();
     expect(lockedPitch({ locked: 0, signedIn: false, member: false })).toBeNull();
+  });
+});
+
+// WHO IS OFFERED A PRICE BOX.
+//
+// The fixture page showed the Book inputs and the paste box to everybody while the server
+// refused the write — 401 signed out, 402 signed in and unpaid — so a visitor's first
+// interactive control was one that rejects them. These pin the rule to the server's, because
+// the two drifting apart is the whole defect and neither end fails loudly when they do.
+describe("who may type a price", () => {
+  test("a member may", () => {
+    expect(canWritePrices({ member: true })).toBe(true);
+  });
+
+  test("a signed-out visitor may not", () => {
+    expect(canWritePrices({ member: false })).toBe(false);
+    expect(canWritePrices({})).toBe(false);
+    expect(canWritePrices()).toBe(false);
+  });
+
+  test("and neither may a signed-in reader without a subscription", () => {
+    // The case it would be easy to miss: they get a 402 rather than a 401, which is the
+    // same dead end one status code along.
+    expect(canWritePrices({ member: false, user_id: "u1" })).toBe(false);
+  });
+
+  test("it answers with a boolean rather than whatever it was handed", () => {
+    // It gates JSX. A truthy object would render the control; `undefined` would not — and
+    // both would read as working until the wrong one showed up.
+    expect(canWritePrices({ member: "yes" })).toBe(true);
+    expect(canWritePrices({ member: null })).toBe(false);
   });
 });

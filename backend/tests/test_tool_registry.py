@@ -87,7 +87,7 @@ class TestEveryModeCanActuallyRun:
         # Named rather than only covered by the sweep above, so deleting one from a
         # registry fails with the name of what stopped working.
         for mode in ("calibration", "settlement_audit", "pick_line_audit", "bet_audit",
-                     "watchlist"):
+                     "watchlist", "h2h_coverage"):
             assert mode in server.MEASURE_MODES, f"{mode} is not a harness mode"
             script = server.MEASURE_MODES[mode][0]
             assert script in server.TOOL_SCRIPTS, f"{mode} -> {script} is not registered"

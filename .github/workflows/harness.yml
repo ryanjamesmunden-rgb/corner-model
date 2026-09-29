@@ -41,6 +41,7 @@ on:
           - pick_line_audit   # was lambda right for the picks actually published
           - bet_audit         # why is each pending slip on the Bets page still pending
           - signup_audit      # did anybody try to subscribe and not get through
+          - h2h_coverage      # is there history for the Previous meetings panel to show
           - watchlist         # which games to watch when football returns after a break
           - sweep           # model weight sweep
           - country_leagues # SPENDS CREDITS (1 call) — what competitions exist for a country
@@ -153,6 +154,7 @@ jobs:
               pick_line_audit)  SCRIPT="audit_pick_lines" ;;
               bet_audit)        SCRIPT="audit_bets" ;;
               signup_audit)     SCRIPT="audit_signups" ;;
+              h2h_coverage)     SCRIPT="measure_h2h" ;;
               watchlist)        SCRIPT="watchlist" ;;
               # The fallback is measure_features because `sweep` is a mode OF it. A new
               # harness with its own script that is not added above polls this script,

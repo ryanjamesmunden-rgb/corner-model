@@ -86,6 +86,22 @@ def test_league_keys_are_url_safe():
         assert all(c.isalnum() or c == "-" for c in lid), lid
 
 
+def test_england_stops_at_league_two():
+    """eng-nl (National League, api 43) is OUT, and for a different reason from nor-d2.
+
+    The id is right — the provider agrees 43 is England's National League. It files no
+    corner data for it: probe_leagues returned corners=0/4 across 120 finished games.
+    A corner model cannot price a competition whose corners are not recorded.
+
+    It shipped for months looking populated, because every team carried a seeded average
+    and every fixture a lambda while `real_samples` sat at 0 for all of them — so the
+    failure mode this guards is re-adding it from the fact that it "used to work"."""
+    eng = {k: v for k, v in LEAGUE_META.items() if v["country"] == "England"}
+    assert set(eng) == {"eng-pl", "eng-ch", "eng-l1", "eng-l2"}
+    assert 43 not in {m["api"] for m in LEAGUE_META.values()}
+    assert max(m["tier"] for m in eng.values()) == 4
+
+
 def test_norway_carries_only_the_confirmed_tiers():
     """103 and 104 are confirmed by probe_leagues.py against live data.
 

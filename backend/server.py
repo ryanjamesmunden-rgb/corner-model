@@ -2575,10 +2575,26 @@ async def tool_probe_leagues(token: Optional[str] = None, league_id: Optional[st
         return await _start_tool("probe_leagues", ["--country", name], f"leagues in {name}")
     argv, label = [], "recently added leagues"
     if league_id and league_id != "all":
-        if league_id not in LEAGUE_META:
+        # RAW PROVIDER IDS TOO, AND THAT IS THE POINT OF PROBING AT ALL. `league_id` had to
+        # be a key already in LEAGUE_META, so the one competition you cannot check is the
+        # one you have not added yet — which is exactly when this is worth running. The
+        # note on nor-d2 says to verify a competition carries corners BEFORE spending 250
+        # statistics calls on it, and that was impossible through this endpoint.
+        #
+        # Digits only, and every part must be one, so nothing that is not a provider id
+        # reaches argv. probe_leagues takes them after --id.
+        raw = [x.strip() for x in str(league_id).split(",") if x.strip()]
+        if all(x.isdigit() for x in raw):
+            if len(raw) > 6:
+                raise HTTPException(status_code=400,
+                                    detail="probe at most 6 ids at once — each costs ~6 calls")
+            argv = ["--id", *raw]
+            label = f"api ids {' '.join(raw)}"
+        elif league_id not in LEAGUE_META:
             raise HTTPException(status_code=400, detail=_not_a_league(league_id))
-        argv.append(league_id)
-        label = league_id
+        else:
+            argv.append(league_id)
+            label = league_id
     return await _start_tool("probe_leagues", argv, label)
 
 

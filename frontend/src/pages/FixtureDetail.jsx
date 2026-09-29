@@ -3,13 +3,14 @@ import { useParams, useNavigate } from "react-router-dom";
 import { toast } from "sonner";
 import {
   ArrowLeft, TrendingUp, TrendingDown, ClipboardPaste, Flame, Shield, MapPin, Swords, Eye,
-  Lock,
+  Lock, History,
 } from "lucide-react";
 import StarButton from "@/components/StarButton";
 import ShareButtons from "@/components/ShareButtons";
 import PostPick from "@/components/PostPick";
 import { fixtureStreakShare } from "@/lib/shareText";
 import { fixtureStreaks, streakDetail, streakHeadline } from "@/lib/fixtureStreaks";
+import { hasH2H, meetingRows, recordLine, summaryLine, unbeatenRows } from "@/lib/h2h";
 import { useAuth } from "@/context/AuthContext";
 import { canWritePrices } from "@/lib/locked";
 import ProbabilityChart from "@/components/ProbabilityChart";
@@ -241,6 +242,12 @@ export default function FixtureDetail() {
         share={fixtureStreakShare({ fixture, streaks: data.streaks || [],
                                     form: data.form || [], leagueName: data.league_name })}
       />
+
+      {/* WHAT THESE TWO HAVE DONE TO EACH OTHER BEFORE. Closed by default and one line
+          wide when shut: it is context for the projection above, not the projection
+          itself, and a fixture page that opens on nine rows of history buries the
+          numbers somebody came for. */}
+      <HeadToHead h2h={data.h2h} homeName={fixture.home_name} awayName={fixture.away_name} />
 
       <KeyFactors factors={keyFactors} homeName={fixture.home_name} awayName={fixture.away_name} />
 
@@ -1192,6 +1199,111 @@ function RunningStreaks({ streaks, share }) {
         A run is what has already happened, not a forecast. The projection above is the model's view.
       </p>
     </section>
+  );
+}
+
+function HeadToHead({ h2h, homeName, awayName }) {
+  // NOTHING ON FILE IS NOT THE SAME AS NEVER PLAYED, so the panel does not render at all
+  // rather than printing an empty state that would have to make one claim or the other.
+  // The results cache only goes back as far as this site has been syncing the
+  // competition — h2h.py has the full note.
+  if (!hasH2H(h2h)) return null;
+  const rows = meetingRows(h2h);
+  const runs = unbeatenRows(h2h);
+  const record = recordLine(h2h, homeName, awayName);
+  const corners = h2h.corners;
+
+  return (
+    <details className="bg-card border border-border rounded-lg" data-testid="h2h">
+      <summary className="px-4 py-3 cursor-pointer list-none flex items-center gap-2 text-sm
+                          font-head font-semibold hover:text-primary transition-colors
+                          [&::-webkit-details-marker]:hidden">
+        <History className="h-4 w-4 text-muted-foreground" />
+        Previous meetings
+        {/* The one line worth reading without opening it: what this pairing produces. */}
+        <span className="font-sans font-normal text-xs text-muted-foreground ml-1"
+              data-testid="h2h-summary">
+          — {summaryLine(h2h)}
+        </span>
+      </summary>
+
+      <div className="px-4 pb-4 space-y-3">
+        {/* THE UNBEATEN RUNS FIRST. They are the claim a reader repeats, and burying them
+            under a table means they get read off the rows by eye — which is where a
+            miscount comes from. */}
+        {runs.length > 0 && (
+          <div className="space-y-1.5" data-testid="h2h-runs">
+            {runs.map((r) => (
+              <div key={r.key} data-testid={`h2h-run-${r.key}`}
+                   className="rounded border border-border/70 bg-secondary/40 px-3 py-2
+                              flex items-baseline gap-2 flex-wrap">
+                <span className="font-medium text-sm">{r.team}</span>
+                <span className="text-sm text-tone-streak-fg">{r.label}</span>
+                {/* OUT OF HOW MANY, always. Three from three and three from nine are
+                    different claims, and the short one sounds the strongest. */}
+                <span className="text-[11px] text-muted-foreground font-mono-data">
+                  ({r.played} on file)
+                </span>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {corners && (
+          <div className="flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-muted-foreground
+                          font-mono-data" data-testid="h2h-corners">
+            <span>avg {corners.avg_total} corners</span>
+            <span>{homeName} {corners.avg_home_team} · {awayName} {corners.avg_away_team}</span>
+            <span>range {corners.lowest}–{corners.highest}</span>
+            <span>{corners.played} {corners.played === 1 ? "meeting" : "meetings"}</span>
+          </div>
+        )}
+
+        <div className="overflow-x-auto">
+          <table className="w-full">
+            <thead>
+              <tr className="border-b border-border text-muted-foreground text-[10px]
+                             uppercase tracking-wider">
+                <th className="text-left font-medium px-2 py-2">Date</th>
+                <th className="text-left font-medium px-2 py-2">Comp</th>
+                <th className="text-left font-medium px-2 py-2 w-full">Score</th>
+                <th className="text-right font-medium px-2 py-2 whitespace-nowrap">Corners</th>
+              </tr>
+            </thead>
+            <tbody className="font-mono-data text-sm">
+              {rows.map((r) => (
+                <tr key={r.key} className="border-b border-border/50 last:border-0"
+                    data-testid="h2h-row">
+                  <td className="px-2 py-2 whitespace-nowrap text-muted-foreground">
+                    {r.date}
+                    {/* Where it was played, from the home side's end — the same side
+                        every number in the row is stated from. */}
+                    <span className="ml-1 text-[10px] uppercase">{r.venue}</span>
+                  </td>
+                  <td className="px-2 py-2 text-[11px] text-muted-foreground whitespace-nowrap">
+                    {r.competition}
+                  </td>
+                  {/* A MEETING WITH NO SCORE ON FILE SAYS SO. Older cache rows carry
+                      corners and no goals, and rendering a blank as 0-0 would invent a
+                      draw — which also reads as "unbeaten". */}
+                  <td className="px-2 py-2">
+                    {r.score || <span className="text-muted-foreground text-xs">score not on file</span>}
+                  </td>
+                  <td className="px-2 py-2 text-right whitespace-nowrap">{r.corners || "—"}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+
+        {record && (
+          <p className="text-[11px] text-muted-foreground" data-testid="h2h-record">{record}</p>
+        )}
+        {/* Said on the panel, because an absence here is the thing most likely to be
+            misread as a fact about the teams. */}
+        <p className="text-[11px] text-muted-foreground">{h2h.window}</p>
+      </div>
+    </details>
   );
 }
 

@@ -108,7 +108,13 @@ class FakeCollection:
     @staticmethod
     def _match(doc, q):
         for key, want in q.items():
-            if isinstance(want, dict) and "$in" in want:
+            # $or, because the head-to-head lookup asks for a pairing in either order and
+            # a fake that ignored it would match every stored fixture — which is the one
+            # way that panel can be wrong without looking wrong.
+            if key == "$or":
+                if not any(FakeCollection._match(doc, branch) for branch in want):
+                    return False
+            elif isinstance(want, dict) and "$in" in want:
                 if doc.get(key) not in want["$in"]:
                     return False
             elif doc.get(key) != want:
@@ -117,11 +123,15 @@ class FakeCollection:
 
 
 class FakeDB:
-    def __init__(self, teams, fixtures, leagues=LEAGUES):
+    def __init__(self, teams, fixtures, leagues=LEAGUES, fixture_stats=()):
         self.teams = FakeCollection(teams)
         self.fixtures = FakeCollection(fixtures)
         self.leagues = FakeCollection(leagues)
         self.odds = FakeCollection([])
+        # The results cache the head-to-head panel reads. Empty unless a test hands it
+        # meetings: most of this file is about which league prices a cup tie, and a
+        # pairing with no stored history is the ordinary case anyway.
+        self.fixture_stats = FakeCollection(fixture_stats)
 
 
 def run(coro):
@@ -425,6 +435,90 @@ class TestTheFixturePage:
         right = server.expected_lambdas(BUSY, QUIET, 16.0, 4.0, 10.0, 4.0)
         assert d["model"]["lambdas"]["home"] == right["home"]
         assert d["model"]["lambdas"]["away"] == right["away"]
+
+
+class TestPreviousMeetings:
+    """The head-to-head panel, end to end through the endpoint.
+
+    h2h.py has its own unit tests; what these cover is the WIRING, which is where this
+    can go wrong without looking wrong: the wrong id handed to the lookup, or the wrong
+    one handed to the orientation. Both produce a full, plausible panel of somebody
+    else's numbers."""
+
+    def detail(self, monkeypatch, teams, fixtures, fid, stats):
+        monkeypatch.setattr(server, "db", FakeDB(teams, fixtures, fixture_stats=stats))
+        return run(server.fixture_detail(fid, user={"user_id": "u1", "member": True}))
+
+    def stat(self, host_api, guest_api, hg, ag, hc, ac, date="2026-02-01T15:00:00Z",
+             lid="eng-pl"):
+        return {"_id": 1, "league_id": lid, "date": date,
+                "home_id": host_api, "away_id": guest_api,
+                "home_goals": hg, "away_goals": ag,
+                "home_corners": hc, "away_corners": ac}
+
+    DOM = "eng-pl-1"
+
+    def _fx(self):
+        return fixture(self.DOM, "eng-pl", BUSY, BUSY2)
+
+    def test_a_stored_meeting_reaches_the_payload(self, monkeypatch):
+        d = self.detail(monkeypatch, [BUSY, BUSY2], [self._fx()], self.DOM,
+                        [self.stat(42, 47, 2, 1, 7, 4)])
+        rows = d["h2h"]["meetings"]
+        assert len(rows) == 1
+        assert rows[0]["goals_home_team"] == 2 and rows[0]["corners_home_team"] == 7
+        assert rows[0]["league_name"] == "Premier League"
+
+    def test_a_meeting_the_other_way_round_is_flipped_to_this_fixtures_home_side(self, monkeypatch):
+        """THE WIRING BUG THAT WOULD NOT LOOK LIKE ONE. Handing the lookup the away side's
+        id — or orienting on it — returns a full panel of numbers with the two teams
+        silently swapped. Every row still reads as a plausible result."""
+        d = self.detail(monkeypatch, [BUSY, BUSY2], [self._fx()], self.DOM,
+                        [self.stat(47, 42, 3, 0, 9, 2)])
+        row = d["h2h"]["meetings"][0]
+        assert row["venue"] == "away"
+        assert (row["goals_home_team"], row["goals_away_team"]) == (0, 3)
+        assert (row["corners_home_team"], row["corners_away_team"]) == (2, 9)
+
+    def test_a_match_against_somebody_else_is_not_a_meeting(self, monkeypatch):
+        d = self.detail(monkeypatch, [BUSY, BUSY2], [self._fx()], self.DOM,
+                        [self.stat(42, 999, 1, 0, 5, 5)])
+        assert d["h2h"]["meetings"] == []
+
+    def test_no_history_still_carries_the_sentence_that_explains_the_gap(self, monkeypatch):
+        d = self.detail(monkeypatch, [BUSY, BUSY2], [self._fx()], self.DOM, [])
+        assert d["h2h"]["meetings"] == []
+        assert "as far as this site has been syncing" in d["h2h"]["window"]
+
+    def test_an_unbeaten_run_comes_through(self, monkeypatch):
+        stats = [self.stat(42, 47, 2, 0, 7, 4, date=f"2026-0{i}-01T15:00:00Z")
+                 for i in range(1, 5)]
+        d = self.detail(monkeypatch, [BUSY, BUSY2], [self._fx()], self.DOM, stats)
+        runs = d["h2h"]["unbeaten"]["home_team"]
+        assert runs and runs[0]["run"] == 4
+        assert d["h2h"]["unbeaten"]["away_team"] == []
+
+    def test_a_cup_tie_surfaces_the_sides_domestic_meetings_too(self, monkeypatch):
+        """The lookup is on team ids, not on the competition, so European and domestic
+        meetings both come back — each labelled with where it was played, because a 1-1
+        in a league game and a 1-1 in a second leg are different facts."""
+        d = self.detail(monkeypatch, [BUSY, QUIET], [fixture(CUP_TIE, "ucl", BUSY, QUIET)],
+                        CUP_TIE,
+                        [self.stat(42, 157, 1, 1, 6, 6, lid="ucl"),
+                         self.stat(157, 42, 0, 2, 3, 8, date="2025-11-01T15:00:00Z",
+                                   lid="ger-bl")])
+        comps = [r["league_name"] for r in d["h2h"]["meetings"]]
+        assert comps == ["Champions League", "Bundesliga"]
+
+    def test_previous_meetings_are_not_behind_the_member_wall(self, monkeypatch):
+        """Games already played, like the streaks and the form beside them. What stays
+        behind the wall is the model's read of them, which _blur_model strips."""
+        monkeypatch.setattr(server, "db",
+                            FakeDB([BUSY, BUSY2], [self._fx()],
+                                   fixture_stats=[self.stat(42, 47, 2, 1, 7, 4)]))
+        d = run(server.fixture_detail(self.DOM, user={"user_id": "u1", "member": False}))
+        assert d["model"]["blurred"] is True
+        assert len(d["h2h"]["meetings"]) == 1
 
 
 class TestTheCardsCorroborationBar:

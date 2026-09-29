@@ -97,8 +97,22 @@ async def probe(hc, lid, meta):
         return
     assumed = f"{meta['country']} / {meta['name']}"
     actual = f"{ident['country']} / {ident['name']}"
-    match = (ident["country"] or "").lower() == meta["country"].lower()
+    # NOTHING TO MISMATCH AGAINST IN --id MODE, and treating that as a mismatch made the
+    # mode useless. `--id` builds a placeholder meta of "?" / "?" because the whole point is
+    # probing a competition we have NOT named yet — and the check below then compared the
+    # provider's country against "?", never matched, and returned before sampling a single
+    # fixture. So the one mode meant for "does this unknown league carry corners" could
+    # answer only "here is its name", which is the half you already had from the country
+    # listing that sent you here.
+    #
+    # An unnamed id is therefore reported and probed. There is no claim to contradict, so
+    # there is no contradiction — the provider's own name IS the finding, and the corner
+    # count underneath it is what the run was for.
+    unnamed = meta.get("country") in (None, "", "?")
+    match = unnamed or (ident["country"] or "").lower() == meta["country"].lower()
     print(f"{lid:8} api={api:<4} provider says: {actual}  ({ident['type']}, season {ident['season']})")
+    if unnamed:
+        print(f"{'':8} (not in leagues_meta — probing it as an unknown id)")
     if not match:
         print(f"{'':8} !! MISMATCH — we call it {assumed}. Fix leagues_meta.py before syncing.")
         # don't make the reader guess again: show what the country actually offers

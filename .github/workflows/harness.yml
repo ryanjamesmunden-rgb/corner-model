@@ -51,7 +51,7 @@ on:
         type: string
         default: "World"
       leagues:
-        description: "For `league_probe`: our key (eng-nl) or provider ids (473,474). Blank = unproven ones"
+        description: "For `league_probe`: our key (nor-d1) or provider ids (473,474). Blank = unproven ones"
         required: false
         type: string
         default: ""

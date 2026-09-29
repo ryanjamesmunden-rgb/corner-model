@@ -14,7 +14,20 @@ LEAGUE_META = {
     "eng-ch":  {"api": 40,  "name": "Championship",     "country": "England", "tier": 2},
     "eng-l1":  {"api": 41,  "name": "League One",       "country": "England", "tier": 3},
     "eng-l2":  {"api": 42,  "name": "League Two",       "country": "England", "tier": 4},
-    "eng-nl":  {"api": 43,  "name": "National League",  "country": "England", "tier": 5},
+    # NO eng-nl (National League, api 43) ON PURPOSE, and NOT because the id is wrong —
+    # the provider agrees 43 is England / National League. It files no corner data for it.
+    # probe_leagues.py, 2026-09-29: season 2026, 120 finished games, ~10 per team,
+    # 432 upcoming — and corners=0/4, shots=0/4, blocked=0/4. Coverage, not sample size.
+    #
+    # IT WAS NOT SHOWING AS EMPTY, WHICH IS WHY IT SURVIVED SO LONG. Every team carried a
+    # corner average and every fixture a lambda, all of it seeded rather than measured:
+    # the data export prints `real_samples` per team, and for this league alone it read 0
+    # for every side while the neighbouring tiers read 9-11. Synthetic numbers on a board
+    # that sells measured ones are worse than a visible gap.
+    #
+    # Removing the key is also what deletes the rows: boot cleanup drops every league,
+    # team and fixture whose league_id is not in MANAGED_LEAGUE_IDS, and the orphan-odds
+    # purge that runs straight after clears any price left pointing at them.
     "aus-al":  {"api": 188, "name": "A-League",         "country": "Australia", "tier": 1},
     "nor-el":  {"api": 103, "name": "Eliteserien",      "country": "Norway", "tier": 1},
     # Norway's tiers are confusingly named: the SECOND level is called "1. divisjon"
@@ -106,9 +119,9 @@ CUP_META = {
 # TIER is the level within its own COUNTRY: 1 = top flight, 2 = second tier, and so on.
 #
 # It exists because this app ranks teams ACROSS leagues — the homepage board sorts every
-# side in the database by corners won, so a National League team sits directly above a
-# Premier League one with nothing to tell them apart. Six corners a game is not the same
-# achievement in the fifth tier as in the first, and the board could not say so.
+# side in the database by corners won, so a League Two team sits directly above a Premier
+# League one with nothing to tell them apart. Six corners a game is not the same
+# achievement in the fourth tier as in the first, and the board could not say so.
 #
 # WHAT IT IS NOT: a strength score comparable between countries. England's Championship
 # is a stronger league than several of the top flights here, so tier 2 does not mean

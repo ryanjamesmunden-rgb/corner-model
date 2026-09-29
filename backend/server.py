@@ -2193,6 +2193,7 @@ TOOL_SCRIPTS = {"backfill_shots": "backfill_shots.py", "measure_features": "meas
                 "probe_corner_halves": "probe_corner_halves.py",
                 "probe_stat_types": "probe_stat_types.py",
                 "probe_leagues": "probe_leagues.py",
+                "measure_h2h": "measure_h2h.py",
                 # The two harnesses written to answer questions nothing in the repo had
                 # measured. They were never reachable from here, which is exactly why
                 # neither had ever been run against real data.
@@ -2209,6 +2210,9 @@ TOOL_COOLDOWN = {"backfill_shots": 600, "measure_features": 120,
                  "backfill_goal_events": 600,
                  "probe_corner_halves": 600,
                  "probe_stat_types": 600, "probe_leagues": 120,
+                 # Reads the whole results cache. Cheap per row but the collection only
+                 # grows, and the answer moves at the speed of the twice-daily sync.
+                 "measure_h2h": 300,
                  # Both sweep every stored match. Long cooldowns because re-running one
                  # answers the same question with the same data — the reason to run it
                  # again is new matches, which arrive twice a day at most.
@@ -2271,6 +2275,13 @@ MEASURE_MODES = {
     # watchlist for setting price alerts, never a card: nothing in the window is
     # priced yet, which is the whole premise.
     "watchlist": ("watchlist", [], True),
+    # IS THERE ANYTHING FOR THE PREVIOUS MEETINGS PANEL TO SHOW. The panel renders nothing
+    # when a pairing has no stored meeting — correctly, since an empty one would have to
+    # choose between "no history on file" and "they have never met" — and that makes a
+    # panel shipping dark indistinguishable from one that was never built. This counts,
+    # per league, against the fixtures on the board right now. Reads db.fixture_stats,
+    # db.fixtures and db.teams.
+    "h2h_coverage": ("measure_h2h", [], True),
     "backfill_fh": ("backfill_fh", [], False),
     # WHICH DISTRIBUTION SHOULD PRICE A MATCH TOTAL. Team lines use a Negative Binomial
     # chosen on a recorded Brier; match totals use a Poisson that nothing in the repo

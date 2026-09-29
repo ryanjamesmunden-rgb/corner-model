@@ -27,6 +27,7 @@ from collections import defaultdict, deque
 import settlement
 import angle_of_day
 import cups
+import h2h
 import log_redact
 import record_view
 import projection_record
@@ -3314,6 +3315,25 @@ async def fixture_detail(fixture_id: str, token: Optional[str] = None,
                     for side in ("for", "against")}}
                 for m in reversed(rms)]
 
+    # PREVIOUS MEETINGS, out of the results cache rather than the provider.
+    #
+    # db.fixture_stats is the only collection here that is never swept, so it already
+    # holds every meeting this site has synced — both corner counts, both scores, and the
+    # date — and nothing was reading it for this. No API call, no new sync, no new
+    # collection. h2h.py has the reasoning and the depth caveat.
+    #
+    # A SYNTHESIZED FIXTURE HAS NO HISTORY TO LOOK UP. Those carry a string team id
+    # instead of the provider's int, and db.fixture_stats is keyed by ints — the same
+    # type trap that left nineteen slips pending. h2h.query returns None rather than
+    # building a filter that matches nothing and looks like "they have never met".
+    h2h_filter = h2h.query((home or {}).get("api_team_id"), (away or {}).get("api_team_id"))
+    h2h_docs = await db.fixture_stats.find(h2h_filter, {"_id": 0}).to_list(50) if h2h_filter else []
+    # What each of those competitions is CALLED. A cup pairing's history spans their
+    # domestic league and Europe, and "eng-pl" against "ucl" on a row is the difference
+    # between a league game and a knockout tie.
+    h2h_names = {lid: (await _league_doc(lid)).get("name", "")
+                 for lid in {d.get("league_id") for d in h2h_docs if d.get("league_id")}}
+
     # THE MODEL'S NUMBERS ARE FOR MEMBERS; EVERYTHING ELSE ON THIS PAGE IS NOT. `user` was
     # a dependency here that nothing read, which is how the priced angle on every fixture
     # went out to anyone with the URL. See _blur_model.
@@ -3333,6 +3353,12 @@ async def fixture_detail(fixture_id: str, token: Optional[str] = None,
             # rather than a second endpoint: the page has to load this anyway to show it,
             # and a separate call would just be a second thing to keep in step.
             "streaks": fixture_streaks(home, away, home["name"], away["name"]),
+            # PREVIOUS MEETINGS. Not behind the member wall: it is a record of games that
+            # have already been played, the same class of thing as the streaks and the
+            # form above. What stays behind the wall is the model's read of it — the
+            # price, the EV and the line — which _blur_model strips.
+            "h2h": h2h.build(h2h_docs, (home or {}).get("api_team_id"),
+                             home["name"], away["name"], league_names=h2h_names),
             # Game state next to the corner line: who is on the front foot and who is
             # likely to be chasing. Both produce corners, for opposite reasons.
             "form": fixture_form(home, away, home["name"], away["name"]),
@@ -7938,6 +7964,24 @@ async def on_startup():
     except Exception:
         logger.exception("billing: had_subscription backfill failed — returning "
                          "customers may briefly be offered a trial checkout will refuse")
+    # THE ONLY INDEXES THIS APP ASKS FOR, and they exist for one query: the head-to-head
+    # panel looks up every stored meeting between two sides, which is an $or over
+    # home_id/away_id in both orders. Without these it is a full scan of the results
+    # cache on every fixture page load, and that cache is the one collection here that
+    # only ever grows.
+    #
+    # BOTH ORDERS, because Mongo serves an $or by taking an index per branch: one
+    # compound index would cover half the query and leave the other half scanning, which
+    # performs like no index at all while looking like it is covered.
+    #
+    # Guarded, and idempotent — createIndex on an index that already exists is a no-op.
+    # A failure here must never stop the app booting: the panel would simply be slow.
+    try:
+        await db.fixture_stats.create_index([("home_id", 1), ("away_id", 1)])
+        await db.fixture_stats.create_index([("away_id", 1), ("home_id", 1)])
+    except Exception:
+        logger.exception("fixture_stats index creation failed — head-to-head lookups "
+                         "will fall back to a collection scan")
     # remove any legacy / non-managed leagues (e.g. old mock leagues from an earlier deploy)
     stale = await db.leagues.find({"league_id": {"$nin": list(MANAGED_LEAGUE_IDS)}}, {"_id": 0, "league_id": 1}).to_list(100)
     stale_ids = [l["league_id"] for l in stale]

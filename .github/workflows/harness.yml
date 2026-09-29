@@ -44,11 +44,17 @@ on:
           - watchlist         # which games to watch when football returns after a break
           - sweep           # model weight sweep
           - country_leagues # SPENDS CREDITS (1 call) — what competitions exist for a country
+          - league_probe    # SPENDS CREDITS (~6/league) — does a league carry corner data
       country:
         description: "Country for `country_leagues` only, e.g. World, Norway. Ignored otherwise"
         required: false
         type: string
         default: "World"
+      leagues:
+        description: "For `league_probe`: our key (eng-nl) or provider ids (473,474). Blank = unproven ones"
+        required: false
+        type: string
+        default: ""
       file_issue:
         description: "Keep the result as a GitHub issue"
         required: false
@@ -113,6 +119,24 @@ jobs:
             C=$(python3 -c 'import sys,urllib.parse;print(urllib.parse.quote(sys.argv[1]))' "$COUNTRY")
             URL="$BACKEND/api/tools/probe-leagues?token=$TOOLS_TOKEN&country=$C"
             SCRIPT="probe_leagues" ;;
+          league_probe)
+            # DOES THIS COMPETITION CARRY CORNERS. A league showing no corner stats on the
+            # site has two unrelated explanations — the sync never reached it, or the
+            # provider files no Corner Kicks for it — and sync_real drops a fixture with
+            # null corners without a word, so the second is invisible from the outside.
+            # This prints corners=n/4 and a QUALIFY/SKIP verdict per league.
+            #
+            # TAKES RAW PROVIDER IDS TOO, so a competition that is not in LEAGUE_META yet
+            # can be checked BEFORE it is added — which is the order the nor-d2 note asks
+            # for and the order that was not previously possible.
+            #
+            # IDS THROUGH env FOR THE SAME REASON AS COUNTRY ABOVE — free text spliced into
+            # a run: block is shell. The backend validates: every part digits, or a known
+            # league key, or 400.
+            L=$(python3 -c 'import sys,urllib.parse;print(urllib.parse.quote(sys.argv[1]))' "$LEAGUES")
+            URL="$BACKEND/api/tools/probe-leagues?token=$TOOLS_TOKEN"
+            [ -n "$LEAGUES" ] && URL="$URL&league_id=$L"
+            SCRIPT="probe_leagues" ;;
           *)
             # THE OPTION NAME IS THE MODE. It goes into the URL as `mode=$H`, so every
             # choice above must be spelled exactly as its key in MEASURE_MODES — the case
@@ -153,6 +177,7 @@ jobs:
           BACKEND: ${{ vars.BACKEND_URL || 'https://corner-model.onrender.com' }}
           TOOLS_TOKEN: ${{ secrets.TOOLS_TOKEN }}
           COUNTRY: ${{ inputs.country }}
+          LEAGUES: ${{ inputs.leagues }}
 
       - name: Wait for it, then read what it said
         id: result

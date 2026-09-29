@@ -138,17 +138,53 @@ The signature check is not optional and has no unsigned fallback — this endpoi
 revokes paid access and is open to the internet by necessity, so without `STRIPE_WEBHOOK_SECRET`
 it refuses everything.
 
+**A WRONG secret looks exactly like no webhook at all, and that cost two weeks.** Between 15
+and 29 Sep 2026 every delivery was refused with `SignatureVerificationError`: Stripe was
+calling constantly and `STRIPE_WEBHOOK_SECRET` no longer matched the signing secret on the
+endpoint. Nothing failed loudly, because from the outside "Stripe has never called" and
+"Stripe calls and is turned away at the door" are the same silence.
+
+A secret drifts for ordinary reasons. Deleting and recreating the endpoint mints a new one.
+Test and live mode have entirely separate secrets. A trailing space on the paste fails
+identically.
+
+**So check it rather than assume it.** Two ways, both read-only:
+
+- The `signup_audit` harness prints every Stripe event received, with the rejection reason.
+- `check_setup.yml` prints one line: whether the last delivery was accepted or refused, and
+  what to do about it.
+
+**There IS a backstop, and it is why this did not lock anybody out.** `_reconcile_billing`
+runs every 15 minutes, asks Stripe directly for every subscription, and grants or revokes
+membership from the answer. A missed or refused webhook therefore self-heals within a quarter
+of an hour — access is late rather than absent.
+
+That is a safety net and not a substitute. **Stripe disables endpoints that keep failing**,
+and once it does the sweep is the only path left, with nothing behind it.
+
 ### 8.2 The trial and the signup window
 
 | Key | Default | What it is |
 |---|---|---|
 | `TRIAL_DAYS` | `7` | Free days on a first subscription. `0` turns the trial off. |
-| `SIGNUP_DAY` | `1` (Monday) | ISO weekday the door is open, so trials start as a weekly cohort. `0` = always open. |
+| `SIGNUP_DAY` | `0` (always open) | ISO weekday the door is open, so trials start as a weekly cohort. `0` turns the window off. |
 | `SIGNUP_SCOPE` | `trial` | `trial` gates only checkouts that would start one; `all` gates everybody. |
 
 **Leave all three unset.** Each defaults to the intended policy, and an explicit value only
 creates something that can drift out of step later. They exist to be changed deliberately,
 not to be set on day one.
+
+**`SIGNUP_DAY` defaulted to `1` until 28 Sep 2026, and the reason it no longer does is worth
+knowing before you set it back.** `SIGNUP_SCOPE=trial` reads as "anyone willing to pay full
+price can join any day". It is not: `billing.trial_days_for` offers every account with no
+prior subscription a trial, and there is no way to decline one — so a brand-new visitor was
+always a trial signup and always waited. Six days in seven the door was shut to everybody who
+had never subscribed, which is the entire audience the join page is written for. The people
+`scope=trial` actually lets through are RETURNING ex-subscribers.
+
+Set `SIGNUP_DAY=1` to bring the cohort back. The machinery is untouched and the case for it
+is still sound — see the note at the top of `backend/signup.py` — but it is a decision about
+the business, so make it knowing who it stops.
 
 One trial per account, keyed on whether a Stripe customer has ever existed for it —
 cancelling and resubscribing does not earn another. A different Google account does; that is

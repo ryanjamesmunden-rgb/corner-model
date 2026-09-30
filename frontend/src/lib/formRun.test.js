@@ -1,4 +1,6 @@
-import { RESULTS, formLabel, formRun, formSummary, resultOf, unbeatenRun } from "./formRun";
+import {
+  FORM_GAMES, RESULTS, formLabel, formRun, formSummary, resultOf, unbeatenRun,
+} from "./formRun";
 
 /** A game row as the fixture endpoint's `recent` emits it. */
 const g = (gf, ga, over = {}) => ({
@@ -36,18 +38,24 @@ describe("the run going into the game", () => {
   test("reads left to right INTO the fixture, oldest first", () => {
     // "L W W D W" towards the game is a side finding form; the same five the other way is a
     // side losing it.
-    expect(formRun(GAMES).run).toEqual(["W", "W", "L", "D", "W"]);
+    expect(formRun(GAMES, 5).run).toEqual(["W", "W", "L", "D", "W"]);
   });
 
-  test("it takes the most recent five, not the first five on file", () => {
-    const { run } = formRun(GAMES);
+  test("it takes the most recent n, not the first n on file", () => {
+    const { run } = formRun(GAMES, 5);
     expect(run).toHaveLength(5);
     expect(run[run.length - 1]).toBe("W");   // the most recent game
   });
 
-  test("ungraded games are dropped so five characters mean five results", () => {
+  test("it shows ten by default", () => {
+    expect(FORM_GAMES).toBe(10);
+    // Six on file, so all six — the cap is a ceiling, not a requirement.
+    expect(formRun(GAMES).run).toHaveLength(6);
+  });
+
+  test("ungraded games are dropped so every badge means a result", () => {
     const withGap = [g(2, 1), g(null, null), g(1, 1), g(0, 2), g(3, 0), g(1, 0)];
-    const { run, played } = formRun(withGap);
+    const { run, played } = formRun(withGap, 5);
     expect(run).toEqual(["W", "W", "L", "D", "W"]);
     expect(played).toBe(5);
   });
@@ -112,5 +120,42 @@ describe("the one-line read", () => {
 
   test("nothing in is an empty string", () => {
     expect(formLabel([])).toBe("");
+  });
+});
+
+
+// THIS SEASON ONLY. The pool mixes seasons on purpose — the sync tops up from last year
+// while this one is thin — so a strip in August could be three games under a new manager and
+// two under the old one, read as one run. A form strip is the most glanceable thing on the
+// page and the least likely to be questioned, so it gets the strictest window.
+describe("the season filter", () => {
+  const MIXED = [
+    g(2, 1, { season: 2026 }), g(1, 1, { season: 2026 }), g(0, 2, { season: 2026 }),
+    g(3, 0, { season: 2025 }), g(1, 0, { season: 2025 }),
+  ];
+
+  test("last season's games are left out when a season is given", () => {
+    const { run, played } = formRun(MIXED, 10, 2026);
+    expect(run).toEqual(["L", "D", "W"]);
+    expect(played).toBe(3);
+  });
+
+  test("and kept when none is", () => {
+    // The caller not knowing the season must not silently empty the strip.
+    expect(formRun(MIXED, 10).played).toBe(5);
+    expect(formRun(MIXED, 10, null).played).toBe(5);
+    expect(formRun(MIXED, 10, undefined).played).toBe(5);
+  });
+
+  test("an unknown season counts as current", () => {
+    // Rows synced before the stamp shipped carry none, and dropping them would empty every
+    // strip on the site for a week after a deploy.
+    const unstamped = [g(2, 1), g(1, 1, { season: 2025 })];
+    expect(formRun(unstamped, 10, 2026).played).toBe(1);
+  });
+
+  test("a side with no games this season shows an empty strip, not last year's", () => {
+    const allOld = [g(2, 1, { season: 2025 }), g(1, 0, { season: 2025 })];
+    expect(formRun(allOld, 10, 2026).run).toEqual([]);
   });
 });

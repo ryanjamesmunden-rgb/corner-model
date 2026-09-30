@@ -12,12 +12,14 @@ import { fixtureStreakShare, mismatchShare } from "@/lib/shareText";
 import StoryButton from "@/components/StoryButton";
 import { renderFormStory, renderMismatchStory } from "@/lib/storyImage";
 import { canRecord, extFor, recordStoryVideo } from "@/lib/storyVideo";
+import { formLabel, formRun } from "@/lib/formRun";
 import { kickoffLabel } from "@/lib/kickoff";
 import { fixtureStreaks, streakDetail, streakHeadline } from "@/lib/fixtureStreaks";
 import { hasH2H, meetingRows, recordLine, summaryLine, unbeatenRows } from "@/lib/h2h";
 import {
   SUBJECTS as CONSISTENCY_SUBJECTS, consistencyHeadline, consistencyRows, defaultLine,
-  gameBars, hitsAt, lineWindow, valuesFor, windowsFor, seasonNote, splitSeasons,
+  gameBars, hitsAt, lineWindow, valuesFor, seasonNote, splitSeasons, clampWindow,
+  MIN_WINDOW,
   thisSeasonOnly,
 } from "@/lib/consistency";
 import { claimLine, hasMismatch, headline as mismatchHeadline, mismatches } from "@/lib/mismatch";
@@ -65,6 +67,15 @@ export default function FixtureDetail() {
   // people are pricing. An unrecognised line lands here rather than nowhere.
   const [pasteTarget, setPasteTarget] = useState("total");
   const [flash, setFlash] = useState({});
+  // ONE WINDOW PER TEAM CARD, HELD HERE rather than inside either half of it. The ladder's
+  // "Landed" column and the chart below it are the same games counted twice — that is the
+  // whole reason they were merged — so a window control on only one of them would leave the
+  // card disagreeing with itself about which ten games it was talking about.
+  //
+  // UP HERE WITH THE OTHER HOOKS, not down beside the markup that uses it: this component
+  // returns early while the fixture is loading, and a hook declared after that return is
+  // called on some renders and not others, which React refuses outright.
+  const [windows, setWindows] = useState({});
   // Which market has its staking panel open, by key — ONE AT A TIME, and held here rather
   // than inside each row, because the panel is a sibling row and a row cannot render its
   // own sibling. Market keys are unique across both team tables, so one value covers them.
@@ -150,6 +161,8 @@ export default function FixtureDetail() {
   const canPrice = canWritePrices({ member });
   // Every market — totals included — now carries fair odds, your price and the EV
   // between them. See TotalCorners for why totals were the exception and no longer are.
+  const winFor = (key, pool) => clampWindow(windows[key], pool);
+
   const groups = [
     { key: "home", label: `${fixture.home_name} Corners`, team: home_team, venue: true },
     { key: "away", label: `${fixture.away_name} Corners`, team: away_team, venue: false },
@@ -174,11 +187,52 @@ export default function FixtureDetail() {
             </h1>
           </div>
           <p className="font-mono-data text-xs text-muted-foreground mt-1">
+            {/* League and country beside the kick-off, because a reader landing from a post
+                needs to know WHICH Liga Profesional this is before anything else on the
+                page means much. */}
+            {data.league_name && <span className="text-foreground">{data.league_name} · </span>}
             {new Date(fixture.date).toLocaleString()}
             {fixture.round && fixture.round !== "Upcoming" && (
               <span data-testid="fixture-round" className="ml-2 text-primary/80">· {fixture.round}</span>
             )}
           </p>
+          {/* FORM RUNNING INTO THE GAME. Not a corner stat and it feeds nothing — it is the
+              orientation a reader needs before any corner number means anything. A side
+              winning every week and a side losing every week produce corners for opposite
+              reasons, and this page used to open on a lambda with no way to tell which you
+              were looking at. */}
+          <div className="flex flex-wrap gap-x-5 gap-y-1.5 mt-2.5">
+            {[[fixture.home_name, home_team], [fixture.away_name, away_team]].map(
+              ([name, team]) => {
+                const { run, played } = formRun(team?.recent || []);
+                if (!run.length) return null;
+                return (
+                  <div key={name} className="flex items-center gap-2"
+                       data-testid={`form-run-${team === home_team ? "home" : "away"}`}>
+                    <span className="text-xs text-muted-foreground truncate max-w-[110px]">
+                      {name}
+                    </span>
+                    <span className="flex gap-1">
+                      {run.map((r, i) => (
+                        <span key={i}
+                          className={`w-5 h-5 rounded text-[10px] font-mono-data font-semibold
+                                      flex items-center justify-center ${
+                            r === "W" ? "bg-primary/20 text-primary border border-primary/40"
+                            : r === "D" ? "bg-secondary text-muted-foreground border border-border"
+                            : "bg-slate-600/25 text-slate-400 border border-slate-600/40"}`}>
+                          {r}
+                        </span>
+                      ))}
+                    </span>
+                    {/* The read, and the count it came from — "unbeaten in 4" off four games
+                        on file is a different claim from the same run inside twenty. */}
+                    <span className="text-[11px] text-muted-foreground whitespace-nowrap">
+                      {formLabel(run)}{played < 5 ? ` · ${played} on file` : ""}
+                    </span>
+                  </div>
+                );
+              })}
+          </div>
         </div>
         {/* Wraps on a phone instead of running off the edge, and the confidence chip
             goes with them rather than being pushed onto its own line. */}
@@ -261,12 +315,6 @@ export default function FixtureDetail() {
       <Mismatch home={home_team} away={away_team} fixture={fixture}
                 leagueName={data.league_name} />
 
-      {/* WHAT THESE TWO HAVE DONE TO EACH OTHER BEFORE. Closed by default and one line
-          wide when shut: it is context for the projection above, not the projection
-          itself, and a fixture page that opens on nine rows of history buries the
-          numbers somebody came for. */}
-      <HeadToHead h2h={data.h2h} homeName={fixture.home_name} awayName={fixture.away_name} />
-
       {/* THE BULK ENTRY BOX. This parser was written, complete, and never rendered —
           `handlePaste` had no caller, so filling a ladder meant eight separate inputs
           and eight round trips. Prices arrive from a bookmaker as a block of text, so
@@ -294,9 +342,35 @@ export default function FixtureDetail() {
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-3 sm:gap-4">
         {groups.map((g) => (
           <div key={g.key} className="bg-card border border-border rounded-lg overflow-hidden">
-            <div className="px-4 py-3 border-b border-border flex items-center gap-2">
+            <div className="px-4 py-3 border-b border-border flex items-center gap-2 flex-wrap">
               <TrendingUp className="h-4 w-4 text-muted-foreground" />
               <h3 className="font-head font-semibold text-sm">{g.label}</h3>
+              {/* THE SCROLLER, and it governs the whole card. A slider rather than tabs
+                  because the useful question is how the claim MOVES as the window shortens —
+                  a run that survives down to the last three is a different thing from one
+                  that only exists over ten, and tabs make you compare two snapshots from
+                  memory while a drag shows it. */}
+              {(() => {
+                const pool = (g.team?.recent || []).filter((x) => x.home === g.venue).length;
+                const max = Math.max(MIN_WINDOW, pool);
+                const w = winFor(g.key, pool);
+                if (pool <= MIN_WINDOW) return null;
+                return (
+                  <div className="ml-auto flex items-center gap-2">
+                    <span className="text-[10px] uppercase tracking-wider text-muted-foreground
+                                     whitespace-nowrap">
+                      Last <span className="font-mono-data text-foreground">{w}</span>
+                    </span>
+                    <input
+                      type="range" min={MIN_WINDOW} max={max} step={1} value={w}
+                      data-testid={`window-${g.key}`}
+                      aria-label={`How many recent games to count — currently ${w}`}
+                      onChange={(e) => setWindows({ ...windows, [g.key]: Number(e.target.value) })}
+                      className="w-24 accent-primary cursor-pointer"
+                    />
+                  </div>
+                );
+              })()}
             </div>
             {/* Wide on a phone: the card clips, so the table needs its own scroller. */}
             <div className="overflow-x-auto">
@@ -325,7 +399,8 @@ export default function FixtureDetail() {
                   // the same evidence the match-total table uses, on the same bands.
                   // Venue-filtered, because the market is for this team at this venue and
                   // the model prices it that way too.
-                  const played = (g.team?.recent || []).filter((x) => x.home === g.venue);
+                  const venueGames = (g.team?.recent || []).filter((x) => x.home === g.venue);
+                  const played = venueGames.slice(0, winFor(g.key, venueGames.length));
                   const plus = Math.ceil(m.line ?? parseFloat(String(m.key).split("_").pop()));
                   const hit = played.filter((x) => (x.won ?? -1) >= plus).length;
                   const pct = played.length ? Math.round((hit / played.length) * 100) : null;
@@ -343,12 +418,16 @@ export default function FixtureDetail() {
                         </span>
                       </td>
                       <td className="px-3 py-2 w-full">
+                        {/* THE GAMES, NOT A PERCENTAGE BAR. A bar filled to 80% says eight
+                            in ten and nothing else; ten bars say WHICH eight — whether the
+                            two misses were the last two or last April, and whether the hits
+                            cleared the line comfortably or scraped it. Same chart language
+                            as the panel below, which is the point: they were the same
+                            numbers drawn two different ways. */}
                         {pct == null ? <span className="text-muted-foreground text-xs">—</span> : (
                           <div className="flex items-center gap-2">
                             <span className={`${c.text} text-xs font-semibold w-9 shrink-0`}>{hit}/{played.length}</span>
-                            <div className="h-1.5 rounded-full bg-white/5 overflow-hidden flex-1 min-w-[28px] max-w-[150px]">
-                              <div className={`h-full rounded-full ${c.bar}`} style={{ width: `${pct}%` }} />
-                            </div>
+                            <LineGames games={played} line={plus} />
                             <span className={`${c.text} text-xs w-8 text-right`}>{pct}%</span>
                           </div>
                         )}
@@ -410,7 +489,9 @@ export default function FixtureDetail() {
                 shot panel to do it. One card per team now — price at the top, the games it
                 came from underneath, and the split tabs govern both. */}
             <TeamBreakdown team={g.team} title={g.label} highlight={g.key} embedded
-                           fixture={fixture} leagueName={data.league_name} />
+                           fixture={fixture} leagueName={data.league_name}
+                           window={winFor(g.key, (g.team?.recent || [])
+                             .filter((x) => x.home === g.venue).length)} />
           </div>
         ))}
       </div>
@@ -434,6 +515,13 @@ export default function FixtureDetail() {
         backing={backing}
         onBacking={setBacking}
       />
+
+      {/* WHAT THESE TWO HAVE DONE TO EACH OTHER BEFORE — moved down to sit with the rest
+          of the evidence rather than above the price. It is the last input a reader picks
+          up before deciding, and it reads as history once they have seen this season's
+          form rather than as a competing version of it. Closed by default: a fixture page
+          that opens on nine rows of old results buries the numbers somebody came for. */}
+      <HeadToHead h2h={data.h2h} homeName={fixture.home_name} awayName={fixture.away_name} />
 
       {/* AFTER THE LADDERS, because it posts what they say. The pick is chosen off a
           priced line, so the composer belongs below the prices rather than above them —
@@ -465,6 +553,40 @@ export default function FixtureDetail() {
 // and it has to read differently from "you have not typed a price yet", which is also a
 // blank. A dash for both would make a locked board look like an empty one, and the visitor
 // would conclude the site has nothing rather than that it is holding something back.
+// THE GAMES BEHIND ONE LADDER LINE, at a glance size.
+//
+// This replaced a progress bar filled to a percentage, and the difference is the whole point:
+// 80% says eight in ten, ten bars say WHICH eight — whether the misses were the last two
+// games or last April, and whether the hits cleared comfortably or scraped it. It is the same
+// chart language as the big panel further down the card, because the two were the same
+// numbers drawn two different ways and a reader had to hold one in their head to read the
+// other.
+//
+// HEIGHT IS THE CORNER COUNT, scaled across the row's own games AND the line — scaling to the
+// bars alone would put the threshold off the top of a row where every game cleared it
+// comfortably, which is the row most worth reading.
+function LineGames({ games, line }) {
+  const values = (games || []).map((x) => x.won).filter((v) => typeof v === "number");
+  if (!values.length) return <span className="text-muted-foreground text-xs">—</span>;
+  const peak = Math.max(...values, line, 1);
+  // Oldest on the LEFT, matching the chart below and the distribution above it. `recent`
+  // arrives newest-first, so the row is reversed here rather than in three places.
+  const bars = values.slice().reverse();
+  return (
+    <span className="flex items-end gap-[2px] h-5 flex-1 min-w-[28px] max-w-[150px]"
+          title={`${bars.length} games, oldest first — lit where they reached ${line}+`}>
+      {bars.map((v, i) => (
+        <span key={i} className="flex-1 min-w-[3px] flex flex-col justify-end h-full">
+          <span
+            className={`w-full rounded-sm ${v >= line ? "bg-primary" : "bg-slate-600/70"}`}
+            style={{ height: `${Math.max(12, (v / peak) * 100)}%` }}
+          />
+        </span>
+      ))}
+    </span>
+  );
+}
+
 function Locked() {
   return (
     <span className="text-muted-foreground/70" title="The model's price and edge are for members">
@@ -795,18 +917,20 @@ const Metric = ({ label, value, accent }) => (
   </div>
 );
 
-function TeamBreakdown({ team, title, highlight, embedded = false, fixture, leagueName }) {
+function TeamBreakdown({ team, title, highlight, embedded = false, fixture, leagueName,
+                        window: sharedWindow }) {
   const [split, setSplit] = useState(highlight);
-  const [count, setCount] = useState("5");
   const recentAll = team.recent || [];
   const filtered = recentAll.filter((m) => split === "overall" || (split === "home" ? m.home : !m.home));
   // ONLY THE WINDOWS THIS SPLIT CAN HONESTLY OFFER. "Last 20" over fourteen games is a tab
   // that lies, and history is capped at 20 — so on a venue split, which holds at most half
   // of it, the longer windows simply are not there.
-  const windows = windowsFor(filtered);
-  // A window from the previous split may not exist on this one (10 games overall, 4 at
-  // home), so it falls back rather than showing an empty chart under a selected tab.
-  const activeCount = windows.includes(parseInt(count, 10)) ? parseInt(count, 10) : windows[0];
+  // THE WINDOW COMES FROM THE CARD, not from a second control in here. The scroller in the
+  // header governs the ladder and this chart together — they are the same games counted two
+  // ways, and two controls would let the card disagree with itself about which ten it meant.
+  // Clamped to what this split actually holds: a venue split holds at most half the history,
+  // so a window of 10 chosen on the ladder can only offer 4 here.
+  const activeCount = clampWindow(sharedWindow, filtered.length);
   const games = filtered.slice(0, activeCount);
   const fmtDate = (d) => new Date(d).toLocaleDateString(undefined, { month: "short", day: "numeric" });
   // goal-form summary over the games currently shown; games without goal data are left out
@@ -860,13 +984,13 @@ function TeamBreakdown({ team, title, highlight, embedded = false, fixture, leag
       {/* Per-game breakdown */}
       <div className="px-4 py-2.5 border-t border-border flex items-center gap-3">
         <span className="text-[10px] uppercase tracking-wider text-muted-foreground flex-1">Recent games ({split})</span>
-        <Tabs value={String(activeCount)} onValueChange={setCount}>
-          <TabsList className="bg-secondary h-7">
-            {windows.map((c) => (
-              <TabsTrigger key={c} value={String(c)} data-testid={`bd-count-${highlight}-${c}`} className="text-xs px-2.5 h-5">Last {c}</TabsTrigger>
-            ))}
-          </TabsList>
-        </Tabs>
+        {/* NO WINDOW CONTROL HERE — the card's scroller owns it. This only says what it is
+            currently showing, because a number with no control beside it reads as a label
+            rather than as something that is still changing under the slider above. */}
+        <span className="text-[10px] uppercase tracking-wider text-muted-foreground
+                         font-mono-data" data-testid={`bd-count-${highlight}`}>
+          Last {activeCount}
+        </span>
       </div>
 
       {/* WHAT HELD IN EVERY ONE OF THOSE GAMES, before the table they would have to work

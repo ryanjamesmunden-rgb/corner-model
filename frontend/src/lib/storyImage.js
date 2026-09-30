@@ -2685,7 +2685,8 @@ export const renderMismatchStory = (canvas, {
  * direction as the distribution's ascending axis, so a viewer who has seen either knows
  * which end is "now" without being told.
  */
-const drawFormBars = (ctx, values, { x, y, w, h, line, progress = 1, tone = C.primary }) => {
+const drawFormBars = (ctx, values, { x, y, w, h, line, progress = 1, tone = C.primary,
+                                    prior = [] }) => {
   if (!values?.length) return;
   // THE SCALE INCLUDES THE LINE. Scaling to the tallest bar alone puts the threshold rule
   // off the top of the panel whenever every game cleared it comfortably — which is exactly
@@ -2700,9 +2701,18 @@ const drawFormBars = (ctx, values, { x, y, w, h, line, progress = 1, tone = C.pr
     if (grow <= 0) return;
     const bh = Math.max(5, (v / peak) * h) * grow;
     const bx = x + i * (bw + gap);
-    ctx.fillStyle = v >= line ? tone : C.dim;
     roundRect(ctx, bx, y + h - bh, bw, bh, Math.min(10, bw / 2, bh / 2));
-    ctx.fill();
+    // A PRIOR-SEASON BAR IS HOLLOW, not a third colour. Colour on this chart already means
+    // "inside the claim or outside it", and a third hue would make a stale hit read as a
+    // third kind of result rather than as the same result from an older team.
+    if (prior[i]) {
+      ctx.strokeStyle = v >= line ? tone : C.dim;
+      ctx.lineWidth = 4;
+      ctx.stroke();
+    } else {
+      ctx.fillStyle = v >= line ? tone : C.dim;
+      ctx.fill();
+    }
     // The count under each bar. Ten of them fit at story width; the site's chart prints
     // these too, so the image and the page agree bar for bar.
     ctx.globalAlpha = progress >= 1 ? 1 : seg(progress, i * stagger + 0.2, i * stagger + 0.5);
@@ -2759,6 +2769,10 @@ export const renderFormStory = (canvas, {
   // a conceded record is, so each subject owns its own sentence — see SUBJECTS in
   // consistency.js. Defaulted so a caller that forgets still draws something true.
   claim = "", windowLabel = "", venueLabel = "", opponentLabel = "",
+  // THE CAVEAT TRAVELS WITH THE PICTURE. An image saying 7/10 with two of those games from
+  // last April is the overclaim this exists to stop, and a picture is shared without the
+  // panel it was made from. `prior` is aligned with `values`.
+  staleNote = "", prior = [],
   leagueId = "", leagueName = "", kickoff = "",
   cta = "Full lines on the site", brand = "CORNER MODEL", progress = 1,
 } = {}) => {
@@ -2825,7 +2839,7 @@ export const renderFormStory = (canvas, {
   // The bars run alongside the count rather than after it, so the shape and the number
   // arrive together — the bars ARE the explanation of the fraction.
   drawFormBars(ctx, values, {
-    x: M, y: 770, w: W, h: 420, line,
+    x: M, y: 770, w: W, h: 420, line, prior,
     progress: done ? 1 : clamp01((P - 0.07) / 0.52),
   });
 
@@ -2839,9 +2853,17 @@ export const renderFormStory = (canvas, {
       M, 1268);
     // SAID ON THE IMAGE, because a picture travels without its caption and a record read as
     // a tip is the one misreading this can cause.
+    // THE SEASON CAVEAT, ABOVE the not-a-tip line and in the warning colour, because it is
+    // the one that changes what the number means rather than how to read it.
+    if (staleNote) {
+      ctx.fillStyle = "#F99B2F";
+      ctx.font = `600 27px ${FONT_BODY}`;
+      wrapText(ctx, `${staleNote}. Hollow bars are those games.`, W)
+        .forEach((ln, i) => ctx.fillText(ln, M, 1320 + i * 36));
+    }
     ctx.fillStyle = C.muted;
     ctx.font = `500 28px ${FONT_BODY}`;
-    ctx.fillText("What already happened — not a tip.", M, 1320);
+    ctx.fillText("What already happened — not a tip.", M, staleNote ? 1420 : 1320);
   });
 
   const ctaY = STORY_H - 340;

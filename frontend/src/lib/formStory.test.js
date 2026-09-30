@@ -218,3 +218,55 @@ describe("the bars and the threshold", () => {
     expect(all()).toContain("4+");
   });
 });
+
+
+describe("the season caveat travels with the picture", () => {
+  // A picture is shared without the panel it was made from, so an image saying 7/10 with two
+  // of those games from last April is the overclaim this exists to stop.
+  const STALE = {
+    ...ARGS,
+    hits: 7, n: 10,
+    staleNote: "2 of these are from last season — squad and formation may have changed since",
+    prior: [true, true, false, false, false, false, false, false, false, false],
+  };
+
+  it("prints the note on the image", () => {
+    const { canvas, all } = mockCanvas();
+    renderFormStory(canvas, STALE);
+    expect(all()).toContain("from last season");
+    expect(all()).toContain("Hollow bars are those games.");
+  });
+
+  it("still says it is not a tip, alongside rather than instead", () => {
+    const { canvas, all } = mockCanvas();
+    renderFormStory(canvas, STALE);
+    expect(all()).toContain("What already happened — not a tip.");
+  });
+
+  it("outlines the stale bars rather than filling them", () => {
+    // Colour already means "inside the claim or outside it"; a third hue would make a stale
+    // hit read as a third kind of result. A stroke says "old" without saying "different".
+    let strokes = 0;
+    const { canvas } = mockCanvas();
+    const ctx = canvas.getContext();
+    const realStroke = ctx.stroke;
+    ctx.stroke = () => { strokes += 1; realStroke(); };
+    renderFormStory(canvas, STALE);
+    // Two hollow bars plus the threshold rule.
+    expect(strokes).toBeGreaterThanOrEqual(3);
+  });
+
+  it("says nothing extra when the window is all current", () => {
+    const { canvas, all } = mockCanvas();
+    renderFormStory(canvas, ARGS);
+    expect(all()).not.toContain("from last season");
+    expect(all()).not.toContain("Hollow bars");
+  });
+
+  it("does not throw mid-animation with stale bars in the set", () => {
+    for (let i = 0; i <= 12; i += 1) {
+      const { canvas } = mockCanvas();
+      expect(() => renderFormStory(canvas, { ...STALE, progress: i / 12 })).not.toThrow();
+    }
+  });
+});

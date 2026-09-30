@@ -246,6 +246,19 @@ async def sync_league(hc, my_lid):
         hth = ((f.get("score") or {}).get("halftime") or {})
         hg, ag = (g.get("home") or 0), (g.get("away") or 0)
         hfg, afg = (hth.get("home") or 0), (hth.get("away") or 0)
+        # WHICH SEASON THIS GAME BELONGS TO, taken from the fixture rather than inferred.
+        #
+        # THE POOL MIXES SEASONS BY DESIGN. When the current season has produced fewer than
+        # STATS_CAP finished games, the block above tops up from `season - 1` — which is what
+        # gives a team twenty games of history in August instead of three. That is the right
+        # trade, and it was invisible: nothing downstream could tell a game played six weeks
+        # ago from one played last April, so "won 5+ in 7 of 10" could be 5 of 7 this season
+        # and two from a side that has since changed manager, formation and half its squad.
+        #
+        # The provider labels every fixture with its own season, so this is its answer and not
+        # a guess from the date — which would need a different cutoff for every league, since
+        # Brazil, Japan and MLS run on the calendar year and Europe does not.
+        fseason = (f.get("league") or {}).get("season")
         c = cached.get(fid)
         if c:
             hc_, ac_, hs_, as_ = c["home_corners"], c["away_corners"], c["home_shots"], c["away_shots"]
@@ -275,7 +288,7 @@ async def sync_league(hc, my_lid):
                 coverage[feat] += sum(1 for side in (home_feat, away_feat) if side[feat] is not None)
             coverage["fixtures"] += 1
             await db.fixture_stats.update_one({"_id": fid}, {"$set": {
-                "_id": fid, "league_id": my_lid, "date": fdate,
+                "_id": fid, "league_id": my_lid, "date": fdate, "season": fseason,
                 "home_id": hid, "away_id": aid,
                 "home_corners": hc_, "away_corners": ac_,
                 "home_shots": hs_, "away_shots": as_,
@@ -288,12 +301,12 @@ async def sync_league(hc, my_lid):
         if hid in samples:
             samples[hid].append({"home": True, "corners_for": hc_, "corners_against": ac_, "shots_for": hs_,
                                  "goals_for": hg, "goals_against": ag, "fh_goals_for": hfg,
-                                 "fh_goals_against": afg, "date": fdate,
+                                 "fh_goals_against": afg, "date": fdate, "season": fseason,
                                  "opponent": aname, **_feature_sample(home_feat, away_feat)})
         if aid in samples:
             samples[aid].append({"home": False, "corners_for": ac_, "corners_against": hc_, "shots_for": as_,
                                  "goals_for": ag, "goals_against": hg, "fh_goals_for": afg,
-                                 "fh_goals_against": hfg, "date": fdate,
+                                 "fh_goals_against": hfg, "date": fdate, "season": fseason,
                                  "opponent": hname, **_feature_sample(away_feat, home_feat)})
     print(f"[{my_lid}] stats cache_hit={len(cached)} api_fetched={fetched}")
     if coverage["fixtures"]:

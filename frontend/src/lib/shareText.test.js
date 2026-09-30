@@ -5,7 +5,8 @@
  * of a line and the one thing a row limit must never break: the "+N more" count has to
  * describe the list it is actually attached to.
  */
-import { streakShare, fixtureShare, bestTeamsShare, streakResultShare,
+import { CONCEDED_MARK, MISMATCH_MARK, mismatchShare,
+  streakShare, fixtureShare, bestTeamsShare, streakResultShare,
          fixtureStreakShare, telegramPick, wonLadder, openGameCase, postHeader,
          pickGame, pickGameDetailed, gameShare, cardPost, picksReview, moreVia,
          postDate, postTime, postDayTime, POST_TZ, pickLabel, angleMenu,
@@ -1261,5 +1262,59 @@ describe("the card heading", () => {
     const mid = cardPost({ rows: [row()], label: "Midweek" });
     const end = cardPost({ rows: [row()], label: "Weekend" });
     expect(mid.replace("Midweek", "X")).toBe(end.replace("Weekend", "X"));
+  });
+});
+
+
+// THE MISMATCH POST. Goes to Telegram as the advert, so it has to make its case with no
+// price in it and no wording that implies one.
+describe("the mismatch caption", () => {
+  const mismatch = {
+    attacker: "Arsenal", defender: "Brighton", line: 5,
+    attack: { hits: 5, n: 5 }, defence: { hits: 4, n: 5 },
+  };
+  const fixture = {
+    home_name: "Arsenal", away_name: "Brighton", league_id: "eng-pl",
+    date: "2026-10-04T15:00:00Z",
+  };
+  const build = (over = {}) =>
+    mismatchShare({ mismatch, fixture, leagueName: "Premier League", ...over });
+
+  test("it names both halves at ONE shared line", () => {
+    // Quoting each side at its own best line would read stronger and mean less, because
+    // the halves would stop being about the same bet.
+    const out = build()(2);
+    expect(out).toContain("Arsenal — 5+ corners in 5 of their last 5");
+    expect(out).toContain("Brighton — conceded 5+ in 4 of their last 5");
+  });
+
+  test("the two halves wear opposed marks", () => {
+    const out = build()(2);
+    expect(out).toContain(MISMATCH_MARK);
+    expect(out).toContain(CONCEDED_MARK);
+    expect(MISMATCH_MARK).not.toBe(CONCEDED_MARK);
+  });
+
+  test("it carries the fixture header a channel post needs", () => {
+    const out = build()(2);
+    expect(out).toContain("Arsenal v Brighton");
+    expect(out).toContain("Premier League");
+  });
+
+  test("it contains no price and nothing that implies one", () => {
+    // The whole reason this is safe to post: it is a record of games already played.
+    const out = build()(2);
+    expect(out).not.toMatch(/\bEV\b/);
+    expect(out).not.toMatch(/odds/i);
+    expect(out).not.toMatch(/\d+\.\d{2}\b/);   // a decimal price
+    expect(out).not.toMatch(/%/);
+  });
+
+  test("it says plainly that it is not a tip", () => {
+    expect(build()(2)).toContain("not a tip");
+  });
+
+  test("no mismatch is an empty string rather than a post about nothing", () => {
+    expect(mismatchShare({ mismatch: null, fixture })(2)).toBe("");
   });
 });

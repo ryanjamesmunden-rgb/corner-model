@@ -97,6 +97,31 @@ was prose. It is measured now: every run also replays itself over synthetic data
 team has one fixed true rate, and prints each ranking against the floor measured on that same
 sample. See synthesise() and ESTIMATOR_FAMILY.
 
+RESULT (2026-09-30, 11,700 spots over 7,521 fixtures) — IT DOES NOT RANK:
+
+    opp_conc_consistency  +1.3 against a floor of 2.4
+    opp_conc_run          +3.1 against a floor of 2.2
+    RANDOM                -2.2  <- control
+
+Both at their floor. A conceded run stays a way to FIND a spot and is not a reason to weight
+one, which is what the site already says about it.
+
+AND THE NULL PAID FOR ITSELF IMMEDIATELY, on a question nobody asked it. Every lambda-derived
+ranking came back strongly INVERTED on the real data — chase_score -10.0, lambda_only -10.4,
+no_consistency -12.1, top bucket residual about -5 and bottom about +6. Read against the
+shuffled control that is five rankings flagged as broken. Read against their own nulls, which
+are inverted HARDER still (-18.9, -19.4, -19.5), every one of them is at its floor: the
+inversion is regression in a lambda estimated from ten games, not a fault in the ordering.
+Without the null there was no way to tell those two apart, and the obvious reading was the
+wrong one.
+
+WHAT IS STILL WORTH CHASING, and it is not a ranking: the top-2-per-matchday view has
+chase_score picking spots the model prices at 64.8% that land 57.0% — a 7.8 point gap on
+exactly the rows the Daily 2 would select, at an average line of 5.4. High lines over-promise
+and low ones under-promise. That is the NEXT HYPOTHESIS below, arriving from a second
+direction: NB_R is fixed at 11 for every team, so the tails cannot be right for all of them.
+A model change, not a score.
+
 Two views:
   1. Buckets over every scored row — is there a gradient at all?
   2. Top-N per matchday — what the board and the Daily 2 ledger actually do.
@@ -348,11 +373,19 @@ RANKINGS = [
 # since, and NOTHING IN THE REPO COULD REPRODUCE IT — so the number deciding whether a
 # candidate is real was a comment. `--null` now measures it, on this same sample.
 #
-# The conceded candidates are in that family by construction: both read the opponent's
-# recent realised conceded counts, and the opponent's conceded rate is already an input to
-# lambda. So they must clear the NULL floor, not the RANDOM one.
-ESTIMATOR_FAMILY = {"consistency_only", "venue_delta", "opp_conc_delta",
-                    "opp_conc_consistency", "opp_conc_run", "depth"}
+# DERIVED, NOT LISTED, AND THE FIRST REAL RUN IS WHY. This was a hand-typed set of the six
+# rankings that read realised counts, and it was wrong: `chase_score`, `lambda_only`,
+# `no_opp_fh`, `no_consistency` and `slack` are all functions of LAMBDA, which is itself
+# estimated from a ten-game window. Held against the shuffled control they came back
+# "INVERTED past its floor" — five rankings flagged as broken. Held against their own nulls,
+# which are MORE inverted still (-18.9 against -10.0 for chase_score), every one of them is
+# at its floor: the inversion is regression in the estimate, not a fault in the ordering.
+#
+# So the rule is simply: the control bounds sampling noise and nothing else, and EVERY
+# ranking built from the data is held to its own null. That is also one less hand-maintained
+# list to get wrong — the same failure mode as the three tool registries, which broke three
+# times before a test closed it.
+ESTIMATOR_FAMILY = frozenset(k for k, _ in RANKINGS if k != "RANDOM")
 
 
 def _nb_sample(lam, rng, cap=40):
@@ -626,9 +659,13 @@ def main():
     asyncio.run(run(league_id=opt("--league"), top_n=opt("--top", TOP_N, int),
                     window=opt("--window", WINDOW, int),
                     min_games=opt("--min-games", MIN_GAMES, int),
-                    # The null doubles the replay. On by default because without it an
-                    # estimator-family spread cannot be read at all — which is how +7.9
-                    # was once mistaken for a finding.
+                    # The null doubles the replay, and it is on by default because EVERY
+                    # ranking here is built from estimated quantities — so without it the
+                    # whole table is unreadable, not just part of it. That is what --no-null
+                    # now means: a fast structural check that the replay still runs, never a
+                    # shortcut to an answer. Reading a spread against the shuffled control
+                    # is how +7.9 was once mistaken for a finding, and how five rankings
+                    # were briefly flagged as broken.
                     with_null="--no-null" not in args))
 
 

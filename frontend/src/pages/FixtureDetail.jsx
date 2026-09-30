@@ -8,13 +8,17 @@ import {
 import StarButton from "@/components/StarButton";
 import ShareButtons from "@/components/ShareButtons";
 import PostPick from "@/components/PostPick";
-import { fixtureStreakShare } from "@/lib/shareText";
+import { fixtureStreakShare, mismatchShare } from "@/lib/shareText";
+import StoryButton from "@/components/StoryButton";
+import { renderMismatchStory } from "@/lib/storyImage";
+import { kickoffLabel } from "@/lib/kickoff";
 import { fixtureStreaks, streakDetail, streakHeadline } from "@/lib/fixtureStreaks";
 import { hasH2H, meetingRows, recordLine, summaryLine, unbeatenRows } from "@/lib/h2h";
 import {
   SUBJECTS as CONSISTENCY_SUBJECTS, consistencyHeadline, consistencyRows, defaultLine,
-  gameBars, hitsAt, lineWindow, valuesFor,
+  gameBars, hitsAt, lineWindow, valuesFor, windowsFor,
 } from "@/lib/consistency";
+import { claimLine, hasMismatch, headline as mismatchHeadline, mismatches } from "@/lib/mismatch";
 import { useAuth } from "@/context/AuthContext";
 import { canWritePrices } from "@/lib/locked";
 import ProbabilityChart from "@/components/ProbabilityChart";
@@ -246,6 +250,14 @@ export default function FixtureDetail() {
         share={fixtureStreakShare({ fixture, streaks: data.streaks || [],
                                     form: data.form || [], leagueName: data.league_name })}
       />
+
+      {/* THE MISMATCH: one side's corners-won record against the other's conceded record,
+          at a line BOTH of them clear. The two streak boards each tell half of this and
+          neither can say that those two sides are playing each other — which is the only
+          version of it that is actionable. Renders on the fixtures where it is true and
+          nowhere else; most games are not a mismatch. */}
+      <Mismatch home={home_team} away={away_team} fixture={fixture}
+                leagueName={data.league_name} />
 
       {/* WHAT THESE TWO HAVE DONE TO EACH OTHER BEFORE. Closed by default and one line
           wide when shut: it is context for the projection above, not the projection
@@ -776,10 +788,16 @@ const Metric = ({ label, value, accent }) => (
 function TeamBreakdown({ team, title, highlight }) {
   const [split, setSplit] = useState(highlight);
   const [count, setCount] = useState("5");
-  const rows = [["3", "Last 3"], ["5", "Last 5"], ["10", "Last 10"], ["0", "Season"]];
   const recentAll = team.recent || [];
   const filtered = recentAll.filter((m) => split === "overall" || (split === "home" ? m.home : !m.home));
-  const games = filtered.slice(0, parseInt(count, 10));
+  // ONLY THE WINDOWS THIS SPLIT CAN HONESTLY OFFER. "Last 20" over fourteen games is a tab
+  // that lies, and history is capped at 20 — so on a venue split, which holds at most half
+  // of it, the longer windows simply are not there.
+  const windows = windowsFor(filtered);
+  // A window from the previous split may not exist on this one (10 games overall, 4 at
+  // home), so it falls back rather than showing an empty chart under a selected tab.
+  const activeCount = windows.includes(parseInt(count, 10)) ? parseInt(count, 10) : windows[0];
+  const games = filtered.slice(0, activeCount);
   const fmtDate = (d) => new Date(d).toLocaleDateString(undefined, { month: "short", day: "numeric" });
   // goal-form summary over the games currently shown; games without goal data are left out
   const withGoals = games.filter((m) => m.gf != null && m.ga != null);
@@ -809,33 +827,13 @@ function TeamBreakdown({ team, title, highlight }) {
           </TabsList>
         </Tabs>
       </div>
-      <div className="overflow-x-auto">
-      <table className="w-full">
-        <thead>
-          <tr className="border-b border-border text-muted-foreground text-[10px] uppercase tracking-wider">
-            <th className="text-left font-medium px-2 py-2 sm:px-4">Window</th>
-            <th className="text-right font-medium px-2 py-2 sm:px-4">Won</th>
-            <th className="text-right font-medium px-2 py-2 sm:px-4">Conceded</th>
-            <th className="text-right font-medium px-2 py-2 sm:px-4">Total /g</th>
-            <th className="text-right font-medium px-4 py-2">Games</th>
-          </tr>
-        </thead>
-        <tbody className="font-mono-data text-sm">
-          {rows.map(([w, label]) => {
-            const s = team.splits[split][w];
-            return (
-              <tr key={w} className="border-b border-border/50 hover:bg-white/5 transition-colors duration-150">
-                <td className="px-4 py-2 text-foreground">{label}</td>
-                <td className="px-4 py-2 text-right text-emerald-400">{s.for_avg.toFixed(2)}</td>
-                <td className="px-4 py-2 text-right text-red-400">{s.against_avg.toFixed(2)}</td>
-                <td className="px-4 py-2 text-right text-foreground font-semibold">{s.total_avg.toFixed(2)}</td>
-                <td className="px-4 py-2 text-right text-muted-foreground">{s.played}</td>
-              </tr>
-            );
-          })}
-        </tbody>
-      </table>
-      </div>
+      {/* THE LAST 3/5/10/SEASON AVERAGES TABLE IS GONE, and nothing replaced it because
+          the graph below already answers the question it was asked. Four rows of three
+          averages each is twelve numbers to hold in your head to work out whether a side
+          reliably clears a line — which is exactly the reading the consistency chart does
+          for you, over the window you pick. The averages themselves were also the weaker
+          half: a mean of 5.4 is true of a side going 5,5,6,5,6 and of one going
+          1,2,9,6,9, and the table could not tell you which you had. */}
 
       <ShotBlock feats={team.features?.[split]} intent={team.intent?.[split]}
         highlight={highlight} split={split} />
@@ -843,10 +841,10 @@ function TeamBreakdown({ team, title, highlight }) {
       {/* Per-game breakdown */}
       <div className="px-4 py-2.5 border-t border-border flex items-center gap-3">
         <span className="text-[10px] uppercase tracking-wider text-muted-foreground flex-1">Recent games ({split})</span>
-        <Tabs value={count} onValueChange={setCount}>
+        <Tabs value={String(activeCount)} onValueChange={setCount}>
           <TabsList className="bg-secondary h-7">
-            {["5", "10"].map((c) => (
-              <TabsTrigger key={c} value={c} data-testid={`bd-count-${highlight}-${c}`} className="text-xs px-2.5 h-5">Last {c}</TabsTrigger>
+            {windows.map((c) => (
+              <TabsTrigger key={c} value={String(c)} data-testid={`bd-count-${highlight}-${c}`} className="text-xs px-2.5 h-5">Last {c}</TabsTrigger>
             ))}
           </TabsList>
         </Tabs>
@@ -944,6 +942,125 @@ function TeamBreakdown({ team, title, highlight }) {
   );
 }
 
+// THE MISMATCH — a side that keeps winning corners against one that keeps shipping them.
+//
+// WHY IT IS A SECTION AND NOT A LINE ON THE STREAK PANEL. The two boards each tell half:
+// team-corner streaks say who wins them, conceded streaks say who ships them. Pairing them
+// by hand means holding one board in your head while scrolling the other, and the answer
+// only matters when the two sides are actually playing each other — which is here.
+//
+// ONE SHARED LINE, NOT TWO BEST ONES. "Arsenal won 5+ in 5 of 5 · Brighton conceded 5+ in 4
+// of 5" is one claim about one number. Quoting each side at its own best line would read
+// stronger and mean less, because the halves would stop being about the same bet.
+//
+// AND IT IS A WAY TO FIND A SPOT, NOT A PRICE. measure_chase_board replayed the conceded
+// ordering against a floor measured on data with no edge in it, and it did not rank. So the
+// panel describes and the caveat is on it, same as every other run on this site.
+//
+// THE WINDOW IS FIXED AT FIVE rather than following the team panels below. This is a
+// headline claim meant to be read once and shared, and a claim whose meaning changes with a
+// toggle somewhere else on the page is not one — the share image would also have to name
+// which window it was built from, every time.
+const MISMATCH_WINDOW = 5;
+
+function Mismatch({ home, away, fixture, leagueName }) {
+  const rows = mismatches((home?.recent || []).slice(0, MISMATCH_WINDOW),
+                          (away?.recent || []).slice(0, MISMATCH_WINDOW),
+                          fixture?.home_name || "", fixture?.away_name || "");
+  if (!hasMismatch(rows)) return null;
+  const best = rows[0];
+
+  return (
+    <section className="bg-card border border-border rounded-lg overflow-hidden"
+             data-testid="mismatch">
+      <div className="px-4 py-3 border-b border-border flex items-center gap-2 flex-wrap">
+        <Swords className="h-4 w-4 text-primary" />
+        <h3 className="font-head font-semibold text-sm">The mismatch</h3>
+        <span className="font-sans font-normal text-xs text-muted-foreground"
+              data-testid="mismatch-headline">
+          — {mismatchHeadline(best)}
+        </span>
+        {/* SHAREABLE, because this is the one claim on the page worth posting: it is made
+            of facts anyone can check and it gives away no price. */}
+        <div className="ml-auto flex items-center gap-2">
+          <StoryButton
+            days={[{ key: `mismatch-${fixture?.fixture_id}` }]}
+            testId="mismatch-story"
+            label="Image"
+            title="A picture of this mismatch for Telegram — the record, no price"
+            render={(canvas) => renderMismatchStory(canvas, {
+              mismatch: best, fixture, leagueName, kickoff: kickoffLabel(fixture?.date),
+            })}
+          />
+          <ShareButtons
+            buildX={mismatchShare({ mismatch: best, fixture, leagueName })}
+            xRows={2}
+            text={mismatchShare({ mismatch: best, fixture, leagueName })(2)}
+          />
+        </div>
+      </div>
+
+      <div className="px-4 pt-4 pb-3 space-y-3">
+        {rows.map((m) => (
+          <div key={`${m.attacker}-${m.line}`} data-testid="mismatch-row"
+               className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+            <MismatchHalf kicker="WINS THEM" name={m.attacker} line={m.line}
+                          hits={m.attack} values={m.attackValues} tone="for" />
+            <MismatchHalf kicker="SHIPS THEM" name={m.defender} line={m.line}
+                          hits={m.defence} values={m.defenceValues} tone="against" />
+          </div>
+        ))}
+        <p className="text-[11px] text-muted-foreground">
+          Both records over their last {MISMATCH_WINDOW} games. What already happened, not a
+          forecast — the ordering was measured against a null and does not rank.
+        </p>
+      </div>
+    </section>
+  );
+}
+
+const MISMATCH_TONE = {
+  for: { text: "text-emerald-400", bar: "bg-emerald-500", border: "border-emerald-500/40" },
+  against: { text: "text-red-400", bar: "bg-red-500", border: "border-red-500/40" },
+};
+
+function MismatchHalf({ kicker, name, line, hits, values, tone }) {
+  const t = MISMATCH_TONE[tone];
+  const peak = Math.max(...values, 1);
+  return (
+    <div className={`rounded border ${t.border} bg-secondary/30 px-3 py-2.5`}>
+      <p className={`text-[10px] uppercase tracking-wider ${t.text}`}>{kicker}</p>
+      <p className="text-sm font-medium mt-0.5 truncate">{name}</p>
+      <p className="mt-1 flex items-baseline gap-2">
+        <span className={`font-mono-data text-2xl font-bold ${t.text}`}>
+          {hits.hits}/{hits.n}
+        </span>
+        <span className="text-xs text-muted-foreground">
+          games at <span className="text-foreground font-medium">{line}+</span>
+        </span>
+      </p>
+      {/* The same bars as the chart below, at a glance size. Oldest on the left. */}
+      <div className="mt-2 flex items-end gap-[3px] h-8">
+        {values.slice().reverse().map((v, i) => (
+          <span key={i} title={`${v}`}
+            className="flex-1 min-w-0 flex flex-col justify-end h-full">
+            <span className={`w-full rounded-t ${v >= line ? t.bar : "bg-slate-600/70"}`}
+                  style={{ height: `${Math.max(8, (v / peak) * 100)}%` }} />
+          </span>
+        ))}
+      </div>
+      <div className="flex gap-[3px] mt-1">
+        {values.slice().reverse().map((v, i) => (
+          <span key={i}
+            className="flex-1 min-w-0 text-center font-mono-data text-[9px] text-muted-foreground">
+            {v}
+          </span>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 // WHAT HOLDS UP OVER THE GAMES SHOWN — drawn in the same language as the probability
 // chart at the top of the page, on purpose. One vertical bar per column, brand cyan for
 // the ones inside the claim and slate for the ones outside, a line picker underneath, and
@@ -968,17 +1085,21 @@ function Consistency({ games, highlight }) {
   const [line, setLine] = useState(null);
   const [hover, setHover] = useState(null);
 
-  const subject = CONSISTENCY_SUBJECTS.find((s) => s.key === subjectKey)
-    || CONSISTENCY_SUBJECTS[0];
-  const values = valuesFor(games, subject.pick);
-  const bars = gameBars(games, subject.pick);
+  const rows = consistencyRows(games);
+  // ONLY THE SUBJECTS THAT HAVE DATA GET A BUTTON. Shots are the case: the provider covers
+  // them for roughly half of fixtures, so offering the tab unconditionally means tapping it
+  // empties the chart — and because the component returns null on no bars, it would take
+  // the whole panel with it. A subject nobody can chart should not be offered.
+  const offered = CONSISTENCY_SUBJECTS.filter((s) => rows.some((r) => r.key === s.key));
+  const subject = offered.find((s) => s.key === subjectKey) || offered[0];
+  const values = subject ? valuesFor(games, subject.pick) : [];
+  const bars = subject ? gameBars(games, subject.pick) : [];
   const lines = lineWindow(values);
   // A line held over from the previous subject is meaningless on this one — conceded and
   // match total run on different scales — so it falls back whenever it is off the window.
   const active = line != null && lines.includes(line) ? line : defaultLine(values);
-  const rows = consistencyRows(games);
 
-  if (!bars.length || active == null) return null;
+  if (!subject || !bars.length || active == null) return null;
 
   const at = hitsAt(values, active);
   const peak = Math.max(...values, 1);
@@ -991,7 +1112,7 @@ function Consistency({ games, highlight }) {
         <BarChart3 className="h-4 w-4 text-primary" />
         <h4 className="font-head font-semibold text-sm">What holds up?</h4>
         <div className="ml-auto flex rounded-md bg-secondary p-0.5">
-          {CONSISTENCY_SUBJECTS.map((s) => (
+          {offered.map((s) => (
             <button key={s.key} data-testid={`bd-cs-subject-${highlight}-${s.key}`}
               onClick={() => { setSubjectKey(s.key); setLine(null); }}
               className={`text-[11px] px-2 py-1 rounded transition-colors ${

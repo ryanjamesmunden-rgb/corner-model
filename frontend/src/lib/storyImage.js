@@ -2463,3 +2463,200 @@ export const renderChaseSlate = (canvas, {
   ctx.textAlign = "left";
   return true;
 };
+
+// ----------------------------- The mismatch, as a picture -----------------------------
+//
+// FOR TELEGRAM, which is what it is shaped around. The channel post is the advert, so this
+// image has to make its case with no price in it at all: one side keeps winning corners,
+// the other keeps shipping them, here are both records over the same five games at the same
+// line. Every number on it is checkable by anyone, which is the whole persuasive trick —
+// "we say 63%" is a claim, "5 of their last 5" is a fact.
+//
+// NO BETSLIP AND NO BLURRED PRICE, unlike renderAngleStory. That image sells a model output
+// and holds the price back to create the curiosity; this one sells the EVIDENCE and has
+// nothing to hold back. Adding a blurred box would imply a price was derived from this
+// pairing, and measure_chase_board showed the ordering does not rank — so it would be
+// implying an edge the harness could not find.
+//
+// THE SHARED LINE IS PRINTED ONCE, BIG, BETWEEN THE TWO HALVES. It is the one number both
+// records are about, and the composition's job is to stop a reader taking "5 of 5" from one
+// panel and "4 of 5" from the other as though they were separate findings.
+
+/** One half of the mismatch: kicker, team, the fraction, and the games behind it. */
+const drawMismatchHalf = (ctx, { x, y, w, h, kicker, name, hits, n, values, line, tone }) => {
+  ctx.fillStyle = C.card;
+  roundRect(ctx, x, y, w, h, 26);
+  ctx.fill();
+  ctx.strokeStyle = `${tone}44`;
+  ctx.lineWidth = 2;
+  ctx.stroke();
+  // A colour stripe down the edge, so the two sides read as opposed at a glance — the same
+  // device renderAngleStory uses, for the same reason.
+  ctx.fillStyle = tone;
+  roundRect(ctx, x, y, 8, h, 4);
+  ctx.fill();
+
+  ctx.fillStyle = tone;
+  ctx.font = `700 24px ${FONT_HEAD}`;
+  ctx.letterSpacing = "3px";
+  ctx.fillText(kicker, x + 34, y + 50);
+  ctx.letterSpacing = "0px";
+
+  ctx.fillStyle = C.text;
+  ctx.font = fitFont(ctx, name || "", { size: 38, max: w - 66, weight: 600, family: FONT_HEAD });
+  ctx.fillText(name || "", x + 34, y + 106);
+
+  // The fraction, not a percentage: "5/5" carries its own sample size and "100%" does not.
+  ctx.fillStyle = tone;
+  ctx.font = `700 96px ${FONT_DATA}`;
+  ctx.fillText(`${hits}/${n}`, x + 34, y + 194);
+  ctx.fillStyle = C.muted;
+  ctx.font = `500 25px ${FONT_BODY}`;
+  ctx.fillText(`games at ${line}+`, x + 34, y + 258);
+
+  if (!values.length) return;
+  ctx.strokeStyle = C.border;
+  ctx.beginPath();
+  ctx.moveTo(x + 34, y + 292);
+  ctx.lineTo(x + w - 34, y + 292);
+  ctx.stroke();
+  ctx.fillStyle = C.muted;
+  ctx.font = `600 19px ${FONT_DATA}`;
+  ctx.letterSpacing = "2px";
+  ctx.fillText(`LAST ${values.length}`, x + 34, y + 328);
+  ctx.letterSpacing = "0px";
+  // DIMMED WHERE THE GAME MISSED THE LINE, which drawGames cannot do — it paints one tone.
+  // The miss is the most informative bar on the panel ("4 of 5, and here is the 5th"), so
+  // hiding it inside a uniform block would be the one dishonest thing this image could do.
+  const vals = values.slice().reverse();
+  const peak = Math.max(...vals, 1);
+  const gap = 10;
+  const bw = (w - 68 - gap * (vals.length - 1)) / vals.length;
+  vals.forEach((v, i) => {
+    const bh = Math.max(6, (v / peak) * 60);
+    const bx = x + 34 + i * (bw + gap);
+    ctx.fillStyle = v >= line ? tone : C.dim;
+    roundRect(ctx, bx, y + 352 + 60 - bh, bw, bh, Math.min(8, bw / 2, bh / 2));
+    ctx.fill();
+    ctx.fillStyle = C.muted;
+    ctx.font = `500 22px ${FONT_DATA}`;
+    ctx.textAlign = "center";
+    ctx.fillText(String(v), bx + bw / 2, y + 352 + 60 + 26);
+    ctx.textAlign = "left";
+  });
+};
+
+export const renderMismatchStory = (canvas, {
+  mismatch = null, fixture = {}, leagueName = "", kickoff = "",
+  cta = "Full lines on the site", brand = "CORNER MODEL",
+} = {}) => {
+  canvas.width = STORY_W;
+  canvas.height = STORY_H;
+  const ctx = canvas.getContext("2d");
+  const M = 72;
+  const W = STORY_W - M * 2;
+
+  ctx.fillStyle = C.bg;
+  ctx.fillRect(0, 0, STORY_W, STORY_H);
+  const top = ctx.createRadialGradient(220, 180, 40, 220, 180, 1000);
+  top.addColorStop(0, "rgba(20,219,245,0.20)");
+  top.addColorStop(1, "rgba(20,219,245,0)");
+  ctx.fillStyle = top;
+  ctx.fillRect(0, 0, STORY_W, 1200);
+
+  ctx.textBaseline = "middle";
+  const useFlags = flagsRender(ctx);
+
+  ctx.fillStyle = C.primary;
+  ctx.font = `700 26px ${FONT_HEAD}`;
+  ctx.letterSpacing = "6px";
+  ctx.fillText(brand, M, 132);
+  ctx.letterSpacing = "0px";
+
+  ctx.fillStyle = C.muted;
+  ctx.font = `600 28px ${FONT_HEAD}`;
+  ctx.letterSpacing = "4px";
+  ctx.fillText("THE MISMATCH", M, 186);
+  ctx.letterSpacing = "0px";
+
+  // The fixture as the hero, in the page's own naming order.
+  ctx.fillStyle = C.text;
+  ctx.font = fitFont(ctx, fixture.home_name || "", { size: 66, max: W, family: FONT_HEAD });
+  ctx.fillText(fixture.home_name || "", M, 268);
+  ctx.fillStyle = C.muted;
+  ctx.font = `500 32px ${FONT_BODY}`;
+  ctx.fillText("v", M, 332);
+  ctx.fillStyle = C.text;
+  ctx.font = fitFont(ctx, fixture.away_name || "", { size: 66, max: W - 46, family: FONT_HEAD });
+  ctx.fillText(fixture.away_name || "", M + 46, 332);
+
+  const where = [
+    (useFlags ? flagFor(fixture.league_id) : null) || countryCodeFor(fixture.league_id),
+    leagueName || fixture.league_name || "", kickoff,
+  ].filter(Boolean).join("  ·  ");
+  if (where) {
+    ctx.fillStyle = C.muted;
+    ctx.font = `500 28px ${FONT_BODY}`;
+    ctx.fillText(where, M, 396);
+  }
+
+  if (!mismatch) return canvas;
+
+  // THE LINE, ONCE, BETWEEN THE TWO HALVES. Both records are about this number, and printing
+  // it on each panel instead would invite reading the two fractions as separate findings.
+  ctx.fillStyle = C.primary;
+  ctx.font = `700 34px ${FONT_HEAD}`;
+  ctx.fillText(`${mismatch.line}+ CORNERS`, M, 486);
+  ctx.fillStyle = C.muted;
+  ctx.font = `500 26px ${FONT_BODY}`;
+  ctx.fillText("the line both records are about", M + 250, 488);
+
+  const panelY = 540;
+  const panelH = 470;
+  const halfW = (W - 24) / 2;
+  drawMismatchHalf(ctx, {
+    x: M, y: panelY, w: halfW, h: panelH, kicker: "WINS THEM",
+    name: mismatch.attacker, hits: mismatch.attack.hits, n: mismatch.attack.n,
+    values: mismatch.attackValues || [], line: mismatch.line, tone: C.solid,
+  });
+  drawMismatchHalf(ctx, {
+    x: M + halfW + 24, y: panelY, w: halfW, h: panelH, kicker: "SHIPS THEM",
+    name: mismatch.defender, hits: mismatch.defence.hits, n: mismatch.defence.n,
+    values: mismatch.defenceValues || [], line: mismatch.line, tone: "#F99B2F",
+  });
+
+  // The claim in a sentence, centred in the band left above the call to action.
+  const ctaY = STORY_H - 340;
+  const hook = `${mismatch.attacker} keep winning ${mismatch.line}+. `
+    + `${mismatch.defender} keep conceding ${mismatch.line}+.`;
+  ctx.font = `600 44px ${FONT_HEAD}`;
+  const lns = wrapText(ctx, hook, W);
+  const bandTop = panelY + panelH;
+  let hy = bandTop + Math.max(72, (ctaY - bandTop - lns.length * 56) / 2);
+  lns.forEach((ln) => {
+    ctx.fillStyle = C.text;
+    ctx.font = `600 44px ${FONT_HEAD}`;
+    ctx.fillText(ln, M, hy);
+    hy += 56;
+  });
+
+  // SAID ON THE IMAGE, not only in the caption. A picture travels without its post, and a
+  // record read as a tip is the one misreading this image could cause.
+  ctx.fillStyle = C.muted;
+  ctx.font = `500 26px ${FONT_BODY}`;
+  ctx.fillText("Record over their last games — not a tip.", M, hy + 24);
+
+  ctx.fillStyle = C.primary;
+  roundRect(ctx, M, ctaY, W, 104, 52);
+  ctx.fill();
+  ctx.fillStyle = "#00181C";
+  ctx.font = fitFont(ctx, cta, { size: 38, max: W - 140, family: FONT_HEAD });
+  ctx.textAlign = "center";
+  ctx.fillText(cta, STORY_W / 2, ctaY + 54);
+  ctx.fillStyle = C.muted;
+  ctx.font = `500 25px ${FONT_BODY}`;
+  ctx.fillText("corner-model", STORY_W / 2, ctaY + 158);
+  ctx.textAlign = "left";
+
+  return canvas;
+};

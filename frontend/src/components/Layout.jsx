@@ -26,6 +26,9 @@ export default function Layout({ children }) {
   const [leagueId, setLeagueId] = useState(localStorage.getItem("leagueId") || "ned-ed");
   const [now, setNow] = useState(Date.now());
   const [moreOpen, setMoreOpen] = useState(false);
+  // What the page currently being viewed IS, when that page is a single league. See
+  // LeagueContext for why this is separate from the stored preference.
+  const [viewedLeague, setViewedLeague] = useState(null);
 
   useEffect(() => {
     api.leagues().then(setLeagues).catch(() => {});
@@ -78,7 +81,8 @@ export default function Layout({ children }) {
     || location.pathname.startsWith("/fixture/");
 
   return (
-    <LeagueContext.Provider value={{ leagueId, changeLeague, leagues }}>
+    <LeagueContext.Provider
+      value={{ leagueId, changeLeague, leagues, viewedLeague, setViewedLeague }}>
       <div className="min-h-screen bg-background">
         <header className="sticky top-0 z-40 bg-[#0a0a0a]/80 backdrop-blur-xl border-b border-white/10">
           <div className="max-w-[1600px] mx-auto px-3 sm:px-6 min-h-12 sm:min-h-16 py-1.5 sm:py-2 flex items-center gap-1.5 sm:gap-4 flex-wrap">
@@ -169,20 +173,41 @@ export default function Layout({ children }) {
           {showLeague && (
             <div className="border-t border-white/5 bg-[#0a0a0a]/60">
               <div className="max-w-[1600px] mx-auto px-3 sm:px-6 py-2">
-                <Select value={leagueId} onValueChange={changeLeague}>
-                  <SelectTrigger data-testid="league-switcher"
-                    className="w-full sm:w-[220px] bg-[#121212] border-border font-mono-data
-                               text-xs h-11 sm:h-9">
-                    <SelectValue placeholder="Select league" />
-                  </SelectTrigger>
-                  <SelectContent className="bg-[#121212] border-border">
-                    {leagues.map((l) => (
-                      <SelectItem key={l.league_id} value={l.league_id} data-testid={`league-opt-${l.league_id}`} className="font-mono-data text-xs">
-                        {l.name} · {l.country}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+                {/* A LABEL, NOT A CONTROL, when the page is one fixture. The header read
+                    "League One · England" over a Primeira Liga game, because the selector
+                    was showing the stored browsing preference and the page was showing
+                    whatever fixture you had opened. Changing it there did nothing visible
+                    and silently moved every other board to a league you had not asked for.
+                    So a page that is a single league says which one, and the preference is
+                    left where the reader put it. */}
+                {viewedLeague ? (
+                  <div data-testid="league-viewing"
+                    className="w-full sm:w-[220px] bg-[#121212] border border-border rounded-md
+                               font-mono-data text-xs h-11 sm:h-9 flex items-center px-3
+                               text-muted-foreground">
+                    {(() => {
+                      const l = leagues.find((x) => x.league_id === viewedLeague);
+                      // The id rather than a blank while the league list is still loading:
+                      // an empty strip reads as a broken header.
+                      return l ? `${l.name} · ${l.country}` : viewedLeague;
+                    })()}
+                  </div>
+                ) : (
+                  <Select value={leagueId} onValueChange={changeLeague}>
+                    <SelectTrigger data-testid="league-switcher"
+                      className="w-full sm:w-[220px] bg-[#121212] border-border font-mono-data
+                                 text-xs h-11 sm:h-9">
+                      <SelectValue placeholder="Select league" />
+                    </SelectTrigger>
+                    <SelectContent className="bg-[#121212] border-border">
+                      {leagues.map((l) => (
+                        <SelectItem key={l.league_id} value={l.league_id} data-testid={`league-opt-${l.league_id}`} className="font-mono-data text-xs">
+                          {l.name} · {l.country}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                )}
               </div>
             </div>
           )}

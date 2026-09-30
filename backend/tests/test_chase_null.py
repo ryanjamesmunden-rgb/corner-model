@@ -154,6 +154,22 @@ class TestTheRegistryOfFloors:
         keys = {k for k, _ in mcb.RANKINGS}
         assert mcb.ESTIMATOR_FAMILY <= keys, mcb.ESTIMATOR_FAMILY - keys
 
+    def test_every_lambda_derived_ranking_is_in_it_too(self):
+        """THE CLASSIFICATION THE FIRST REAL RUN CORRECTED.
+
+        The family was hand-typed as the six rankings that read realised counts, which left
+        out every ranking built from LAMBDA — and lambda is itself estimated from a ten-game
+        window. Held against the shuffled control those five came back "INVERTED past its
+        floor"; held against their own nulls, which are more inverted still, each is at its
+        floor and the inversion is regression in the estimate."""
+        for key in ("chase_score", "lambda_only", "no_opp_fh", "no_consistency", "slack"):
+            assert key in mcb.ESTIMATOR_FAMILY, key
+
+    def test_it_is_derived_rather_than_typed(self):
+        """One less hand-maintained list to get wrong — the same failure mode as the three
+        tool registries, which broke three times before a test closed it."""
+        assert mcb.ESTIMATOR_FAMILY == {k for k, _ in mcb.RANKINGS} - {"RANDOM"}
+
 
 class TestTheReplayScoresTheNewCandidates:
     def build(self, rows):
@@ -222,5 +238,11 @@ class TestTheVerdictReadsTheSign:
     def test_the_control_is_labelled_as_one_whatever_it_did(self):
         assert mcb._verdict("RANDOM", 20.0, 1.0, True) == "control"
 
-    def test_a_non_family_ranking_is_readable_without_a_null(self):
-        assert "clears its floor" in mcb._verdict("chase_score", 12.0, 2.0, False)
+    def test_without_a_null_nothing_but_the_control_is_readable(self):
+        """The honest consequence of deriving the family: every ranking here is built from
+        estimated quantities, so --no-null leaves the whole table unreadable. That makes the
+        flag a fast structural check and not a shortcut to an answer, which is better than a
+        flag that prints numbers nobody can interpret."""
+        for key in ("chase_score", "lambda_only", "opp_conc_run", "slack"):
+            assert "unreadable" in mcb._verdict(key, 12.0, 2.0, False), key
+        assert mcb._verdict("RANDOM", 12.0, 2.0, False) == "control"

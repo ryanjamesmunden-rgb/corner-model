@@ -12,7 +12,7 @@ import { fixtureStreakShare, mismatchShare } from "@/lib/shareText";
 import StoryButton from "@/components/StoryButton";
 import { renderFormStory, renderMismatchStory } from "@/lib/storyImage";
 import { canRecord, extFor, recordStoryVideo } from "@/lib/storyVideo";
-import { formLabel, formRun } from "@/lib/formRun";
+import { FORM_GAMES, formLabel, formRun } from "@/lib/formRun";
 import { kickoffLabel } from "@/lib/kickoff";
 import { fixtureStreaks, streakDetail, streakHeadline } from "@/lib/fixtureStreaks";
 import { hasH2H, meetingRows, recordLine, summaryLine, unbeatenRows } from "@/lib/h2h";
@@ -201,35 +201,52 @@ export default function FixtureDetail() {
               winning every week and a side losing every week produce corners for opposite
               reasons, and this page used to open on a lambda with no way to tell which you
               were looking at. */}
-          <div className="flex flex-wrap gap-x-5 gap-y-1.5 mt-2.5">
-            {[[fixture.home_name, home_team], [fixture.away_name, away_team]].map(
-              ([name, team]) => {
-                const { run, played } = formRun(team?.recent || []);
+          {/* A GRID, NOT TWO FLEX ROWS. The names are different lengths — "Benfica" and
+              "Vitória SC" — so two independent rows started their badges at different
+              places and the strips read as ragged rather than as a pair to compare. One
+              column for the name, one for the badges, and the two rows line up whatever the
+              names are. Fixed-width badges, so a side with fewer games this season still
+              starts where the other does instead of centring its shorter run.
+
+              TEN, THIS SEASON ONLY. The pool mixes seasons on purpose, and a strip in August
+              could otherwise be three games under a new manager and two under the old one,
+              read as one run. This is the most glanceable thing on the page and the least
+              likely to be questioned, so it gets the strictest window rather than the
+              widest. */}
+          <div className="grid gap-y-1.5 mt-2.5"
+               style={{ gridTemplateColumns: "auto 1fr" }}>
+            {[["home", fixture.home_name, home_team], ["away", fixture.away_name, away_team]]
+              .map(([side, name, team]) => {
+                const { run, played } = formRun(team?.recent || [], FORM_GAMES,
+                                                team?.current_season);
                 if (!run.length) return null;
                 return (
-                  <div key={name} className="flex items-center gap-2"
-                       data-testid={`form-run-${team === home_team ? "home" : "away"}`}>
-                    <span className="text-xs text-muted-foreground truncate max-w-[110px]">
+                  <Fragment key={side}>
+                    <span className="text-xs text-muted-foreground truncate max-w-[104px]
+                                     pr-3 self-center"
+                          data-testid={`form-run-${side}`}>
                       {name}
                     </span>
-                    <span className="flex gap-1">
+                    <span className="flex items-center gap-1 flex-wrap">
                       {run.map((r, i) => (
                         <span key={i}
-                          className={`w-5 h-5 rounded text-[10px] font-mono-data font-semibold
-                                      flex items-center justify-center ${
+                          className={`w-[18px] h-[18px] shrink-0 rounded-[3px] text-[10px]
+                                      font-mono-data font-semibold flex items-center
+                                      justify-center ${
                             r === "W" ? "bg-primary/20 text-primary border border-primary/40"
                             : r === "D" ? "bg-secondary text-muted-foreground border border-border"
                             : "bg-slate-600/25 text-slate-400 border border-slate-600/40"}`}>
                           {r}
                         </span>
                       ))}
+                      {/* The read, and the count behind it — "unbeaten in 4" off four games
+                          on file is a different claim from the same run inside twenty. */}
+                      <span className="text-[11px] text-muted-foreground whitespace-nowrap ml-1.5">
+                        {formLabel(run)}
+                        {played < FORM_GAMES ? ` · ${played} this season` : ""}
+                      </span>
                     </span>
-                    {/* The read, and the count it came from — "unbeaten in 4" off four games
-                        on file is a different claim from the same run inside twenty. */}
-                    <span className="text-[11px] text-muted-foreground whitespace-nowrap">
-                      {formLabel(run)}{played < 5 ? ` · ${played} on file` : ""}
-                    </span>
-                  </div>
+                  </Fragment>
                 );
               })}
           </div>

@@ -28,19 +28,35 @@ export function resultOf(game) {
   return RESULTS.draw;
 }
 
+// `recent` arrives newest-first, which is the right order for a table and the wrong one for a
+// run: "L W W D W" read towards the game is a side finding form, and the same characters the
+// other way round is a side losing it.
+export const FORM_GAMES = 10;
+
 /**
  * The last `n` results, OLDEST FIRST so the strip reads left to right into the fixture.
  *
- * `recent` arrives newest-first, which is the right order for a table and the wrong one for a
- * run: "L W W D W" read towards the game is a side finding form, and the same five characters
- * the other way round is a side losing it.
+ * THIS SEASON ONLY when a season is given, and that is the whole reason the argument exists.
+ * The sample pool mixes seasons on purpose — the sync tops up from last year while this one
+ * is thin — so a five-game strip in August could be three games under a new manager and two
+ * under the old one, read as one run. A form strip is the most glanceable thing on the page
+ * and the least likely to be questioned, so it gets the strictest window rather than the
+ * widest.
  *
- * Ungraded games are dropped rather than rendered as a gap, so five characters always mean
- * five results. `played` says how many were available, which is what stops "W W" reading as a
- * two-game unbeaten run when it is all that is on file.
+ * Ungraded games are dropped rather than rendered as a gap, so every badge means a result.
+ * `played` says how many were available, which is what stops three badges reading as a
+ * three-game run when it is simply all there is.
  */
-export function formRun(games = [], n = 5) {
-  const all = (games || []).map(resultOf).filter(Boolean);
+export function formRun(games = [], n = FORM_GAMES, currentSeason) {
+  const pool = currentSeason == null
+    ? (games || [])
+    : (games || []).filter((g) => {
+        const s = g?.season;
+        // Unknown season counts as current — rows synced before the stamp shipped carry
+        // none, and dropping them would empty the strip for a week after a deploy.
+        return s === null || s === undefined || Number(s) >= Number(currentSeason);
+      });
+  const all = pool.map(resultOf).filter(Boolean);
   const shown = all.slice(0, n).reverse();
   return { run: shown, played: all.length };
 }

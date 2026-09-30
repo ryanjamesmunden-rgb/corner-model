@@ -3,20 +3,22 @@ import { useParams, useNavigate } from "react-router-dom";
 import { toast } from "sonner";
 import {
   ArrowLeft, TrendingUp, TrendingDown, ClipboardPaste, Flame, Shield, MapPin, Swords, Eye,
-  Lock, History, BarChart3,
+  Lock, History, BarChart3, Video,
 } from "lucide-react";
 import StarButton from "@/components/StarButton";
 import ShareButtons from "@/components/ShareButtons";
 import PostPick from "@/components/PostPick";
 import { fixtureStreakShare, mismatchShare } from "@/lib/shareText";
 import StoryButton from "@/components/StoryButton";
-import { renderMismatchStory } from "@/lib/storyImage";
+import { renderFormStory, renderMismatchStory } from "@/lib/storyImage";
+import { canRecord, extFor, recordStoryVideo } from "@/lib/storyVideo";
 import { kickoffLabel } from "@/lib/kickoff";
 import { fixtureStreaks, streakDetail, streakHeadline } from "@/lib/fixtureStreaks";
 import { hasH2H, meetingRows, recordLine, summaryLine, unbeatenRows } from "@/lib/h2h";
 import {
   SUBJECTS as CONSISTENCY_SUBJECTS, consistencyHeadline, consistencyRows, defaultLine,
-  gameBars, hitsAt, lineWindow, valuesFor, windowsFor,
+  gameBars, hitsAt, lineWindow, valuesFor, windowsFor, seasonNote, splitSeasons,
+  thisSeasonOnly,
 } from "@/lib/consistency";
 import { claimLine, hasMismatch, headline as mismatchHeadline, mismatches } from "@/lib/mismatch";
 import { useAuth } from "@/context/AuthContext";
@@ -407,7 +409,8 @@ export default function FixtureDetail() {
                 comparing them had to scroll past the match total, the post composer and a
                 shot panel to do it. One card per team now — price at the top, the games it
                 came from underneath, and the split tabs govern both. */}
-            <TeamBreakdown team={g.team} title={g.label} highlight={g.key} embedded />
+            <TeamBreakdown team={g.team} title={g.label} highlight={g.key} embedded
+                           fixture={fixture} leagueName={data.league_name} />
           </div>
         ))}
       </div>
@@ -792,7 +795,7 @@ const Metric = ({ label, value, accent }) => (
   </div>
 );
 
-function TeamBreakdown({ team, title, highlight, embedded = false }) {
+function TeamBreakdown({ team, title, highlight, embedded = false, fixture, leagueName }) {
   const [split, setSplit] = useState(highlight);
   const [count, setCount] = useState("5");
   const recentAll = team.recent || [];
@@ -871,7 +874,10 @@ function TeamBreakdown({ team, title, highlight, embedded = false }) {
           problem: judging whether a side reliably clears 5 means reading a column
           downwards and comparing five numbers to 5 by eye, and by eye is where the
           miscount comes from. Reads the same split and window the reader already chose. */}
-      <Consistency games={games} highlight={highlight} />
+      <Consistency games={games} highlight={highlight} teamName={team.name}
+                   split={split} windowLabel={`last ${activeCount} games`}
+                   fixture={fixture} leagueName={leagueName}
+                   currentSeason={team.current_season} />
       {withGoals.length > 0 && (
         <div className="px-4 pb-2.5 flex flex-wrap gap-2" data-testid={`bd-goalform-${highlight}`}>
           <GoalChip label={`Scored in ${scored}/${withGoals.length}`} strong={scored >= withGoals.length * 0.7} />
@@ -1096,7 +1102,8 @@ function MismatchHalf({ kicker, name, line, hits, values, tone }) {
 //
 // THE BIG NUMBER IS A FRACTION, NOT A PERCENTAGE. "100%" off five games is the overclaim
 // this whole page is careful not to make; "5/5" carries its own sample size.
-function Consistency({ games, highlight }) {
+function Consistency({ games, highlight, teamName, split, windowLabel, fixture, leagueName,
+                       currentSeason }) {
   const [subjectKey, setSubjectKey] = useState("won");
   const [line, setLine] = useState(null);
   const [hover, setHover] = useState(null);
@@ -1109,7 +1116,7 @@ function Consistency({ games, highlight }) {
   const offered = CONSISTENCY_SUBJECTS.filter((s) => rows.some((r) => r.key === s.key));
   const subject = offered.find((s) => s.key === subjectKey) || offered[0];
   const values = subject ? valuesFor(games, subject.pick) : [];
-  const bars = subject ? gameBars(games, subject.pick) : [];
+  const bars = subject ? gameBars(games, subject.pick, currentSeason) : [];
   const lines = lineWindow(values);
   // A line held over from the previous subject is meaningless on this one — conceded and
   // match total run on different scales — so it falls back whenever it is off the window.
@@ -1119,6 +1126,36 @@ function Consistency({ games, highlight }) {
 
   const at = hitsAt(values, active);
   const peak = Math.max(...values, 1);
+  // WHERE LAST SEASON STARTS. The pool mixes seasons on purpose — the sync tops up from the
+  // previous one while the current is thin — and until this was carried nothing could tell a
+  // game from six weeks ago from one last April. See consistency.js.
+  const seasons = splitSeasons(games, currentSeason);
+  const recentOnly = thisSeasonOnly(games, subject, active, currentSeason);
+  const stale = seasonNote(games, currentSeason);
+  // ONE DESCRIPTION OF THE PICTURE, used by both the still and the video, so the two cannot
+  // show different games — the same arrangement renderFixtureStory uses.
+  const storyArgs = {
+    teamName: teamName || "",
+    values: bars.map((b) => b.value),
+    line: active,
+    hits: at.hits,
+    n: at.n,
+    claim: subject.claim(active),
+    windowLabel,
+    venueLabel: split === "overall" ? "" : split === "home" ? "at home" : "away",
+    opponentLabel: fixture
+      ? `${fixture.home_name === teamName ? "vs" : "@"} ${
+          fixture.home_name === teamName ? fixture.away_name : fixture.home_name}`
+      : "",
+    leagueId: fixture?.league_id || "",
+    leagueName: leagueName || "",
+    kickoff: kickoffLabel(fixture?.date),
+    // THE PICTURE CARRIES THE CAVEAT TOO. An image saying 7/10 with two of them from
+    // last April is exactly the overclaim this whole change exists to stop, and a
+    // picture travels without the panel it was made from.
+    staleNote: stale,
+    prior: bars.map((b) => b.prior),
+  };
   const shown = hover != null ? bars.find((b) => b.key === hover) : null;
   const everyGame = at.hits === at.n;
 
@@ -1127,6 +1164,36 @@ function Consistency({ games, highlight }) {
       <div className="flex items-center gap-2 flex-wrap mb-3">
         <BarChart3 className="h-4 w-4 text-primary" />
         <h4 className="font-head font-semibold text-sm">What holds up?</h4>
+        {/* THE CHART AS A POST, still or animated — the same two buttons the probability
+            chart at the top of the page offers, over the opposite content. Both render from
+            the LINE AND WINDOW currently selected, so the picture is the chart the reader is
+            looking at rather than a second opinion about it. */}
+        <StoryButton
+          days={[{ key: `form-${highlight}-${active}-${bars.length}` }]}
+          testId={`form-story-${highlight}`}
+          label="Image"
+          title="A picture of this record for Telegram — no price on it"
+          render={(canvas) => renderFormStory(canvas, storyArgs)}
+        />
+        {canRecord() && (
+          <StoryButton
+            days={[{ key: `form-${highlight}-${active}-${bars.length}` }]}
+            testId={`form-video-${highlight}`}
+            icon={Video}
+            label="Video"
+            title="A 5-second video — the bars draw in and the count climbs"
+            makeFile={async (day) => {
+              const canvas = document.createElement("canvas");
+              const { blob, mime, type, ext } = await recordStoryVideo(canvas, (p) =>
+                renderFormStory(canvas, { ...storyArgs, progress: p }));
+              // `type`, not `mime`: a file typed "video/mp4;codecs=avc1…" is refused by the
+              // Android share sheet. Same reason the fixture story does this.
+              const container = extFor(mime);
+              return new File([blob], `corner-model-${day.key}.${ext || container}`,
+                              { type: type || `video/${container}` });
+            }}
+          />
+        )}
         <div className="ml-auto flex rounded-md bg-secondary p-0.5">
           {offered.map((s) => (
             <button key={s.key} data-testid={`bd-cs-subject-${highlight}-${s.key}`}
@@ -1155,6 +1222,17 @@ function Consistency({ games, highlight }) {
             {everyGame ? "every game" : "of these games"} had{" "}
             <span className="text-foreground font-medium">{active}+ {subject.noun}</span>
           </p>
+          {/* THE NUMBER THE READER ACTUALLY WANTS when the window crosses a summer. "7 of 10"
+              and "5 of 7 this season" are different claims about different teams, and only
+              one of them is about the side that runs out on Saturday. */}
+          {recentOnly && (
+            <p className="text-xs mt-1" data-testid={`bd-cs-season-${highlight}`}>
+              <span className="font-mono-data text-primary font-medium">
+                {recentOnly.hits}/{recentOnly.n}
+              </span>
+              <span className="text-muted-foreground"> this season only</span>
+            </p>
+          )}
         </div>
         <div className="ml-auto text-right">
           <p className="font-mono-data text-xl text-foreground leading-none">
@@ -1193,8 +1271,13 @@ function Consistency({ games, highlight }) {
                 title={`${b.value} ${subject.noun} ${b.home ? "vs" : "@"} ${b.opponent}`}
                 aria-label={`${b.value} ${subject.noun} against ${b.opponent}`}
                 className="flex-1 min-w-0 flex flex-col justify-end h-full group cursor-pointer">
+                {/* A PRIOR-SEASON BAR IS HOLLOW, not a different colour. Colour already
+                    means "inside the claim or outside it" on this chart, and a third hue
+                    would make a stale hit look like a third category of result. An outline
+                    keeps the claim readable and still says "this one is old". */}
                 <span className={`w-full rounded-t transition-colors ${
-                    inClaim ? "bg-primary group-hover:bg-primary/80"
+                    b.prior ? `border-2 ${inClaim ? "border-primary" : "border-slate-500"} bg-transparent`
+                    : inClaim ? "bg-primary group-hover:bg-primary/80"
                             : "bg-slate-600/70 group-hover:bg-slate-500"
                   } ${hover === b.key ? "ring-2 ring-foreground/40" : ""}`}
                   style={{ height: `${Math.max(4, (b.value / peak) * 100)}%` }} />
@@ -1237,6 +1320,11 @@ function Consistency({ games, highlight }) {
 
       {/* Both floors in one line, so the section says something before it is explored — and
           the caveat, on the panel that most invites the opposite reading. */}
+      {stale && (
+        <p className="text-[11px] text-amber-400/90 mt-3" data-testid={`bd-cs-stale-${highlight}`}>
+          {stale}. Hollow bars are those games.
+        </p>
+      )}
       <p className="text-[11px] text-muted-foreground mt-3">
         <span className="text-foreground">{consistencyHeadline(rows)}</span>
         <span className="mx-2 text-muted-foreground/40">·</span>

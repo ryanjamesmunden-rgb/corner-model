@@ -1,7 +1,7 @@
 import {
   RUNGS, consistencyHeadline, consistencyLabel, consistencyRow, consistencyRows,
   floorOf, hitsAt, ladderFor, valuesFor, SUBJECTS, gameBars, lineWindow, defaultLine,
-  windowsFor, WINDOWS,
+  windowsFor, WINDOWS, isPriorSeason, splitSeasons, thisSeasonOnly, seasonNote,
 } from "./consistency";
 
 /** A game row exactly as the fixture endpoint's `recent` emits it. */
@@ -320,5 +320,113 @@ describe("which windows a split can honestly offer", () => {
     // Returning [] would leave the panel with no window selected and nothing drawn.
     expect(windowsFor([g(5, 4)])).toEqual([3]);
     expect(windowsFor([])).toEqual([3]);
+  });
+});
+
+
+describe("each subject's share-image sentence", () => {
+  test("every subject owns one", () => {
+    // A missing claim renders the fallback, which is true but says less than it could.
+    SUBJECTS.forEach((s) => {
+      expect(typeof s.claim).toBe("function");
+      expect(s.claim(5)).toContain("5");
+    });
+  });
+
+  test("a conceded record is not described as 'cleared'", () => {
+    // THE CASE THAT KILLED THE verb + noun TEMPLATE. A side does not clear corners it
+    // shipped, and "cleared 5+ conceded" says the opposite of what the record is.
+    const conceded = SUBJECTS.find((s) => s.key === "conceded");
+    expect(conceded.claim(5)).toBe("conceded 5+ corners");
+    expect(conceded.claim(5)).not.toContain("cleared");
+  });
+
+  test("and a won record is", () => {
+    expect(SUBJECTS.find((s) => s.key === "won").claim(5)).toBe("cleared 5+ corners");
+  });
+
+  test("a match total reads as the match, not as one side", () => {
+    expect(SUBJECTS.find((s) => s.key === "total").claim(10)).toBe("10+ corners in the match");
+  });
+
+  test("shots read as shots", () => {
+    expect(SUBJECTS.find((s) => s.key === "shots").claim(12)).toBe("had 12+ shots");
+  });
+});
+
+
+// THE NUMBER THAT PROMPTED THIS: "Plymouth won 5+ in 7 of 10" where two of the ten were last
+// April. This season it is 5 of 7 — a different claim about a team with a new manager, a new
+// formation and a third of the squad turned over, with a three-month gap in the middle.
+describe("where last season starts", () => {
+  const WON = SUBJECTS.find((s) => s.key === "won");
+  /** Plymouth's ten, newest first: five clear 5+ this season, two more last season. */
+  const PLYMOUTH = [
+    g(6, 3, { season: 2026 }), g(7, 4, { season: 2026 }), g(2, 5, { season: 2026 }),
+    g(5, 3, { season: 2026 }), g(6, 4, { season: 2026 }), g(3, 6, { season: 2026 }),
+    g(5, 2, { season: 2026 }),
+    g(8, 3, { season: 2025 }), g(6, 5, { season: 2025 }), g(1, 7, { season: 2025 }),
+  ];
+
+  test("a game from an earlier season is flagged", () => {
+    expect(isPriorSeason({ season: 2025 }, 2026)).toBe(true);
+    expect(isPriorSeason({ season: 2026 }, 2026)).toBe(false);
+  });
+
+  test("an unknown season counts as current, not as stale", () => {
+    // Rows synced before the stamp shipped carry none. Flagging all of them would put a
+    // "last season" warning on the whole board for a week after a deploy.
+    expect(isPriorSeason({}, 2026)).toBe(false);
+    expect(isPriorSeason({ season: null }, 2026)).toBe(false);
+  });
+
+  test("and an unknown CURRENT season flags nothing", () => {
+    expect(isPriorSeason({ season: 2025 }, null)).toBe(false);
+    expect(isPriorSeason({ season: 2025 }, undefined)).toBe(false);
+  });
+
+  test("the window splits at the boundary and keeps its order", () => {
+    const { current, prior, crosses } = splitSeasons(PLYMOUTH, 2026);
+    expect(current).toHaveLength(7);
+    expect(prior).toHaveLength(3);
+    expect(crosses).toBe(true);
+    expect(current[0].won).toBe(6);
+  });
+
+  test("a window inside one season does not cross", () => {
+    expect(splitSeasons(PLYMOUTH.slice(0, 5), 2026).crosses).toBe(false);
+    expect(splitSeasons([], 2026).crosses).toBe(false);
+  });
+
+  test("THE PLYMOUTH CASE: 7 of 10 overall is 5 of 7 this season", () => {
+    expect(hitsAt(valuesFor(PLYMOUTH, WON.pick), 5)).toMatchObject({ hits: 7, n: 10 });
+    expect(thisSeasonOnly(PLYMOUTH, WON, 5, 2026)).toMatchObject({ hits: 5, n: 7, games: 7 });
+  });
+
+  test("this-season-only is absent when the window does not cross", () => {
+    // Printing the same number twice invites the reader to look for a difference.
+    expect(thisSeasonOnly(PLYMOUTH.slice(0, 5), WON, 5, 2026)).toBeNull();
+  });
+
+  test("and absent when nothing this season is on file", () => {
+    const allOld = [g(6, 3, { season: 2025 }), g(7, 3, { season: 2025 })];
+    expect(thisSeasonOnly(allOld, WON, 5, 2026)).toBeNull();
+  });
+
+  test("the note names the gap and why it matters", () => {
+    // "2 from last season" is a fact; the reason it matters is the half a reader acts on.
+    const note = seasonNote(PLYMOUTH, 2026);
+    expect(note).toBe("3 of these are from last season"
+      + " — squad and formation may have changed since");
+  });
+
+  test("it is singular for one", () => {
+    expect(seasonNote([g(6, 3, { season: 2026 }), g(6, 3, { season: 2025 })], 2026))
+      .toContain("1 of these is from last season");
+  });
+
+  test("and silent when the window is all current", () => {
+    expect(seasonNote(PLYMOUTH.slice(0, 5), 2026)).toBe("");
+    expect(seasonNote([], 2026)).toBe("");
   });
 });

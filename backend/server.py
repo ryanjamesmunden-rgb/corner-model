@@ -3309,6 +3309,16 @@ async def fixture_detail(fixture_id: str, token: Optional[str] = None,
     def recent(team):
         rms = team.get("real_matches") or []
         return [{"date": m["date"], "opponent": m["opponent"], "home": m["home"],
+                 # WHICH SEASON EACH GAME BELONGS TO. The pool mixes them on purpose — the
+                 # sync tops up from last season while the current one is thin, which is what
+                 # gives a side twenty games of history in August — and until this was carried
+                 # nothing downstream could tell a game from six weeks ago from one last
+                 # April. "Won 5+ in 7 of 10" could be 5 of 7 this season plus two from a
+                 # squad that has since changed manager and formation.
+                 #
+                 # Absent on rows synced before this shipped, so every reader has to treat
+                 # None as "unknown" rather than as the current season.
+                 "season": m.get("season"),
                  "won": m["corners_for"], "conceded": m["corners_against"],
                  "total": m["corners_for"] + m["corners_against"],
                  "gf": m.get("goals_for"), "ga": m.get("goals_against"),
@@ -3407,12 +3417,23 @@ async def fixture_detail(fixture_id: str, token: Optional[str] = None,
             "key_factors": {
                 "home": key_factors(home, away, "home", home["name"], away["name"], lg_teams),
                 "away": key_factors(away, home, "away", away["name"], home["name"], lg_teams)},
+            # WHICH SEASON IS THE CURRENT ONE, per side, so the page can tell a game played
+            # six weeks ago from one last April. PER SIDE because on a cup tie the two teams
+            # come from different leagues on different calendars — Brazil and Japan run on the
+            # calendar year, Europe does not — and one number for the fixture would be wrong
+            # for one of them. Taken from the league document the sync stamps, which is
+            # authoritative; deriving it as max(season) over the games would read a team whose
+            # history is entirely last season's as being up to date.
             "home_team": {"name": home["name"], "splits": splits(home), "features": features(home),
+                          "current_season": (league_docs.get((home or {}).get("league_id")) or {}
+                                             ).get("season"),
                           "state_splits": states(home), "goal_profile": goals(home),
                           "intent": intent(home), "recent": recent(home),
                           "profile": team_profile(home, "home", lg_avg),
                           "real_samples": home.get("real_samples", 0)},
             "away_team": {"name": away["name"], "splits": splits(away), "features": features(away),
+                          "current_season": (league_docs.get((away or {}).get("league_id")) or {}
+                                             ).get("season"),
                           "state_splits": states(away), "goal_profile": goals(away),
                           "intent": intent(away), "recent": recent(away),
                           "profile": team_profile(away, "away", lg_avg),

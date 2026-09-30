@@ -983,7 +983,9 @@ jobs:
             -X POST "https://api.telegram.org/bot$TG_TOKEN/sendMessage" \
             -H 'content-type: application/json' --data-binary @locked_payload.json || true)
           if [ "$code" = "200" ]; then
-            echo "::notice::locked-in list sent to Telegram"
+            MID=$(python3 -c "import json;print((json.load(open('tgl.json')).get('result') or {}).get('message_id',''))" 2>/dev/null || echo "")
+            echo "::notice::locked-in list sent to Telegram — message_id $MID"
+            echo "locked-in list: message_id \`$MID\`" >> "$GITHUB_STEP_SUMMARY"
           else
             echo "::warning::locked list send failed (HTTP $code) — the freeze is still recorded"
             cat tgl.json || true
@@ -1069,7 +1071,15 @@ jobs:
             -X POST "https://api.telegram.org/bot$TG_TOKEN/send${KIND^}" \
             -F "chat_id=$TG_CHAT" -F "caption=$CAPTION" -F "$KIND=@$FILE" || true)
           if [ "$code" = "200" ]; then
-            echo "::notice::locked-in $KIND sent to Telegram"
+            # THE MESSAGE ID IS PRINTED, and this step is why telegram_admin.yml can exist at
+            # all. A `send: false` rehearsal once posted an animation here anyway, and removing
+            # it needed the message_id Telegram returns — which this step used to throw away
+            # with the response body, leaving the Telegram app as the only way to undo a post.
+            # A bot cannot list its own channel history, so an id that is not recorded here is
+            # not recoverable from anywhere.
+            MID=$(python3 -c "import json;print((json.load(open('tgp.json')).get('result') or {}).get('message_id',''))" 2>/dev/null || echo "")
+            echo "::notice::locked-in $KIND sent to Telegram — message_id $MID"
+            echo "locked-in $KIND: message_id \`$MID\` (delete via the 'Delete a channel message' workflow)" >> "$GITHUB_STEP_SUMMARY"
           else
             echo "::warning::locked $KIND send failed (HTTP $code) — the list is already out"
             cat tgp.json || true

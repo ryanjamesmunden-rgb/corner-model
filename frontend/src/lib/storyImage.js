@@ -2660,3 +2660,226 @@ export const renderMismatchStory = (canvas, {
 
   return canvas;
 };
+
+// ------------------------- The form, as an animation -------------------------
+//
+// THE SAME SHAPE AS THE FIXTURE STORY AND THE OPPOSITE CONTENT. That one animates the
+// MODEL'S curve — one bar per possible corner count, a forecast, with a probability counting
+// up. This animates the GAMES THAT HAPPENED — one bar per match, a record, with the count of
+// how many cleared the line climbing to 9. Identical motion over opposite meanings, so the
+// caption is load-bearing: "cleared 5+ in their last 10" is past tense on purpose.
+//
+// A FRACTION COUNTS UP, NOT A PERCENTAGE. "90%" off ten games is the overclaim the whole site
+// avoids, and "9/10" carries its own sample size. It still climbs, because a number arriving
+// at 9 is watched to the end and a number already sitting at 9 is read and scrolled past.
+//
+// AND THERE IS A RULE ACROSS THE BARS AT THE LINE. This is the one thing the probability
+// chart cannot do and this needs: with a threshold drawn at the line's own height, "nine of
+// these ten cleared it" is visible without counting anything. The bars carry the colour and
+// the rule carries the argument.
+
+/**
+ * One bar per game, oldest first, with the line drawn across them.
+ *
+ * `values` arrive oldest-first — the same direction the site's chart reads, and the same
+ * direction as the distribution's ascending axis, so a viewer who has seen either knows
+ * which end is "now" without being told.
+ */
+const drawFormBars = (ctx, values, { x, y, w, h, line, progress = 1, tone = C.primary,
+                                    prior = [] }) => {
+  if (!values?.length) return;
+  // THE SCALE INCLUDES THE LINE. Scaling to the tallest bar alone puts the threshold rule
+  // off the top of the panel whenever every game cleared it comfortably — which is exactly
+  // the case worth posting.
+  const peak = Math.max(...values, line, 1);
+  const gap = values.length > 12 ? 8 : 14;
+  const bw = (w - gap * (values.length - 1)) / values.length;
+  const stagger = 0.55 / Math.max(1, values.length - 1);
+
+  values.forEach((v, i) => {
+    const grow = progress >= 1 ? 1 : seg(progress, i * stagger, i * stagger + 0.45);
+    if (grow <= 0) return;
+    const bh = Math.max(5, (v / peak) * h) * grow;
+    const bx = x + i * (bw + gap);
+    roundRect(ctx, bx, y + h - bh, bw, bh, Math.min(10, bw / 2, bh / 2));
+    // A PRIOR-SEASON BAR IS HOLLOW, not a third colour. Colour on this chart already means
+    // "inside the claim or outside it", and a third hue would make a stale hit read as a
+    // third kind of result rather than as the same result from an older team.
+    if (prior[i]) {
+      ctx.strokeStyle = v >= line ? tone : C.dim;
+      ctx.lineWidth = 4;
+      ctx.stroke();
+    } else {
+      ctx.fillStyle = v >= line ? tone : C.dim;
+      ctx.fill();
+    }
+    // The count under each bar. Ten of them fit at story width; the site's chart prints
+    // these too, so the image and the page agree bar for bar.
+    ctx.globalAlpha = progress >= 1 ? 1 : seg(progress, i * stagger + 0.2, i * stagger + 0.5);
+    ctx.fillStyle = v >= line ? C.text : C.muted;
+    ctx.font = `600 26px ${FONT_DATA}`;
+    ctx.textAlign = "center";
+    ctx.fillText(String(v), bx + bw / 2, y + h + 32);
+    ctx.globalAlpha = 1;
+  });
+
+  // The threshold, drawn LAST so it sits over the bars, and arriving after them so the eye
+  // has somewhere to land when it appears.
+  const ruleAt = progress >= 1 ? 1 : seg(progress, 0.5, 0.75);
+  if (ruleAt > 0) {
+    const ry = y + h - (line / peak) * h;
+    ctx.globalAlpha = ruleAt;
+    ctx.strokeStyle = C.text;
+    ctx.lineWidth = 3;
+    ctx.setLineDash([14, 10]);
+    ctx.beginPath();
+    ctx.moveTo(x, ry);
+    ctx.lineTo(x + w, ry);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    // Labelled on the rule itself. A dashed line with no number on it is a decoration.
+    ctx.font = `700 28px ${FONT_DATA}`;
+    const label = `${line}+`;
+    const lw = ctx.measureText(label).width + 28;
+    ctx.fillStyle = C.text;
+    roundRect(ctx, x + w - lw, ry - 22, lw, 44, 22);
+    ctx.fill();
+    ctx.fillStyle = C.bg;
+    ctx.textAlign = "center";
+    ctx.fillText(label, x + w - lw / 2, ry);
+    ctx.globalAlpha = 1;
+  }
+  ctx.textAlign = "left";
+};
+
+/**
+ * A team's last N games against one line, as a Story — still or animated.
+ *
+ * `progress = 1` is the finished frame, which is what the PNG wants, so the still and the
+ * video are the same drawing code and cannot drift apart. Same contract as
+ * renderFixtureStory.
+ *
+ * NO PRICE, and none held back either. Every number here is a game that has been played, so
+ * there is nothing to blur — and a blurred box would imply a price was derived from this
+ * record, which measure_chase_board's null showed does not rank.
+ */
+export const renderFormStory = (canvas, {
+  teamName = "", values = [], line = 0, hits = 0, n = 0,
+  // THE WHOLE PHRASE, not a verb plus a noun. "cleared 5+ conceded" says the opposite of what
+  // a conceded record is, so each subject owns its own sentence — see SUBJECTS in
+  // consistency.js. Defaulted so a caller that forgets still draws something true.
+  claim = "", windowLabel = "", venueLabel = "", opponentLabel = "",
+  // THE CAVEAT TRAVELS WITH THE PICTURE. An image saying 7/10 with two of those games from
+  // last April is the overclaim this exists to stop, and a picture is shared without the
+  // panel it was made from. `prior` is aligned with `values`.
+  staleNote = "", prior = [],
+  leagueId = "", leagueName = "", kickoff = "",
+  cta = "Full lines on the site", brand = "CORNER MODEL", progress = 1,
+} = {}) => {
+  const P = clamp01(progress);
+  const done = P >= 1;
+  canvas.width = STORY_W;
+  canvas.height = STORY_H;
+  const ctx = canvas.getContext("2d");
+  const M = 72;
+  const W = STORY_W - M * 2;
+
+  ctx.fillStyle = C.bg;
+  ctx.fillRect(0, 0, STORY_W, STORY_H);
+  const glow = ctx.createRadialGradient(STORY_W / 2, 240, 60, STORY_W / 2, 240, 900);
+  glow.addColorStop(0, "rgba(20,219,245,0.16)");
+  glow.addColorStop(1, "rgba(20,219,245,0)");
+  ctx.fillStyle = glow;
+  ctx.fillRect(0, 0, STORY_W, 1100);
+
+  ctx.textBaseline = "middle";
+  const useFlags = flagsRender(ctx);
+
+  faded(ctx, done ? 1 : seg(P, 0, 0.07), () => {
+    ctx.fillStyle = C.primary;
+    ctx.font = `700 30px ${FONT_HEAD}`;
+    ctx.letterSpacing = "6px";
+    ctx.fillText(brand, M, 180);
+    ctx.letterSpacing = "0px";
+
+    ctx.fillStyle = C.text;
+    ctx.font = fitFont(ctx, teamName, { size: 72, max: W, family: FONT_HEAD });
+    ctx.fillText(teamName, M, 276);
+
+    const where = [
+      (useFlags ? flagFor(leagueId) : null) || countryCodeFor(leagueId),
+      leagueName, opponentLabel, kickoff,
+    ].filter(Boolean).join("  ·  ");
+    if (where) {
+      ctx.fillStyle = C.muted;
+      ctx.font = `500 30px ${FONT_BODY}`;
+      ctx.fillText(where, M, 344);
+    }
+  });
+
+  // THE NUMBER, counting up. A fraction rather than a percentage — see the note above.
+  const count = done ? 1 : seg(P, 0.06, 0.55);
+  faded(ctx, done ? 1 : seg(P, 0.04, 0.13), () => {
+    ctx.fillStyle = C.primary;
+    ctx.font = `700 150px ${FONT_DATA}`;
+    ctx.fillText(`${Math.round(hits * count)}/${n}`, M, 520);
+    ctx.fillStyle = C.text;
+    ctx.font = `600 44px ${FONT_HEAD}`;
+    // PAST TENSE, and it is the only thing separating this image from the forecast one it
+    // is drawn to look like.
+    ctx.fillText(claim || `${line}+ corners`, M, 622);
+    const sub = [windowLabel, venueLabel].filter(Boolean).join("  ·  ");
+    if (sub) {
+      ctx.fillStyle = C.muted;
+      ctx.font = `500 32px ${FONT_BODY}`;
+      ctx.fillText(sub, M, 678);
+    }
+  });
+
+  // The bars run alongside the count rather than after it, so the shape and the number
+  // arrive together — the bars ARE the explanation of the fraction.
+  drawFormBars(ctx, values, {
+    x: M, y: 770, w: W, h: 420, line, prior,
+    progress: done ? 1 : clamp01((P - 0.07) / 0.52),
+  });
+
+  // The legend, in words, so the claim never rests on colour alone.
+  faded(ctx, done ? 1 : seg(P, 0.72, 0.9), () => {
+    ctx.fillStyle = C.muted;
+    ctx.font = `500 30px ${FONT_BODY}`;
+    const miss = n - hits;
+    ctx.fillText(
+      miss ? `${hits} over the line, ${miss} under it.` : `Every one of the last ${n}.`,
+      M, 1268);
+    // SAID ON THE IMAGE, because a picture travels without its caption and a record read as
+    // a tip is the one misreading this can cause.
+    // THE SEASON CAVEAT, ABOVE the not-a-tip line and in the warning colour, because it is
+    // the one that changes what the number means rather than how to read it.
+    if (staleNote) {
+      ctx.fillStyle = "#F99B2F";
+      ctx.font = `600 27px ${FONT_BODY}`;
+      wrapText(ctx, `${staleNote}. Hollow bars are those games.`, W)
+        .forEach((ln, i) => ctx.fillText(ln, M, 1320 + i * 36));
+    }
+    ctx.fillStyle = C.muted;
+    ctx.font = `500 28px ${FONT_BODY}`;
+    ctx.fillText("What already happened — not a tip.", M, staleNote ? 1420 : 1320);
+  });
+
+  const ctaY = STORY_H - 340;
+  faded(ctx, done ? 1 : seg(P, 0.8, 0.95), () => {
+    ctx.fillStyle = C.primary;
+    roundRect(ctx, M, ctaY, W, 104, 52);
+    ctx.fill();
+    ctx.fillStyle = "#00181C";
+    ctx.font = fitFont(ctx, cta, { size: 38, max: W - 140, family: FONT_HEAD });
+    ctx.textAlign = "center";
+    ctx.fillText(cta, STORY_W / 2, ctaY + 54);
+    ctx.fillStyle = C.muted;
+    ctx.font = `500 25px ${FONT_BODY}`;
+    ctx.fillText("corner-model", STORY_W / 2, ctaY + 158);
+    ctx.textAlign = "left";
+  });
+
+  return canvas;
+};

@@ -25,12 +25,19 @@
 // `short` is what fits the switcher on a phone; `noun` is what completes "4+ ___" in the
 // caption. Both are here rather than in the component so the chart, the sentence and the
 // screen-reader label cannot end up calling the same subject three different things.
+// `claim` is the whole phrase for a share image, and it exists because composing one from a
+// verb and a noun produces nonsense on the conceded subject: "cleared 5+ conceded" says the
+// opposite of what a conceded record is. A side does not CLEAR corners it shipped. Each
+// subject therefore owns its own sentence rather than being fed through one template.
 export const SUBJECTS = [
   { key: "won", label: "Corners won", short: "Won", noun: "corners won",
+    claim: (line) => `cleared ${line}+ corners`,
     pick: (m) => m.won, tone: "for" },
   { key: "conceded", label: "Corners conceded", short: "Conceded", noun: "conceded",
+    claim: (line) => `conceded ${line}+ corners`,
     pick: (m) => m.conceded, tone: "against" },
   { key: "total", label: "Match total", short: "Total", noun: "in the match",
+    claim: (line) => `${line}+ corners in the match`,
     pick: (m) => m.total, tone: "total" },
   // SHOTS, AND A ZERO HERE MEANS "NOT REPORTED" RATHER THAN "TOOK NONE.
   //
@@ -45,6 +52,7 @@ export const SUBJECTS = [
   // is everywhere else. The cost is that a genuine 0-shot match would vanish; the benefit
   // is that a dozen unreported ones do not silently rewrite the floor.
   { key: "shots", label: "Shots", short: "Shots", noun: "shots",
+    claim: (line) => `had ${line}+ shots`,
     pick: (m) => (m.shots_for ? m.shots_for : null), tone: "shots" },
 ];
 
@@ -178,7 +186,7 @@ export const LINE_SPREAD = 3;
  * A game the provider did not cover is dropped, not drawn as a zero bar. A phantom empty
  * column would read as a game they were kept to nothing in.
  */
-export function gameBars(games = [], pick) {
+export function gameBars(games = [], pick, currentSeason) {
   return (games || [])
     .map((m, i) => ({ value: num(pick(m || {})), game: m || {}, i }))
     .filter((b) => b.value !== null)
@@ -188,6 +196,10 @@ export function gameBars(games = [], pick) {
       opponent: game.opponent || "",
       home: Boolean(game.home),
       date: game.date || null,
+      season: game.season ?? null,
+      // Marked rather than dropped, so the chart can say "this one is from last season"
+      // without the window silently shrinking under the reader. See the season note below.
+      prior: isPriorSeason(game, currentSeason),
       key: `${game.date || "?"}-${i}`,
     }));
 }
@@ -250,4 +262,79 @@ export function consistencyHeadline(rows = []) {
   if (conc?.every) bits.push(`concedes ${conc.every}+ every game`);
   if (!bits.length) return rows.length ? "no line held in every game" : "";
   return bits.join(" · ");
+}
+
+// ------------------------- Where last season starts -------------------------
+//
+// THE PROBLEM, IN THE NUMBER THAT PROMPTED IT. "Plymouth won 5+ in 7 of 10" — and two of
+// those ten were last April. This season it is 5 of 7, which is a different claim about a
+// different team: same badge, new manager, new formation, a third of the squad turned over,
+// and a three-month gap in the middle where nothing was measured.
+//
+// WHY THE POOL MIXES SEASONS AT ALL, because it is not a bug to be removed. sync_real tops
+// up from the previous season while the current one has produced fewer than STATS_CAP
+// finished games. Without it a side has three games of history in August and every number on
+// the site is noise. With it they have twenty and some of them are stale. Both readings are
+// useful and only one of them was visible.
+//
+// SO IT IS SPLIT AND LABELLED, NOT DROPPED. The window the reader chose still shows what it
+// shows; the games from before the break are marked, counted, and the this-season figure is
+// stated beside the headline. A panel that silently discarded them would jump from ten games
+// to five with no explanation, which is a worse surprise than the one it fixes.
+//
+// AN UNKNOWN SEASON IS TREATED AS CURRENT. Rows synced before the season stamp shipped carry
+// none, and marking every one of them as stale would put a "last season" flag on a whole
+// board for a week after deploy. The flag is therefore conservative: it appears only where
+// the data positively says the game is older.
+
+/** Is this game from a season before `current`? Unknown counts as current — see above. */
+export function isPriorSeason(game, current) {
+  const s = game?.season;
+  if (s === null || s === undefined || current === null || current === undefined) return false;
+  return Number(s) < Number(current);
+}
+
+/**
+ * The window, split at the season boundary.
+ *
+ * `current` are the games from the season in progress and `prior` everything older, both
+ * keeping the order they arrived in. `crosses` is the only thing most callers need: it says
+ * whether this window reaches back past the break at all.
+ */
+export function splitSeasons(games = [], current) {
+  const prior = (games || []).filter((g) => isPriorSeason(g, current));
+  return {
+    current: (games || []).filter((g) => !isPriorSeason(g, current)),
+    prior,
+    crosses: prior.length > 0,
+  };
+}
+
+/**
+ * The same claim over this season only, for a window that crosses the break.
+ *
+ * Returns null when the window does not cross one, because then it is the same number as the
+ * headline and printing it twice invites the reader to look for a difference.
+ */
+export function thisSeasonOnly(games, subject, line, current) {
+  const { current: recent, crosses } = splitSeasons(games, current);
+  if (!crosses) return null;
+  const values = valuesFor(recent, subject.pick);
+  if (!values.length) return null;
+  return { ...hitsAt(values, line), games: recent.length };
+}
+
+/**
+ * The sentence that goes on the panel and on the share image.
+ *
+ * NAMES THE GAP, not just the count. "2 from last season" is a fact; "2 from last season —
+ * squad and formation may have changed since" is the reason it matters, and it is the half a
+ * reader acts on.
+ */
+export function seasonNote(games = [], current) {
+  const { prior } = splitSeasons(games, current);
+  if (!prior.length) return "";
+  const n = prior.length;
+  return `${n} of these ${n === 1 ? "is" : "are"} from last season`
+    + " — squad and formation may have changed since";
 }

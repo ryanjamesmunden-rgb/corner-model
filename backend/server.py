@@ -3843,7 +3843,10 @@ async def _next_fixtures(q):
 WIN, VOID, LOSS = "win", "void", "loss"
 
 # Laddered lines the auto-picker walks. Team corners top out far lower than match totals.
-STREAK_LADDERS = {"team": list(range(1, 16)), "match": list(range(1, 31))}
+STREAK_LADDERS = {"team": list(range(1, 16)), "match": list(range(1, 31)),
+                  # Corners CONCEDED runs on the same scale as corners won — it is the
+                  # same count, measured from the other end of the same match.
+                  "conceded": list(range(1, 16))}
 # A run of one game is a result, not a streak. Two things could put one on the board:
 #   - a line carried by VOIDS — four exact-line pushes and a single win cleared the old
 #     `hits >= 1 and hits + voids >= min_hits` test, and showed as "streak: 1"
@@ -3993,12 +3996,12 @@ def _preview(rows, user: dict, response, limit: Optional[int] = None):
     response.headers["X-Readable-Rows"] = str(min(keep, total))
     return list(rows[:keep]) + [_blur(r) for r in rows[keep:]]
 # Default ceiling for under streaks: above these a line is true so often it says nothing.
-UNDER_LINE_CAP = {"team": 8, "match": 12}
+UNDER_LINE_CAP = {"team": 8, "match": 12, "conceded": 8}
 # The mirror of the cap: below these, an OVER is not a claim worth making. Every side
 # clears "1+ corners" most weeks, so the ladder's bottom rungs manufacture long runs that
 # say nothing — a suggested line of "1+ corners, 3 in a row" is technically true and reads
 # as a joke. The streak board already refuses them via min_line; this is the same floor.
-OVER_LINE_FLOOR = {"team": 3, "match": 7}
+OVER_LINE_FLOOR = {"team": 3, "match": 7, "conceded": 3}
 
 
 def settle_streak_leg(value: int, line: int, direction: str) -> str:
@@ -4011,9 +4014,18 @@ def settle_streak_leg(value: int, line: int, direction: str) -> str:
 
 
 def streak_value(match: dict, subject: str) -> int:
-    """The number a streak line is measured against for one played match."""
+    """The number a streak line is measured against for one played match.
+
+    `conceded` IS A PROPERTY OF THE DEFENCE, not the inverse of somebody's attack, and
+    that is the whole reason it is worth a subject of its own. A side that has conceded
+    5+ corners in six straight games did it against six different opponents — that is a
+    statement about them, and it is the one that finds a leaky defence before its next
+    opponent's own numbers say anything.
+    """
     if subject == "match":
         return match["corners_for"] + match["corners_against"]
+    if subject == "conceded":
+        return match["corners_against"]
     return match["corners_for"]
 
 
@@ -4207,12 +4219,17 @@ def fixture_streaks(home: dict, away: dict, home_name: str, away_name: str,
     that keeps winning corners, and leaving them out would only ever show half the game.
     """
     rows = []
-    for team, name, venue in ((home, home_name, "home"), (away, away_name, "away")):
-        for subject in ("team", "match"):
+    # CONCEDED CARRIES THE OPPONENT'S NAME, because the run belongs to one side and the
+    # bet belongs to the other. Every other subject reads "<team> <line>"; this one has to
+    # read "<opponent> <line>, against <team>", so the opponent travels with the row.
+    for team, name, venue, opp_name in ((home, home_name, "home", away_name),
+                                        (away, away_name, "away", home_name)):
+        for subject in ("team", "match", "conceded"):
             for direction in ("over", "under"):
                 r = live_streak(team, venue, subject, direction, min_len=min_run)
                 if r:
-                    rows.append({**r, "team": name})
+                    rows.append({**r, "team": name,
+                                 **({"opponent": opp_name} if subject == "conceded" else {})})
     # Longest run first; the reader only wants the top few and they should be the best few.
     rows.sort(key=lambda r: (r["run"], r["line"] if r["direction"] == "over" else -r["line"]),
               reverse=True)
@@ -4250,6 +4267,30 @@ def _streak_projection(team: dict, opp: Optional[dict], team_venue: str, opp_ven
     lam = live_lambda((t_for + o_against) / 2, team, team_venue, league_shots, league_blocked)
     ge, pmf, group = nb_ge, nb_pmf, team_venue
     extra = {}
+    if subject == "conceded":
+        # A CONCEDED STREAK IS A BET ON THE OTHER SIDE, and that is the whole difficulty
+        # of this subject. "Brighton have conceded 5+ in six straight" is a fact about
+        # Brighton; the slip it produces is OPPONENT 5+ TEAM CORNERS. So every part of the
+        # price has to move to the opponent:
+        #
+        #   - the lambda is built from the opponent's attack against this team's defence,
+        #     not the other way round;
+        #   - the intent adjustment comes from the OPPONENT, because they are the side
+        #     taking the corners;
+        #   - and the market key is the opponent's venue, because `home_over_4.5` and
+        #     `away_over_4.5` are two different bets and the book price is looked up by
+        #     that key.
+        #
+        # Get any of the three wrong and the row prices the streaking team's own corners:
+        # a number that is plausible, a fair price that is wrong, and an EV computed
+        # against a bookmaker's price for a different market entirely.
+        o_for = _real_avg(opp, opp_venue, "corners_for")
+        t_against = _real_avg(team, team_venue, "corners_against")
+        if o_for is None or t_against is None:
+            return None
+        lam = live_lambda((o_for + t_against) / 2, opp, opp_venue, league_shots, league_blocked)
+        group = opp_venue
+        extra = {"opp_for": round(o_for, 2), "team_conceded": round(t_against, 2)}
     if subject == "match":
         o_for = _real_avg(opp, opp_venue, "corners_for")
         t_against = _real_avg(team, team_venue, "corners_against")
@@ -4275,7 +4316,16 @@ def _streak_projection(team: dict, opp: Optional[dict], team_venue: str, opp_ven
         mkey = f"{group}_over_{line - 0.5}"
         book = odds.get(mkey)
         ev = round((book * p - 1) * 100, 2) if book else None
+    # `team_for` AND `opp_conceded` ARE THE LAMBDA'S TWO INPUTS — the attacking side's
+    # rate and the defence it is meeting — and on a conceded streak the attacking side is
+    # the OPPONENT. Reporting the streaking team's own attack there would print two
+    # numbers that do not average to the lambda beside them, which is the kind of
+    # disagreement a reader checks once and then stops trusting the whole row.
+    # `attacker` names whose corners are actually being priced, so the board can label it.
+    if subject == "conceded":
+        t_for, o_against = extra["opp_for"], extra["team_conceded"]
     return {"team_for": round(t_for, 2), "opp_conceded": round(o_against, 2), **extra,
+            "attacker": "opponent" if subject == "conceded" else "team",
             "lambda": lam, "line": line, "direction": direction, "subject": subject,
             "prob": round(p * 100, 1), "void_prob": round(p_void * 100, 1),
             "fair_odds": fo, "market_key": mkey, "book_odds": book, "ev": ev,
@@ -4329,7 +4379,13 @@ async def streaks(league_id: Optional[str] = None, side: str = "overall", window
     now = datetime.now(timezone.utc)
 
     direction = "under" if direction == "under" else "over"
-    subject = "match" if subject == "match" else "team"
+    # WHITELISTED RATHER THAN NORMALISED TO A DEFAULT. This was `"match" if subject ==
+    # "match" else "team"`, which silently answered a request for any other subject with
+    # the team-corner board — so a new subject reaching this line before its ladder
+    # existed would have returned a full, plausible board of the WRONG measurement under
+    # the right heading. An unknown subject still falls back, but the known ones pass
+    # through, and adding one means adding it here.
+    subject = subject if subject in STREAK_LADDERS else "team"
     cap = max_line if max_line is not None else UNDER_LINE_CAP[subject]
     # never demand more wins than the window can supply, and never drop below 1
     floor = max(1, min(int(min_streak), min_hits))
@@ -5824,14 +5880,17 @@ def _streak_line_label(row: dict) -> str:
     fixture, so the source team is named. Without it the same fixture can show an
     over and an under total — each true of a different side — and read as the model
     contradicting itself."""
-    if row["subject"] == "match":
-        side = "match total"
-    else:
-        side = f"{row['name']} team corners"
     line = f"under {row['line']}" if row["direction"] == "under" else f"{row['line']}+"
     if row["subject"] == "match":
-        return f"{side} {line} (via {row['name']}'s games)"
-    return f"{side} {line}"
+        return f"match total {line} (via {row['name']}'s games)"
+    if row["subject"] == "conceded":
+        # THE SLIP NAMES THE OTHER TEAM, because that is the bet. The run belongs to the
+        # defence and the wager belongs to whoever is playing them, and a label reading
+        # "Brighton team corners 5+" off a Brighton CONCEDED streak would be the exact
+        # opposite of the angle — backing the side that has been kept quiet.
+        opp = row.get("opponent") or "opponent"
+        return f"{opp} team corners {line} (vs {row['name']}, who keep conceding)"
+    return f"{row['name']} team corners {line}"
 
 
 def _streak_record(row: dict) -> str:

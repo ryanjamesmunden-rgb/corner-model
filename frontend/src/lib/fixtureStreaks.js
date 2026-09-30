@@ -55,22 +55,39 @@ export const markFor = (run) => ((num(run) || 0) >= FIRE_RUN ? "🔥" : "🚩");
  * twice the team one.
  */
 export const subjectLabel = (subject) =>
-  (subject === "match" ? "in the match" : "their own corners");
+  (subject === "match" ? "in the match"
+    : subject === "conceded" ? "corners against them"
+    : "their own corners");
+
+// The subjects the API actually sends. A WHITELIST, not a two-way normalisation: the
+// original `subject === "match" ? "match" : "team"` turned every unrecognised subject
+// into "team", so a conceded run would have printed "their own corners" — the exact
+// opposite of what it is, on a row that otherwise looks correct.
+const SUBJECTS = ["team", "match", "conceded"];
 
 /** One streak, reduced to what the panel prints. */
 export const streakRow = (s = {}) => {
   const run = num(s.run) || 0;
   const line = num(s.line);
   const direction = s.direction === "under" ? "under" : "over";
+  const subject = SUBJECTS.includes(s.subject) ? s.subject : "team";
+  const team = s.team || "";
+  const label = s.line_label || "";
   return {
-    team: s.team || "",
+    team,
     // Straight from the API rather than rebuilt from the number: mislabelling an under as
     // an over costs money in the opposite direction to the reader's intent.
-    label: s.line_label || "",
+    label,
     line,
     direction,
-    subject: s.subject === "match" ? "match" : "team",
-    subjectText: subjectLabel(s.subject),
+    subject,
+    subjectText: subjectLabel(subject),
+    // WHO THE BET IS ON, which on a conceded run is not whose run it is. "Brighton 5+"
+    // off a Brighton CONCEDED streak reads as backing Brighton's corners — the opposite
+    // side of the exact angle the row exists to find. The verb is what separates them.
+    claim: subject === "conceded" ? `${team} concede ${label}` : `${team} ${label}`,
+    // The side actually taking those corners next, when the API named them.
+    opponent: s.opponent || null,
     venue: s.venue === "away" ? "away" : "home",
     run,
     mark: markFor(run),
@@ -98,6 +115,10 @@ export const fixtureStreaks = (streaks = [], minRun = MIN_RUN) =>
 /** "their own corners at home · 9 in a row of 20 on file" — the sample beside the claim. */
 export const streakDetail = (r = {}) => [
   `${r.subjectText} ${r.venue}`,
+  // Names the bet on a conceded row. The run is the defence's; the slip is the other
+  // side's team corners, and that inversion is the one thing a reader must not have to
+  // work out for themselves.
+  r.subject === "conceded" && r.opponent ? `${r.opponent} to win them` : null,
   r.games ? `${r.games} games on file` : null,
 ].filter(Boolean).join("  ·  ");
 

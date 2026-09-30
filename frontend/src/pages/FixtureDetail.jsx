@@ -11,6 +11,7 @@ import PostPick from "@/components/PostPick";
 import { fixtureStreakShare } from "@/lib/shareText";
 import { fixtureStreaks, streakDetail, streakHeadline } from "@/lib/fixtureStreaks";
 import { hasH2H, meetingRows, recordLine, summaryLine, unbeatenRows } from "@/lib/h2h";
+import { consistencyHeadline, consistencyLabel, consistencyRows } from "@/lib/consistency";
 import { useAuth } from "@/context/AuthContext";
 import { canWritePrices } from "@/lib/locked";
 import ProbabilityChart from "@/components/ProbabilityChart";
@@ -847,6 +848,13 @@ function TeamBreakdown({ team, title, highlight }) {
           </TabsList>
         </Tabs>
       </div>
+
+      {/* WHAT HELD IN EVERY ONE OF THOSE GAMES, before the table they would have to work
+          it out from. Everything here is already in the rows below — which is exactly the
+          problem: judging whether a side reliably clears 5 means reading a column
+          downwards and comparing five numbers to 5 by eye, and by eye is where the
+          miscount comes from. Reads the same split and window the reader already chose. */}
+      <Consistency games={games} highlight={highlight} />
       {withGoals.length > 0 && (
         <div className="px-4 pb-2.5 flex flex-wrap gap-2" data-testid={`bd-goalform-${highlight}`}>
           <GoalChip label={`Scored in ${scored}/${withGoals.length}`} strong={scored >= withGoals.length * 0.7} />
@@ -929,6 +937,84 @@ function TeamBreakdown({ team, title, highlight }) {
       </table>
       </div>
       <GoalDetail profile={team.goal_profile?.[split]} highlight={highlight} split={split} />
+    </div>
+  );
+}
+
+// WHAT IS CONSISTENT, stated rather than left to be counted off the table below.
+//
+// THE FLOOR IS THE HEADLINE AND NOT THE AVERAGE. A mean of 5.4 is true of a side going
+// 5,5,6,5,6 and of one going 1,2,9,6,9, and only the first is worth a line at 5. "4+ every
+// game" is a claim a reader can act on without re-deriving it.
+//
+// THE LADDER'S FIRST RUNG ALWAYS HOLDS, because it starts at the floor. Rungs above it are
+// where it stops holding, which is the other half of the same question: 5/5 at 4+ and 4/5
+// at 5+ is a different bet from 5/5 and 1/5.
+const TONE = {
+  for: { text: "text-emerald-400", bar: "bg-emerald-500" },
+  against: { text: "text-red-400", bar: "bg-red-500" },
+  total: { text: "text-foreground", bar: "bg-slate-400" },
+};
+
+function Consistency({ games, highlight }) {
+  const rows = consistencyRows(games);
+  if (!rows.length) return null;
+  return (
+    <div className="px-4 pb-3 space-y-2" data-testid={`bd-consistency-${highlight}`}>
+      <div className="flex items-baseline gap-2 flex-wrap">
+        <span className="text-[10px] uppercase tracking-wider text-muted-foreground">
+          Held in every game
+        </span>
+        <span className="text-[11px] text-muted-foreground font-sans"
+              data-testid={`bd-consistency-head-${highlight}`}>
+          {consistencyHeadline(rows)}
+        </span>
+      </div>
+      {rows.map((r) => {
+        const tone = TONE[r.tone] || TONE.total;
+        return (
+          <div key={r.key} data-testid={`bd-consistency-${highlight}-${r.key}`}
+               className="rounded border border-border/70 bg-secondary/30 px-2.5 py-2">
+            <div className="flex items-baseline gap-2 flex-wrap">
+              <span className="text-xs font-medium w-[112px] shrink-0">{r.label}</span>
+              <span className={`text-xs font-mono-data ${tone.text}`}>
+                {consistencyLabel(r)}
+              </span>
+              {/* THE SPREAD, because a floor and an average together still do not separate
+                  4,4,5,5 from 4,9,4,9 — and the second is not the same bet. */}
+              <span className="ml-auto text-[10px] text-muted-foreground font-mono-data
+                               whitespace-nowrap">
+                {r.low}–{r.high} · avg {r.avg}
+              </span>
+            </div>
+            {/* The rungs, as bars rather than a second table. A reader scanning for "where
+                does this stop being true" wants the shape, and the count is beside it for
+                anyone who wants the number. */}
+            <div className="mt-1.5 flex gap-1.5 flex-wrap">
+              {r.ladder.map((l) => (
+                <div key={l.line} className="flex items-center gap-1"
+                     title={`${l.hits} of ${l.n} games reached ${l.line}+`}>
+                  <span className="text-[10px] font-mono-data text-muted-foreground w-[26px]">
+                    {l.line}+
+                  </span>
+                  <span className="inline-block h-1.5 w-12 rounded bg-border/60 overflow-hidden">
+                    <span className={`block h-full ${tone.bar}`} style={{ width: `${l.pct}%` }} />
+                  </span>
+                  <span className={`text-[10px] font-mono-data ${
+                    l.pct === 100 ? tone.text : "text-muted-foreground"}`}>
+                    {l.hits}/{l.n}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </div>
+        );
+      })}
+      {/* Said once, on the panel that most invites the opposite reading — the same caveat
+          the streak panel carries, for the same reason. */}
+      <p className="text-[10px] text-muted-foreground">
+        What already happened over these games, not a forecast.
+      </p>
     </div>
   );
 }
@@ -1180,8 +1266,10 @@ function RunningStreaks({ streaks, share }) {
                className="rounded border border-border/70 bg-secondary/40 px-3 py-2">
             <div className="flex items-baseline gap-2 flex-wrap">
               <span aria-hidden="true">{r.mark}</span>
-              <span className="font-medium text-sm">{r.team}</span>
-              <span className="font-mono-data text-sm">{r.label}</span>
+              {/* THE VERB MATTERS ON A CONCEDED ROW. "Brighton 5+" off a Brighton
+                  CONCEDED streak reads as backing Brighton's own corners, which is the
+                  opposite side of the angle. `claim` carries the verb. */}
+              <span className="font-medium text-sm">{r.claim}</span>
               <span className={`text-sm ${r.hot ? "text-tone-streak-fg" : "text-muted-foreground"}`}>
                 — {r.run} in a row
               </span>

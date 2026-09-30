@@ -89,6 +89,20 @@ describe("a streak line", () => {
       .toBe("Match corner streaks running right now in away games:");
   });
 
+  test("a conceded board says so in the heading and in every row", () => {
+    // LEFT ON THE DEFAULT THIS POSTS THE OPPOSITE BET. "Team corner streaks" over a list
+    // of leaky defences reads as seven attacking runs, and the reader backs the side that
+    // has been kept quiet. The heading and the verb are the only two places they are told.
+    const out = streakShare({ rows, subject: "conceded", side: "overall" })(1);
+    expect(out.split("\n")[0]).toBe("Conceded corner streaks running right now:");
+    expect(out.split("\n")[1]).toBe(`${NORWAY} A conc 5+ — 9 in a row`);
+  });
+
+  test("and the other subjects keep no verb at all", () => {
+    expect(build(1)).not.toContain("conc");
+    expect(streakShare({ rows, subject: "match", side: "overall" })(1)).not.toContain("conc");
+  });
+
   test("is shorter than what it replaced, which is the point", () => {
     // The old row was "🇳🇴 A vs Rosenborg (5/5) · Tomorrow 12:00" plus a times footer.
     // Room for more streaks is the whole reason for the change, so it is worth pinning.

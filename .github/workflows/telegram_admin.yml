@@ -1,0 +1,114 @@
+# Delete a message the bot posted to the channel. One dispatch, one message.
+#
+# WHY THIS EXISTS. A `send: false` rehearsal once posted a locked-in animation to the channel
+# anyway — the list obeyed the flag and the picture did not. The bug is fixed, but the post
+# was still there, and there was no way to remove it from anywhere except the Telegram app:
+# the bot token is a repository secret, so nothing outside Actions can reach the API at all.
+#
+# AND THE ID WAS NOT RECORDED, which is the half that made it archaeology. Every send step in
+# this repo kept the HTTP code and threw the response body away, so the message_id Telegram
+# returned — the only handle deleteMessage takes — was gone the moment the run finished. The
+# send steps now print it; this is what consumes it.
+#
+# A BOT CANNOT LIST CHANNEL HISTORY. There is no Bot API call that enumerates what it posted,
+# and getUpdates returns nothing while a webhook is set (which it is). So the id has to come
+# from somewhere: the run log of the send, or the message's own link — in Telegram, right-click
+# the message and Copy Message Link, which gives t.me/c/<internal>/<message_id>.
+#
+# TELEGRAM'S OWN 48-HOUR RULE APPLIES. A bot may delete its own message in a channel where it
+# is an administrator; outside that window the API refuses and the answer is the app. The step
+# says which case it got rather than failing silently.
+#
+# NOTHING IS SCHEDULED AND NOTHING IS IMPLICIT. Deleting a post is visible to every member of
+# the channel, so it is dispatch-only, takes the message explicitly, and requires `confirm` to
+# be typed. A workflow that could remove a post on a default would be a worse problem than the
+# one it fixes.
+name: Delete a channel message
+
+on:
+  workflow_dispatch:
+    inputs:
+      message:
+        description: "Message id (12345) or its Telegram link (t.me/c/123456/12345)"
+        required: true
+        type: string
+      confirm:
+        description: "Type DELETE to confirm — this is visible to every channel member"
+        required: true
+        type: string
+        default: ""
+
+concurrency:
+  group: telegram-admin
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  delete:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check the confirmation
+        # BEFORE ANYTHING REACHES TELEGRAM. A typo in the id with no confirmation gate is a
+        # deleted message somebody wanted, and there is no undo on the other side.
+        run: |
+          if [ "$CONFIRM" != "DELETE" ]; then
+            echo "::error::confirm must be exactly DELETE — nothing was sent"
+            exit 1
+          fi
+        env:
+          CONFIRM: ${{ inputs.confirm }}
+
+      - name: Read the message id
+        id: parse
+        # THROUGH env, NOT A TEMPLATE EXPRESSION. Free text spliced into a run: block is
+        # executed as shell by whoever dispatches it — the same reason harness.yml passes its
+        # country and league inputs this way.
+        run: |
+          ID=$(python3 - <<'PY'
+          import os, re, sys
+          raw = (os.environ.get("MSG") or "").strip()
+          # A pasted link ends in the message id; a bare number is already one. Anything else
+          # is refused rather than guessed at, because a wrong id deletes a real post.
+          m = re.search(r"(\d+)\s*$", raw)
+          if not m:
+              sys.exit("could not find a message id in that input")
+          print(m.group(1))
+          PY
+          ) || { echo "::error::$ID"; exit 1; }
+          echo "id=$ID" >> "$GITHUB_OUTPUT"
+          echo "will delete message $ID"
+        env:
+          MSG: ${{ inputs.message }}
+
+      - name: Delete it
+        run: |
+          code=$(curl -s -o tg.json -w '%{http_code}' --max-time 60 \
+            -X POST "https://api.telegram.org/bot$TG_TOKEN/deleteMessage" \
+            -d "chat_id=$TG_CHAT" -d "message_id=$ID" || true)
+          # THE BODY IS THE ANSWER, NOT THE CODE. Telegram returns 400 for "message to delete
+          # not found" and for "message can't be deleted" — one means the wrong id and the
+          # other means the 48-hour window has closed, and they need different next steps.
+          # `description` is safe to print: it never contains the token.
+          DESC=$(python3 -c "import json;print((json.load(open('tg.json')).get('description') or '')[:200])" 2>/dev/null || echo "")
+          case "$code" in
+            200) echo "::notice::message $ID deleted from the channel" ;;
+            400) echo "::error::Telegram refused it: $DESC"
+                 echo "  'not found' means the id is wrong — check the message link."
+                 echo "  \"can't be deleted\" means it is older than 48 hours, and the only"
+                 echo "  way left is deleting it in the Telegram app."
+                 exit 1 ;;
+            403) echo "::error::the bot is not an administrator of that chat: $DESC"; exit 1 ;;
+            *)   echo "::error::deleteMessage failed (HTTP $code): $DESC"; exit 1 ;;
+          esac
+          {
+            echo "### Deleted message \`$ID\`"
+            echo ""
+            echo "Removed from the channel. Visible to every member as a gap where it was."
+          } >> "$GITHUB_STEP_SUMMARY"
+        env:
+          TG_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TG_CHAT: ${{ secrets.TELEGRAM_CHAT_ID }}
+          ID: ${{ steps.parse.outputs.id }}

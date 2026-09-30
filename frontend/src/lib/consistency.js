@@ -20,11 +20,18 @@
 // walk-forward and could not separate any from a shuffled control, so what a side has done
 // is not a forecast of what it will do. Every label here is past tense on purpose.
 
-/** The three things worth laddering on a corner page, and where each lives on a game row. */
+// The three things worth laddering on a corner page, and where each lives on a game row.
+//
+// `short` is what fits the switcher on a phone; `noun` is what completes "4+ ___" in the
+// caption. Both are here rather than in the component so the chart, the sentence and the
+// screen-reader label cannot end up calling the same subject three different things.
 export const SUBJECTS = [
-  { key: "won", label: "Corners won", pick: (m) => m.won, tone: "for" },
-  { key: "conceded", label: "Corners conceded", pick: (m) => m.conceded, tone: "against" },
-  { key: "total", label: "Match total", pick: (m) => m.total, tone: "total" },
+  { key: "won", label: "Corners won", short: "Won", noun: "corners won",
+    pick: (m) => m.won, tone: "for" },
+  { key: "conceded", label: "Corners conceded", short: "Conceded", noun: "conceded",
+    pick: (m) => m.conceded, tone: "against" },
+  { key: "total", label: "Match total", short: "Total", noun: "in the match",
+    pick: (m) => m.total, tone: "total" },
 ];
 
 // How many rungs to print above the floor. Three is enough to show where reliability runs
@@ -118,6 +125,73 @@ export function consistencyRow(games, subject) {
 /** All three subjects for the games currently on screen. */
 export function consistencyRows(games = []) {
   return SUBJECTS.map((s) => consistencyRow(games, s)).filter(Boolean);
+}
+
+// ------------------------- The chart the panel draws -------------------------
+//
+// SAME GRAMMAR AS THE PROBABILITY CHART AT THE TOP OF THE PAGE, deliberately: one vertical
+// bar per column, brand cyan for the ones inside the claim and slate for the ones outside,
+// a line picker under it, and the split named in words. A reader who has understood one of
+// the two charts has understood both.
+//
+// AND IT IS THE OPPOSITE CONTENT, which is why the heading has to say so. The chart above
+// draws the MODEL'S distribution — one bar per possible corner count, a forecast. This
+// draws the GAMES THAT HAPPENED — one bar per match, a record. Identical styling over
+// opposite meanings is only safe while each says which it is.
+
+/** How many rungs either side of the floor the line picker offers. */
+export const LINE_SPREAD = 3;
+
+/**
+ * One bar per game, OLDEST FIRST.
+ *
+ * The page's `recent` array is newest-first, and a chart read left to right has to run the
+ * other way — the same direction as the distribution's ascending axis above it. Reversing
+ * here rather than in the component keeps the order testable and stops the two charts
+ * disagreeing about which end is "now".
+ *
+ * A game the provider did not cover is dropped, not drawn as a zero bar. A phantom empty
+ * column would read as a game they were kept to nothing in.
+ */
+export function gameBars(games = [], pick) {
+  return (games || [])
+    .map((m, i) => ({ value: num(pick(m || {})), game: m || {}, i }))
+    .filter((b) => b.value !== null)
+    .reverse()
+    .map(({ value, game, i }) => ({
+      value,
+      opponent: game.opponent || "",
+      home: Boolean(game.home),
+      date: game.date || null,
+      key: `${game.date || "?"}-${i}`,
+    }));
+}
+
+/**
+ * The lines worth offering, as buttons.
+ *
+ * CENTRED ON THE FLOOR rather than on the average, because the floor is the claim the
+ * panel is built around and the picker should open on it. Never below 1 — "0+" is true of
+ * every game ever played — and never above the highest value, which would offer a line
+ * nothing in the window reached.
+ */
+export function lineWindow(values = [], spread = LINE_SPREAD) {
+  if (!values.length) return [];
+  const floor = Math.max(1, floorOf(values));
+  const top = Math.max(...values);
+  const lo = Math.max(1, floor - 1);
+  const hi = Math.min(Math.max(top, lo), floor + spread);
+  return Array.from({ length: Math.max(0, hi - lo + 1) }, (_, i) => lo + i);
+}
+
+/**
+ * Where the picker starts: the line they never went below.
+ *
+ * So the chart opens fully lit, and the first thing a reader sees is the claim that holds
+ * rather than one they have to go looking for.
+ */
+export function defaultLine(values = []) {
+  return values.length ? Math.max(1, floorOf(values)) : null;
 }
 
 /**

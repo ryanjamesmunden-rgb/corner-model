@@ -345,30 +345,7 @@ export default function FixtureDetail() {
             <div className="px-4 py-3 border-b border-border flex items-center gap-2 flex-wrap">
               <TrendingUp className="h-4 w-4 text-muted-foreground" />
               <h3 className="font-head font-semibold text-sm">{g.label}</h3>
-              {/* THE SCROLLER, and it governs the whole card. A slider rather than tabs
-                  because the useful question is how the claim MOVES as the window shortens —
-                  a run that survives down to the last three is a different thing from one
-                  that only exists over ten, and tabs make you compare two snapshots from
-                  memory while a drag shows it. */}
-              {(() => {
-                const pool = (g.team?.recent || []).filter((x) => x.home === g.venue).length;
-                const max = Math.max(MIN_WINDOW, pool);
-                const w = winFor(g.key, pool);
-                if (pool <= MIN_WINDOW) return null;
-                return (
-                  <div className="ml-auto flex items-center gap-2">
-                    <span className="text-[10px] uppercase tracking-wider text-muted-foreground
-                                     whitespace-nowrap">
-                      Last <span className="font-mono-data text-foreground">{w}</span>
-                    </span>
-                    <input
-                      type="range" min={MIN_WINDOW} max={max} step={1} value={w}
-                      data-testid={`window-${g.key}`}
-                      aria-label={`How many recent games to count — currently ${w}`}
-                      onChange={(e) => setWindows({ ...windows, [g.key]: Number(e.target.value) })}
-                      className="w-24 accent-primary cursor-pointer"
-                    />
-                  </div>
+
                 );
               })()}
             </div>
@@ -418,16 +395,18 @@ export default function FixtureDetail() {
                         </span>
                       </td>
                       <td className="px-3 py-2 w-full">
-                        {/* THE GAMES, NOT A PERCENTAGE BAR. A bar filled to 80% says eight
-                            in ten and nothing else; ten bars say WHICH eight — whether the
-                            two misses were the last two or last April, and whether the hits
-                            cleared the line comfortably or scraped it. Same chart language
-                            as the panel below, which is the point: they were the same
-                            numbers drawn two different ways. */}
+                        {/* THE BANDED BAR, PUT BACK. A per-game chart was tried here and it
+                            was wrong twice over: it drew the same ten games the panel below
+                            already draws, and it drew them in brand blue on a table where
+                            COLOUR MEANS RELIABILITY — green through amber to red. A blue bar
+                            in that column says nothing about which band the line is in, which
+                            is the one thing this column is for. */}
                         {pct == null ? <span className="text-muted-foreground text-xs">—</span> : (
                           <div className="flex items-center gap-2">
                             <span className={`${c.text} text-xs font-semibold w-9 shrink-0`}>{hit}/{played.length}</span>
-                            <LineGames games={played} line={plus} />
+                            <div className="h-1.5 rounded-full bg-white/5 overflow-hidden flex-1 min-w-[28px] max-w-[150px]">
+                              <div className={`h-full rounded-full ${c.bar}`} style={{ width: `${pct}%` }} />
+                            </div>
                             <span className={`${c.text} text-xs w-8 text-right`}>{pct}%</span>
                           </div>
                         )}
@@ -491,7 +470,8 @@ export default function FixtureDetail() {
             <TeamBreakdown team={g.team} title={g.label} highlight={g.key} embedded
                            fixture={fixture} leagueName={data.league_name}
                            window={winFor(g.key, (g.team?.recent || [])
-                             .filter((x) => x.home === g.venue).length)} />
+                             .filter((x) => x.home === g.venue).length)}
+                           onWindow={(n) => setWindows({ ...windows, [g.key]: n })} />
           </div>
         ))}
       </div>
@@ -553,40 +533,6 @@ export default function FixtureDetail() {
 // and it has to read differently from "you have not typed a price yet", which is also a
 // blank. A dash for both would make a locked board look like an empty one, and the visitor
 // would conclude the site has nothing rather than that it is holding something back.
-// THE GAMES BEHIND ONE LADDER LINE, at a glance size.
-//
-// This replaced a progress bar filled to a percentage, and the difference is the whole point:
-// 80% says eight in ten, ten bars say WHICH eight — whether the misses were the last two
-// games or last April, and whether the hits cleared comfortably or scraped it. It is the same
-// chart language as the big panel further down the card, because the two were the same
-// numbers drawn two different ways and a reader had to hold one in their head to read the
-// other.
-//
-// HEIGHT IS THE CORNER COUNT, scaled across the row's own games AND the line — scaling to the
-// bars alone would put the threshold off the top of a row where every game cleared it
-// comfortably, which is the row most worth reading.
-function LineGames({ games, line }) {
-  const values = (games || []).map((x) => x.won).filter((v) => typeof v === "number");
-  if (!values.length) return <span className="text-muted-foreground text-xs">—</span>;
-  const peak = Math.max(...values, line, 1);
-  // Oldest on the LEFT, matching the chart below and the distribution above it. `recent`
-  // arrives newest-first, so the row is reversed here rather than in three places.
-  const bars = values.slice().reverse();
-  return (
-    <span className="flex items-end gap-[2px] h-5 flex-1 min-w-[28px] max-w-[150px]"
-          title={`${bars.length} games, oldest first — lit where they reached ${line}+`}>
-      {bars.map((v, i) => (
-        <span key={i} className="flex-1 min-w-[3px] flex flex-col justify-end h-full">
-          <span
-            className={`w-full rounded-sm ${v >= line ? "bg-primary" : "bg-slate-600/70"}`}
-            style={{ height: `${Math.max(12, (v / peak) * 100)}%` }}
-          />
-        </span>
-      ))}
-    </span>
-  );
-}
-
 function Locked() {
   return (
     <span className="text-muted-foreground/70" title="The model's price and edge are for members">
@@ -918,7 +864,7 @@ const Metric = ({ label, value, accent }) => (
 );
 
 function TeamBreakdown({ team, title, highlight, embedded = false, fixture, leagueName,
-                        window: sharedWindow }) {
+                        window: sharedWindow, onWindow }) {
   const [split, setSplit] = useState(highlight);
   const recentAll = team.recent || [];
   const filtered = recentAll.filter((m) => split === "overall" || (split === "home" ? m.home : !m.home));
@@ -933,13 +879,6 @@ function TeamBreakdown({ team, title, highlight, embedded = false, fixture, leag
   const activeCount = clampWindow(sharedWindow, filtered.length);
   const games = filtered.slice(0, activeCount);
   const fmtDate = (d) => new Date(d).toLocaleDateString(undefined, { month: "short", day: "numeric" });
-  // goal-form summary over the games currently shown; games without goal data are left out
-  const withGoals = games.filter((m) => m.gf != null && m.ga != null);
-  const scored = withGoals.filter((m) => m.gf >= 1).length;
-  const over25 = withGoals.filter((m) => m.gf + m.ga >= 3).length;
-  const avgGoals = withGoals.length ? withGoals.reduce((s, m) => s + m.gf + m.ga, 0) / withGoals.length : null;
-  const fhKnown = games.filter((m) => m.fh != null);
-  const fhg = fhKnown.filter((m) => m.fh).length;
   const resultTone = (m) =>
     m.gf > m.ga ? "text-emerald-400" : m.gf < m.ga ? "text-red-400" : "text-zinc-400";
   // EMBEDDED MEANS "the card already exists and already names this team". Merged under the
@@ -951,10 +890,30 @@ function TeamBreakdown({ team, title, highlight, embedded = false, fixture, leag
     <Wrap {...wrapProps}>
       <div className={`px-4 py-3 flex items-center gap-3 ${embedded ? "border-t" : "border-b"} border-border`}>
         {embedded
-          ? <span className="text-[10px] uppercase tracking-wider text-muted-foreground flex-1">
-              The games behind it
+          ? <span className="text-[10px] uppercase tracking-wider text-muted-foreground
+                             whitespace-nowrap" data-testid={`bd-count-${highlight}`}>
+              Last <span className="font-mono-data text-foreground">{activeCount}</span>
             </span>
           : <h3 className="font-head font-semibold text-sm flex-1">{title}</h3>}
+        {/* THE SCROLLER LIVES HERE, NOT IN THE CARD HEADER. It was at the top of the card,
+            which on a phone is a screen and a half above the chart it governs — so the chart
+            read as "Last 5" with no control anywhere near it, and the only way to find the
+            toggle was to scroll back up past the whole price ladder. One control, beside the
+            games it changes.
+
+            A slider rather than tabs because the useful question is how the claim MOVES as
+            the window shortens: a run that survives down to the last three is a different
+            thing from one that only exists over ten. */}
+        {embedded && onWindow && filtered.length > MIN_WINDOW && (
+          <input
+            type="range" min={MIN_WINDOW} max={filtered.length} step={1} value={activeCount}
+            data-testid={`window-${highlight}`}
+            aria-label={`How many recent games to show — currently ${activeCount}`}
+            onChange={(e) => onWindow(Number(e.target.value))}
+            className="w-20 accent-primary cursor-pointer"
+          />
+        )}
+        <span className="flex-1" />
         <span
           data-testid={`bd-samples-${highlight}`}
           className={`text-[10px] px-2 py-0.5 rounded border font-mono-data ${team.real_samples >= 5 ? "bg-emerald-500/15 text-emerald-400 border-emerald-500/30" : "bg-amber-500/15 text-amber-400 border-amber-500/30"}`}
@@ -981,18 +940,6 @@ function TeamBreakdown({ team, title, highlight, embedded = false, fixture, leag
       <ShotBlock feats={team.features?.[split]} intent={team.intent?.[split]}
         highlight={highlight} split={split} />
 
-      {/* Per-game breakdown */}
-      <div className="px-4 py-2.5 border-t border-border flex items-center gap-3">
-        <span className="text-[10px] uppercase tracking-wider text-muted-foreground flex-1">Recent games ({split})</span>
-        {/* NO WINDOW CONTROL HERE — the card's scroller owns it. This only says what it is
-            currently showing, because a number with no control beside it reads as a label
-            rather than as something that is still changing under the slider above. */}
-        <span className="text-[10px] uppercase tracking-wider text-muted-foreground
-                         font-mono-data" data-testid={`bd-count-${highlight}`}>
-          Last {activeCount}
-        </span>
-      </div>
-
       {/* WHAT HELD IN EVERY ONE OF THOSE GAMES, before the table they would have to work
           it out from. Everything here is already in the rows below — which is exactly the
           problem: judging whether a side reliably clears 5 means reading a column
@@ -1002,14 +949,10 @@ function TeamBreakdown({ team, title, highlight, embedded = false, fixture, leag
                    split={split} windowLabel={`last ${activeCount} games`}
                    fixture={fixture} leagueName={leagueName}
                    currentSeason={team.current_season} />
-      {withGoals.length > 0 && (
-        <div className="px-4 pb-2.5 flex flex-wrap gap-2" data-testid={`bd-goalform-${highlight}`}>
-          <GoalChip label={`Scored in ${scored}/${withGoals.length}`} strong={scored >= withGoals.length * 0.7} />
-          {fhKnown.length > 0 && <GoalChip label={`FHG in ${fhg}/${fhKnown.length}`} strong={fhg >= fhKnown.length * 0.6} />}
-          <GoalChip label={`${avgGoals.toFixed(1)} goals/g`} strong={avgGoals >= 2.8} />
-          <GoalChip label={`O2.5 in ${over25}/${withGoals.length}`} strong={over25 >= withGoals.length * 0.6} />
-        </div>
-      )}
+      {/* THE GOAL CHIPS ARE GONE, and so is the goal-profile panel that followed the table.
+          Four goals summaries and a fifth panel, on a card about CORNERS — and the table
+          below prints every score they were computed from. A reader hunting the corner
+          numbers had to scroll past all of it. */}
       <div className="overflow-x-auto">
       <table className="w-full">
         <thead>
@@ -1083,7 +1026,6 @@ function TeamBreakdown({ team, title, highlight, embedded = false, fixture, leag
         </tbody>
       </table>
       </div>
-      <GoalDetail profile={team.goal_profile?.[split]} highlight={highlight} split={split} />
     </Wrap>
   );
 }

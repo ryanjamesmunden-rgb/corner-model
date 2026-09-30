@@ -329,9 +329,12 @@ async def ledger_view(league_id=None):
 
 
 async def replay_view(league_id=None, top_n=TOP_N):
-    from measure_chase_board import build_spots
+    # The fetch and the replay are separate now, so the same replay can be run over the
+    # synthetic null. Nothing changes here except that this caller does the load itself.
+    from measure_chase_board import build_spots, load_matches
 
-    spots, matches = await build_spots(league_id)
+    matches = await load_matches(league_id)
+    spots = build_spots(matches)
     print(f"\n{'=' * 78}\nTHE REPLAY — the same model over every cached fixture")
     print(f"{'=' * 78}")
     if not matches:

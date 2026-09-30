@@ -79,12 +79,31 @@ about ESTIMATION, not about finding mispriced games: it says lambda is noisy and
 consistency knows something lambda missed. The fix that implies is folding venue form
 into lambda, not betting the top of the board harder.
 
+RE-OPENED ONCE, FOR THE CONCEDED ANGLE (2026-09-30). The site now surfaces a CONCEDED
+streak — a defence that keeps shipping 5+ corners, with the bet going to whoever plays them
+next — so the question is whether that ordering finds spots the model underrates.
+
+It is NOT orthogonal to lambda's mean: the opponent's conceded rate is already an input to
+model_lambda, and the mean version of this died here as `opp_conc_delta`. What is left is
+SHAPE — how often they conceded the line, and whether the run is unbroken — which a fixed
+NB_R=11 cannot hold. That is `consistency_only`'s bet pointed at the defence, so it inherits
+`consistency_only`'s problem: a floor that the RANDOM control does not measure.
+
+AND THAT FLOOR WAS A COMMENT. `consistency_only` came back +7.9 against a control near
+zero, which read as a finding until it was checked against synthetic data with no edge by
+construction, where it still produced 7.5. That 7.5 has sat in this docstring ever since and
+NOTHING IN THE REPO COULD REPRODUCE IT — the number deciding whether a candidate was real
+was prose. It is measured now: every run also replays itself over synthetic data where every
+team has one fixed true rate, and prints each ranking against the floor measured on that same
+sample. See synthesise() and ESTIMATOR_FAMILY.
+
 Two views:
   1. Buckets over every scored row — is there a gradient at all?
   2. Top-N per matchday — what the board and the Daily 2 ledger actually do.
 
 Run: python measure_chase_board.py
      python measure_chase_board.py --league eng-pl --top 2
+     python measure_chase_board.py --no-null      # skips the floor; spreads then unreadable
 """
 import asyncio
 import os
@@ -96,7 +115,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 from motor.motor_asyncio import AsyncIOMotorClient
 
-from server import NB_R, V3_BLOCKED_WEIGHT, model_lambda, nb_ge
+from server import NB_R, V3_BLOCKED_WEIGHT, model_lambda, nb_ge, nb_pmf
 
 ROOT = Path(__file__).parent
 load_dotenv(ROOT / ".env")
@@ -115,18 +134,45 @@ def avg(d):
     return sum(d) / len(d) if d else 0.0
 
 
+def _run_from_end(values, line):
+    """The unbroken run of values >= line, counted back from the most recent.
+
+    FROM THE END, because that is what a streak is. These deques are appended
+    chronologically, so the newest game is last — counting from the front would measure a
+    run that ENDED some time ago and report it as one running into this fixture, which is
+    the difference between the angle and a historical curiosity.
+    """
+    run = 0
+    for v in reversed(list(values)):
+        if v < line:
+            break
+        run += 1
+    return run
+
+
 def rate(hits, n):
     return (hits / n * 100) if n else 0.0
 
 
-async def build_spots(league_id=None, window=WINDOW, min_games=MIN_GAMES):
-    """Replay every past fixture as the chase board would have seen it beforehand."""
+async def load_matches(league_id=None):
+    """Every cached finished fixture, oldest first."""
     q = {} if not league_id or league_id == "all" else {"league_id": league_id}
     matches = await db.fixture_stats.find(q, {"_id": 0}).to_list(60000)
     matches = [m for m in matches if m.get("date")]
     matches.sort(key=lambda m: m["date"])
+    return matches
+
+
+def build_spots(matches, window=WINDOW, min_games=MIN_GAMES):
+    """Replay every past fixture as the chase board would have seen it beforehand.
+
+    TAKES THE MATCHES RATHER THAN FETCHING THEM, so the identical replay can be run over
+    the real data and over the synthetic null. Two copies of this loop would be two
+    slightly different measurements, and the whole point of the null is that it is the same
+    measurement on data with no edge in it.
+    """
     if not matches:
-        return [], matches
+        return []
 
     shots = [m.get(f"{s}_shots", 0) for m in matches for s in ("home", "away")]
     lg_shots = (sum(shots) / len(shots)) if shots else 0.0
@@ -209,6 +255,34 @@ async def build_spots(league_id=None, window=WINDOW, min_games=MIN_GAMES):
                 # consistency alone — never tested standalone; `no_consistency` only ever
                 # removed it, which is not the same experiment.
                 "consistency_only": consistency,
+                # --- the conceded-run candidates ---
+                # WHAT IS BEING ASKED. The site now surfaces a CONCEDED streak: a defence
+                # that keeps shipping 5+ corners, and the bet is whoever plays them next.
+                # These are that angle as a ranking — does knowing the opponent has
+                # conceded THIS spot's line lately find spots the model underrates?
+                #
+                # AND THEY ARE NOT ORTHOGONAL TO LAMBDA'S MEAN. The opponent's conceded
+                # rate is already an INPUT to lambda (model_lambda's second argument), so
+                # the mean version of this was tested as `opp_conc_delta` and came back
+                # flat. What is left is SHAPE: how often they conceded the line, and
+                # whether the run is unbroken — which a fixed NB_R=11 cannot hold. That is
+                # the same bet `consistency_only` made, pointed at the defence, which is
+                # why it carries the same known noise floor (see NOISE_FAMILY below).
+                #
+                # opp_conc_consistency: the direct analogue of `consistency`, on the
+                # opponent's conceding, on the venue they are playing.
+                "opp_conc_consistency": (
+                    sum(1 for c in opp_vpool if c >= line) / len(opp_vpool)
+                    if len(opp_vpool) >= MIN_VENUE_GAMES else 0.0),
+                # opp_conc_run: the site's own definition — the UNBROKEN run of conceding
+                # the line, counted back from their most recent game. A 5-from-5 and a
+                # 3-then-miss-then-2 are the same fraction and different streaks, and the
+                # board sells the streak.
+                "opp_conc_run": (_run_from_end(opp_vpool, line)
+                                 if len(opp_vpool) >= MIN_VENUE_GAMES else 0),
+                # Coverage, so a candidate scored 0 on a thin opponent pool is counted
+                # rather than quietly sitting in the bottom bucket as if it were measured.
+                "opp_pool": len(opp_vpool),
                 # slack: how far lambda sits above the line it was rounded to. The
                 # probability does capture this, so a flat result is EXPECTED — it is here
                 # as a sanity anchor, not a candidate.
@@ -234,7 +308,7 @@ async def build_spots(league_id=None, window=WINDOW, min_games=MIN_GAMES):
             vca[(team, s)].append(m.get(f"{other}_corners") or 0)
             vsf[(team, s)].append(m.get(f"{s}_shots") or 0)
             vfh[(team, s)].append(1 if (m.get(f"{s}_fh_goals") or 0) >= 1 else 0)
-    return spots, matches
+    return spots
 
 
 # Every ordering scored, in both views. The first four are already falsified (all flat
@@ -246,13 +320,106 @@ RANKINGS = [
     ("lambda_only", "lambda_only — no chase, no consistency [known flat]"),
     ("no_opp_fh", "no_opp_fh — falsified opponent term removed [known flat]"),
     ("no_consistency", "no_consistency — last-5 term removed [known flat]"),
-    ("venue_delta", "venue_delta — venue form vs the team's own average [CANDIDATE]"),
-    ("opp_conc_delta", "opp_conc_delta — opponent conceding more on this venue [CANDIDATE]"),
-    ("consistency_only", "consistency_only — last-5 hit rate alone [CANDIDATE]"),
+    ("venue_delta", "venue_delta — venue form vs the team's own average [known artifact]"),
+    ("opp_conc_delta", "opp_conc_delta — opponent conceding more on this venue [known flat]"),
+    ("consistency_only", "consistency_only — last-5 hit rate alone [known: floor-bound]"),
+    ("opp_conc_consistency",
+     "opp_conc_consistency — opponent conceded the line, last 5 on venue [CANDIDATE]"),
+    ("opp_conc_run",
+     "opp_conc_run — opponent's UNBROKEN conceded run at the line [CANDIDATE]"),
     ("depth", "depth — games behind the estimate [diagnostic, argues for a bar]"),
     ("slack", "slack — lambda above the line [anchor, flat is EXPECTED]"),
     ("RANDOM", "RANDOM — control, must be flat"),
 ]
+
+# WHICH BASELINE EACH RANKING HAS TO BEAT, and this is the whole reason the conceded
+# candidates could not simply be added and read off.
+#
+# The RANDOM control measures ONE kind of noise: sampling. A shuffled score separates the
+# buckets by nothing because it correlates with nothing. But a ranking built from a team's
+# RECENT REALISED COUNTS is not in that family — it correlates with the true rate, and
+# lambda is an estimate of the true rate from a 10-game window, so such a ranking can
+# separate the buckets with no market edge whatsoever. It is correcting the ESTIMATE, not
+# finding a mispriced game.
+#
+# That is what happened to `consistency_only`: +7.9 against a RANDOM floor near zero, which
+# read as a finding until it was checked against synthetic data with NO edge by
+# construction, where it still produced 7.5. The file has carried that 7.5 in prose ever
+# since, and NOTHING IN THE REPO COULD REPRODUCE IT — so the number deciding whether a
+# candidate is real was a comment. `--null` now measures it, on this same sample.
+#
+# The conceded candidates are in that family by construction: both read the opponent's
+# recent realised conceded counts, and the opponent's conceded rate is already an input to
+# lambda. So they must clear the NULL floor, not the RANDOM one.
+ESTIMATOR_FAMILY = {"consistency_only", "venue_delta", "opp_conc_delta",
+                    "opp_conc_consistency", "opp_conc_run", "depth"}
+
+
+def _nb_sample(lam, rng, cap=40):
+    """One draw from the model's OWN distribution at mean `lam`, by inverse CDF.
+
+    Inverse CDF off nb_pmf rather than a library sampler, deliberately: the null has to be
+    drawn from exactly the distribution the model prices with, or the floor it measures
+    belongs to some other model. No new dependency either.
+    """
+    u = rng.random()
+    cum = 0.0
+    for k in range(cap):
+        cum += nb_pmf(k, lam, NB_R)
+        if u <= cum:
+            return k
+    return cap
+
+
+def synthesise(matches, seed):
+    """The same fixtures with the corner counts redrawn — NO EDGE BY CONSTRUCTION.
+
+    WHAT THIS IS FOR. A ranking built from recent realised counts can separate the buckets
+    with no market edge at all, because it corrects the noise in a lambda estimated from
+    ten games. To tell that apart from a real finding you need the same measurement on data
+    where a real finding is impossible, and this builds it.
+
+    HOW. Every team is given ONE fixed true attack rate and ONE fixed true concede rate,
+    taken from their real full-sample averages so the spread across teams stays realistic.
+    Each match's corners are then drawn from the model's own NB at the mean production
+    would use — (true attack + opponent's true concede) / 2. Nothing about a team varies
+    over time, so there is nothing for a ranking to discover: any bucket separation it
+    produces is estimation error, and that number is the floor.
+
+    THE SHOTS AND FIRST-HALF GOALS ARE LEFT REAL, and that is conservative in the right
+    direction. They feed lambda but no longer correlate with the redrawn corners, so lambda
+    here is NOISIER than in production — which makes the floor higher, so a candidate has a
+    HARDER bar to clear rather than an easier one.
+    """
+    rng = random.Random(seed)
+    cf, ca = defaultdict(list), defaultdict(list)
+    for m in matches:
+        for side, other in (("home", "away"), ("away", "home")):
+            tid = m.get(f"{side}_id")
+            if tid is None:
+                continue
+            if m.get(f"{side}_corners") is not None:
+                cf[tid].append(m[f"{side}_corners"])
+            if m.get(f"{other}_corners") is not None:
+                ca[tid].append(m[f"{other}_corners"])
+    pool = [c for v in cf.values() for c in v]
+    league = (sum(pool) / len(pool)) if pool else 5.0
+    attack = {t: (avg(v) or league) for t, v in cf.items()}
+    concede = {t: (avg(v) or league) for t, v in ca.items()}
+
+    out = []
+    for m in matches:
+        h, a = m.get("home_id"), m.get("away_id")
+        if h is None or a is None:
+            out.append(m)
+            continue
+        row = dict(m)
+        row["home_corners"] = _nb_sample(
+            (attack.get(h, league) + concede.get(a, league)) / 2, rng)
+        row["away_corners"] = _nb_sample(
+            (attack.get(a, league) + concede.get(h, league)) / 2, rng)
+        out.append(row)
+    return out
 
 
 def summarise(rows):
@@ -301,16 +468,66 @@ def print_top_n(spots, key, label, top_n):
     return s
 
 
-async def run(league_id=None, top_n=TOP_N, window=WINDOW, min_games=MIN_GAMES):
-    spots, matches = await build_spots(league_id, window, min_games)
+def spreads_for(spots, show=True):
+    """Every ranking's top-minus-bottom residual over these spots."""
+    rng = random.Random(CONTROL_SEED)
+    for r in spots:
+        r["RANDOM"] = rng.random()
+    out = {}
+    for key, label in RANKINGS:
+        out[key] = print_buckets(spots, key, label) if show else _spread(spots, key)
+    return out
+
+
+def _verdict(key, spread, floor, have_null):
+    """What this spread means, against the floor that applies to it.
+
+    THE SIGN IS NOT DECORATION, and reading it off `abs()` is how a smoke test caught this
+    file claiming a -13.7 spread had "cleared its floor by +7.4". The claim a ranking makes
+    is that its TOP bucket beats its BOTTOM one, so only a positive spread can support it.
+    A large negative spread is the ordering inverted — the worst spots on top — which is
+    never a reason to bet the top of the list and usually means the score's sign is wrong.
+    """
+    if key == "RANDOM":
+        return "control"
+    if not have_null and key in ESTIMATOR_FAMILY:
+        return "no null measured — unreadable"
+    bar = floor + 1.0
+    if spread > bar:
+        return f"clears its floor ({floor:.1f}) by {spread - floor:+.1f}"
+    if spread < -bar:
+        return f"INVERTED past its floor ({floor:.1f}) — worst spots on top, not a finding"
+    return f"AT THE FLOOR ({floor:.1f}) — not a finding"
+
+
+def _spread(spots, key):
+    ranked = sorted(spots, key=lambda r: r[key], reverse=True)
+    size = len(ranked) // BUCKETS
+    if not size:
+        return 0.0
+    top, bottom = summarise(ranked[:size]), summarise(ranked[-size:])
+    return (top["residual"] - bottom["residual"]) if top and bottom else 0.0
+
+
+async def run(league_id=None, top_n=TOP_N, window=WINDOW, min_games=MIN_GAMES,
+              with_null=True):
+    matches = await load_matches(league_id)
     if not matches:
         print("no cached fixtures — run sync_real.py first")
         return
+    spots = build_spots(matches, window, min_games)
     print(f"fixtures={len(matches)}  league={league_id or 'all'}  spots scored={len(spots)}")
     if not spots:
         print("no spot had enough history to rank — nothing to measure")
         return
     print(f"date range: {matches[0]['date'][:10]} -> {matches[-1]['date'][:10]}")
+    # COVERAGE OF THE CONCEDED CANDIDATES, named rather than assumed. Both score 0 where
+    # the opponent has too few venue games, and a candidate that is a constant on a third
+    # of the sample has a degenerate bottom bucket — which would look like a flat result
+    # for a reason that has nothing to do with the angle.
+    thin = sum(1 for r in spots if r["opp_pool"] < MIN_VENUE_GAMES)
+    print(f"opponent venue pool < {MIN_VENUE_GAMES} on {thin} of {len(spots)} spots "
+          f"({100.0 * thin / len(spots):.1f}%) — the conceded candidates score 0 there")
     overall = summarise(spots)
     print(f"\nevery spot: n={overall['n']}  avg line {overall['avg_line']:.2f}  "
           f"model {overall['model_prob']:.1f}%  actual {overall['hit_rate']:.1f}%  "
@@ -320,17 +537,39 @@ async def run(league_id=None, top_n=TOP_N, window=WINDOW, min_games=MIN_GAMES):
     if len(spots) < MIN_ROWS:
         print(f"\n!! {len(spots)} spots is thin (want >= {MIN_ROWS}); treat this as a smoke test.")
 
-    rng = random.Random(CONTROL_SEED)
-    for r in spots:
-        r["RANDOM"] = rng.random()
+    spreads = spreads_for(spots)
 
-    spreads = {}
-    for key, label in RANKINGS:
-        spreads[key] = print_buckets(spots, key, label)
+    # THE NULL: the same replay on data with no edge in it, so each candidate's spread can
+    # be read against a floor MEASURED on this sample rather than against a number quoted
+    # in a comment. See synthesise(); this is the half that was missing.
+    null = {}
+    if with_null:
+        print(f"\n{'=' * 78}")
+        print("NULL RUN — the same measurement on synthetic data with NO edge by construction")
+        print(f"{'=' * 78}")
+        print("Every team gets one fixed true attack and concede rate; corners are redrawn")
+        print("from the model's own NB at the mean production would use. Nothing varies over")
+        print("time, so there is nothing to discover — whatever a ranking separates here is")
+        print("estimation error, and that is the bar a candidate has to clear.")
+        null_spots = build_spots(synthesise(matches, CONTROL_SEED + 1), window, min_games)
+        if len(null_spots) < MIN_ROWS:
+            print(f"  !! only {len(null_spots)} null spots — the floor itself is noisy here")
+        null = spreads_for(null_spots, show=False) if null_spots else {}
+        print(f"  null spots scored: {len(null_spots)}")
 
     print("\ntop-minus-bottom residual (how much the ordering separates good from bad):")
-    for key, spread in spreads.items():
-        print(f"  {key:16} {spread:+.1f} pts")
+    ctrl_floor = abs(spreads.get("RANDOM", 0.0))
+    print(f"  {'ranking':22} {'real':>7} {'null':>7}  verdict")
+    for key, _ in RANKINGS:
+        spread = spreads.get(key, 0.0)
+        # WHICH FLOOR APPLIES IS THE WHOLE JUDGEMENT. A ranking that reads a team's recent
+        # realised counts is correcting a noisy lambda, so it must beat the NULL; one that
+        # correlates with nothing only has to beat the shuffled control.
+        floor = max(abs(null.get(key, 0.0)), ctrl_floor) if key in ESTIMATOR_FAMILY \
+            else ctrl_floor
+        verdict = _verdict(key, spread, floor, bool(null))
+        nullv = f"{null.get(key, 0.0):+7.1f}" if key in null else "      –"
+        print(f"  {key:22} {spread:+7.1f} {nullv}  {verdict}")
 
     n_days = len({r["date"] for r in spots})
     print(f"\ntop {top_n} per matchday — what the board and the Daily 2 ledger actually pick:")
@@ -341,12 +580,41 @@ async def run(league_id=None, top_n=TOP_N, window=WINDOW, min_games=MIN_GAMES):
     for key, _ in RANKINGS:
         print_top_n(spots, key, key, top_n)
 
-    ctrl = abs(spreads.get("RANDOM", 0.0))
-    print(f"\nREAD IT LIKE THIS: the control's spread ({spreads.get('RANDOM', 0):+.1f}) is the noise "
-          f"floor.\nA ranking is only doing something if its spread clearly exceeds it.")
-    if ctrl > 3:
-        print("!! The control separated the buckets by more than 3 points — the sample is too "
+    print(f"\n{'=' * 78}\nHOW TO READ IT\n{'=' * 78}")
+    print(f"  Two floors, and which one applies depends on the ranking.")
+    print(f"  RANDOM ({spreads.get('RANDOM', 0):+.1f}) is the sampling floor — it correlates with")
+    print(f"  nothing, so anything at that level is noise.")
+    if with_null and null:
+        print(f"  The NULL column is the ESTIMATOR floor: the same ranking on data with no edge")
+        print(f"  in it. A ranking built from recent realised counts can separate the buckets")
+        print(f"  with no edge at all, because it is correcting a lambda estimated from ten")
+        print(f"  games. Those rankings have to clear the null, not the control.")
+    if ctrl_floor > 3:
+        print("\n!! The control separated the buckets by more than 3 points — the sample is too "
               "noisy for\n!! any of these spreads to mean much.")
+
+    # THE ANSWER TO THE QUESTION THIS RUN WAS DISPATCHED FOR, in one line, so it cannot be
+    # read off the wrong column.
+    if with_null and null:
+        print(f"\n{'=' * 78}\nTHE CONCEDED ANGLE AS A RANKING\n{'=' * 78}")
+        for key in ("opp_conc_consistency", "opp_conc_run"):
+            spread = spreads.get(key, 0.0)
+            floor = max(abs(null.get(key, 0.0)), ctrl_floor)
+            # POSITIVE ONLY, for the reason in _verdict: the claim is that the top of the
+            # ordering beats the bottom, and a negative spread is the opposite of that
+            # rather than a stronger version of it.
+            gap = spread - floor
+            if gap > 1.0:
+                print(f"  {key}: {spread:+.1f} against a floor of {floor:.1f} — CLEARS IT by "
+                      f"{gap:+.1f}. Worth a second look before anything is built on it.")
+            elif spread < -(floor + 1.0):
+                print(f"  {key}: {spread:+.1f} against a floor of {floor:.1f} — INVERTED. The "
+                      f"ordering puts the worst spots on top, which is not an edge upside down;"
+                      f" check the score's sign before reading anything into it.")
+            else:
+                print(f"  {key}: {spread:+.1f} against a floor of {floor:.1f} — does NOT rank.")
+        print("  A conceded run stays a way to FIND a spot, not a reason to weight it. The site")
+        print("  labels it that way already; nothing here changes that.")
 
 
 def main():
@@ -357,7 +625,11 @@ def main():
 
     asyncio.run(run(league_id=opt("--league"), top_n=opt("--top", TOP_N, int),
                     window=opt("--window", WINDOW, int),
-                    min_games=opt("--min-games", MIN_GAMES, int)))
+                    min_games=opt("--min-games", MIN_GAMES, int),
+                    # The null doubles the replay. On by default because without it an
+                    # estimator-family spread cannot be read at all — which is how +7.9
+                    # was once mistaken for a finding.
+                    with_null="--no-null" not in args))
 
 
 if __name__ == "__main__":

@@ -2202,7 +2202,9 @@ TOOL_SCRIPTS = {"backfill_shots": "backfill_shots.py", "measure_features": "meas
                 "tune_totals": "tune_totals.py",
                 "measure_game_state": "measure_game_state.py"}
 TOOL_COOLDOWN = {"backfill_shots": 600, "measure_features": 120,
-                 "measure_chase_board": 120, "measure_calibration": 120,
+                 # Roughly doubled since the null run was added — it replays every cached
+                 # fixture twice, once real and once synthetic.
+                 "measure_chase_board": 300, "measure_calibration": 120,
                  "audit_settlement": 120, "audit_pick_lines": 120,
                  "audit_bets": 120, "audit_signups": 120,
                  "watchlist": 120,

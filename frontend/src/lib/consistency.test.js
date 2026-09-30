@@ -1,11 +1,16 @@
 import {
   RUNGS, consistencyHeadline, consistencyLabel, consistencyRow, consistencyRows,
   floorOf, hitsAt, ladderFor, valuesFor, SUBJECTS, gameBars, lineWindow, defaultLine,
+  windowsFor, WINDOWS,
 } from "./consistency";
 
 /** A game row exactly as the fixture endpoint's `recent` emits it. */
 const g = (won, conceded, extra = {}) => ({
   won, conceded, total: won + conceded, date: "2026-09-01T15:00:00Z",
+  // shots_for is on every real row; 14 is an ordinary count. A game row WITHOUT it is a
+  // separate case with its own test, because a missing shot count is stored as 0 and must
+  // not read as "took none".
+  shots_for: 14,
   opponent: "X", home: true, ...extra,
 });
 
@@ -118,8 +123,16 @@ describe("one subject's row", () => {
     expect(consistencyRows([])).toEqual([]);
   });
 
-  test("all three subjects come through for a normal set of games", () => {
+  test("every subject comes through for a normal set of games", () => {
     expect(consistencyRows([g(6, 3), g(5, 4)]).map((r) => r.key))
+      .toEqual(["won", "conceded", "total", "shots"]);
+  });
+
+  test("a subject with nothing reported is left out rather than drawn empty", () => {
+    // Shots are the case: a fixture set the provider never covered should produce three
+    // rows, not four with one of them blank.
+    const noShots = [{ won: 6, conceded: 3, total: 9 }, { won: 5, conceded: 4, total: 9 }];
+    expect(consistencyRows(noShots).map((r) => r.key))
       .toEqual(["won", "conceded", "total"]);
   });
 });
@@ -253,6 +266,59 @@ describe("the subject vocabulary", () => {
 
   test("each picks its own column off a game row", () => {
     const row = g(6, 3);
-    expect(SUBJECTS.map((s) => s.pick(row))).toEqual([6, 3, 9]);
+    expect(SUBJECTS.map((s) => s.pick(row))).toEqual([6, 3, 9, 14]);
+  });
+});
+
+
+describe("shots, where a zero is not a zero", () => {
+  const SHOTS = SUBJECTS.find((s) => s.key === "shots");
+
+  test("a real shot count comes through", () => {
+    expect(valuesFor([g(5, 4, { shots_for: 17 })], SHOTS.pick)).toEqual([17]);
+  });
+
+  test("a zero is treated as NOT REPORTED and dropped", () => {
+    // THE WHOLE REASON THIS SUBJECT NEEDS ITS OWN PICK. sync_real coerces a missing shot
+    // count to 0 because the live lambda consumes it and must not see null — so an
+    // uncovered fixture and a shotless one are the same value in the database. Drawn as a
+    // real zero it puts a floor of 0 on the panel and drags the claim down, and a side
+    // taking literally no shots in a match essentially does not happen.
+    expect(valuesFor([g(5, 4, { shots_for: 0 }), g(5, 4, { shots_for: 12 })], SHOTS.pick))
+      .toEqual([12]);
+  });
+
+  test("so does a missing one", () => {
+    expect(valuesFor([{ won: 5, conceded: 4 }], SHOTS.pick)).toEqual([]);
+  });
+
+  test("the floor is taken over the games that WERE reported", () => {
+    const games = [g(5, 4, { shots_for: 0 }), g(5, 4, { shots_for: 14 }),
+                   g(5, 4, { shots_for: 11 })];
+    const row = consistencyRow(games, SHOTS);
+    expect(row.n).toBe(2);
+    expect(row.every).toBe(11);
+  });
+});
+
+
+describe("which windows a split can honestly offer", () => {
+  test("a full history offers all of them", () => {
+    expect(windowsFor(new Array(20).fill(g(5, 4)))).toEqual([3, 5, 10, 20]);
+  });
+
+  test("fourteen games does not offer 'Last 20'", () => {
+    // A tab reading "Last 20" over fourteen games is a label that lies.
+    expect(windowsFor(new Array(14).fill(g(5, 4)))).toEqual([3, 5, 10]);
+  });
+
+  test("a thin venue split offers only what it has", () => {
+    expect(windowsFor(new Array(6).fill(g(5, 4)))).toEqual([3, 5]);
+  });
+
+  test("it always offers something, even on almost nothing", () => {
+    // Returning [] would leave the panel with no window selected and nothing drawn.
+    expect(windowsFor([g(5, 4)])).toEqual([3]);
+    expect(windowsFor([])).toEqual([3]);
   });
 });

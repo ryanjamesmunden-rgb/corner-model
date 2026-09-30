@@ -32,7 +32,32 @@ export const SUBJECTS = [
     pick: (m) => m.conceded, tone: "against" },
   { key: "total", label: "Match total", short: "Total", noun: "in the match",
     pick: (m) => m.total, tone: "total" },
+  // SHOTS, AND A ZERO HERE MEANS "NOT REPORTED" RATHER THAN "TOOK NONE.
+  //
+  // sync_real coerces a missing shot count to 0 on purpose — the live lambda consumes it
+  // and must not start seeing null — so an uncovered fixture and a shotless one are the
+  // same value in the database. They are not the same thing: a side taking literally zero
+  // shots in a match essentially does not happen, while the provider not reporting shots
+  // happens often. Drawn as a real zero it puts a floor of 0 on the panel and drags the
+  // whole claim down, which is the one number on this chart worth protecting.
+  //
+  // So the pick returns null for 0 and the game is dropped, exactly as an uncovered game
+  // is everywhere else. The cost is that a genuine 0-shot match would vanish; the benefit
+  // is that a dozen unreported ones do not silently rewrite the floor.
+  { key: "shots", label: "Shots", short: "Shots", noun: "shots",
+    pick: (m) => (m.shots_for ? m.shots_for : null), tone: "shots" },
 ];
+
+// The windows the panel offers, smallest first. A window is only offered when the split
+// actually holds that many games — "Last 20" over fourteen games is a label that lies, and
+// team history is capped at 20 so it will only ever appear on the overall split.
+export const WINDOWS = [3, 5, 10, 20];
+
+/** Which of WINDOWS this pool can honestly support, always at least the smallest. */
+export function windowsFor(pool = []) {
+  const fits = WINDOWS.filter((w) => pool.length >= w);
+  return fits.length ? fits : [WINDOWS[0]];
+}
 
 // How many rungs to print above the floor. Three is enough to show where reliability runs
 // out and short enough to stay one glanceable row on a phone.

@@ -92,6 +92,12 @@ export const fixtureShare = ({ fixtures = [], days = "3" }) => (limit) => {
 export const BEST_TEAMS_MARK = "\u{1F6A9}";   // 🚩 the board
 export const AVG_MARK = "\u{1F4C8}";          // 📈 the number
 
+// The two halves of a mismatch post. Opposed marks on purpose — the whole claim is that one
+// side does something and the other has it done to them, and two identical bullets would
+// flatten that into a list of two facts.
+export const MISMATCH_MARK = "\u{26A1}";      // ⚡ wins them
+export const CONCEDED_MARK = "\u{1F6A8}";     // 🚨 ships them
+
 /**
  * Best Corner Teams: flag, team, number. Nothing else on the line.
  *
@@ -1060,4 +1066,32 @@ export const angleMenu = (opts = {}) => {
   // One row per section and still too long. Cannot happen with real rows, and returning a
   // message that cannot be sent would be worse than returning none.
   return { text: "", items: [] };
+};
+
+/**
+ * THE MISMATCH, as a Telegram/X caption.
+ *
+ * Built to go WITH the image rather than describe it: the picture carries the bars and the
+ * fixture, so the text carries the claim in words for anyone reading with images off, and
+ * the context a channel post needs — the day, the league, the kick-off.
+ *
+ * ONE SHARED LINE, BOTH HALVES. Quoting each side at its own best line would read stronger
+ * and mean less, because the two halves would stop being about the same bet. Same rule the
+ * panel follows.
+ *
+ * NO PRICE, and nothing implying one. This is a record of games already played, which is
+ * exactly why it is safe to post: it gives away no model output, and it is checkable by
+ * anyone who wants to. The price stays on the site.
+ */
+export const mismatchShare = ({ mismatch, fixture = {}, leagueName = "" }) => (limit) => {
+  if (!mismatch) return "";
+  const head = postHeader({ fixture, leagueName }).join("\n");
+  const lines = [
+    `${MISMATCH_MARK} ${mismatch.attacker} — ${mismatch.line}+ corners in `
+      + `${mismatch.attack.hits} of their last ${mismatch.attack.n}`,
+    `${CONCEDED_MARK} ${mismatch.defender} — conceded ${mismatch.line}+ in `
+      + `${mismatch.defence.hits} of their last ${mismatch.defence.n}`,
+  ].slice(0, Math.max(2, limit || 2));
+  return `${head}\n\nThe mismatch:\n${lines.join("\n")}`
+    + `\n\nRecord only, not a tip. Lines and prices on the site.`;
 };

@@ -17,7 +17,17 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 const SIDES = [{ v: "home", l: "Home" }, { v: "away", l: "Away" }, { v: "overall", l: "Overall" }];
 // One model, two directions: overs clear the line, unders stay below it (exact line = void).
 const DIRECTIONS = [{ v: "over", l: "Over" }, { v: "under", l: "Under" }];
-const SUBJECTS = [{ v: "team", l: "Team corners" }, { v: "match", l: "Match total" }];
+// CONCEDED IS A SUBJECT, NOT A DIRECTION. "Conceded 5+" is not the under of "won 5+" —
+// it counts the corners going the other way, so it finds a leaky defence rather than a
+// quiet attack. It is the fastest route to the angle this board could not express:
+// a side that keeps shipping corners, and whoever is playing them next.
+//
+// THE BET IS THE OTHER TEAM'S. The run belongs to the defence; the slip is the opponent's
+// team corners, which is why every label for this subject names both sides.
+const SUBJECTS = [{ v: "team", l: "Team corners" },
+                  { v: "conceded", l: "Corners conceded" },
+                  { v: "match", l: "Match total" }];
+const SUBJECT_LABEL = { team: "Team corners", conceded: "Corners conceded", match: "Match total" };
 // Ordered loosest-first: the looser presets surface more teams (good for a wide
 // screenshot), the longer windows demand more history and return fewer but
 // better-evidenced runs. A team needs at least `window` real games to appear at all.
@@ -45,10 +55,21 @@ const LADDERS = {
   "over-match": [8, 9, 10, 11, 12, 13],
   "under-team": [3, 4, 5, 6, 7, 8],
   "under-match": [8, 9, 10, 11, 12],
+  // Same scale as a team's own corners: it is the same count, from the other end of the
+  // same match.
+  "over-conceded": [3, 4, 5, 6, 7],
+  "under-conceded": [3, 4, 5, 6, 7, 8],
 };
-const MIN_LINE = { team: 3, match: 7 };
+const MIN_LINE = { team: 3, match: 7, conceded: 3 };
 
-const lineLabel = (line, direction) => (direction === "under" ? `U ${line}` : `${line}+`);
+// THE CHIP HAS TO CARRY THE SUBJECT ON A CONCEDED ROW. "5+" beside a team's name reads
+// as that team's own corners everywhere else on this site, so an unmarked chip on a
+// conceded run is the same two characters meaning the opposite bet. "conc 5+" is the
+// smallest thing that cannot be misread at a glance.
+const lineLabel = (line, direction, subject) => {
+  const base = direction === "under" ? `U ${line}` : `${line}+`;
+  return subject === "conceded" ? `conc ${base}` : base;
+};
 const presetLabelOf = (v) => PRESETS.find((p) => p.v === v)?.l || v;
 const fmtDate = (d) => (d ? new Date(d).toLocaleDateString(undefined, { month: "short", day: "numeric" }) : "");
 
@@ -129,7 +150,7 @@ export default function StreakFinder({ leagueId }) {
   ].filter(Boolean).length;
   const filterSummary = [
     isUnder ? "Under" : "Over",
-    subject === "match" ? "Match total" : "Team corners",
+    SUBJECT_LABEL[subject] || SUBJECT_LABEL.team,
     SIDES.find((x) => x.v === side)?.l,
     presetLabelOf(preset),
   ].filter(Boolean).join(" · ") + (extras ? ` · +${extras}` : "");
@@ -255,7 +276,16 @@ export default function StreakFinder({ leagueId }) {
               </th>
               <th className="text-left font-medium px-2 py-1.5 sm:px-4 sm:py-2.5 hidden md:table-cell">Recent ({side})</th>
               <th className="text-left font-medium px-2 py-1.5 sm:px-4 sm:py-2.5">Next</th>
-              <th className="text-right font-medium px-2 py-1.5 sm:px-4 sm:py-2.5">{subject === "match" ? "Proj λ" : "Opp conc"}</th>
+              {/* The lambda's two inputs are the attacking side's rate and the defence it
+                  meets. On a CONCEDED run the attacker is the opponent, so this column
+                  is the streaking team's OWN leaky defence — the number the angle is
+                  about — and calling it "Opp conc" would name the wrong side. */}
+              <th className="text-right font-medium px-2 py-1.5 sm:px-4 sm:py-2.5"
+                  title={subject === "conceded"
+                    ? "What this team concedes — the defence their next opponent is meeting"
+                    : undefined}>
+                {subject === "match" ? "Proj λ" : subject === "conceded" ? "They conc" : "Opp conc"}
+              </th>
               <th className="text-right font-medium px-2 py-1.5 sm:px-4 sm:py-2.5">Model odds</th>
               <th className="text-right font-medium px-2 py-1.5 sm:px-4 sm:py-2.5">Edge</th>
               <th className="px-2 py-1.5 sm:px-4 sm:py-2.5"></th>
@@ -292,10 +322,11 @@ export default function StreakFinder({ leagueId }) {
                 </td>
                 <td className="px-2 py-1.5 sm:px-4 sm:py-2.5">
                   <span className={`inline-flex items-center gap-1 text-xs px-2 py-1 rounded border ${isSolid(r) ? SOLID : THIN}`}
-                    title={`${subject === "match" ? "Match total corners" : "Team corners"} — ${
+                    title={`${subject === "conceded" ? "Corners conceded — the bet is their opponent's team corners"
+                             : subject === "match" ? "Match total corners" : "Team corners"} — ${
                       isSolid(r) ? "solid: landed in 4 of every 5 settled games"
                                  : "thin: under 4 in 5, so treat it as a lead rather than a signal"}`}>
-                    {isUnder ? <TrendingDown className="h-3 w-3" /> : <Target className="h-3 w-3" />} {lineLabel(r.line, r.direction)}
+                    {isUnder ? <TrendingDown className="h-3 w-3" /> : <Target className="h-3 w-3" />} {lineLabel(r.line, r.direction, subject)}
                   </span>
                 </td>
                 <td className="px-2 py-1.5 sm:px-4 sm:py-2.5 whitespace-nowrap">
@@ -396,7 +427,7 @@ export default function StreakFinder({ leagueId }) {
                 <td className="px-2 py-1.5 sm:px-4 sm:py-2.5 text-right whitespace-nowrap">
                   {r.projection && r.projection.fair_odds ? (
                     <span className="text-foreground font-semibold"
-                      title={`Model: ${r.projection.prob.toFixed(1)}% to land ${lineLabel(r.line, r.direction)} (λ ${r.projection.lambda})`
+                      title={`Model: ${r.projection.prob.toFixed(1)}% to land ${lineLabel(r.line, r.direction, subject)} (λ ${r.projection.lambda})`
                         + (r.projection.void_prob ? ` · ${r.projection.void_prob.toFixed(1)}% void` : "")}>
                       {r.projection.fair_odds.toFixed(2)}
                     </span>

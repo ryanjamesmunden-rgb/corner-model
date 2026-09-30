@@ -41,7 +41,12 @@ const more = (total, limit) => (total > limit ? `\n+${total - limit} more on the
  */
 export const streakShare = ({ rows = [], subject, side }) => (limit) => {
   if (!rows.length) return "";
-  const what = subject === "match" ? "Match" : "Team";
+  // CONCEDED NEEDS ITS OWN HEADING, and the row body below needs the verb. Left on the
+  // "Team" default, a conceded board would post "Team corner streaks" over a list of
+  // leaky defences — every name in it read as an attacking run, which is the opposite
+  // bet. The heading is the only place a reader gets told which board this is.
+  const conceded = subject === "conceded";
+  const what = subject === "match" ? "Match" : conceded ? "Conceded" : "Team";
   const where = side === "overall" ? "" : ` in ${side} games`;
   const head = `${what} corner streaks running right now${where}:`;
   const lines = rows.slice(0, limit).map((r) => {
@@ -53,7 +58,10 @@ export const streakShare = ({ rows = [], subject, side }) => (limit) => {
     const run = Number(r.streak?.length);
     const tail = run >= 2 ? ` — ${run} in a row` : "";
     // The flag replaces the bullet rather than joining it — see flagBullet.
-    return `${flagBullet(r.league_id)} ${r.name}${line}${tail}`;
+    // "Brighton conc 5+" rather than "Brighton 5+": the run is the defence's and the bet
+    // is whoever plays them, so the verb is what stops the row reading as its own mirror.
+    const verb = conceded ? " conc" : "";
+    return `${flagBullet(r.league_id)} ${r.name}${verb}${line}${tail}`;
   });
   return `${head}\n${lines.join("\n")}${more(rows.length, limit)}`;
 };
@@ -209,7 +217,12 @@ export const fixtureStreakShare = ({ fixture = {}, streaks = [], form = [],
   const lines = streaks.slice(0, limit).map((s) => {
     // "Derby games 10+" for a match total, "Derby 6+" for that team's own corners — the
     // two are different claims and a reader has to be able to tell which is which.
-    const what = s.subject === "match" ? `${s.team} games ${s.line_label}` : `${s.team} ${s.line_label}`;
+    // "Derby games 10+" for a match total, "Derby 6+" for that team's own corners, and
+    // "Derby conc 6+" where the run is what they SHIP — three different claims, and the
+    // conceded one points at the other team's slip.
+    const what = s.subject === "match" ? `${s.team} games ${s.line_label}`
+      : s.subject === "conceded" ? `${s.team} conc ${s.line_label}`
+      : `${s.team} ${s.line_label}`;
     const mark = s.run >= FIRE_RUN ? "🔥 " : "";
     return `${mark}${what} corners — ${s.run} in a row`;
   });

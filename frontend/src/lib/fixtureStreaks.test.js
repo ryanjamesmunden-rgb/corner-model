@@ -136,3 +136,56 @@ describe("the header", () => {
     expect(streakHeadline([])).toBe("");
   });
 });
+
+
+// CORNERS CONCEDED. The run belongs to the defence; the bet belongs to whoever is playing
+// them. Every label on this subject has to carry that inversion, because the row otherwise
+// reads as its exact mirror — backing the side that has been kept quiet.
+describe("a conceded run", () => {
+  const conc = (over = {}) => ({
+    ...row("Brighton", { subject: "conceded", line: 5, run: 6, ...over }),
+    opponent: "Arsenal",
+  });
+
+  test("the subject survives instead of being normalised to 'team'", () => {
+    // THE SILENT FAILURE THIS REPLACED. `subject === "match" ? "match" : "team"` turned
+    // a conceded row into a team row, and `subjectLabel` then said "their own corners"
+    // over a leaky defence — the opposite claim, on a row that otherwise looks right.
+    expect(streakRow(conc()).subject).toBe("conceded");
+    expect(subjectLabel("conceded")).toBe("corners against them");
+  });
+
+  test("an unrecognised subject still falls back to team", () => {
+    expect(streakRow(row("X", { subject: "nonsense" })).subject).toBe("team");
+  });
+
+  test("the claim carries the verb", () => {
+    expect(streakRow(conc()).claim).toBe("Brighton concede 5+");
+  });
+
+  test("and the other subjects read as before", () => {
+    expect(streakRow(row("Derby", { line: 6 })).claim).toBe("Derby 6+");
+    expect(streakRow(row("Derby", { subject: "match", line: 10 })).claim).toBe("Derby 10+");
+  });
+
+  test("the detail names who actually wins those corners", () => {
+    expect(streakDetail(streakRow(conc()))).toContain("Arsenal to win them");
+  });
+
+  test("a row with no opponent says less rather than naming the wrong side", () => {
+    const noOpp = { ...conc() };
+    delete noOpp.opponent;
+    const r = streakRow(noOpp);
+    expect(r.opponent).toBeNull();
+    expect(streakDetail(r)).not.toContain("to win them");
+  });
+
+  test("it sorts and keys alongside the other subjects", () => {
+    const rows = fixtureStreaks([
+      row("Arsenal", { subject: "team", run: 9 }),
+      conc({ run: 6 }),
+    ]);
+    expect(rows.map((r) => r.run)).toEqual([9, 6]);
+    expect(new Set(rows.map((r) => r.key)).size).toBe(2);
+  });
+});

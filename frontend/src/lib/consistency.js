@@ -61,6 +61,27 @@ export const SUBJECTS = [
 // team history is capped at 20 so it will only ever appear on the overall split.
 export const WINDOWS = [3, 5, 10, 20];
 
+// The shortest window worth offering. Two games is a pair of results, not a window.
+export const MIN_WINDOW = 3;
+
+/**
+ * The window to actually use, given what the pool holds.
+ *
+ * ONE PLACE, because it is applied twice on a team card — once by the price ladder and once
+ * by the chart under it — and those two must never disagree about which games they mean.
+ * A chosen window larger than the pool SHRINKS to the pool rather than returning it
+ * unchanged: the alternative is a chart drawing four bars under a label reading "Last 10".
+ */
+export function clampWindow(chosen, pool, min = MIN_WINDOW) {
+  const max = Math.max(min, pool || 0);
+  // null AND undefined BOTH MEAN "not chosen", and null has to be said out loud because
+  // `Number(null)` is 0 and finite — so a card that had not been touched clamped its window
+  // to zero games and drew nothing. The same trap as the shots column, in the same file.
+  const chose = chosen !== null && chosen !== undefined && Number.isFinite(Number(chosen));
+  const want = chose ? Number(chosen) : Math.min(10, max);
+  return Math.max(1, Math.min(want, max, pool || max));
+}
+
 /** Which of WINDOWS this pool can honestly support, always at least the smallest. */
 export function windowsFor(pool = []) {
   const fits = WINDOWS.filter((w) => pool.length >= w);

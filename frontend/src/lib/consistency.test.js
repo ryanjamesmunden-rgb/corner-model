@@ -1,7 +1,7 @@
 import {
   RUNGS, consistencyHeadline, consistencyLabel, consistencyRow, consistencyRows,
   floorOf, hitsAt, ladderFor, valuesFor, SUBJECTS, gameBars, lineWindow, defaultLine,
-  windowsFor, WINDOWS, isPriorSeason, splitSeasons, thisSeasonOnly, seasonNote,
+  windowsFor, WINDOWS, clampWindow, MIN_WINDOW, isPriorSeason, splitSeasons, thisSeasonOnly, seasonNote,
 } from "./consistency";
 
 /** A game row exactly as the fixture endpoint's `recent` emits it. */
@@ -428,5 +428,39 @@ describe("where last season starts", () => {
   test("and silent when the window is all current", () => {
     expect(seasonNote(PLYMOUTH.slice(0, 5), 2026)).toBe("");
     expect(seasonNote([], 2026)).toBe("");
+  });
+});
+
+
+describe("the window a card actually uses", () => {
+  test("a chosen window inside the pool is kept", () => {
+    expect(clampWindow(5, 10)).toBe(5);
+  });
+
+  test("one larger than the pool SHRINKS to the pool", () => {
+    // THE CASE THAT MATTERS ON A TEAM CARD. The scroller sits on the ladder, which counts
+    // venue games; the chart under it can be on a split holding fewer. Returning 10 there
+    // draws four bars under a label reading "Last 10".
+    expect(clampWindow(10, 4)).toBe(4);
+  });
+
+  test("it defaults to ten, or the pool if that is smaller", () => {
+    expect(clampWindow(undefined, 20)).toBe(10);
+    expect(clampWindow(undefined, 6)).toBe(6);
+    expect(clampWindow(null, 6)).toBe(6);
+  });
+
+  test("a junk value falls back rather than producing NaN", () => {
+    // NaN as a slice length returns an empty array, which renders as a card with no chart
+    // and no error.
+    expect(clampWindow("nonsense", 8)).toBe(8);
+  });
+
+  test("an empty pool still returns a usable number", () => {
+    expect(clampWindow(10, 0)).toBeGreaterThanOrEqual(1);
+  });
+
+  test("the floor is three, because two results are not a window", () => {
+    expect(MIN_WINDOW).toBe(3);
   });
 });

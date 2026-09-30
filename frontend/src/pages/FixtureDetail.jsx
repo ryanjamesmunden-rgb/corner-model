@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, Fragment } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { toast } from "sonner";
 import {
-  ArrowLeft, TrendingUp, TrendingDown, ClipboardPaste, Flame, Shield, MapPin, Swords, Eye,
+  ArrowLeft, TrendingUp, TrendingDown, ClipboardPaste, Flame, Shield, MapPin, Swords,
   Lock, History, BarChart3, Video,
 } from "lucide-react";
 import StarButton from "@/components/StarButton";
@@ -13,6 +13,7 @@ import StoryButton from "@/components/StoryButton";
 import { renderFormStory, renderMismatchStory } from "@/lib/storyImage";
 import { canRecord, extFor, recordStoryVideo } from "@/lib/storyVideo";
 import { FORM_GAMES, formLabel, formRun } from "@/lib/formRun";
+import { anglePanel } from "@/lib/angleFactors";
 import { kickoffLabel } from "@/lib/kickoff";
 import { fixtureStreaks, streakDetail, streakHeadline } from "@/lib/fixtureStreaks";
 import { hasH2H, meetingRows, recordLine, summaryLine, unbeatenRows } from "@/lib/h2h";
@@ -553,7 +554,8 @@ export default function FixtureDetail() {
           seen a single number — so the first thing on the page was a reason to doubt a claim
           nobody had made yet. It belongs where it is useful: after the evidence and the
           price, as the last pass before backing something. */}
-      <KeyFactors factors={keyFactors} homeName={fixture.home_name} awayName={fixture.away_name} />
+      <DoesItLand factors={keyFactors} fixture={fixture} model={model}
+                 homeTeam={home_team} awayTeam={away_team} />
 
     </div>
   );
@@ -1640,16 +1642,6 @@ function TeamRead({ name, profile, where }) {
   );
 }
 
-// ----------------------------- What could change the game -----------------------------
-// A corner count is decided by who has to chase. The backed team scoring first is the main
-// way a corners-over dies; the opponent going a goal or a man down is the way it runs away.
-// These are measured from this team's own games — except the red-card row, which carries no
-// number because the provider data has no cards in it, and says so rather than implying one.
-const FACTOR_META = {
-  risk: { icon: TrendingDown, cls: "text-tone-under-fg border-tone-under/40 bg-tone-under/10", word: "Risk" },
-  boost: { icon: TrendingUp, cls: "text-tone-strong-fg border-tone-strong/40 bg-tone-strong/10", word: "Helps" },
-  watch: { icon: Eye, cls: "text-tone-streak-fg border-tone-streak/40 bg-tone-streak/10", word: "Watch" },
-};
 
 /**
  * The runs going into this game, biggest first.
@@ -1810,64 +1802,116 @@ function HeadToHead({ h2h, homeName, awayName }) {
   );
 }
 
-function KeyFactors({ factors, homeName, awayName }) {
-  const sides = [["home", homeName], ["away", awayName]].filter(([k]) => (factors[k] || []).length);
-  const [side, setSide] = useState(sides[0]?.[0] || "home");
-  if (!sides.length) return null;
-  const rows = factors[side] || [];
+// DOES THIS LINE LAND — what is for it and what is against it.
+//
+// THE PAGE ARGUED ABOUT THE GAME AND NEVER ABOUT THE BET. A reader could see "6+ corners"
+// priced and, further down, a list of things that might change the match — and had to join
+// the two up themselves. This takes the line and says which way each piece of evidence
+// points.
+//
+// TWO LISTS, NEVER A SCORE. Adding these up would be a new model with no measurement behind
+// it, and measure_chase_board spent a day showing that a plausible ordering of exactly this
+// class of evidence does not rank. Two lists let a reader weigh them; one number would be a
+// claim nobody checked.
+//
+// AND THE AGAINST SIDE IS THE POINT. A page that only lists reasons to bet is an advert. The
+// useful rows live on the other side: a record leaning on last season, a sample too thin to
+// carry a rate, a line sitting above what the model actually projects.
+function DoesItLand({ factors, fixture, model, homeTeam, awayTeam }) {
+  const sides = [
+    ["home", fixture.home_name, homeTeam, awayTeam],
+    ["away", fixture.away_name, awayTeam, homeTeam],
+  ];
+  const [side, setSide] = useState("home");
+  const active = sides.find(([k]) => k === side) || sides[0];
+  const [key, name, team, opp] = active;
+
+  // THE LINE THE MODEL ITSELF LEADS WITH for this side, so the panel argues about the bet
+  // the page is actually offering rather than one of its own choosing.
+  const market = (model.markets || [])
+    .filter((m) => m.group === key && m.line != null)
+    .sort((a, b) => Math.abs((a.line ?? 0) - (model.lambdas?.[key] ?? 0))
+                  - Math.abs((b.line ?? 0) - (model.lambdas?.[key] ?? 0)))[0];
+  const line = market ? Math.ceil(market.line) : null;
+
+  // The venue each side is playing, which is the split the ladder prices and the chart shows.
+  const games = (team?.recent || []).filter((m) => m.home === (key === "home"));
+  const oppGames = (opp?.recent || []).filter((m) => m.home === (key !== "home"));
+
+  const panel = anglePanel({
+    games, oppGames, line, lambda: model.lambdas?.[key],
+    currentSeason: team?.current_season, teamName: name,
+    oppName: key === "home" ? fixture.away_name : fixture.home_name,
+  }, factors[key] || []);
+
+  if (!panel.for.length && !panel.against.length) return null;
+
+  const column = (rows, tone, heading, testid) => (
+    <div className="flex-1 min-w-0" data-testid={testid}>
+      <p className={`text-[10px] uppercase tracking-wider mb-2 ${tone.head}`}>{heading}</p>
+      {rows.length === 0 ? (
+        <p className="text-xs text-muted-foreground">Nothing on this side.</p>
+      ) : (
+        <ul className="space-y-2">
+          {rows.map((f) => (
+            <li key={f.key} className={`rounded border px-2.5 py-2 ${tone.box}`}
+                data-testid={`land-${f.key}`}>
+              <p className="text-xs font-medium">{f.title}</p>
+              {f.detail && (
+                <p className="text-[11px] text-muted-foreground mt-0.5 leading-relaxed">
+                  {f.detail}
+                </p>
+              )}
+              {f.games != null && (
+                <p className="text-[10px] text-muted-foreground/70 mt-1 font-mono-data">
+                  from {f.games} game{f.games === 1 ? "" : "s"}
+                </p>
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
 
   return (
-    <section className="bg-card border border-border rounded-lg overflow-hidden" data-testid="key-factors">
+    <section className="bg-card border border-border rounded-lg overflow-hidden"
+             data-testid="does-it-land">
       <div className="px-4 py-3 border-b border-border flex items-center gap-2 flex-wrap">
         <Swords className="h-4 w-4 text-primary" />
-        <h3 className="font-head font-semibold text-sm">What could change this</h3>
-        {sides.length > 1 && (
-          <div className="ml-auto flex rounded-md bg-secondary p-0.5">
-            {sides.map(([k, label]) => (
-              <button key={k} data-testid={`kf-side-${k}`} onClick={() => setSide(k)}
-                className={`text-[11px] px-2 py-1 rounded transition-colors max-w-[110px] truncate ${
-                  side === k ? "bg-primary text-primary-foreground font-medium" : "text-muted-foreground"}`}>
-                {label}
-              </button>
-            ))}
-          </div>
-        )}
+        <h3 className="font-head font-semibold text-sm">
+          Does {line ? `${line}+` : "it"} land?
+        </h3>
+        <div className="ml-auto flex rounded-md bg-secondary p-0.5">
+          {sides.map(([k, label]) => (
+            <button key={k} data-testid={`land-side-${k}`} onClick={() => setSide(k)}
+              className={`text-[11px] px-2 py-1 rounded transition-colors max-w-[110px] truncate ${
+                side === k ? "bg-primary text-primary-foreground font-medium"
+                           : "text-muted-foreground"}`}>
+              {label}
+            </button>
+          ))}
+        </div>
       </div>
-      <ul className="divide-y divide-border">
-        {rows.map((f) => {
-          const m = FACTOR_META[f.kind] || FACTOR_META.watch;
-          const Icon = m.icon;
-          return (
-            <li key={f.key} className="px-4 py-3 flex gap-3" data-testid={`kf-${f.key}`}>
-              <span className={`shrink-0 h-6 w-6 rounded-full border grid place-items-center ${m.cls}`}>
-                <Icon className="h-3 w-3" />
-              </span>
-              <div className="min-w-0">
-                <p className="text-sm font-medium flex items-center gap-2 flex-wrap">
-                  {f.title}
-                  <span className={`text-[9px] uppercase tracking-wider px-1.5 py-0.5 rounded border ${m.cls}`}>
-                    {m.word}
-                  </span>
-                  {f.measured === false && (
-                    <span className="text-[9px] uppercase tracking-wider text-muted-foreground border border-border px-1.5 py-0.5 rounded">
-                      not in the data
-                    </span>
-                  )}
-                </p>
-                <p className="text-xs text-muted-foreground mt-1 leading-relaxed">{f.detail}</p>
-                {f.games != null && (
-                  <p className="text-[10px] text-muted-foreground/70 mt-1 font-mono-data">
-                    from {f.games} game{f.games === 1 ? "" : "s"}
-                  </p>
-                )}
-              </div>
-            </li>
-          );
-        })}
-      </ul>
+      <div className="px-4 py-3.5 flex flex-col sm:flex-row gap-4">
+        {column(panel.for,
+                { head: "text-tone-strong-fg",
+                  box: "border-tone-strong/30 bg-tone-strong/5" },
+                "Works for it", "land-for")}
+        {column(panel.against,
+                { head: "text-tone-under-fg",
+                  box: "border-tone-under/30 bg-tone-under/5" },
+                "Works against it", "land-against")}
+      </div>
+      {/* Said once, on the panel that most invites the opposite reading. */}
+      <p className="px-4 pb-3 text-[11px] text-muted-foreground">
+        Reasons, not a verdict — they are not weighed against each other, because an ordering
+        of this evidence was measured and did not rank.
+      </p>
     </section>
   );
 }
+
 
 // ----------------------------- Backing an angle -----------------------------
 // One tap on a market you have already priced. Everything except the stake is already on

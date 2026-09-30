@@ -265,8 +265,6 @@ export default function FixtureDetail() {
           numbers somebody came for. */}
       <HeadToHead h2h={data.h2h} homeName={fixture.home_name} awayName={fixture.away_name} />
 
-      <KeyFactors factors={keyFactors} homeName={fixture.home_name} awayName={fixture.away_name} />
-
       {/* THE BULK ENTRY BOX. This parser was written, complete, and never rendered —
           `handlePaste` had no caller, so filling a ladder meant eight separate inputs
           and eight round trips. Prices arrive from a bookmaker as a block of text, so
@@ -403,6 +401,13 @@ export default function FixtureDetail() {
             </table>
             </div>
             <BandKey note="Landed = how often this team hit the line in its own games on this venue. Colour follows that, not the model's probability." />
+            {/* THE EVIDENCE, IN THE SAME CARD AS THE PRICE IT SUPPORTS.
+                These were two sections a page apart showing the same thing twice: the
+                ladder's "Landed" column IS the consistency chart's hit count, and a reader
+                comparing them had to scroll past the match total, the post composer and a
+                shot panel to do it. One card per team now — price at the top, the games it
+                came from underneath, and the split tabs govern both. */}
+            <TeamBreakdown team={g.team} title={g.label} highlight={g.key} embedded />
           </div>
         ))}
       </div>
@@ -438,11 +443,13 @@ export default function FixtureDetail() {
         leagueName={data.league_name}
       />
 
-      {/* Team breakdowns */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-3 sm:gap-4">
-        <TeamBreakdown team={home_team} title={fixture.home_name} highlight="home" />
-        <TeamBreakdown team={away_team} title={fixture.away_name} highlight="away" />
-      </div>
+      {/* CAVEATS LAST, AND THAT IS THE ORDER THE RESEARCH IS DONE IN. This sat above the
+          prices, which asked a reader to weigh "they might get a red card" before they had
+          seen a single number — so the first thing on the page was a reason to doubt a claim
+          nobody had made yet. It belongs where it is useful: after the evidence and the
+          price, as the last pass before backing something. */}
+      <KeyFactors factors={keyFactors} homeName={fixture.home_name} awayName={fixture.away_name} />
+
     </div>
   );
 }
@@ -785,7 +792,7 @@ const Metric = ({ label, value, accent }) => (
   </div>
 );
 
-function TeamBreakdown({ team, title, highlight }) {
+function TeamBreakdown({ team, title, highlight, embedded = false }) {
   const [split, setSplit] = useState(highlight);
   const [count, setCount] = useState("5");
   const recentAll = team.recent || [];
@@ -808,10 +815,19 @@ function TeamBreakdown({ team, title, highlight }) {
   const fhg = fhKnown.filter((m) => m.fh).length;
   const resultTone = (m) =>
     m.gf > m.ga ? "text-emerald-400" : m.gf < m.ga ? "text-red-400" : "text-zinc-400";
+  // EMBEDDED MEANS "the card already exists and already names this team". Merged under the
+  // price ladder there is no second card and no second title — the wrapper and the heading
+  // would be a box inside a box with the team's name on both.
+  const Wrap = embedded ? Fragment : "div";
+  const wrapProps = embedded ? {} : { className: "bg-card border border-border rounded-lg overflow-hidden" };
   return (
-    <div className="bg-card border border-border rounded-lg overflow-hidden">
-      <div className="px-4 py-3 border-b border-border flex items-center gap-3">
-        <h3 className="font-head font-semibold text-sm flex-1">{title}</h3>
+    <Wrap {...wrapProps}>
+      <div className={`px-4 py-3 flex items-center gap-3 ${embedded ? "border-t" : "border-b"} border-border`}>
+        {embedded
+          ? <span className="text-[10px] uppercase tracking-wider text-muted-foreground flex-1">
+              The games behind it
+            </span>
+          : <h3 className="font-head font-semibold text-sm flex-1">{title}</h3>}
         <span
           data-testid={`bd-samples-${highlight}`}
           className={`text-[10px] px-2 py-0.5 rounded border font-mono-data ${team.real_samples >= 5 ? "bg-emerald-500/15 text-emerald-400 border-emerald-500/30" : "bg-amber-500/15 text-amber-400 border-amber-500/30"}`}
@@ -938,7 +954,7 @@ function TeamBreakdown({ team, title, highlight }) {
       </table>
       </div>
       <GoalDetail profile={team.goal_profile?.[split]} highlight={highlight} split={split} />
-    </div>
+    </Wrap>
   );
 }
 

@@ -3,7 +3,7 @@ import { useParams, useNavigate } from "react-router-dom";
 import { toast } from "sonner";
 import {
   ArrowLeft, TrendingUp, TrendingDown, ClipboardPaste, Flame, Shield, MapPin, Swords, Eye,
-  Lock, History,
+  Lock, History, BarChart3,
 } from "lucide-react";
 import StarButton from "@/components/StarButton";
 import ShareButtons from "@/components/ShareButtons";
@@ -11,7 +11,10 @@ import PostPick from "@/components/PostPick";
 import { fixtureStreakShare } from "@/lib/shareText";
 import { fixtureStreaks, streakDetail, streakHeadline } from "@/lib/fixtureStreaks";
 import { hasH2H, meetingRows, recordLine, summaryLine, unbeatenRows } from "@/lib/h2h";
-import { consistencyHeadline, consistencyLabel, consistencyRows } from "@/lib/consistency";
+import {
+  SUBJECTS as CONSISTENCY_SUBJECTS, consistencyHeadline, consistencyRows, defaultLine,
+  gameBars, hitsAt, lineWindow, valuesFor,
+} from "@/lib/consistency";
 import { useAuth } from "@/context/AuthContext";
 import { canWritePrices } from "@/lib/locked";
 import ProbabilityChart from "@/components/ProbabilityChart";
@@ -941,79 +944,166 @@ function TeamBreakdown({ team, title, highlight }) {
   );
 }
 
-// WHAT IS CONSISTENT, stated rather than left to be counted off the table below.
+// WHAT HOLDS UP OVER THE GAMES SHOWN — drawn in the same language as the probability
+// chart at the top of the page, on purpose. One vertical bar per column, brand cyan for
+// the ones inside the claim and slate for the ones outside, a line picker underneath, and
+// the split named in words. A reader who has understood one of the two charts has
+// understood both, and the page stops looking like two products bolted together.
 //
-// THE FLOOR IS THE HEADLINE AND NOT THE AVERAGE. A mean of 5.4 is true of a side going
-// 5,5,6,5,6 and of one going 1,2,9,6,9, and only the first is worth a line at 5. "4+ every
-// game" is a claim a reader can act on without re-deriving it.
+// AND IT IS THE OPPOSITE CONTENT, WHICH IS WHY THE HEADING SAYS SO. The chart above draws
+// the MODEL'S distribution — one bar per possible corner count, a forecast. This draws the
+// GAMES THAT HAPPENED — one bar per match, a record. Identical styling over opposite
+// meanings is only safe while each one says which it is, so the caption under the headline
+// is load-bearing rather than decoration.
 //
-// THE LADDER'S FIRST RUNG ALWAYS HOLDS, because it starts at the floor. Rungs above it are
-// where it stops holding, which is the other half of the same question: 5/5 at 4+ and 4/5
-// at 5+ is a different bet from 5/5 and 1/5.
-const TONE = {
-  for: { text: "text-emerald-400", bar: "bg-emerald-500" },
-  against: { text: "text-red-400", bar: "bg-red-500" },
-  total: { text: "text-foreground", bar: "bg-slate-400" },
-};
-
+// THE PICKER OPENS ON THE FLOOR, so the chart opens fully lit and the first thing a reader
+// sees is the claim that holds rather than one they have to go hunting for. The floor is
+// the headline and not the average: a mean of 5.4 is true of a side going 5,5,6,5,6 and of
+// one going 1,2,9,6,9, and only the first is worth a line at 5.
+//
+// THE BIG NUMBER IS A FRACTION, NOT A PERCENTAGE. "100%" off five games is the overclaim
+// this whole page is careful not to make; "5/5" carries its own sample size.
 function Consistency({ games, highlight }) {
+  const [subjectKey, setSubjectKey] = useState("won");
+  const [line, setLine] = useState(null);
+  const [hover, setHover] = useState(null);
+
+  const subject = CONSISTENCY_SUBJECTS.find((s) => s.key === subjectKey)
+    || CONSISTENCY_SUBJECTS[0];
+  const values = valuesFor(games, subject.pick);
+  const bars = gameBars(games, subject.pick);
+  const lines = lineWindow(values);
+  // A line held over from the previous subject is meaningless on this one — conceded and
+  // match total run on different scales — so it falls back whenever it is off the window.
+  const active = line != null && lines.includes(line) ? line : defaultLine(values);
   const rows = consistencyRows(games);
-  if (!rows.length) return null;
+
+  if (!bars.length || active == null) return null;
+
+  const at = hitsAt(values, active);
+  const peak = Math.max(...values, 1);
+  const shown = hover != null ? bars.find((b) => b.key === hover) : null;
+  const everyGame = at.hits === at.n;
+
   return (
-    <div className="px-4 pb-3 space-y-2" data-testid={`bd-consistency-${highlight}`}>
-      <div className="flex items-baseline gap-2 flex-wrap">
-        <span className="text-[10px] uppercase tracking-wider text-muted-foreground">
-          Held in every game
-        </span>
-        <span className="text-[11px] text-muted-foreground font-sans"
-              data-testid={`bd-consistency-head-${highlight}`}>
-          {consistencyHeadline(rows)}
-        </span>
+    <div className="px-4 pt-3 pb-4 border-t border-border" data-testid={`bd-consistency-${highlight}`}>
+      <div className="flex items-center gap-2 flex-wrap mb-3">
+        <BarChart3 className="h-4 w-4 text-primary" />
+        <h4 className="font-head font-semibold text-sm">What holds up?</h4>
+        <div className="ml-auto flex rounded-md bg-secondary p-0.5">
+          {CONSISTENCY_SUBJECTS.map((s) => (
+            <button key={s.key} data-testid={`bd-cs-subject-${highlight}-${s.key}`}
+              onClick={() => { setSubjectKey(s.key); setLine(null); }}
+              className={`text-[11px] px-2 py-1 rounded transition-colors ${
+                subjectKey === s.key ? "bg-primary text-primary-foreground font-medium"
+                                     : "text-muted-foreground"}`}>
+              {s.short}
+            </button>
+          ))}
+        </div>
       </div>
-      {rows.map((r) => {
-        const tone = TONE[r.tone] || TONE.total;
-        return (
-          <div key={r.key} data-testid={`bd-consistency-${highlight}-${r.key}`}
-               className="rounded border border-border/70 bg-secondary/30 px-2.5 py-2">
-            <div className="flex items-baseline gap-2 flex-wrap">
-              <span className="text-xs font-medium w-[112px] shrink-0">{r.label}</span>
-              <span className={`text-xs font-mono-data ${tone.text}`}>
-                {consistencyLabel(r)}
-              </span>
-              {/* THE SPREAD, because a floor and an average together still do not separate
-                  4,4,5,5 from 4,9,4,9 — and the second is not the same bet. */}
-              <span className="ml-auto text-[10px] text-muted-foreground font-mono-data
-                               whitespace-nowrap">
-                {r.low}–{r.high} · avg {r.avg}
-              </span>
-            </div>
-            {/* The rungs, as bars rather than a second table. A reader scanning for "where
-                does this stop being true" wants the shape, and the count is beside it for
-                anyone who wants the number. */}
-            <div className="mt-1.5 flex gap-1.5 flex-wrap">
-              {r.ladder.map((l) => (
-                <div key={l.line} className="flex items-center gap-1"
-                     title={`${l.hits} of ${l.n} games reached ${l.line}+`}>
-                  <span className="text-[10px] font-mono-data text-muted-foreground w-[26px]">
-                    {l.line}+
-                  </span>
-                  <span className="inline-block h-1.5 w-12 rounded bg-border/60 overflow-hidden">
-                    <span className={`block h-full ${tone.bar}`} style={{ width: `${l.pct}%` }} />
-                  </span>
-                  <span className={`text-[10px] font-mono-data ${
-                    l.pct === 100 ? tone.text : "text-muted-foreground"}`}>
-                    {l.hits}/{l.n}
-                  </span>
-                </div>
-              ))}
-            </div>
+
+      {/* The headline, in the same shape as the chart above: one big figure and the claim
+          it belongs to spelled out underneath. */}
+      <div className="flex items-end gap-3 flex-wrap mb-4">
+        <div>
+          <p className={`font-mono-data text-4xl font-bold leading-none ${
+              everyGame ? "text-primary" : "text-foreground"}`}
+            data-testid={`bd-cs-headline-${highlight}`}>
+            {at.hits}/{at.n}
+          </p>
+          {/* THE CAPTION THAT KEEPS THE TWO CHARTS APART. "games" and past tense, against
+              the "chance of" above it. */}
+          <p className="text-xs text-muted-foreground mt-1.5">
+            {everyGame ? "every game" : "of these games"} had{" "}
+            <span className="text-foreground font-medium">{active}+ {subject.noun}</span>
+          </p>
+        </div>
+        <div className="ml-auto text-right">
+          <p className="font-mono-data text-xl text-foreground leading-none">
+            {Math.min(...values)}–{Math.max(...values)}
+          </p>
+          {/* The spread, because a floor and an average together still do not separate
+              4,4,5,5 from 4,9,4,9 — and the second is not the same bet. */}
+          <p className="text-[10px] text-muted-foreground mt-1">lowest to highest</p>
+        </div>
+      </div>
+
+      {/* One bar per game, oldest on the left — the same direction as the distribution's
+          ascending axis above. `role=img` with a spoken summary, because the bars are not
+          readable by a screen reader and the table below is the long form. */}
+      <div className="relative" role="img"
+        aria-label={`${subject.label} in each of the last ${bars.length} games. ${at.hits} of ${at.n} reached ${active} or more.`}>
+        {shown && (
+          <div className="absolute -top-1 left-0 right-0 text-center pointer-events-none z-10">
+            <span className="inline-block bg-secondary border border-border rounded px-2 py-1 text-[11px] font-mono-data">
+              {shown.value} {shown.home ? "vs" : "@"} {shown.opponent}
+            </span>
           </div>
-        );
-      })}
-      {/* Said once, on the panel that most invites the opposite reading — the same caveat
-          the streak panel carries, for the same reason. */}
-      <p className="text-[10px] text-muted-foreground">
-        What already happened over these games, not a forecast.
+        )}
+        <div className="flex items-end gap-[3px] h-24" data-testid={`bd-cs-bars-${highlight}`}>
+          {bars.map((b) => {
+            const inClaim = b.value >= active;
+            return (
+              <button key={b.key} type="button" data-testid={`bd-cs-bar-${highlight}-${b.key}`}
+                data-in-claim={inClaim ? "1" : "0"}
+                onMouseEnter={() => setHover(b.key)} onMouseLeave={() => setHover(null)}
+                onFocus={() => setHover(b.key)} onBlur={() => setHover(null)}
+                // Tapping a game sets the line to what it produced — the same "tap a bar to
+                // move the line" the chart above offers, and the quickest way to ask "how
+                // many games matched this one?"
+                onClick={() => lines.includes(b.value) && setLine(b.value)}
+                title={`${b.value} ${subject.noun} ${b.home ? "vs" : "@"} ${b.opponent}`}
+                aria-label={`${b.value} ${subject.noun} against ${b.opponent}`}
+                className="flex-1 min-w-0 flex flex-col justify-end h-full group cursor-pointer">
+                <span className={`w-full rounded-t transition-colors ${
+                    inClaim ? "bg-primary group-hover:bg-primary/80"
+                            : "bg-slate-600/70 group-hover:bg-slate-500"
+                  } ${hover === b.key ? "ring-2 ring-foreground/40" : ""}`}
+                  style={{ height: `${Math.max(4, (b.value / peak) * 100)}%` }} />
+              </button>
+            );
+          })}
+        </div>
+        <div className="flex gap-[3px] mt-1.5">
+          {bars.map((b) => (
+            <span key={b.key}
+              className="flex-1 min-w-0 text-center font-mono-data text-[9px] text-muted-foreground">
+              {b.value}
+            </span>
+          ))}
+        </div>
+      </div>
+
+      {/* The legend, in words. Both regions named — never colour on its own. */}
+      <p className="text-[11px] text-muted-foreground mt-3 leading-relaxed">
+        <span className="inline-block h-2 w-2 rounded-sm bg-primary align-middle mr-1" />
+        <span className="text-foreground">{active} or more</span> ({at.hits} game{at.hits === 1 ? "" : "s"})
+        <span className="mx-2 text-muted-foreground/40">·</span>
+        <span className="inline-block h-2 w-2 rounded-sm bg-slate-600/70 align-middle mr-1" />
+        under {active} ({at.n - at.hits}).
+        {" "}Tap a bar to move the line.
+      </p>
+
+      {/* The line picker, same as the chart above — a row of labelled buttons is
+          discoverable and a bar is not. */}
+      <div className="flex flex-wrap gap-1 mt-2.5" data-testid={`bd-cs-lines-${highlight}`}>
+        {lines.map((l) => (
+          <button key={l} data-testid={`bd-cs-line-${highlight}-${l}`} onClick={() => setLine(l)}
+            className={`font-mono-data text-[11px] px-2 py-1 rounded border transition-colors ${
+              l === active ? "border-primary/60 bg-primary/15 text-primary"
+                           : "border-border text-muted-foreground hover:text-foreground hover:border-foreground/30"}`}>
+            {l}+
+          </button>
+        ))}
+      </div>
+
+      {/* Both floors in one line, so the section says something before it is explored — and
+          the caveat, on the panel that most invites the opposite reading. */}
+      <p className="text-[11px] text-muted-foreground mt-3">
+        <span className="text-foreground">{consistencyHeadline(rows)}</span>
+        <span className="mx-2 text-muted-foreground/40">·</span>
+        what already happened over these games, not a forecast
       </p>
     </div>
   );

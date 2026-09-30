@@ -1,6 +1,6 @@
 import {
   RUNGS, consistencyHeadline, consistencyLabel, consistencyRow, consistencyRows,
-  floorOf, hitsAt, ladderFor, valuesFor, SUBJECTS,
+  floorOf, hitsAt, ladderFor, valuesFor, SUBJECTS, gameBars, lineWindow, defaultLine,
 } from "./consistency";
 
 /** A game row exactly as the fixture endpoint's `recent` emits it. */
@@ -164,5 +164,95 @@ describe("the panel header", () => {
 
   test("and nothing at all when there are no games", () => {
     expect(consistencyHeadline([])).toBe("");
+  });
+});
+
+
+// THE CHART. Same grammar as the probability chart at the top of the page — vertical bars,
+// a line picker, the split in words — over the opposite content: those bars are the model's
+// forecast, these are the games that happened.
+describe("the bars", () => {
+  const games = [g(7, 3), g(4, 6), g(6, 5)];   // newest first, as the endpoint sends them
+
+  test("run oldest first, so the chart reads left to right like the one above it", () => {
+    expect(gameBars(games, (m) => m.won).map((b) => b.value)).toEqual([6, 4, 7]);
+  });
+
+  test("each bar carries the game it came from", () => {
+    const b = gameBars([g(7, 3, { opponent: "Arsenal", home: false })], (m) => m.won)[0];
+    expect(b).toMatchObject({ value: 7, opponent: "Arsenal", home: false });
+  });
+
+  test("an uncovered game is dropped, not drawn as an empty column", () => {
+    // A phantom zero bar reads as a game they were kept to nothing in.
+    expect(gameBars([g(7, 3), { won: null }], (m) => m.won).map((b) => b.value)).toEqual([7]);
+  });
+
+  test("every bar gets its own key even when two share a date", () => {
+    const bars = gameBars([g(5, 1), g(5, 1)], (m) => m.won);
+    expect(new Set(bars.map((b) => b.key)).size).toBe(2);
+  });
+
+  test("no games is no bars", () => {
+    expect(gameBars([], (m) => m.won)).toEqual([]);
+    expect(gameBars(undefined, (m) => m.won)).toEqual([]);
+  });
+});
+
+describe("the line picker", () => {
+  test("opens on the line they never went below", () => {
+    expect(defaultLine([6, 4, 7, 5])).toBe(4);
+  });
+
+  test("a floor of zero opens at one, not at zero", () => {
+    expect(defaultLine([0, 6])).toBe(1);
+  });
+
+  test("it offers a window around the floor, not every count", () => {
+    // Centred on the floor because the floor is the claim the panel is built around.
+    expect(lineWindow([6, 4, 7, 5])).toEqual([3, 4, 5, 6, 7]);
+  });
+
+  test("it never offers a line nothing in the window reached", () => {
+    expect(lineWindow([4, 5])).toEqual([3, 4, 5]);
+  });
+
+  test("it never offers zero", () => {
+    expect(lineWindow([0, 1, 2])).toEqual([1, 2]);
+  });
+
+  test("a flat set still gives something to pick", () => {
+    expect(lineWindow([5, 5, 5])).toEqual([4, 5]);
+  });
+
+  test("no games is no picker and no default", () => {
+    expect(lineWindow([])).toEqual([]);
+    expect(defaultLine([])).toBeNull();
+  });
+});
+
+
+describe("the subject vocabulary", () => {
+  test("every subject carries the three words the chart needs", () => {
+    // A missing `noun` renders "4+ undefined" in the caption, and a missing `short`
+    // renders an empty switcher button — both compile and ship.
+    SUBJECTS.forEach((s) => {
+      expect(typeof s.label).toBe("string");
+      expect(s.label.length).toBeGreaterThan(0);
+      expect(typeof s.short).toBe("string");
+      expect(s.short.length).toBeGreaterThan(0);
+      expect(typeof s.noun).toBe("string");
+      expect(s.noun.length).toBeGreaterThan(0);
+      expect(typeof s.pick).toBe("function");
+    });
+  });
+
+  test("the short labels fit a phone switcher", () => {
+    SUBJECTS.forEach((s) => expect(s.short.length).toBeLessThanOrEqual(9));
+  });
+
+  test("each picks its own column off a game row", () => {
+    const row = g(6, 3);
+    expect(SUBJECTS.map((s) => s.pick(row))).toEqual([6, 3, 9]);
   });
 });

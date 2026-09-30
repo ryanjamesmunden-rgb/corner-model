@@ -16,6 +16,29 @@ curves being too dispersed can.
 
 So this now sweeps r properly and scores it where it belongs: against team corner outcomes
 directly, rather than inferred through a sum.
+
+ANSWERED (2026-09-30, 7,521 matches): r=11 STAYS, and the case for raising it is dead.
+
+    nb_r8    4+:64.4/65.7  5+:49.9/51.2  6+:36.8/37.9  7+:26.0/26.4   Brier 0.2205  gap 1.04
+    nb_r11   4+:65.9/65.7  5+:50.7/51.2  6+:36.9/37.9  7+:25.5/26.4   Brier 0.2207  gap 0.61
+    nb_r24   4+:68.2/65.7  5+:52.1/51.2  6+:37.1/37.9  7+:24.7/26.4   Brier 0.2216  gap 1.48
+
+11 has the smallest per-line gap of anything swept. r=8 wins on Brier by 0.0002, which is
+below the noise threshold this file already states. And the direction matters more than the
+size: at 6+ and 7+ the live model UNDER-promises, so the tails are not too fat — raising r
+pushes the low lines into over-promising (r=24 prices 4+ at 68.2 against an actual 65.7)
+without fixing anything at the top.
+
+THE CONVOLUTION ARGUMENT DOES NOT SURVIVE THE DIRECT TEST. tune_totals reaching r=24 through
+a sum of two team curves was the reason to look higher; measured against team outcomes, which
+is what this file exists to do, it is contradicted. If the match-total curve is still 4pp low
+at 7+, that is now a fact about the CONVOLUTION — the independence assumption, or the total
+being priced by Poisson rather than by the same NB — and not about the team curves.
+
+Anyone arriving here from a bucket-ranked residual table (measure_chase_board's top-2 view
+shows 64.8% priced against 57.0% landed) should read that file's note first: bucketing by
+ranked lambda cannot separate a miscalibrated model from a noisy estimate of a calibrated
+one. The per-line columns below can, and they say the model is fine.
 """
 import os
 import math

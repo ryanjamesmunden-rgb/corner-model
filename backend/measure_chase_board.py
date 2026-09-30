@@ -115,12 +115,28 @@ inversion is regression in a lambda estimated from ten games, not a fault in the
 Without the null there was no way to tell those two apart, and the obvious reading was the
 wrong one.
 
-WHAT IS STILL WORTH CHASING, and it is not a ranking: the top-2-per-matchday view has
-chase_score picking spots the model prices at 64.8% that land 57.0% — a 7.8 point gap on
-exactly the rows the Daily 2 would select, at an average line of 5.4. High lines over-promise
-and low ones under-promise. That is the NEXT HYPOTHESIS below, arriving from a second
-direction: NB_R is fixed at 11 for every team, so the tails cannot be right for all of them.
-A model change, not a score.
+THE TOP-2 GAP IS SELECTION, NOT THE MODEL — CHASED AND SETTLED (2026-09-30). The
+top-2-per-matchday view has chase_score picking spots priced at 64.8% that land 57.0%: a 7.8
+point gap on exactly the rows the Daily 2 would select, at an average line of 5.4. The
+obvious reading is that high lines over-promise, which points at NB_R being fixed at 11 for
+every team. That reading is WRONG, and tune_model settles it directly:
+
+    nb_r11 (live)   4+:65.9/65.7   5+:50.7/51.2   6+:36.9/37.9   7+:25.5/26.4   avg gap 0.61pp
+
+r=11 has the SMALLEST per-line gap of every candidate swept, and at the high lines the model
+UNDER-promises — the opposite sign to the one the bucket view suggested. Raising r makes it
+worse in exactly the predicted way (r=24: 4+ goes to 68.2 against 65.7). Brier moves by
+0.0002, which this harness's own note calls noise. Over 7,521 matches, 11 is right.
+
+So the gap is what the null column below already says it is: sorting on an ESTIMATED
+probability selects estimation error. measure_calibration's verdict names this case in
+words — "the model is fine and the selection bleeds... do not retune anything on this" — and
+this is that case. The fix, if one is wanted, is what the Daily 2 SELECTS on: a sample bar,
+or not sorting on the estimate at all. Not the dispersion, and not a score.
+
+DO NOT RE-OPEN THE DISPERSION ROUTE on the strength of a bucket table again. Bucketing by
+ranked lambda cannot separate a miscalibrated model from a noisy estimate of a calibrated
+one; only the per-line view in tune_model can, and it has answered.
 
 Two views:
   1. Buckets over every scored row — is there a gradient at all?

@@ -25,12 +25,19 @@
 // `short` is what fits the switcher on a phone; `noun` is what completes "4+ ___" in the
 // caption. Both are here rather than in the component so the chart, the sentence and the
 // screen-reader label cannot end up calling the same subject three different things.
+// `claim` is the whole phrase for a share image, and it exists because composing one from a
+// verb and a noun produces nonsense on the conceded subject: "cleared 5+ conceded" says the
+// opposite of what a conceded record is. A side does not CLEAR corners it shipped. Each
+// subject therefore owns its own sentence rather than being fed through one template.
 export const SUBJECTS = [
   { key: "won", label: "Corners won", short: "Won", noun: "corners won",
+    claim: (line) => `cleared ${line}+ corners`,
     pick: (m) => m.won, tone: "for" },
   { key: "conceded", label: "Corners conceded", short: "Conceded", noun: "conceded",
+    claim: (line) => `conceded ${line}+ corners`,
     pick: (m) => m.conceded, tone: "against" },
   { key: "total", label: "Match total", short: "Total", noun: "in the match",
+    claim: (line) => `${line}+ corners in the match`,
     pick: (m) => m.total, tone: "total" },
   // SHOTS, AND A ZERO HERE MEANS "NOT REPORTED" RATHER THAN "TOOK NONE.
   //
@@ -45,6 +52,7 @@ export const SUBJECTS = [
   // is everywhere else. The cost is that a genuine 0-shot match would vanish; the benefit
   // is that a dozen unreported ones do not silently rewrite the floor.
   { key: "shots", label: "Shots", short: "Shots", noun: "shots",
+    claim: (line) => `had ${line}+ shots`,
     pick: (m) => (m.shots_for ? m.shots_for : null), tone: "shots" },
 ];
 

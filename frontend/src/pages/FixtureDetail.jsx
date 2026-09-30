@@ -3,14 +3,15 @@ import { useParams, useNavigate } from "react-router-dom";
 import { toast } from "sonner";
 import {
   ArrowLeft, TrendingUp, TrendingDown, ClipboardPaste, Flame, Shield, MapPin, Swords, Eye,
-  Lock, History, BarChart3,
+  Lock, History, BarChart3, Video,
 } from "lucide-react";
 import StarButton from "@/components/StarButton";
 import ShareButtons from "@/components/ShareButtons";
 import PostPick from "@/components/PostPick";
 import { fixtureStreakShare, mismatchShare } from "@/lib/shareText";
 import StoryButton from "@/components/StoryButton";
-import { renderMismatchStory } from "@/lib/storyImage";
+import { renderFormStory, renderMismatchStory } from "@/lib/storyImage";
+import { canRecord, extFor, recordStoryVideo } from "@/lib/storyVideo";
 import { kickoffLabel } from "@/lib/kickoff";
 import { fixtureStreaks, streakDetail, streakHeadline } from "@/lib/fixtureStreaks";
 import { hasH2H, meetingRows, recordLine, summaryLine, unbeatenRows } from "@/lib/h2h";
@@ -407,7 +408,8 @@ export default function FixtureDetail() {
                 comparing them had to scroll past the match total, the post composer and a
                 shot panel to do it. One card per team now — price at the top, the games it
                 came from underneath, and the split tabs govern both. */}
-            <TeamBreakdown team={g.team} title={g.label} highlight={g.key} embedded />
+            <TeamBreakdown team={g.team} title={g.label} highlight={g.key} embedded
+                           fixture={fixture} leagueName={data.league_name} />
           </div>
         ))}
       </div>
@@ -792,7 +794,7 @@ const Metric = ({ label, value, accent }) => (
   </div>
 );
 
-function TeamBreakdown({ team, title, highlight, embedded = false }) {
+function TeamBreakdown({ team, title, highlight, embedded = false, fixture, leagueName }) {
   const [split, setSplit] = useState(highlight);
   const [count, setCount] = useState("5");
   const recentAll = team.recent || [];
@@ -871,7 +873,9 @@ function TeamBreakdown({ team, title, highlight, embedded = false }) {
           problem: judging whether a side reliably clears 5 means reading a column
           downwards and comparing five numbers to 5 by eye, and by eye is where the
           miscount comes from. Reads the same split and window the reader already chose. */}
-      <Consistency games={games} highlight={highlight} />
+      <Consistency games={games} highlight={highlight} teamName={team.name}
+                   split={split} windowLabel={`last ${activeCount} games`}
+                   fixture={fixture} leagueName={leagueName} />
       {withGoals.length > 0 && (
         <div className="px-4 pb-2.5 flex flex-wrap gap-2" data-testid={`bd-goalform-${highlight}`}>
           <GoalChip label={`Scored in ${scored}/${withGoals.length}`} strong={scored >= withGoals.length * 0.7} />
@@ -1096,7 +1100,7 @@ function MismatchHalf({ kicker, name, line, hits, values, tone }) {
 //
 // THE BIG NUMBER IS A FRACTION, NOT A PERCENTAGE. "100%" off five games is the overclaim
 // this whole page is careful not to make; "5/5" carries its own sample size.
-function Consistency({ games, highlight }) {
+function Consistency({ games, highlight, teamName, split, windowLabel, fixture, leagueName }) {
   const [subjectKey, setSubjectKey] = useState("won");
   const [line, setLine] = useState(null);
   const [hover, setHover] = useState(null);
@@ -1119,6 +1123,25 @@ function Consistency({ games, highlight }) {
 
   const at = hitsAt(values, active);
   const peak = Math.max(...values, 1);
+  // ONE DESCRIPTION OF THE PICTURE, used by both the still and the video, so the two cannot
+  // show different games — the same arrangement renderFixtureStory uses.
+  const storyArgs = {
+    teamName: teamName || "",
+    values: bars.map((b) => b.value),
+    line: active,
+    hits: at.hits,
+    n: at.n,
+    claim: subject.claim(active),
+    windowLabel,
+    venueLabel: split === "overall" ? "" : split === "home" ? "at home" : "away",
+    opponentLabel: fixture
+      ? `${fixture.home_name === teamName ? "vs" : "@"} ${
+          fixture.home_name === teamName ? fixture.away_name : fixture.home_name}`
+      : "",
+    leagueId: fixture?.league_id || "",
+    leagueName: leagueName || "",
+    kickoff: kickoffLabel(fixture?.date),
+  };
   const shown = hover != null ? bars.find((b) => b.key === hover) : null;
   const everyGame = at.hits === at.n;
 
@@ -1127,6 +1150,36 @@ function Consistency({ games, highlight }) {
       <div className="flex items-center gap-2 flex-wrap mb-3">
         <BarChart3 className="h-4 w-4 text-primary" />
         <h4 className="font-head font-semibold text-sm">What holds up?</h4>
+        {/* THE CHART AS A POST, still or animated — the same two buttons the probability
+            chart at the top of the page offers, over the opposite content. Both render from
+            the LINE AND WINDOW currently selected, so the picture is the chart the reader is
+            looking at rather than a second opinion about it. */}
+        <StoryButton
+          days={[{ key: `form-${highlight}-${active}-${bars.length}` }]}
+          testId={`form-story-${highlight}`}
+          label="Image"
+          title="A picture of this record for Telegram — no price on it"
+          render={(canvas) => renderFormStory(canvas, storyArgs)}
+        />
+        {canRecord() && (
+          <StoryButton
+            days={[{ key: `form-${highlight}-${active}-${bars.length}` }]}
+            testId={`form-video-${highlight}`}
+            icon={Video}
+            label="Video"
+            title="A 5-second video — the bars draw in and the count climbs"
+            makeFile={async (day) => {
+              const canvas = document.createElement("canvas");
+              const { blob, mime, type, ext } = await recordStoryVideo(canvas, (p) =>
+                renderFormStory(canvas, { ...storyArgs, progress: p }));
+              // `type`, not `mime`: a file typed "video/mp4;codecs=avc1…" is refused by the
+              // Android share sheet. Same reason the fixture story does this.
+              const container = extFor(mime);
+              return new File([blob], `corner-model-${day.key}.${ext || container}`,
+                              { type: type || `video/${container}` });
+            }}
+          />
+        )}
         <div className="ml-auto flex rounded-md bg-secondary p-0.5">
           {offered.map((s) => (
             <button key={s.key} data-testid={`bd-cs-subject-${highlight}-${s.key}`}

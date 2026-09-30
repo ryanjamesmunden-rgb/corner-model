@@ -322,3 +322,34 @@ describe("which windows a split can honestly offer", () => {
     expect(windowsFor([])).toEqual([3]);
   });
 });
+
+
+describe("each subject's share-image sentence", () => {
+  test("every subject owns one", () => {
+    // A missing claim renders the fallback, which is true but says less than it could.
+    SUBJECTS.forEach((s) => {
+      expect(typeof s.claim).toBe("function");
+      expect(s.claim(5)).toContain("5");
+    });
+  });
+
+  test("a conceded record is not described as 'cleared'", () => {
+    // THE CASE THAT KILLED THE verb + noun TEMPLATE. A side does not clear corners it
+    // shipped, and "cleared 5+ conceded" says the opposite of what the record is.
+    const conceded = SUBJECTS.find((s) => s.key === "conceded");
+    expect(conceded.claim(5)).toBe("conceded 5+ corners");
+    expect(conceded.claim(5)).not.toContain("cleared");
+  });
+
+  test("and a won record is", () => {
+    expect(SUBJECTS.find((s) => s.key === "won").claim(5)).toBe("cleared 5+ corners");
+  });
+
+  test("a match total reads as the match, not as one side", () => {
+    expect(SUBJECTS.find((s) => s.key === "total").claim(10)).toBe("10+ corners in the match");
+  });
+
+  test("shots read as shots", () => {
+    expect(SUBJECTS.find((s) => s.key === "shots").claim(12)).toBe("had 12+ shots");
+  });
+});

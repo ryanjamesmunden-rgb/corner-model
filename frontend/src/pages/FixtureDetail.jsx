@@ -24,6 +24,7 @@ import {
 } from "@/lib/consistency";
 import { claimLine, hasMismatch, headline as mismatchHeadline, mismatches } from "@/lib/mismatch";
 import { useAuth } from "@/context/AuthContext";
+import { useLeague } from "@/context/LeagueContext";
 import { canWritePrices } from "@/lib/locked";
 import ProbabilityChart from "@/components/ProbabilityChart";
 import { api, tierMeta, confMeta } from "@/lib/api";
@@ -58,6 +59,7 @@ export default function FixtureDetail() {
   // `member` straight off the context rather than derived from `user`: the provider already
   // computes it, and two places deciding what "a member" means is how they come to disagree.
   const { member } = useAuth();
+  const { setViewedLeague } = useLeague();
   const { id } = useParams();
   const navigate = useNavigate();
   const [data, setData] = useState(null);
@@ -91,6 +93,21 @@ export default function FixtureDetail() {
   }, [id]);
 
   useEffect(() => { load(); }, [load]);
+
+  // TELL THE HEADER WHAT IT IS LOOKING AT. Without this the league strip showed the stored
+  // browsing preference — "League One · England" over a Primeira Liga game — and the control
+  // it offered changed nothing on this page while quietly moving every board to a league the
+  // reader had not asked for.
+  //
+  // CLEARED ON THE WAY OUT, so going back to a board restores the selector and the league it
+  // was on. The cleanup runs on the id changing too, which matters when one fixture links
+  // straight to another.
+  const fixtureLeague = data?.fixture?.league_id;
+  useEffect(() => {
+    if (!fixtureLeague) return undefined;
+    setViewedLeague(fixtureLeague);
+    return () => setViewedLeague(null);
+  }, [fixtureLeague, setViewedLeague]);
 
   const submitOdds = async (next) => {
     const payload = {};

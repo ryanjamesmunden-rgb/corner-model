@@ -262,6 +262,37 @@ class TestTheCardsPayload:
         db.odds.n = 0
         assert "no prices stored at all" in share(db, monkeypatch)["note"]
 
+    def test_and_names_the_hurdle_each_price_fell_at(self, db, monkeypatch):
+        """THE ONE THE FIRST REAL RUN NEEDED. "Nothing cleared the floor" was true and
+        useless: a price typed for tomorrow, a seeded price and a game already kicked off
+        are three different things to go and do something about."""
+        install(monkeypatch, [
+            row(fid="f1", source="demo"),                       # price not typed in
+            row(fid="f2", hours=-1),                            # kicked off
+            row(fid="f3", hours=72),                            # another day
+            row(fid="f4", ev=-3.0),                             # below the floor
+            row(fid="f5", key="home_under_4"),                  # cannot be settled
+            {**row(fid="f6"), "status": "no_fixture", "best": None},
+        ])
+        out = share(db, monkeypatch, min_ev=0.0)
+        assert out["rows"] == []
+        assert out["drops"] == {"price not typed in": 1, "kicked off": 1, "another day": 1,
+                                "below the floor": 1, "market cannot be settled": 1,
+                                "no_fixture": 1}
+        for phrase in ("price not typed in", "kicked off", "another day",
+                       "below the floor", "market cannot be settled"):
+            assert phrase in out["note"]
+
+    def test_a_preview_still_gets_the_diagnosis_without_writing_anything(self, db, monkeypatch):
+        """The preview is the run somebody dispatches BY HAND to find out why nothing is
+        going out, so it is the one that most needs this — and it must still create no
+        record while answering."""
+        install(monkeypatch, [row(source="demo")])
+        out = share(db, monkeypatch, freeze=False)
+        assert out["drops"] == {"price not typed in": 1}
+        assert "price not typed in" in out["note"]
+        assert db.picks.docs == []
+
     def test_a_settled_card_carries_the_units_it_actually_won(self, db, monkeypatch):
         install(monkeypatch, [row(book=1.95)])
         share(db, monkeypatch)

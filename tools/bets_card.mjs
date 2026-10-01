@@ -62,6 +62,16 @@ const params = new URLSearchParams({
 });
 if (DAY) params.set("day", DAY);
 
+// WHAT A 4xx MEANS HERE, since retrying one is pure delay: 404 is the backend not having
+// deployed this endpoint yet, 403 is a bad token, 503 is TOOLS_TOKEN unset on the backend.
+// None of them changes between two attempts a second apart, and the first real run spent
+// its retry discovering a 404 twice before reporting it.
+const ADVICE = {
+  404: "the backend has not deployed /api/share/bets yet — wait for Render and run again",
+  403: "TOOLS_TOKEN does not match the backend's",
+  503: "TOOLS_TOKEN is not set on the backend, so the tool endpoints are disabled",
+};
+
 const get = async () => {
   for (let i = 0; i < FETCH_MS.length; i++) {
     const ctl = new AbortController();
@@ -72,6 +82,9 @@ const get = async () => {
         // The body carries FastAPI's `detail`, which separates "bad token" from
         // "tool endpoints are disabled" — two different things to go and fix.
         const body = await res.text().catch(() => "");
+        if (res.status < 500 && res.status !== 408 && res.status !== 429) {
+          fail(`HTTP ${res.status} — ${ADVICE[res.status] || body.slice(0, 200)}`);
+        }
         throw new Error(`HTTP ${res.status} ${body.slice(0, 200)}`);
       }
       return await res.json();

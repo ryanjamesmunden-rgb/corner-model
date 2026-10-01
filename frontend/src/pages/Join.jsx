@@ -8,6 +8,7 @@ import { supportPhrase } from "@/lib/support";
 import { trialOffer, offerStillStands } from "@/lib/trialOffer";
 import { closedNotice } from "@/lib/signupWindow";
 import { summarise, totalLabel, periodNote } from "@/lib/resultsSummary";
+import { CHANNEL_RESULTS as RESULTS } from "@/lib/channelResults";
 import { useAuth } from "@/context/AuthContext";
 
 // The subscription page the payment link points at.
@@ -38,25 +39,11 @@ const PRICE = "£20";
 
 // RESULTS AS RECORDED IN THE CHANNEL.
 //
-// Stated figures, not computed. The site cannot yet verify these: its ledger holds the
-// model's automated selections, not the picks actually sent out, so there is nothing here
-// to check them against. That is why the page says plainly where they come from rather
-// than dressing them as site-verified — a number a buyer cannot check is worth exactly
-// what its source is worth, and pretending otherwise is the fastest way to lose someone.
-//
-// Edit this list each month. It becomes computed — and verifiable — once real picks are
-// logged through POST /api/picks and the record can be built from settled results.
-//
-// A MONTH STILL RUNNING CARRIES `partial: true` and is labelled on the row AND in the
-// total. September at +16 beside two closed months, with the total reading as final, is a
-// true number arranged into a false impression — the same trap the day card had. Drop the
-// flag when the month closes and both labels disappear on their own.
-const RESULTS = [
-  { period: "June - July", units: 17.14 },
-  { period: "August", units: 20.73 },
-  // Month to date. Update as it settles, and remove `partial` once September has closed.
-  { period: "September", units: 16.00, partial: true },
-];
+// The list itself lives in lib/channelResults.js, because the review card publishes the
+// same months and two copies of a results table would disagree the first month somebody
+// updated one of them — about what this account publicly claims it has made. Everything
+// that was written here about where the figures come from, and about labelling a month
+// still running, is in that file beside them.
 
 const INCLUDED = [
   "Every pick posted before kick-off, with the price taken",

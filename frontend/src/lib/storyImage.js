@@ -2505,6 +2505,211 @@ export const renderBetsCard = (canvas, {
 };
 
 /**
+ * The review: the channel's last few months, with the site's graded record beside them.
+ *
+ * TWO KINDS OF NUMBER, DRAWN APART, AND THAT IS THE WHOLE LAYOUT DECISION. The monthly
+ * units are the account's own record of what it sent out; the site cannot check them. The
+ * hit rate underneath is graded on this site off snapshots frozen before kick-off, so it
+ * can be checked row by row. Putting them in one strip would let the unverifiable number
+ * borrow the credibility of the verifiable one, which on an advert is the whole game. They
+ * get separate blocks, and each says where it came from.
+ *
+ * NO PROGRESS BARS UNDER THE FIGURES. The card this is modelled on draws a part-filled bar
+ * beneath every metric, which reads as progress toward a target — and there is no target
+ * here, so the fill would be decoration shaped exactly like information. A reader cannot
+ * tell those apart, and on a results graphic they should not have to.
+ *
+ * `review` is whatever lib/reviewCard.reviewFrom returned. Null draws nothing and returns
+ * false: a period with no stated months has no card, and that decision belongs there.
+ */
+export const renderReviewCard = (canvas, {
+  review = null, site = "thecornermodel.com", brand = "CORNER MODEL",
+  heading = "THE RECORD", subtitle = "CORNER BETTING  ·  STRUCTURED RELEASES",
+  creed = ["DISCIPLINE", "PROCESS", "EVIDENCE", "LONG TERM"],
+} = {}) => {
+  if (!review || !review.blocks?.length) return false;
+  const W = FEED_W;
+  const pad = 56;
+  const inner = W - pad * 2;
+  const gap = 16;
+  const blockH = 168;
+  const headBottom = 318;
+  const totalH = 150;
+  const verifiedH = review.verified ? 150 : 0;
+  const H = Math.round(headBottom + review.n * blockH + (review.n - 1) * gap + 26
+                       + totalH + (verifiedH ? verifiedH + 16 : 0) + 118);
+  canvas.width = W;
+  canvas.height = H;
+  const ctx = canvas.getContext("2d");
+
+  ctx.fillStyle = C.bg;
+  ctx.fillRect(0, 0, W, H);
+  const glow = ctx.createRadialGradient(W / 2, 180, 80, W / 2, 180, 700);
+  glow.addColorStop(0, `${C.primary}26`);
+  glow.addColorStop(1, `${C.primary}00`);
+  ctx.fillStyle = glow;
+  ctx.fillRect(0, 0, W, 620);
+  ctx.textBaseline = "middle";
+
+  // ---- the band across the top
+  ctx.fillStyle = C.text;
+  ctx.font = `800 36px ${FONT_HEAD}`;
+  ctx.letterSpacing = "2px";
+  ctx.fillText(brand, pad, 70);
+  ctx.letterSpacing = "0px";
+  ctx.fillStyle = C.muted;
+  ctx.font = `600 20px ${FONT_BODY}`;
+  ctx.letterSpacing = "3px";
+  ctx.fillText(subtitle, pad, 108);
+  ctx.letterSpacing = "0px";
+
+  ctx.textAlign = "right";
+  ctx.fillStyle = C.muted;
+  ctx.font = `700 19px ${FONT_BODY}`;
+  ctx.letterSpacing = "4px";
+  creed.slice(0, 4).forEach((word, i) => {
+    ctx.fillText(word, W - pad, 58 + i * 28);
+  });
+  ctx.letterSpacing = "0px";
+  ctx.textAlign = "left";
+
+  // ---- the title
+  ctx.fillStyle = C.text;
+  ctx.font = `800 96px ${FONT_HEAD}`;
+  ctx.fillText(heading, pad, 208);
+  ctx.fillStyle = C.primary;
+  ctx.font = `700 28px ${FONT_HEAD}`;
+  ctx.letterSpacing = "6px";
+  ctx.fillText(`LAST ${review.n} MONTHS`, pad + 4, 262);
+  ctx.letterSpacing = "0px";
+
+  ctx.strokeStyle = C.border;
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(pad, headBottom - 24);
+  ctx.lineTo(W - pad, headBottom - 24);
+  ctx.stroke();
+
+  // ---- a month per block
+  review.blocks.forEach((b, i) => {
+    const y = headBottom + i * (blockH + gap);
+    const tone = b.up ? C.solid : "#F2557E";
+
+    ctx.fillStyle = C.card;
+    roundRect(ctx, pad, y, inner, blockH, 18);
+    ctx.fill();
+    ctx.strokeStyle = C.border;
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+    ctx.fillStyle = tone;
+    roundRect(ctx, pad, y + 22, 5, blockH - 44, 3);
+    ctx.fill();
+
+    ctx.fillStyle = C.text;
+    ctx.font = `800 46px ${FONT_HEAD}`;
+    ctx.fillText(b.period, pad + 34, y + 58);
+
+    // A MONTH STILL RUNNING SAYS SO ON ITS OWN ROW. The row is what gets screenshotted
+    // out of context, so the caveat cannot live only in the total underneath.
+    if (b.partial) {
+      ctx.fillStyle = "#F2B04E";
+      ctx.font = `700 22px ${FONT_BODY}`;
+      ctx.fillText(b.note.toUpperCase(), pad + 34, y + 96);
+    }
+
+    ctx.textAlign = "right";
+    ctx.fillStyle = C.muted;
+    ctx.font = `700 21px ${FONT_BODY}`;
+    ctx.letterSpacing = "4px";
+    ctx.fillText("PROFIT", W - pad - 36, y + 50);
+    ctx.letterSpacing = "0px";
+    ctx.fillStyle = tone;
+    ctx.font = `800 76px ${FONT_HEAD}`;
+    ctx.fillText(b.unitsText, W - pad - 36, y + 112);
+    ctx.textAlign = "left";
+  });
+
+  // ---- the total
+  const totalY = headBottom + review.n * (blockH + gap) + 10;
+  ctx.fillStyle = C.secondary;
+  roundRect(ctx, pad, totalY, inner, totalH, 18);
+  ctx.fill();
+  ctx.strokeStyle = `${C.primary}55`;
+  ctx.lineWidth = 2;
+  ctx.stroke();
+
+  ctx.fillStyle = C.muted;
+  ctx.font = `700 22px ${FONT_BODY}`;
+  ctx.letterSpacing = "4px";
+  ctx.fillText("OVERALL", pad + 34, totalY + 46);
+  ctx.letterSpacing = "0px";
+  ctx.fillStyle = C.text;
+  ctx.font = `600 25px ${FONT_BODY}`;
+  // The total refuses to read as final while a month is still running, and names which.
+  ctx.fillText(review.partial
+    ? `${review.running.join(" and ")} still running`
+    : `${review.n} months, every pick posted before kick-off`,
+  pad + 34, totalY + 92);
+
+  ctx.textAlign = "right";
+  ctx.fillStyle = review.total >= 0 ? C.solid : "#F2557E";
+  ctx.font = `800 86px ${FONT_HEAD}`;
+  ctx.fillText(review.totalText, W - pad - 36, totalY + 76);
+  ctx.textAlign = "left";
+
+  // ---- the graded record, in its own block because it is a different kind of number
+  if (review.verified) {
+    const vy = totalY + totalH + 16;
+    ctx.fillStyle = C.card;
+    roundRect(ctx, pad, vy, inner, verifiedH, 18);
+    ctx.fill();
+    ctx.strokeStyle = C.border;
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+
+    ctx.fillStyle = C.primary;
+    ctx.font = `700 22px ${FONT_BODY}`;
+    ctx.letterSpacing = "4px";
+    ctx.fillText("GRADED ON SITE", pad + 34, vy + 44);
+    ctx.letterSpacing = "0px";
+    // CUT TO THE SPACE THE PERCENTAGE LEAVES. Drawn full width, this caption ran straight
+    // under the 66% beside it — a sentence about how the record is graded, half-hidden
+    // behind the number it is vouching for.
+    const capW = inner - 68 - 220;
+    ctx.fillStyle = C.muted;
+    ctx.font = `500 23px ${FONT_BODY}`;
+    ctx.fillText(ellipsize(ctx, "Published streaks, settled off a frozen snapshot",
+                           capW), pad + 34, vy + 86);
+    ctx.fillStyle = C.text;
+    ctx.font = `500 24px ${FONT_BODY}`;
+    ctx.fillText(`${review.verified.big} landed`, pad + 34, vy + 120);
+
+    // The rate is the smaller number of the pair, deliberately: the fraction is the claim,
+    // the percentage is the summary of it.
+    ctx.textAlign = "right";
+    ctx.fillStyle = C.text;
+    ctx.font = `800 72px ${FONT_HEAD}`;
+    ctx.fillText(`${review.verified.rate}%`, W - pad - 36, vy + 82);
+    ctx.textAlign = "left";
+  }
+
+  // ---- where the numbers came from, and the footer
+  ctx.fillStyle = C.muted;
+  ctx.font = `500 23px ${FONT_BODY}`;
+  ctx.fillText(review.source, pad, H - 92);
+
+  ctx.fillStyle = C.text;
+  ctx.font = `700 34px ${FONT_HEAD}`;
+  ctx.fillText(site, pad, H - 42);
+  ctx.textAlign = "right";
+  ctx.fillStyle = C.muted;
+  ctx.font = `500 22px ${FONT_BODY}`;
+  ctx.fillText("18+ · gambleaware.org", W - pad, H - 42);
+  ctx.textAlign = "left";
+  return true;
+};
+
+/**
  * The morning board: ten chase spots for a day, each with the reason it is on the card.
  *
  * WHY A TALLER CARD. Ten rows will not fit the 4:5 feed shape and stay readable — at

@@ -14,6 +14,7 @@ import { renderFormStory, renderMismatchStory } from "@/lib/storyImage";
 import { canRecord, extFor, recordStoryVideo } from "@/lib/storyVideo";
 import { FORM_GAMES, formLabel, formRun } from "@/lib/formRun";
 import { anglePanel } from "@/lib/angleFactors";
+import { whyItHit } from "@/lib/whyItHit";
 import { kickoffLabel } from "@/lib/kickoff";
 import { fixtureStreaks, streakDetail, streakHeadline } from "@/lib/fixtureStreaks";
 import { hasH2H, meetingRows, recordLine, summaryLine, unbeatenRows } from "@/lib/h2h";
@@ -325,6 +326,12 @@ export default function FixtureDetail() {
           homeName={fixture.home_name} awayName={fixture.away_name} />
       )}
 
+      {/* THE RECORD, STRAIGHT AFTER THE FORECAST. "57% chance of 10+" and "they have done it
+          in 8 of their last 10" are the two halves of one question, and they were a page
+          apart. */}
+      <RecordUnderForecast fixture={fixture} model={model} homeTeam={home_team}
+                           awayTeam={away_team} leagueName={data.league_name} />
+
       {/* Who is playing, in words. */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-3 sm:gap-4">
         <TeamRead name={fixture.home_name} profile={home_team.profile} where="home" />
@@ -375,7 +382,19 @@ export default function FixtureDetail() {
           team is a whole extra way to be wrong that you are not being paid extra for.
           The page should open on the market with the fewer moving parts. */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-3 sm:gap-4">
-        {groups.map((g) => (
+        {groups.map((g) => {
+          // THE LINE THIS CARD IS ABOUT: the one nearest the model's projection for the side,
+          // which is what the ladder leads with. The explanation underneath is then about the
+          // bet on screen rather than one of its own choosing.
+          const ladderLine = (() => {
+            const rows = (model.markets || []).filter((m) => m.group === g.key && m.line != null);
+            if (!rows.length) return null;
+            const lam = model.lambdas?.[g.key] ?? 0;
+            const best = rows.slice().sort(
+              (a, b) => Math.abs(a.line - lam) - Math.abs(b.line - lam))[0];
+            return Math.ceil(best.line);
+          })();
+          return (
           <div key={g.key} className="bg-card border border-border rounded-lg overflow-hidden">
             <div className="px-4 py-3 border-b border-border flex items-center gap-2 flex-wrap">
               <TrendingUp className="h-4 w-4 text-muted-foreground" />
@@ -503,12 +522,14 @@ export default function FixtureDetail() {
                 shot panel to do it. One card per team now — price at the top, the games it
                 came from underneath, and the split tabs govern both. */}
             <TeamBreakdown team={g.team} title={g.label} highlight={g.key} embedded
+                           line={ladderLine}
                            fixture={fixture} leagueName={data.league_name}
                            window={winFor(g.key, (g.team?.recent || [])
                              .filter((x) => x.home === g.venue).length)}
                            onWindow={(n) => setWindows({ ...windows, [g.key]: n })} />
           </div>
-        ))}
+          );
+        })}
       </div>
 
       {/* Below the team tables now, and it says why. A total is not a worse market, it
@@ -900,7 +921,7 @@ const Metric = ({ label, value, accent }) => (
 );
 
 function TeamBreakdown({ team, title, highlight, embedded = false, fixture, leagueName,
-                        window: sharedWindow, onWindow }) {
+                        window: sharedWindow, onWindow, line: cardLine }) {
   const [split, setSplit] = useState(highlight);
   const recentAll = team.recent || [];
   const filtered = recentAll.filter((m) => split === "overall" || (split === "home" ? m.home : !m.home));
@@ -981,10 +1002,10 @@ function TeamBreakdown({ team, title, highlight, embedded = false, fixture, leag
           problem: judging whether a side reliably clears 5 means reading a column
           downwards and comparing five numbers to 5 by eye, and by eye is where the
           miscount comes from. Reads the same split and window the reader already chose. */}
-      <Consistency games={games} highlight={highlight} teamName={team.name}
-                   split={split} windowLabel={`last ${activeCount} games`}
-                   fixture={fixture} leagueName={leagueName}
-                   currentSeason={team.current_season} />
+      {/* THE CHART MOVED UP, under the forecast where the question it answers is asked.
+          What stays here is the detail it cannot carry: which games, against whom, and what
+          separated the ones that landed from the ones that did not. */}
+      <WhyItHit games={games} line={cardLine} highlight={highlight} />
       {/* THE GOAL CHIPS ARE GONE, and so is the goal-profile panel that followed the table.
           Four goals summaries and a fifth panel, on a card about CORNERS — and the table
           below prints every score they were computed from. A reader hunting the corner
@@ -1204,6 +1225,111 @@ function MismatchHalf({ kicker, name, line, hits, values, tone }) {
 //
 // THE BIG NUMBER IS A FRACTION, NOT A PERCENTAGE. "100%" off five games is the overclaim
 // this whole page is careful not to make; "5/5" carries its own sample size.
+// THE RECORD, DIRECTLY UNDER THE FORECAST.
+//
+// The chart above says how likely the model thinks it is. This says how often it has actually
+// happened. Those are the two halves of the same question and they were a full page apart —
+// the forecast at the top, the record buried inside a team card below the price ladder — so
+// answering "is 57% believable" meant scrolling past everything and holding a number in your
+// head on the way down.
+//
+// ONE SECTION WITH A SIDE SWITCHER, mirroring the tabs on the chart above it, rather than two
+// charts side by side. Two would be the same mistake again: a reader compares one thing at a
+// time, and a phone shows one at a time whatever the markup says.
+//
+// THE DETAIL STAYS BELOW. Which games, against whom, with what shots — that is the next
+// question, not this one, and the team cards further down still answer it.
+// WHY THE GAMES THAT LANDED LANDED, AND WHY THE OTHERS DID NOT.
+//
+// The chart under the forecast says eight of ten reached the line. It cannot say what was
+// different about the other two, and that is the next question a reader has: was the miss a
+// quiet afternoon with no shots, or a game they led from the tenth minute and never had to
+// chase?
+//
+// A COMPARISON, NOT A CORRELATION. An r over eight games is a number with a confident face
+// and almost no information. "Their 6+ games averaged 20 shots against 11.5 in the others" is
+// the same fact, carries its own sample size, and cannot be mistaken for a model output.
+function WhyItHit({ games, line, highlight }) {
+  const rows = whyItHit(games, line);
+  if (!rows.length) return null;
+  return (
+    <div className="px-4 pt-3 pb-4 border-t border-border"
+         data-testid={`why-hit-${highlight}`}>
+      <p className="text-[10px] uppercase tracking-wider text-muted-foreground mb-2">
+        What separated them
+      </p>
+      <ul className="space-y-2">
+        {rows.map((r) => (
+          <li key={r.key} className="rounded border border-border/70 bg-secondary/30 px-2.5 py-2"
+              data-testid={`why-${r.key}`}>
+            <p className="text-xs font-medium">{r.title}</p>
+            <p className="text-[11px] text-muted-foreground mt-0.5 leading-relaxed">
+              {r.detail}
+            </p>
+          </li>
+        ))}
+      </ul>
+      {/* Said once: these describe what happened and were measured not to rank. */}
+      <p className="text-[11px] text-muted-foreground mt-2.5">
+        What was different about those games — not a reason to expect the next one.
+      </p>
+    </div>
+  );
+}
+
+function RecordUnderForecast({ fixture, model, homeTeam, awayTeam, leagueName }) {
+  const sides = [
+    ["home", fixture.home_name, homeTeam],
+    ["away", fixture.away_name, awayTeam],
+  ];
+  const [side, setSide] = useState("home");
+  const [window, setWindow] = useState(null);
+  const active = sides.find(([k]) => k === side) || sides[0];
+  const [key, name, team] = active;
+
+  // The venue this side is playing, which is what the ladder prices and what the reader is
+  // being asked about — not their overall form.
+  const venueGames = (team?.recent || []).filter((m) => m.home === (key === "home"));
+  const count = clampWindow(window, venueGames.length);
+  const games = venueGames.slice(0, count);
+  if (!games.length) return null;
+
+  return (
+    <section className="bg-card border border-border rounded-lg overflow-hidden"
+             data-testid="record-under-forecast">
+      <div className="px-4 py-3 border-b border-border flex items-center gap-2 flex-wrap">
+        <BarChart3 className="h-4 w-4 text-primary" />
+        <h3 className="font-head font-semibold text-sm">How often has it happened?</h3>
+        <div className="ml-auto flex items-center gap-2">
+          {venueGames.length > MIN_WINDOW && (
+            <input
+              type="range" min={MIN_WINDOW} max={venueGames.length} step={1} value={count}
+              data-testid="ruf-window"
+              aria-label={`How many recent games to show — currently ${count}`}
+              onChange={(e) => setWindow(Number(e.target.value))}
+              className="w-20 accent-primary cursor-pointer"
+            />
+          )}
+          <div className="flex rounded-md bg-secondary p-0.5">
+            {sides.map(([k, label]) => (
+              <button key={k} data-testid={`ruf-side-${k}`} onClick={() => setSide(k)}
+                className={`text-[11px] px-2 py-1 rounded transition-colors max-w-[92px] truncate ${
+                  side === k ? "bg-primary text-primary-foreground font-medium"
+                             : "text-muted-foreground"}`}>
+                {label}
+              </button>
+            ))}
+          </div>
+        </div>
+      </div>
+      <Consistency games={games} highlight={key} teamName={name}
+                   split={key} windowLabel={`last ${count} ${key} games`}
+                   fixture={fixture} leagueName={leagueName}
+                   currentSeason={team?.current_season} />
+    </section>
+  );
+}
+
 function Consistency({ games, highlight, teamName, split, windowLabel, fixture, leagueName,
                        currentSeason }) {
   const [subjectKey, setSubjectKey] = useState("won");

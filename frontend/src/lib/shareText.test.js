@@ -277,10 +277,12 @@ describe("the results post", () => {
 
 describe("sharing one fixture and what is running into it", () => {
   const fixture = { home_name: "Derby", away_name: "West Brom", league_id: "eng-ch", date: soon() };
+  // The payload now carries runs from THREE up, so the on-screen panel can show them. The
+  // post keeps the stricter cut, so these fixtures deliberately straddle it.
   const streaks = [
     { team: "Derby", subject: "team", line: 6, line_label: "6+", direction: "over", run: 9 },
     { team: "Derby", subject: "match", line: 10, line_label: "10+", direction: "over", run: 6 },
-    { team: "West Brom", subject: "team", line: 4, line_label: "under 4", direction: "under", run: 4 },
+    { team: "West Brom", subject: "team", line: 4, line_label: "under 4", direction: "under", run: 5 },
   ];
   const build = fixtureStreakShare({ fixture, streaks });
 
@@ -288,7 +290,41 @@ describe("sharing one fixture and what is running into it", () => {
     const out = build(3);
     expect(out).toContain("Derby v West Brom");
     expect(out).toContain("Derby 6+ corners — 9 in a row");
-    expect(out).toContain("West Brom under 4 corners — 4 in a row");
+    expect(out).toContain("West Brom under 4 corners — 5 in a row");
+  });
+
+  test("a run too short to post is left OUT of the post", () => {
+    // THE PANEL AND THE POST NOW DISAGREE ON PURPOSE. On screen a reader can weigh a
+    // three-game run — it carries its own length. A post is read once and scrolled, so a
+    // short run would be making a claim nobody can size up.
+    const withShort = fixtureStreakShare({
+      fixture,
+      streaks: [...streaks,
+                { team: "Derby", subject: "conceded", line: 5, line_label: "5+",
+                  direction: "over", run: 3, opponent: "West Brom" }],
+    })(9);
+    expect(withShort).not.toContain("3 in a row");
+    expect(withShort).toContain("9 in a row");
+  });
+
+  test("and a board of only short runs posts nothing at all", () => {
+    const allShort = fixtureStreakShare({
+      fixture,
+      streaks: [{ team: "Derby", subject: "team", line: 6, line_label: "6+",
+                  direction: "over", run: 3 }],
+    })(4);
+    expect(allShort).toBe("");
+  });
+
+  test("the short ones are filtered BEFORE the limit, not after", () => {
+    // Otherwise a three-game run takes the place of a nine-game one and the post shows
+    // fewer rows than it had.
+    const out = fixtureStreakShare({
+      fixture,
+      streaks: [{ team: "A", subject: "team", line: 6, line_label: "6+", direction: "over", run: 3 },
+                { team: "B", subject: "team", line: 6, line_label: "6+", direction: "over", run: 9 }],
+    })(1);
+    expect(out).toContain("B 6+ corners — 9 in a row");
   });
 
   test("a match total says whose GAMES, not whose corners", () => {

@@ -26,13 +26,23 @@
 // AND IT IS NOT A RECOMMENDATION. A long run is the weakest reading of a team on its own:
 // measure_chase_board.py replayed four orderings walk-forward and could not separate any
 // of them from a shuffled control, so a run says what has happened and not what will.
-import { FIRE_RUN } from "./shareText.js";
+import { FIRE_RUN, SHARE_MIN_RUN } from "./shareText.js";
 
-export { FIRE_RUN };
+export { FIRE_RUN, SHARE_MIN_RUN };
 
-/** The backend's own floor for these rows (SHARE_MIN_RUN). Restated so a row that somehow
- *  arrives shorter is still refused rather than printed as "3 in a row". */
-export const MIN_RUN = 5;
+/**
+ * The floor for the PANEL, which is not the floor for a post.
+ *
+ * On screen a reader can weigh a three-game run themselves — it carries its own length and
+ * the games behind it. A post cannot be weighed, so the share builder keeps the stricter cut
+ * at SHARE_MIN_RUN. One payload, two consumers, and the stricter standard belongs where the
+ * reader cannot answer back.
+ *
+ * THIS WAS 5 AND IT HID THE CONCEDED RUNS. Five in a row at the same line on the same venue
+ * is rare, so most fixtures showed nothing at all and the newest subject on the panel almost
+ * never surfaced.
+ */
+export const MIN_RUN = 3;
 
 const num = (v) => {
   const n = Number(v);

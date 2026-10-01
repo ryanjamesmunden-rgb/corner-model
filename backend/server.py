@@ -4260,9 +4260,25 @@ def fixture_form(home: dict, away: dict, home_name: str, away_name: str) -> List
 # out. Everything shorter stays on the site.
 SHARE_MIN_RUN = 5
 
+# MOVED UP FROM THE BOARD'S OWN BLOCK, which sits nine hundred lines below this and after the
+# function that now defaults to it — a default argument is evaluated when the function is
+# DEFINED, so leaving it there is an import-time NameError rather than a late surprise. One
+# definition, above every use.
+BOARD_MIN_RUN = 3                  # a streak must be a run; 2 is merely the floor for being one
 
+
+# AND THE FIXTURE PANEL IS THE BOARD, NOT THE SHARE. This defaulted to SHARE_MIN_RUN, which
+# applied a POST's threshold to an on-screen panel — the exact distinction the note above
+# draws, pointed the wrong way. Five in a row at the same line on the same venue is rare, so
+# most fixtures showed nothing and the CONCEDED runs, which are the newest and most useful
+# subject here, almost never surfaced at all.
+#
+# On screen a reader can weigh a three-game run themselves; it carries its own length and the
+# games it came from. The SHARE still cuts at five, in the share builder, so a post is
+# unaffected — it is one payload read by two consumers with different standards, and the
+# stricter one belongs where the reader cannot answer back.
 def fixture_streaks(home: dict, away: dict, home_name: str, away_name: str,
-                    min_run: int = SHARE_MIN_RUN) -> List[dict]:
+                    min_run: int = BOARD_MIN_RUN) -> List[dict]:
     """Every live run both sides bring into this fixture, best first.
 
     WHAT THIS IS FOR: a fixture is worth posting when something is ALREADY running into
@@ -5146,7 +5162,7 @@ FIXTURE_BOARD_ANGLES = 6           # angles listed per fixture before it stops b
 # made a Saturday of ten. Ranking alone cannot do this — sort-and-take-N always promotes
 # something, so the only game on gets crowned by default.
 BOARD_MIN_GAMES = 6                # real matches behind EACH side before its numbers mean anything
-BOARD_MIN_RUN = 3                  # a streak must be a run; 2 is merely the floor for being one
+# BOARD_MIN_RUN lives above fixture_streaks now — see the note there.
 BOARD_MIN_CONSISTENCY = 0.8        # a chase spot must have hit 4 of its last 5
 BOARD_MIN_EDGE = 1.0               # the model must expect an at-or-above-par corner game
 # A mismatch is judged on SAMPLE, not on a run. It is a lambda comparison — a side that

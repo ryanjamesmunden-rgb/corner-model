@@ -114,14 +114,41 @@ def test_an_under_too_loose_to_mean_anything_is_never_suggested():
     assert r is None or r["line"] <= UNDER_LINE_CAP["team"]
 
 
-# --- what a SHARE is allowed to carry ---
-def test_a_short_run_stays_on_the_site_and_out_of_the_post():
-    """The board can show a 3-game run because on screen you can weigh it yourself. A post
-    is read once and scrolled, so only runs worth someone's attention go out."""
-    from server import SHARE_MIN_RUN
-    assert SHARE_MIN_RUN >= 5
+# --- what a SHARE is allowed to carry, and what the PANEL is ---
+def test_a_short_run_reaches_the_panel_and_the_post_cuts_it():
+    """This test's own docstring had the rule right and its assertion pointed at the wrong
+    thing. "The board can show a 3-game run because on screen you can weigh it yourself; a
+    post is read once and scrolled" — but it then asserted that fixture_streaks, which FEEDS
+    THE PANEL, excluded it. So the panel inherited the post's threshold and most fixtures
+    showed nothing; the conceded subject, rarest to reach five, almost never appeared.
+
+    The two floors are now separate. fixture_streaks builds at the board's, and the share
+    builder applies the post's — tested on the frontend, where the post is written."""
+    from server import BOARD_MIN_RUN, SHARE_MIN_RUN
+    assert SHARE_MIN_RUN > BOARD_MIN_RUN, "a post must be stricter than a panel"
+    assert BOARD_MIN_RUN == 3
     short = team("Z", [m(True, 9, 3, f"2026-08-{d:02d}") for d in (1, 8, 15)])   # 3 in a row
-    assert fixture_streaks(short, short, "Z", "Z") == []
+    rows = fixture_streaks(short, short, "Z", "Z")
+    assert rows, "a three-game run should reach the panel"
+    assert all(r["run"] >= BOARD_MIN_RUN for r in rows)
+
+
+def test_two_games_is_still_not_a_run():
+    """The floor moved down, not away."""
+    from server import BOARD_MIN_RUN
+    pair = team("Z", [m(True, 9, 3, f"2026-08-{d:02d}") for d in (1, 8)])
+    assert all(r["run"] >= BOARD_MIN_RUN
+               for r in fixture_streaks(pair, pair, "Z", "Z"))
+
+
+def test_a_conceded_run_reaches_the_panel_with_its_opponent():
+    """The subject this change exists for. A side shipping corners in three straight is the
+    angle; the bet is whoever plays them, so the row has to carry the other name."""
+    leaky = team("Z", [m(True, 2, 7, f"2026-08-{d:02d}") for d in (1, 8, 15)])
+    rows = fixture_streaks(leaky, leaky, "Leaky", "Sharp")
+    conceded = [r for r in rows if r["subject"] == "conceded"]
+    assert conceded, "no conceded run reached the panel"
+    assert conceded[0]["opponent"]
 
 
 def test_a_long_run_still_goes_out():

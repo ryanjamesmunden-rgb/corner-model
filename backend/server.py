@@ -1047,58 +1047,91 @@ async def billing_webhook(request: Request):
     kind = event["type"]
     obj = event["data"]["object"]
     result = {"matched": False}
+    applied_error = None
 
-    if kind == "checkout.session.completed":
-        # The session carries our user id; the subscription carries the status. Fetch it
-        # rather than assuming active — a session can complete while payment is still
-        # processing, and granting access on the session alone would let a failed
-        # bank debit through.
-        uid = obj.get("client_reference_id")
-        sub_id = obj.get("subscription")
-        # THE NAME ON THE CARD, captured here because this is the only event that carries
-        # it — a Subscription object does not. It is what the channel's invite-link list is
-        # labelled with, which is how you tell who a given Telegram member actually is.
+    # EVERYTHING FROM HERE IS OUR PROBLEM, NOT STRIPE'S, and the response has to say so.
+    #
+    # STRIPE DISABLED THIS ENDPOINT ON 2026-10-01 after nine consecutive days of failures.
+    # The signing secret had drifted, which is a 400 and correct — but the handler could
+    # also 500, and that is the half this guard is for. Past the signature check it calls
+    # out to Stripe (fetch_subscription), writes to Mongo (apply_subscription) and talks to
+    # Telegram (_revoke_channel_access), and ANY of those raising returned a 500. Stripe
+    # reads a 500 as "try again", retries for days, and after enough of them turns the
+    # endpoint off — which removes the fast path entirely.
+    #
+    # The docstring above has always promised "always answers 200 once the signature checks
+    # out". It was an intention the code did not keep. It does now.
+    #
+    # WHY 200 ON A FAILURE IS SAFE HERE, and it is only safe because of what already exists:
+    # _reconcile_billing runs every fifteen minutes, asks Stripe directly for the live
+    # subscription state and re-applies it. A dropped event self-heals inside a quarter of
+    # an hour. A retry, by contrast, hits the same bug with the same payload — so for a
+    # deterministic failure the retries buy nothing and cost the endpoint.
+    #
+    # The error is recorded rather than swallowed: signup_audit reads db.billing_events and
+    # reports failed rows first, so this stays visible as a thing to fix rather than
+    # becoming a silent drop.
+    try:
+        if kind == "checkout.session.completed":
+            # The session carries our user id; the subscription carries the status. Fetch it
+            # rather than assuming active — a session can complete while payment is still
+            # processing, and granting access on the session alone would let a failed
+            # bank debit through.
+            uid = obj.get("client_reference_id")
+            sub_id = obj.get("subscription")
+            # THE NAME ON THE CARD, captured here because this is the only event that carries
+            # it — a Subscription object does not. It is what the channel's invite-link list is
+            # labelled with, which is how you tell who a given Telegram member actually is.
+            #
+            # IT IS NOT AN ANTI-FRAUD CONTROL and must not be treated as one: a name is typed,
+            # and anybody wanting a second trial types a different one. The trial is limited by
+            # stripe_customer_id, which is issued rather than claimed.
+            name = ((obj.get("customer_details") or {}).get("name") or "").strip()
+            if uid and name:
+                await db.users.update_one({"user_id": uid}, {"$set": {"billing_name": name}})
+            if sub_id:
+                # fetch_subscription, not Subscription.retrieve: the raw object raises on
+                # .get, and apply_subscription reads it like a dict from its first line.
+                sub = billing.fetch_subscription(sub_id)
+                result = await billing.apply_subscription(db, sub, user_id=uid)
+        elif kind in ("customer.subscription.created", "customer.subscription.updated",
+                      "customer.subscription.deleted"):
+            result = await billing.apply_subscription(db, obj)
+        else:
+            logger.info("stripe: ignoring %s", kind)
+
+        # ACCESS ACTUALLY ENDED, which is not the same as "Stripe said the subscription is
+        # over". apply_subscription reports the membership it settled on, and that is the
+        # only safe thing to key removal on:
         #
-        # IT IS NOT AN ANTI-FRAUD CONTROL and must not be treated as one: a name is typed,
-        # and anybody wanting a second trial types a different one. The trial is limited by
-        # stripe_customer_id, which is issued rather than claimed.
-        name = ((obj.get("customer_details") or {}).get("name") or "").strip()
-        if uid and name:
-            await db.users.update_one({"user_id": uid}, {"$set": {"billing_name": name}})
-        if sub_id:
-            # fetch_subscription, not Subscription.retrieve: the raw object raises on
-            # .get, and apply_subscription reads it like a dict from its first line.
-            sub = billing.fetch_subscription(sub_id)
-            result = await billing.apply_subscription(db, sub, user_id=uid)
-    elif kind in ("customer.subscription.created", "customer.subscription.updated",
-                  "customer.subscription.deleted"):
-        result = await billing.apply_subscription(db, obj)
-    else:
-        logger.info("stripe: ignoring %s", kind)
-
-    # ACCESS ACTUALLY ENDED, which is not the same as "Stripe said the subscription is
-    # over". apply_subscription reports the membership it settled on, and that is the only
-    # safe thing to key removal on:
-    #
-    #   · a grandfathered account keeps access when its later subscription lapses
-    #   · so does a comp that happens to have a lapsed subscription
-    #   · `past_due` is still a member — a failed renewal is a retry window, and kicking
-    #     somebody out of the channel over a card blip is how a payment problem becomes a
-    #     cancellation
-    #   · cancelling mid-period leaves them active until the period ends; the deletion
-    #     event arrives later, and that is the one that lands here
-    #
-    # Keying on `sub.status` instead would remove people in every one of those cases.
-    if result.get("matched") and result.get("member") is False:
-        await _revoke_channel_access(result["user_id"])
+        #   · a grandfathered account keeps access when its later subscription lapses
+        #   · so does a comp that happens to have a lapsed subscription
+        #   · `past_due` is still a member — a failed renewal is a retry window, and kicking
+        #     somebody out of the channel over a card blip is how a payment problem becomes
+        #     a cancellation
+        #   · cancelling mid-period leaves them active until the period ends; the deletion
+        #     event arrives later, and that is the one that lands here
+        #
+        # Keying on `sub.status` instead would remove people in every one of those cases.
+        if result.get("matched") and result.get("member") is False:
+            await _revoke_channel_access(result["user_id"])
+    except Exception as e:
+        # NOT RE-RAISED, and that is the whole point of this block — see the note above.
+        # The event was genuine and we failed to act on it; Stripe retrying cannot fix our
+        # bug, and enough retries disable the endpoint. The reconcile sweep re-applies from
+        # Stripe within fifteen minutes, and this row is what makes the failure findable.
+        logger.exception("stripe: %s verified but could not be applied", kind)
+        applied_error = f"{type(e).__name__}: {e}"[:300]
 
     # WRITTEN DOWN, because "did the webhook arrive" had no answer anywhere on this side.
     # The events that decide who is a member were crashing for a day, Stripe's dashboard
     # knew, and nothing here did — the setup checklist reported the webhook secret as set
     # and stopped there. One row per event turns that into a fact the checklist can print:
     # when the last one landed, what it was, and whether it matched an account.
-    await _record_webhook(kind, result)
-    return {"received": True, "type": kind, **result}
+    await _record_webhook(kind, result, error=applied_error)
+    # 200 EITHER WAY. `applied` is how the ledger and anyone reading the response tell a
+    # handled event from one that was accepted and then failed on our side.
+    return {"received": True, "type": kind, "applied": applied_error is None, **result}
 
 
 # ----------------------------- Favourites -----------------------------

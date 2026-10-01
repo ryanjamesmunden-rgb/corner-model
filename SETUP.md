@@ -162,6 +162,33 @@ of an hour — access is late rather than absent.
 That is a safety net and not a substitute. **Stripe disables endpoints that keep failing**,
 and once it does the sweep is the only path left, with nothing behind it.
 
+#### It happened: the endpoint was disabled on 1 October 2026
+
+Nine consecutive days of failures from 15 September, and Stripe turned the endpoint off.
+Nobody lost access — the 15-minute sweep carried it the whole time — but the fast path was
+gone and would have stayed gone silently.
+
+**To bring it back, in this order:**
+
+1. **Stripe → Developers → Webhooks → the live endpoint → Signing secret.** Reveal it, copy
+   the `whsec_…` value.
+2. **Render → the service → Environment → `STRIPE_WEBHOOK_SECRET`.** Paste it, save, let the
+   service redeploy. A mismatched secret is the original cause: every delivery is refused
+   with a signature error, which is a 400, which Stripe counts as a failure.
+3. **Back in Stripe, click Enable on the endpoint.** It stays disabled until you do — fixing
+   the secret alone does not re-enable it.
+4. **Confirm.** Run the `signup_audit` harness: it reads `db.billing_events` and reports
+   failed rows first. A clean run with recent rows means deliveries are landing again.
+
+**Two separate causes, and both are fixed:**
+
+- The **secret drifting** is yours to fix, with the steps above.
+- The **handler returning 500** was ours. Past the signature check it calls Stripe, writes to
+  Mongo and talks to Telegram, and any of those raising returned a 500 — which Stripe retries
+  for days and eventually disables the endpoint over. A verified event now always answers
+  200: the error is recorded in `db.billing_events` and the sweep re-applies it. A retry
+  would only have hit the same bug with the same payload.
+
 ### 8.2 The trial and the signup window
 
 | Key | Default | What it is |

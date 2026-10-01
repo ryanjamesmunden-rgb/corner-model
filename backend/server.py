@@ -20,7 +20,7 @@ import telegram_bot
 from pathlib import Path
 from pydantic import BaseModel
 from typing import List, Optional, Dict, Tuple
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, date, timezone, timedelta
 from zoneinfo import ZoneInfo
 from collections import defaultdict, deque
 
@@ -1873,10 +1873,45 @@ def value_pick_market(key: str, home: str, away: str):
             "venue": group, "subject": "team"}
 
 
+async def _value_day_map(start: str, days: int = 1, min_ev: float = 0.0,
+                         count: int = VALUE_PICK_COUNT
+                         ) -> Tuple[Dict[str, List[dict]], Dict[str, int]]:
+    """The qualifying bets for `days` days from `start`, grouped by the day they kick off.
+
+    ONE BOARD PASS FOR THE WHOLE WINDOW. Looking ahead a day at a time would be one full
+    scan of every stored price per day — four requests to answer "today is quiet, what
+    about tomorrow" — on a free instance whose own docstrings warn that this scan is the
+    expensive thing here. The board is fetched once over the whole window and the rows are
+    bucketed by day afterwards, which costs nothing extra.
+
+    A DAY OUTSIDE THE WINDOW IS STILL COUNTED AS A DROP, so "another day" keeps meaning
+    "there is a priced bet, just not in what you asked for".
+    """
+    horizon = max(1, days)
+    wanted = {(date.fromisoformat(start) + timedelta(days=i)).isoformat()
+              for i in range(horizon)}
+    rows, drops = await _value_rows(wanted, min_ev, horizon + 1)
+    by_day: Dict[str, List[dict]] = {}
+    for row in rows:
+        by_day.setdefault(row["day"], []).append(row)
+    for day in by_day:
+        by_day[day].sort(key=lambda r: -(r["best"]["ev"] or 0))
+        by_day[day] = by_day[day][:count]
+    return {d: by_day[d] for d in sorted(by_day)}, drops
+
+
 async def _value_shortlist(day: str, min_ev: float = 0.0,
                            count: int = VALUE_PICK_COUNT) -> Tuple[List[dict], Dict[str, int]]:
-    """The day's best priced bets, one per fixture, biggest edge first — and why the rest
-    are not here.
+    """One day's best priced bets. See _value_rows for the rules."""
+    rows, drops = await _value_rows({day}, min_ev, 2)
+    rows.sort(key=lambda r: -(r["best"]["ev"] or 0))
+    return rows[:count], drops
+
+
+async def _value_rows(days: set, min_ev: float = 0.0,
+                      within_days: int = 2) -> Tuple[List[dict], Dict[str, int]]:
+    """Every priced bet that qualifies on one of `days`, biggest edge first — and why the
+    rest are not here.
 
     ONE BET PER FIXTURE. value_board already ranks a fixture's whole priced ladder and
     hands back the best plus three alternatives; putting two lines on the same game on a
@@ -1890,7 +1925,7 @@ async def _value_shortlist(day: str, min_ev: float = 0.0,
     itself was rewritten to end, where five ways for a price to vanish all rendered as the
     same empty screen.
     """
-    board = await value_board(within_days=2, min_ev=min_ev, limit=100, user={})
+    board = await value_board(within_days=within_days, min_ev=min_ev, limit=200, user={})
     now = datetime.now(timezone.utc)
     out: List[dict] = []
     drops: Dict[str, int] = {}
@@ -1919,29 +1954,38 @@ async def _value_shortlist(day: str, min_ev: float = 0.0,
         if kick <= now:
             drop("kicked off")
             continue
-        if value_pick_day(kick) != day:
+        kick_day = value_pick_day(kick)
+        if kick_day not in days:
             drop("another day")
             continue
         market = value_pick_market(best["key"], row["home_name"], row["away_name"])
         if market is None:
             drop("market cannot be settled")
             continue
-        out.append({**row, "best": best, "market": market, "kickoff": kick.isoformat()})
-    out.sort(key=lambda r: -(r["best"]["ev"] or 0))
-    return out[:count], drops
+        out.append({**row, "best": best, "market": market,
+                    "kickoff": kick.isoformat(), "day": kick_day})
+    return out, drops
 
 
 async def _snapshot_value_picks(day: Optional[str] = None, min_ev: float = 0.0,
-                                count: int = VALUE_PICK_COUNT) -> dict:
+                                count: int = VALUE_PICK_COUNT,
+                                rows: Optional[List[dict]] = None) -> dict:
     """Freeze the day's priced bets. Idempotent — a pick already stored is never rewritten.
 
     FROZEN AT THE PRICE THAT WAS THERE. The price can move after this runs, and the
     record has to be of the bet that was actually published rather than of whatever the
     market settled at — so a pick already on file is left exactly as it was, including
     its odds. Re-running this an hour later tops the day up; it never revises it.
+
+    `rows` lets a caller that has already built the day map hand its rows straight in,
+    rather than paying for a second pass over every stored price to rebuild the same list.
     """
     day = day or value_pick_day()
-    shortlist, drops = await _value_shortlist(day, min_ev, count)
+    drops: Dict[str, int] = {}
+    if rows is None:
+        shortlist, drops = await _value_shortlist(day, min_ev, count)
+    else:
+        shortlist = rows[:count]
     inserted = []
     for row in shortlist:
         best, market = row["best"], row["market"]
@@ -7556,55 +7600,84 @@ async def share_rows(days: int = 3, limit: int = 12, token: Optional[str] = None
 @api_router.get("/share/bets")
 async def share_bets(token: Optional[str] = None, day: Optional[str] = None,
                      min_ev: float = 0.0, freeze: bool = True,
-                     count: int = VALUE_PICK_COUNT, settle: bool = True):
+                     count: int = VALUE_PICK_COUNT, settle: bool = True,
+                     days: int = 1):
     """The day's priced bets, with whatever has been graded so far — the card's payload.
 
     FREEZE THEN READ, IN THAT ORDER AND IN ONE CALL. The morning run freezes the day's
     bets and draws them; the evening run freezes nothing new (every game has kicked off,
-    and `_value_shortlist` drops those) and draws the same bets with their results. One
-    endpoint rather than two means the card can only ever show rows that are on the
+    and the shortlist drops those) and draws the same bets with their results. One
+    endpoint rather than two means a card can only ever show rows that are on the
     ledger — there is no path by which something is published and not recorded.
 
     `freeze=false` reads without writing, for a preview that must not create a record.
 
-    IT CAN COME BACK EMPTY AND THAT IS A REAL ANSWER. No odds stored, nothing clearing
-    the floor, or a day with no games all produce zero rows, and the caller is expected to
-    post nothing rather than to post an empty card. `note` says which of those it was,
+    `days` LOOKS FORWARD ONLY WHEN TODAY IS EMPTY, and that order matters. Today's card is
+    the one worth posting — its prices can still be taken — so a day with bets on it is
+    never buried under tomorrow's. It is when today has nothing that the next few days are
+    worth showing instead of silence, and each of those days gets its own card rather than
+    being merged into one: they settle on different evenings, and a card that mixed them
+    could not carry a day's result.
+
+    AND LOOKING AHEAD STILL FREEZES. A bet shown for tomorrow is a published bet, recorded
+    at the price that was there when it was shown — which is the price a reader could have
+    taken when they read it. The alternative is a card nobody is accountable for.
+
+    IT CAN COME BACK EMPTY AND THAT IS A REAL ANSWER. No odds stored, nothing clearing the
+    floor, or a quiet window all produce no cards, and the caller is expected to post
+    nothing rather than an empty one. `note` names which hurdle each price fell at,
     because "quiet day" and "the token is wrong" look identical from the outside.
     """
     _check_tools_token(token)
     day = day or value_pick_day()
-    frozen = await _snapshot_value_picks(day, min_ev, count) if freeze else None
+    horizon = max(1, min(days, 7))
+    # Every day already on the ledger for this window, so an evening run redraws what was
+    # frozen this morning even though those games have now kicked off and no longer
+    # qualify. The card is a record by then, not a shortlist.
+    known = {p["date"] for p in await db.picks.find(
+        {"auto": True, "signal": "value",
+         "date": {"$gte": day,
+                  "$lte": (date.fromisoformat(day) + timedelta(days=horizon - 1)).isoformat()}},
+        {"_id": 0, "date": 1}).to_list(500)}
+
+    by_day, drops = await _value_day_map(day, horizon, min_ev, count)
+    # Today first, then the days that have something — but only while today is empty.
+    wanted = [day] if (day in by_day or day in known) else [d for d in sorted(by_day)][:horizon]
+    frozen = 0
+    if freeze:
+        for d in wanted:
+            frozen += (await _snapshot_value_picks(d, min_ev, count,
+                                                   rows=by_day.get(d, [])))["inserted"]
     if settle:
         # Grade what can be graded. Idempotent and throttled to once a minute, so the
-        # evening card gets results without the morning card paying for a settlement run
-        # that has nothing to do.
+        # morning card does not pay for a settlement run that has nothing to do.
         await _run_settlement()
-    picks = await db.picks.find({"auto": True, "signal": "value", "date": day},
-                                {"_id": 0}).to_list(100)
-    picks.sort(key=lambda p: (p.get("kickoff") or "", p.get("home") or ""))
-    rows = [{**p, "profit": _pick_profit(p)} for p in picks]
-    note, drops = "", (frozen or {}).get("drops") or {}
-    if not rows:
+
+    cards = []
+    for d in wanted:
+        picks = await db.picks.find({"auto": True, "signal": "value", "date": d},
+                                    {"_id": 0}).to_list(100)
+        picks.sort(key=lambda p: (p.get("kickoff") or "", p.get("home") or ""))
+        if not picks:
+            continue
+        cards.append({"day": d, "rows": [{**p, "profit": _pick_profit(p)} for p in picks],
+                      "summary": _record(picks)})
+
+    note = ""
+    if not cards:
         stored = await db.odds.count_documents({})
         if not stored:
             note = "no prices stored at all — nothing can have an EV"
         else:
-            if not freeze:
-                # A PREVIEW IS THE RUN THAT MOST NEEDS THE DIAGNOSIS — it is the one
-                # somebody dispatches by hand to find out why nothing is going out. The
-                # shortlist only reads; the freeze is what writes, so running it here
-                # costs a board pass and creates nothing.
-                _, drops = await _value_shortlist(day, min_ev, count)
             # WHICH HURDLE THEY FELL AT. "Nothing cleared the floor" was true and useless:
-            # a price typed for tomorrow, a seeded price and a game already kicked off are
+            # a price typed for next week, a seeded price and a game already kicked off are
             # three different things to go and do something about.
             why = ", ".join(f"{n} {reason}" for reason, n in sorted(drops.items()))
-            note = (f"no priced bet cleared EV {min_ev:.0f}% for {day}"
+            span = day if horizon == 1 else f"{day} and the {horizon - 1} days after it"
+            note = (f"no priced bet cleared EV {min_ev:.0f}% for {span}"
                     + (f" — {why}" if why else " — no prices on a fixture in the window"))
-    return {"day": day, "min_ev": min_ev, "rows": rows,
-            "summary": _record(picks), "note": note, "drops": drops,
-            "frozen": (frozen or {}).get("inserted", 0),
+    return {"day": day, "days": horizon, "min_ev": min_ev, "cards": cards,
+            "note": note, "drops": drops, "frozen": frozen,
             "generated_at": datetime.now(timezone.utc).isoformat()}
 
 

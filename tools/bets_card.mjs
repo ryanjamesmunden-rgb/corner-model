@@ -16,8 +16,15 @@
 // the renderer and any future screen share. A second copy here in Python would drift, and
 // the drift would be about what the account publicly claims it won.
 //
-// Usage:  node tools/bets_card.mjs [--day YYYY-MM-DD] [--min-ev 0] [--rows 6] [--preview]
-//                                  [--json-out bets.json] [--args-out card_args.json]
+// ONE CARD PER DAY, AND ONLY MORE THAN ONE WHEN TODAY IS QUIET. `--days` asks the backend
+// to look forward, and it looks forward only when today has nothing: today's prices can
+// still be taken, so a day with bets on it is never buried under tomorrow's. Each day that
+// does come back gets its own card, because they settle on different evenings and one
+// card mixing two days could not carry a day's result.
+//
+// Usage:  node tools/bets_card.mjs [--day YYYY-MM-DD] [--days 1] [--min-ev 0] [--rows 6]
+//                                  [--preview] [--json-out bets.json]
+//                                  [--args-prefix card_args]
 // Env:    BACKEND_URL, SITE_URL, TOOLS_TOKEN (required)
 //
 // Exit status is 0 on a quiet day. `empty: true` in the JSON says there was nothing to
@@ -42,8 +49,11 @@ const TOKEN = process.env.TOOLS_TOKEN;
 const DAY = arg("day", null);
 const MIN_EV = Number(arg("min-ev", "0"));
 const ROWS = Number(arg("rows", String(MAX_CARD_ROWS)));
+const DAYS = Number(arg("days", "1"));
 const JSON_OUT = arg("json-out", "bets.json");
-const ARGS_OUT = arg("args-out", "card_args.json");
+// One file per card. A day is its own card (they settle on different evenings), so this
+// is a prefix rather than a filename: card_args_1.json, card_args_2.json, ...
+const ARGS_PREFIX = arg("args-prefix", "card_args");
 const HEADING = arg("heading", null);
 
 const fail = (m) => { console.error(`bets_card: ${m}`); process.exit(1); };
@@ -58,6 +68,7 @@ const params = new URLSearchParams({
   token: TOKEN,
   min_ev: String(MIN_EV),
   count: String(ROWS),
+  days: String(DAYS),
   freeze: flag("preview") ? "false" : "true",
 });
 if (DAY) params.set("day", DAY);
@@ -99,35 +110,53 @@ const get = async () => {
 };
 
 const data = await get();
-const card = cardFrom({ rows: data.rows || [], day: data.day, summary: data, max: ROWS });
+const cards = [];
 
-if (!card) {
-  // A QUIET DAY IS NOT A FAILURE, and the note says which kind of quiet it was — "no
+for (const entry of data.cards || []) {
+  const card = cardFrom({
+    rows: entry.rows || [], day: entry.day, summary: data, max: ROWS,
+  });
+  if (!card) continue;
+  // THE HEADING FOLLOWS THE DATA, NOT THE CLOCK. The same job runs twice a day and the two
+  // runs differ only in what has settled by the time they go, so deciding "bets" against
+  // "results" from the hour would be a second source of truth about which run this is —
+  // and the one that can be wrong. A card with nothing settled is bets; a card with a
+  // result on it is results, whenever it happens to be drawn.
+  //
+  // A DAY THAT IS NOT TODAY SAYS SO IN THE HEADING, because "TODAY'S BETS" over tomorrow's
+  // games is wrong in the one way a reader cannot check: the card's own date line is small
+  // and the heading is what gets screenshotted.
+  const today = entry.day === data.day;
+  const auto = card.hasResult ? "Today's results"
+    : today ? "Today's bets" : "Upcoming bets";
+  const heading = HEADING || auto;
+  const post = cardPost({ card, site: SITE.replace(/^https?:\/\//, ""), heading });
+  const argsFile = `${ARGS_PREFIX}_${cards.length + 1}.json`;
+  writeFileSync(argsFile, JSON.stringify({
+    card, site: SITE.replace(/^https?:\/\//, ""), heading: heading.toUpperCase(),
+  }));
+  cards.push({
+    day: card.day, post, args: argsFile, n: card.n,
+    note: `${card.day}: ${card.n} bet${card.n === 1 ? "" : "s"}`
+          + (card.hasResult ? ` · ${card.won}-${card.lost} · ${card.unitsText}` : " · all pending")
+          + (card.hidden ? ` · ${card.hidden} held back` : ""),
+  });
+}
+
+if (!cards.length) {
+  // A QUIET WINDOW IS NOT A FAILURE, and the note says which kind of quiet it was — "no
   // prices stored at all" and "nothing cleared the floor" need opposite responses, and
   // from outside they look identical.
   const note = data.note || "nothing to post";
   console.error(`bets_card: ${note}`);
-  writeFileSync(JSON_OUT, JSON.stringify({ empty: true, day: data.day, note }, null, 2));
+  writeFileSync(JSON_OUT, JSON.stringify({ empty: true, day: data.day, note, cards: [] }, null, 2));
   process.exit(0);
 }
 
-// THE HEADING FOLLOWS THE DATA, NOT THE CLOCK. The same job runs twice a day and the two
-// runs differ only in what has settled by the time they go, so deciding "bets" against
-// "results" from the hour would be a second source of truth about which run this is — and
-// the one that can be wrong. A card with nothing settled is today's bets; a card with a
-// result on it is today's results, whenever it happens to be drawn.
-const auto = card.hasResult ? "Today's results" : "Today's bets";
-const heading = HEADING || auto;
-const post = cardPost({ card, site: SITE.replace(/^https?:\/\//, ""), heading });
-
 writeFileSync(JSON_OUT, JSON.stringify({
-  empty: false, day: card.day, post, card,
-  note: `${card.n} bet${card.n === 1 ? "" : "s"}`
-        + (card.hasResult ? ` · ${card.won}-${card.lost} · ${card.unitsText}` : " · all pending")
-        + (card.hidden ? ` · ${card.hidden} held back` : ""),
+  empty: false, day: data.day, count: cards.length, cards,
+  note: cards.map((c) => c.note).join("  ·  "),
   frozen: data.frozen ?? 0,
 }, null, 2));
-writeFileSync(ARGS_OUT, JSON.stringify({
-  card, site: SITE.replace(/^https?:\/\//, ""), heading: heading.toUpperCase(),
-}));
-console.error(`bets_card: ${card.n} rows for ${card.day}`);
+console.error(`bets_card: ${cards.length} card${cards.length === 1 ? "" : "s"} — `
+              + cards.map((c) => c.note).join(" | "));

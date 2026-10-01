@@ -53,6 +53,11 @@ on:
         required: false
         default: "6"
         type: string
+      days:
+        description: "How far to look ahead WHEN TODAY IS QUIET (1 = today only)"
+        required: false
+        default: "3"
+        type: string
       send:
         # A PREVIEW IS NOT A PUBLICATION. Dispatching with send unticked draws the card and
         # prints the post into the run summary without anything reaching the channel — and
@@ -98,7 +103,8 @@ jobs:
           SITE_URL: ${{ vars.SITE_URL || 'https://thecornermodel.com' }}
           TOOLS_TOKEN: ${{ secrets.TOOLS_TOKEN }}
         run: |
-          set -- --rows "${{ inputs.rows || '6' }}" --min-ev "${{ inputs.min_ev || '0' }}"
+          set -- --rows "${{ inputs.rows || '6' }}" --min-ev "${{ inputs.min_ev || '0' }}" \
+                 --days "${{ inputs.days || '3' }}"
           [ -n "${{ inputs.day }}" ] && set -- "$@" --day "${{ inputs.day }}"
           # A dispatch that is not sending must not write to the ledger either. A frozen
           # pick is a published bet as far as the record is concerned, and a rehearsal
@@ -108,7 +114,7 @@ jobs:
             set -- "$@" --preview
             echo "::notice::preview — reading without freezing anything"
           fi
-          node tools/bets_card.mjs "$@" --json-out bets.json --args-out card_args.json
+          node tools/bets_card.mjs "$@" --json-out bets.json --args-prefix card_args
           empty=$(python3 -c "import json;print('true' if json.load(open('bets.json'))['empty'] else 'false')")
           echo "empty=$empty" >> "$GITHUB_OUTPUT"
           note=$(python3 -c "import json;print(json.load(open('bets.json'))['note'])")
@@ -121,16 +127,18 @@ jobs:
           # WHAT IT ACTUALLY POSTED, in the run itself and in the summary. The card is
           # otherwise only readable in Telegram, and on a preview run — which sends
           # nothing — it would be readable nowhere at all.
-          {
-            echo "## $note"
-            echo
-            echo '```'
-            python3 -c "import json;print(json.load(open('bets.json'))['post'])"
-            echo '```'
-          } >> "$GITHUB_STEP_SUMMARY"
-          echo "----- post -----"
-          python3 -c "import json;print(json.load(open('bets.json'))['post'])"
-          echo "----- end -----"
+          python3 - <<'PY' | tee -a "$GITHUB_STEP_SUMMARY"
+          import json
+          d = json.load(open("bets.json"))
+          print(f"## {d['note']}")
+          for c in d["cards"]:
+              print(f"\n### {c['day']}\n")
+              print("```")
+              print(c["post"])
+              print("```")
+          PY
+          python3 -c "import json;print(json.load(open('bets.json'))['count'])" > count.txt
+          echo "count=$(cat count.txt)" >> "$GITHUB_OUTPUT"
 
       - name: Draw the card
         id: card
@@ -143,12 +151,16 @@ jobs:
             echo "::warning::could not install playwright — sending text only"; exit 0; }
           npx playwright install chromium >/dev/null 2>&1 || {
             echo "::warning::could not install chromium — sending text only"; exit 0; }
-          if node tools/render_story.mjs --kind bets --args card_args.json --out bets.png \
-             && [ -s bets.png ]; then
-            echo "file=bets.png" >> "$GITHUB_OUTPUT"
-          else
-            echo "::warning::the card did not render — sending text only"
-          fi
+          # One render per card. A failure on one is a warning and costs that card its
+          # picture, not the day's post — the text carries every bet on its own.
+          for i in $(seq 1 "${{ steps.build.outputs.count }}"); do
+            if node tools/render_story.mjs --kind bets --args "card_args_$i.json" --out "bets_$i.png" \
+               && [ -s "bets_$i.png" ]; then
+              echo "drew bets_$i.png"
+            else
+              echo "::warning::card $i did not render — that one goes as text"
+            fi
+          done
 
       - name: Send it
         if: >-
@@ -160,47 +172,54 @@ jobs:
           FILE: ${{ steps.card.outputs.file }}
         run: |
           # THE CAPTION CAP IS 1024 AND TELEGRAM ANSWERS A LONGER ONE WITH HTTP 400, so the
-          # length decides the shape of the send rather than being discovered by a
+          # length decides the shape of each send rather than being discovered by a
           # rejection: short enough, one photo with the text on it; too long, the photo
           # goes first and the text follows as its own message.
-          python3 - <<'PY'
-          import json
-          d = json.load(open("bets.json"))
-          open("caption.txt", "w").write(d["post"])
-          open("shape.txt", "w").write("long" if len(d["post"]) > 1024 else "short")
+          #
+          # ONE SEND PER CARD, in day order. Two days on one card could not carry a day's
+          # result, and two days in one message would be read as one slate.
+          count=$(python3 -c "import json;print(json.load(open('bets.json'))['count'])")
+          for i in $(seq 1 "$count"); do
+            python3 - "$i" <<'PY'
+          import json, sys
+          c = json.load(open("bets.json"))["cards"][int(sys.argv[1]) - 1]
+          open("caption.txt", "w").write(c["post"])
+          open("shape.txt", "w").write("long" if len(c["post"]) > 1024 else "short")
           PY
-          SHAPE=$(cat shape.txt)
-          echo "caption is $(wc -c < caption.txt) bytes — sending $SHAPE"
+            SHAPE=$(cat shape.txt)
+            FILE="bets_$i.png"
+            echo "card $i: caption $(wc -c < caption.txt) bytes — sending $SHAPE"
 
-          sent=0
-          if [ -n "$FILE" ] && [ -s "$FILE" ]; then
-            # sendPhoto, not sendDocument: this is meant to be looked at in the channel,
-            # and a document arrives as an attachment nobody opens.
-            set -- -F "chat_id=$TG_CHAT" -F "photo=@$FILE"
-            [ "$SHAPE" = "short" ] && set -- "$@" -F "caption=$(cat caption.txt)"
-            code=$(curl -s -o tg.json -w '%{http_code}' --max-time 120 \
-              -X POST "https://api.telegram.org/bot$TG_TOKEN/sendPhoto" "$@" || true)
-            echo "sendPhoto HTTP $code"
-            if [ "$code" = "200" ]; then
-              sent=1
-            else
-              echo "::warning::sendPhoto failed (HTTP $code) — falling back to text"
-              head -c 300 tg.json || true
+            sent=0
+            if [ -s "$FILE" ]; then
+              # sendPhoto, not sendDocument: this is meant to be looked at in the channel,
+              # and a document arrives as an attachment nobody opens.
+              set -- -F "chat_id=$TG_CHAT" -F "photo=@$FILE"
+              [ "$SHAPE" = "short" ] && set -- "$@" -F "caption=$(cat caption.txt)"
+              code=$(curl -s -o tg.json -w '%{http_code}' --max-time 120 \
+                -X POST "https://api.telegram.org/bot$TG_TOKEN/sendPhoto" "$@" || true)
+              echo "sendPhoto HTTP $code"
+              if [ "$code" = "200" ]; then
+                sent=1
+              else
+                echo "::warning::sendPhoto failed (HTTP $code) — falling back to text"
+                head -c 300 tg.json || true
+              fi
             fi
-          fi
 
-          # The text goes out when the photo carried no caption, and when there was no
-          # photo at all. Both are the same need: the bets and the prices have to arrive.
-          if [ "$sent" = "0" ] || [ "$SHAPE" = "long" ]; then
+            # The text goes out when the photo carried no caption, and when there was no
+            # photo at all. Both are the same need: the bets and the prices have to arrive.
+            if [ "$sent" = "0" ] || [ "$SHAPE" = "long" ]; then
           python3 - <<'PY' > text.json
           import json, os
           print(json.dumps({"chat_id": os.environ["TG_CHAT"],
                             "text": open("caption.txt").read(),
                             "disable_web_page_preview": True}))
           PY
-            code=$(curl -s -o tg2.json -w '%{http_code}' --max-time 60 \
-              -X POST "https://api.telegram.org/bot$TG_TOKEN/sendMessage" \
-              -H 'Content-Type: application/json' --data @text.json || true)
-            echo "sendMessage HTTP $code"
-            [ "$code" = "200" ] || { echo "::error::could not post today's bets"; head -c 300 tg2.json; exit 1; }
-          fi
+              code=$(curl -s -o tg2.json -w '%{http_code}' --max-time 60 \
+                -X POST "https://api.telegram.org/bot$TG_TOKEN/sendMessage" \
+                -H 'Content-Type: application/json' --data @text.json || true)
+              echo "sendMessage HTTP $code"
+              [ "$code" = "200" ] || { echo "::error::could not post card $i"; head -c 300 tg2.json; exit 1; }
+            fi
+          done

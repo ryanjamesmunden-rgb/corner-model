@@ -73,7 +73,19 @@ class FakePicks:
 
     @staticmethod
     def _match(doc, q):
-        return all(doc.get(k) == v for k, v in (q or {}).items())
+        for k, v in (q or {}).items():
+            got = doc.get(k)
+            if isinstance(v, dict):
+                # Only the operators share_bets actually uses — a range over the day key.
+                if "$gte" in v and (got is None or got < v["$gte"]):
+                    return False
+                if "$lte" in v and (got is None or got > v["$lte"]):
+                    return False
+                if "$ne" in v and got == v["$ne"]:
+                    return False
+            elif got != v:
+                return False
+        return True
 
 
 class FakeOdds:
@@ -247,14 +259,14 @@ class TestTheCardsPayload:
     def test_it_freezes_and_returns_in_one_call(self, db, monkeypatch):
         install(monkeypatch, [row()])
         out = share(db, monkeypatch)
-        assert out["frozen"] == 1 and len(out["rows"]) == 1
+        assert out["frozen"] == 1 and len(out["cards"][0]["rows"]) == 1
         # Nothing can reach the card without reaching the ledger first.
         assert len(db.picks.docs) == 1
 
     def test_a_preview_reads_without_creating_a_record(self, db, monkeypatch):
         install(monkeypatch, [row()])
         out = share(db, monkeypatch, freeze=False)
-        assert out["rows"] == [] and db.picks.docs == []
+        assert out["cards"] == [] and db.picks.docs == []
 
     def test_an_empty_day_says_which_kind_of_empty_it_is(self, db, monkeypatch):
         install(monkeypatch, [])
@@ -275,7 +287,7 @@ class TestTheCardsPayload:
             {**row(fid="f6"), "status": "no_fixture", "best": None},
         ])
         out = share(db, monkeypatch, min_ev=0.0)
-        assert out["rows"] == []
+        assert out["cards"] == []
         assert out["drops"] == {"price not typed in": 1, "kicked off": 1, "another day": 1,
                                 "below the floor": 1, "market cannot be settled": 1,
                                 "no_fixture": 1}
@@ -293,18 +305,53 @@ class TestTheCardsPayload:
         assert "price not typed in" in out["note"]
         assert db.picks.docs == []
 
+    def test_a_quiet_today_falls_forward_to_the_days_that_do_have_bets(self, db, monkeypatch):
+        """Rather than silence. Each day gets its OWN card: they settle on different
+        evenings, and one card mixing two days could not carry a day's result."""
+        install(monkeypatch, [row(fid="f1", hours=30), row(fid="f2", hours=54)])
+        out = share(db, monkeypatch, days=4)
+        assert [c["day"] for c in out["cards"]] == [today_of(30), today_of(54)]
+        assert out["frozen"] == 2
+
+    def test_but_a_day_with_bets_on_it_is_never_buried_under_tomorrows(self, db, monkeypatch):
+        """Today's card is the one worth posting — its prices can still be taken."""
+        install(monkeypatch, [row(fid="f1", hours=4), row(fid="f2", hours=30)])
+        out = share(db, monkeypatch, days=4)
+        assert [c["day"] for c in out["cards"]] == [today_of(4)]
+
+    def test_and_tomorrow_is_frozen_when_it_is_shown(self, db, monkeypatch):
+        # A bet shown for tomorrow is a published bet, recorded at the price that was
+        # there when it was shown. The alternative is a card nobody is accountable for.
+        install(monkeypatch, [row(fid="f1", hours=30, book=1.91)])
+        share(db, monkeypatch, days=3)
+        assert db.picks.docs[0]["date"] == today_of(30)
+        assert db.picks.docs[0]["odds"] == 1.91
+
+    def test_an_evening_run_redraws_today_even_though_it_has_kicked_off(self, db, monkeypatch):
+        """THE ONE THAT WOULD HIDE THE DAY'S RESULTS. By evening today's games no longer
+        qualify — they have kicked off — so a look-ahead that only asked the shortlist
+        would skip today and post tomorrow's card instead of the results."""
+        install(monkeypatch, [row(fid="f1", hours=4)])
+        share(db, monkeypatch)                       # morning: today is frozen
+        db.picks.docs[0]["status"] = settlement.WON
+        install(monkeypatch, [row(fid="f2", hours=30)])   # evening: only tomorrow qualifies
+        out = share(db, monkeypatch, days=3)
+        assert [c["day"] for c in out["cards"]] == [today_of(4)]
+        assert out["cards"][0]["summary"]["won"] == 1
+
     def test_a_settled_card_carries_the_units_it_actually_won(self, db, monkeypatch):
         install(monkeypatch, [row(book=1.95)])
         share(db, monkeypatch)
         db.picks.docs[0]["status"] = settlement.WON
         out = share(db, monkeypatch)
-        assert out["rows"][0]["profit"] == 0.95
-        assert out["summary"]["won"] == 1 and out["summary"]["profit"] == 0.95
+        card = out["cards"][0]
+        assert card["rows"][0]["profit"] == 0.95
+        assert card["summary"]["won"] == 1 and card["summary"]["profit"] == 0.95
 
     def test_and_a_void_returns_the_stake_rather_than_counting_as_a_win(self, db, monkeypatch):
         install(monkeypatch, [row(key="total_over_9")])
         share(db, monkeypatch)
         db.picks.docs[0]["status"] = settlement.VOID
-        out = share(db, monkeypatch)
-        assert out["summary"]["void"] == 1
-        assert out["summary"]["won"] == 0 and out["summary"]["profit"] == 0.0
+        card = share(db, monkeypatch)["cards"][0]
+        assert card["summary"]["void"] == 1
+        assert card["summary"]["won"] == 0 and card["summary"]["profit"] == 0.0

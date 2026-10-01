@@ -283,13 +283,15 @@ class TestTheCardsPayload:
                        "below the floor", "market cannot be settled"):
             assert phrase in out["note"]
 
-    def test_a_preview_has_nothing_to_explain_because_it_froze_nothing(self, db, monkeypatch):
-        # freeze=false skips the shortlist entirely, so there are no drop counts to report
-        # and the note must not imply it looked.
+    def test_a_preview_still_gets_the_diagnosis_without_writing_anything(self, db, monkeypatch):
+        """The preview is the run somebody dispatches BY HAND to find out why nothing is
+        going out, so it is the one that most needs this — and it must still create no
+        record while answering."""
         install(monkeypatch, [row(source="demo")])
         out = share(db, monkeypatch, freeze=False)
-        assert out["drops"] == {}
-        assert "no prices on a fixture in the window" in out["note"]
+        assert out["drops"] == {"price not typed in": 1}
+        assert "price not typed in" in out["note"]
+        assert db.picks.docs == []
 
     def test_a_settled_card_carries_the_units_it_actually_won(self, db, monkeypatch):
         install(monkeypatch, [row(book=1.95)])

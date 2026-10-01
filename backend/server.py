@@ -7590,6 +7590,12 @@ async def share_bets(token: Optional[str] = None, day: Optional[str] = None,
         if not stored:
             note = "no prices stored at all — nothing can have an EV"
         else:
+            if not freeze:
+                # A PREVIEW IS THE RUN THAT MOST NEEDS THE DIAGNOSIS — it is the one
+                # somebody dispatches by hand to find out why nothing is going out. The
+                # shortlist only reads; the freeze is what writes, so running it here
+                # costs a board pass and creates nothing.
+                _, drops = await _value_shortlist(day, min_ev, count)
             # WHICH HURDLE THEY FELL AT. "Nothing cleared the floor" was true and useless:
             # a price typed for tomorrow, a seeded price and a game already kicked off are
             # three different things to go and do something about.

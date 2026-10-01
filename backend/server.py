@@ -1803,6 +1803,146 @@ async def _snapshot_daily_picks(day: Optional[str] = None) -> dict:
     return {"day": day, "shortlisted": len(shortlist), "inserted": len(inserted), "picks": inserted}
 
 
+# ----------------------------- Today's bets -----------------------------
+# The day's PRICED positive-EV bets, frozen before kick-off and graded afterwards, so a
+# card can be published that carries a real price, a real result and a real unit figure.
+#
+# THIS IS THE RE-ARM THE DAILY 2 BLOCK ABOVE SANCTIONS, under the one condition it set:
+# "do not re-arm it without giving each pick a price first — an unpriced ledger is worse
+# than no ledger, because it looks like evidence." Every pick here carries a book price
+# BY CONSTRUCTION. It cannot be selected without one, because EV cannot be computed
+# without one, and the floor is on EV.
+#
+# SO THIS IS A DIFFERENT RULE FROM THE DAILY 2, DELIBERATELY. That one dropped price
+# entirely and ordered on the model's own confidence, which makes a calibration record.
+# This one selects purely on the gap between a price somebody typed in and the model's
+# fair value, which is the only thing that can honestly be called a bet. The two would
+# pollute each other's record, so they carry different `signal` values and the ledger
+# already groups by it.
+#
+# ONLY MANUALLY ENTERED PRICES COUNT. seed_team_odds and reseed_odds generate demo prices
+# as `fair_odds * rng.uniform(0.90, 1.15)` — an EV computed against one of those is the
+# model finding value in its own jitter, which on a published card is indistinguishable
+# from a real edge. value_board carries `odds_source` for exactly this, and anything that
+# is not "manual" is refused here rather than filtered somewhere downstream.
+#
+# THE DAY IS A LONDON DAY, not a UTC one. This is the same decision dailySlip.js makes
+# and for the same reason: the card is drawn once on a runner and read by an audience in
+# one place, so "today" has to mean today where they are. A Brazilian kick-off at 23:30
+# UTC is on the card headed with the next morning's date, which is when it kicks off for
+# the reader.
+VALUE_PICK_RULE = "priced_positive_ev"
+VALUE_PICK_TZ = ZoneInfo("Europe/London")
+# How many go on the card. A card is read once and scrolled; past about six rows the
+# reader is skimming, and the seventh-best bet of the day is not what sold the first six.
+VALUE_PICK_COUNT = 6
+
+
+def value_pick_day(when: Optional[datetime] = None) -> str:
+    """Today in London, as YYYY-MM-DD. See VALUE_PICK_TZ above."""
+    return (when or datetime.now(timezone.utc)).astimezone(VALUE_PICK_TZ).date().isoformat()
+
+
+def value_pick_market(key: str, home: str, away: str):
+    """Map a market key onto the fields settlement.resolve_market grades, or None.
+
+    RETURNS None RATHER THAN A GUESS. The value board is built from build_markets, which
+    emits overs only — `home_over_5.5`, `total_over_9.5`. A key outside that shape is
+    either a price typed against a streak projection's market (`home_under_4`) or
+    something new, and settlement cannot grade a team-corner under from
+    `resolve_market`'s team_corners branch, which forces direction "over". Freezing one
+    anyway would put a bet on the card that can never settle, which is the one failure a
+    ledger must not have.
+    """
+    parsed = parse_market_key(key)
+    if parsed is None:
+        return None
+    group, direction, line = parsed
+    if direction != "over":
+        return None
+    if group == "total":
+        # Graded against the match total at the line as typed, so a whole line can push.
+        # `team` still names a side because settlement resolves which side's corners are
+        # "team" from it; for a total the two sides sum either way round.
+        return {"market": "asian_total", "line": line, "direction": "over",
+                "team": home, "venue": "home", "subject": "match"}
+    # Stored as "X+" because that is what resolve_market's team_corners branch expects:
+    # it grades `line - 0.5` as an over, so 5.5 has to be written down as 6.
+    return {"market": "team_corners", "line": line + 0.5, "direction": "over",
+            "team": home if group == "home" else away,
+            "venue": group, "subject": "team"}
+
+
+async def _value_shortlist(day: str, min_ev: float = 0.0,
+                           count: int = VALUE_PICK_COUNT) -> List[dict]:
+    """The day's best priced bets, one per fixture, biggest edge first.
+
+    ONE BET PER FIXTURE. value_board already ranks a fixture's whole priced ladder and
+    hands back the best plus three alternatives; putting two lines on the same game on a
+    card doubles the exposure while reading like two separate calls.
+    """
+    board = await value_board(within_days=2, min_ev=min_ev, limit=100, user={})
+    now = datetime.now(timezone.utc)
+    out = []
+    for row in board:
+        best = row.get("best")
+        if row.get("status") != "ok" or not best:
+            continue
+        if row.get("odds_source") != "manual":
+            continue                      # a price the model effectively wrote itself
+        if best.get("ev") is None or best["ev"] < min_ev or not best.get("book_odds"):
+            continue
+        try:
+            kick = datetime.fromisoformat((row.get("date") or "").replace("Z", "+00:00"))
+        except Exception:
+            continue
+        if kick.tzinfo is None:
+            kick = kick.replace(tzinfo=timezone.utc)
+        if kick <= now or value_pick_day(kick) != day:
+            continue
+        market = value_pick_market(best["key"], row["home_name"], row["away_name"])
+        if market is None:
+            continue
+        out.append({**row, "best": best, "market": market, "kickoff": kick.isoformat()})
+    out.sort(key=lambda r: -(r["best"]["ev"] or 0))
+    return out[:count]
+
+
+async def _snapshot_value_picks(day: Optional[str] = None, min_ev: float = 0.0,
+                                count: int = VALUE_PICK_COUNT) -> dict:
+    """Freeze the day's priced bets. Idempotent — a pick already stored is never rewritten.
+
+    FROZEN AT THE PRICE THAT WAS THERE. The price can move after this runs, and the
+    record has to be of the bet that was actually published rather than of whatever the
+    market settled at — so a pick already on file is left exactly as it was, including
+    its odds. Re-running this an hour later tops the day up; it never revises it.
+    """
+    day = day or value_pick_day()
+    shortlist = await _value_shortlist(day, min_ev, count)
+    inserted = []
+    for row in shortlist:
+        best, market = row["best"], row["market"]
+        key = {"auto": True, "signal": "value", "date": day,
+               "fixture_id": row["fixture_id"], "market_key": best["key"]}
+        if await db.picks.find_one(key):
+            continue
+        doc = {**key, **{k: v for k, v in market.items() if k != "subject"},
+               "subject": market["subject"],
+               "home": row["home_name"], "away": row["away_name"],
+               "league_id": row["league_id"], "league_name": row["league_name"],
+               "kickoff": row["kickoff"], "label": best["label"],
+               "odds": best["book_odds"], "model_odds": best["fair_odds"],
+               "model_prob": best["prob"], "ev": best["ev"], "ev_tier": best["tier"],
+               "selected_by": VALUE_PICK_RULE, "min_ev": min_ev,
+               "status": settlement.PENDING,
+               "created_at": datetime.now(timezone.utc).isoformat()}
+        await db.picks.insert_one(dict(doc))
+        doc.pop("_id", None)
+        inserted.append(doc)
+    return {"day": day, "shortlisted": len(shortlist), "inserted": len(inserted),
+            "picks": inserted}
+
+
 def _ledger_agg(subset: List[dict]) -> dict:
     return _record(subset)
 
@@ -7388,6 +7528,48 @@ async def share_rows(days: int = 3, limit: int = 12, token: Optional[str] = None
         out["value"] = [r for r in rows if r.get("status") == "ok"]
     out["timings_ms"] = timings
     return out
+
+
+@api_router.get("/share/bets")
+async def share_bets(token: Optional[str] = None, day: Optional[str] = None,
+                     min_ev: float = 0.0, freeze: bool = True,
+                     count: int = VALUE_PICK_COUNT, settle: bool = True):
+    """The day's priced bets, with whatever has been graded so far — the card's payload.
+
+    FREEZE THEN READ, IN THAT ORDER AND IN ONE CALL. The morning run freezes the day's
+    bets and draws them; the evening run freezes nothing new (every game has kicked off,
+    and `_value_shortlist` drops those) and draws the same bets with their results. One
+    endpoint rather than two means the card can only ever show rows that are on the
+    ledger — there is no path by which something is published and not recorded.
+
+    `freeze=false` reads without writing, for a preview that must not create a record.
+
+    IT CAN COME BACK EMPTY AND THAT IS A REAL ANSWER. No odds stored, nothing clearing
+    the floor, or a day with no games all produce zero rows, and the caller is expected to
+    post nothing rather than to post an empty card. `note` says which of those it was,
+    because "quiet day" and "the token is wrong" look identical from the outside.
+    """
+    _check_tools_token(token)
+    day = day or value_pick_day()
+    frozen = await _snapshot_value_picks(day, min_ev, count) if freeze else None
+    if settle:
+        # Grade what can be graded. Idempotent and throttled to once a minute, so the
+        # evening card gets results without the morning card paying for a settlement run
+        # that has nothing to do.
+        await _run_settlement()
+    picks = await db.picks.find({"auto": True, "signal": "value", "date": day},
+                                {"_id": 0}).to_list(100)
+    picks.sort(key=lambda p: (p.get("kickoff") or "", p.get("home") or ""))
+    rows = [{**p, "profit": _pick_profit(p)} for p in picks]
+    note = ""
+    if not rows:
+        stored = await db.odds.count_documents({})
+        note = ("no prices stored at all — nothing can have an EV" if not stored
+                else f"no priced bet cleared EV {min_ev:.0f}% for {day}")
+    return {"day": day, "min_ev": min_ev, "rows": rows,
+            "summary": _record(picks), "note": note,
+            "frozen": (frozen or {}).get("inserted", 0),
+            "generated_at": datetime.now(timezone.utc).isoformat()}
 
 
 @api_router.get("/export/streaks")

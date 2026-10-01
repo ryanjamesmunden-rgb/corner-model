@@ -2251,6 +2251,259 @@ export const renderDailySlip = (canvas, {
   return true;
 };
 
+// THE RESULT COLOURS ARE THE RESULT CARD'S, not a second set. A win is the same green on
+// every graphic this account posts, or the palette starts carrying meaning it does not
+// have. See resultVerdict above, which these are lifted from.
+const BET_TONE = {
+  win: "#39D0A3",
+  loss: "#F2557E",
+  void: C.muted,
+  pending: "#F2B04E",
+};
+
+/**
+ * Today's bets: the day's priced positive-EV calls, with results once there are any.
+ *
+ * THE ONLY CARD HERE THAT POSTS A PROFIT FIGURE, and it can only do that because every row
+ * carries a price somebody typed in before kick-off. recordCard.js refuses units for
+ * exactly the opposite reason — posted angles are stored with a line and no price, so a
+ * unit figure on one would be odds invented after the fact. The selection on the backend
+ * cannot produce a row without a book price, so this card cannot draw one.
+ *
+ * ONE DRAWING, TWO MOMENTS. The morning run draws it with every row pending; the evening
+ * run draws THE SAME ROWS with their results. That is why the status column exists on a
+ * card that will often be entirely "PENDING": a second layout for the results would be a
+ * second card, and the day's losers would not have to appear on it.
+ *
+ * THE FOOTER COUNTS WHAT IS SETTLED AND SAYS WHAT IS NOT. "+1.63u" above two open bets is
+ * a half-time score, and a reader who cannot see the denominator cannot tell it from a
+ * finished day. betsCard.cardFrom computes both; this only draws them.
+ *
+ * `card` is whatever lib/betsCard.cardFrom returned. Null draws nothing and returns false:
+ * a day with no priced bet on it has no card, and that decision belongs there, not here.
+ */
+export const renderBetsCard = (canvas, {
+  card = null, site = "thecornermodel.com", brand = "CORNER MODEL",
+  heading = "TODAY'S BETS",
+} = {}) => {
+  if (!card || !card.rows?.length) return false;
+  const W = FEED_W;
+  const pad = 56;
+  const inner = W - pad * 2;
+  const gap = 14;
+  const rowH = 132;
+  const headBottom = 236;
+  const footH = 132;
+  // THE CARD IS AS TALL AS ITS ROWS. A fixed 4:5 frame with two bets on it leaves a hole
+  // the size of four more, which reads as a card that failed to finish rendering — the
+  // failure the slip card's own layout note is about. Six rows is the cap betsCard sets,
+  // so the tallest this gets is a little over the feed shape.
+  const H = Math.round(headBottom + card.n * rowH + (card.n - 1) * gap + 34 + footH + 86);
+  canvas.width = W;
+  canvas.height = H;
+  const ctx = canvas.getContext("2d");
+
+  ctx.fillStyle = C.bg;
+  ctx.fillRect(0, 0, W, H);
+  const glow = ctx.createRadialGradient(W / 2, 150, 60, W / 2, 150, 620);
+  glow.addColorStop(0, `${C.primary}22`);
+  glow.addColorStop(1, `${C.primary}00`);
+  ctx.fillStyle = glow;
+  ctx.fillRect(0, 0, W, 520);
+  ctx.textBaseline = "middle";
+
+  // ---- the band across the top
+  ctx.fillStyle = C.text;
+  ctx.font = `800 34px ${FONT_HEAD}`;
+  ctx.letterSpacing = "2px";
+  ctx.fillText(brand, pad, 74);
+  ctx.letterSpacing = "0px";
+
+  ctx.textAlign = "right";
+  ctx.fillStyle = C.muted;
+  ctx.font = `600 24px ${FONT_BODY}`;
+  const when = [dayCardDate(card.day), card.zone ? `times ${card.zone}` : ""]
+    .filter(Boolean).join("  ·  ");
+  if (when) ctx.fillText(when, W - pad, 74);
+  ctx.textAlign = "left";
+
+  ctx.fillStyle = C.text;
+  ctx.font = `800 86px ${FONT_HEAD}`;
+  ctx.fillText(heading, pad, 158);
+
+  // WHAT MADE THESE THE BETS, stated rather than implied. A card headed "today's bets"
+  // with no rule under it is a tip sheet; with the rule under it, it is a filter anyone
+  // can disagree with. The floor is carried from the backend so the line cannot drift
+  // from the selection it describes.
+  ctx.fillStyle = C.muted;
+  ctx.font = `500 25px ${FONT_BODY}`;
+  const bar = card.minEv ? `model edge over ${card.minEv}%` : "positive model edge";
+  ctx.fillText(`Priced bets with a ${bar}  ·  1u flat`, pad, 204);
+
+  ctx.strokeStyle = C.border;
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(pad, headBottom - 18);
+  ctx.lineTo(W - pad, headBottom - 18);
+  ctx.stroke();
+
+  // ---- the rows
+  //
+  // Column edges are computed once rather than per row, so a long club name cannot push
+  // the price out of line on one row and not the others.
+  const anyChip = card.rows.some((r) => countryCodeFor(r.leagueId));
+  const chipX = pad + 16;
+  const chipW = anyChip ? 58 : 0;
+  const teamX = chipX + (anyChip ? chipW + 14 : 0);
+  // THE MARKET COLUMN IS THE ONE THAT CANNOT SHRINK. "Over 9.5 match corners" over
+  // "model 1.66 · edge 13.2%" is the widest thing on the row and the only part a reader
+  // cannot reconstruct from the rest of the card, so the club names give up the space:
+  // they ellipsize gracefully and the fixture is still legible at 262.
+  const teamW = 262;
+  const marketX = teamX + teamW + 18;
+  const statusW = 176;
+  const statusX = W - pad - statusW - 10;
+  const priceW = 104;
+  const priceX = statusX - priceW - 14;
+  // EVERYTHING IN THIS COLUMN IS CUT TO IT, both lines. The market was ellipsized and the
+  // model/edge line under it was not, so it ran straight under the price box — a number
+  // half-hidden behind another number, which is worse than one that is simply absent.
+  const marketW = Math.max(130, priceX - marketX - 14);
+
+  card.rows.forEach((r, i) => {
+    const y = headBottom + i * (rowH + gap);
+    const mid = y + rowH / 2;
+    const tone = BET_TONE[r.tone] || C.muted;
+
+    ctx.fillStyle = C.card;
+    roundRect(ctx, pad, y, inner, rowH, 14);
+    ctx.fill();
+    ctx.strokeStyle = r.settled ? `${tone}55` : C.border;
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+    // A settled row wears its result on its edge, so the card can be read at a glance
+    // without any of the words. Drawn as a bar rather than a tint: a filled row in a
+    // losing colour reads as an alert about the card rather than about the bet.
+    ctx.fillStyle = tone;
+    roundRect(ctx, pad, y + 16, 5, rowH - 32, 3);
+    ctx.fill();
+
+    const code = countryCodeFor(r.leagueId);
+    if (anyChip && code) {
+      ctx.fillStyle = C.secondary;
+      roundRect(ctx, chipX, mid - 20, chipW, 40, 8);
+      ctx.fill();
+      ctx.fillStyle = C.muted;
+      ctx.font = `700 20px ${FONT_DATA}`;
+      ctx.textAlign = "center";
+      ctx.fillText(code, chipX + chipW / 2, mid + 1);
+      ctx.textAlign = "left";
+    }
+
+    // Both sides, one per line, at ONE size for the pair — fitted independently, a long
+    // name beside a short one reads as two different kinds of thing rather than as one
+    // fixture.
+    ctx.fillStyle = C.text;
+    const teamPx = fitPair(ctx, r.home, r.away,
+                           { size: 28, max: teamW, weight: 600, family: FONT_BODY, min: 18 });
+    ctx.font = `600 ${teamPx}px ${FONT_BODY}`;
+    ctx.fillText(ellipsize(ctx, r.home, teamW), teamX, mid - 26);
+    ctx.fillText(ellipsize(ctx, r.away, teamW), teamX, mid + 8);
+    ctx.fillStyle = C.muted;
+    ctx.font = `500 21px ${FONT_DATA}`;
+    ctx.fillText(r.time || "", teamX, mid + 42);
+
+    // The bet, and under it the model's own number — the thing the price was judged
+    // against. Without it the EV on the row is a claim with nothing behind it.
+    ctx.fillStyle = C.text;
+    ctx.font = fitFont(ctx, r.market, { size: 27, max: marketW, weight: 600, family: FONT_BODY, min: 17 });
+    ctx.fillText(ellipsize(ctx, r.market, marketW), marketX, mid - 16);
+    ctx.fillStyle = C.muted;
+    ctx.font = `500 21px ${FONT_BODY}`;
+    const sub = [r.fair ? `model ${r.fair}` : "", r.ev !== null ? `edge ${r.ev}%` : ""]
+      .filter(Boolean).join("  ·  ");
+    ctx.fillText(ellipsize(ctx, sub, marketW), marketX, mid + 20);
+
+    // ALWAYS THE BOOK BOX. There is no fair-price fallback on this card: a row without a
+    // real price is not a bet and betsCard drops it before it reaches here.
+    drawPriceBox(ctx, { x: priceX, y: mid - 30, w: priceW, price: r.price, kind: "book" });
+
+    // ---- the result, or the fact that there isn't one yet
+    ctx.textAlign = "center";
+    const cx = statusX + statusW / 2;
+    ctx.fillStyle = tone;
+    ctx.font = `800 30px ${FONT_HEAD}`;
+    ctx.fillText(r.statusLabel, cx, mid - (r.settled ? 24 : 10));
+    if (r.settled) {
+      ctx.fillStyle = C.muted;
+      ctx.font = `500 22px ${FONT_BODY}`;
+      ctx.fillText(r.result || "", cx, mid + 8);
+      ctx.fillStyle = tone;
+      ctx.font = `800 30px ${FONT_DATA}`;
+      ctx.fillText(r.profitText, cx, mid + 42);
+    } else {
+      ctx.fillStyle = C.dim;
+      ctx.font = `600 24px ${FONT_DATA}`;
+      ctx.fillText("—", cx, mid + 26);
+    }
+    ctx.textAlign = "left";
+  });
+
+  // ---- the tally
+  const footY = H - footH - 54;
+  ctx.fillStyle = C.secondary;
+  roundRect(ctx, pad, footY, inner, footH, 16);
+  ctx.fill();
+  ctx.strokeStyle = C.border;
+  ctx.lineWidth = 1.5;
+  ctx.stroke();
+
+  // WON / LOST / PENDING / PROFIT, and the last one only once something has settled.
+  // "0u" over a card of open bets reads as a day that went nowhere rather than one that
+  // has not happened yet.
+  const cells = [
+    ["WON", String(card.won), BET_TONE.win],
+    ["LOST", String(card.lost), BET_TONE.loss],
+    ...(card.voided ? [["VOID", String(card.voided), C.muted]] : []),
+    ["PENDING", String(card.pending), BET_TONE.pending],
+    ["PROFIT", card.hasResult ? card.unitsText : "—",
+      card.hasResult && card.units < 0 ? BET_TONE.loss
+        : card.hasResult && card.units > 0 ? BET_TONE.win : C.muted],
+  ];
+  const cellW = inner / cells.length;
+  ctx.textAlign = "center";
+  cells.forEach(([label, value, colour], i) => {
+    const cx = pad + cellW * (i + 0.5);
+    ctx.fillStyle = C.muted;
+    ctx.font = `700 21px ${FONT_BODY}`;
+    ctx.letterSpacing = "3px";
+    ctx.fillText(label, cx, footY + 40);
+    ctx.letterSpacing = "0px";
+    ctx.fillStyle = colour;
+    ctx.font = `800 46px ${FONT_HEAD}`;
+    ctx.fillText(value, cx, footY + 88);
+    if (i) {
+      ctx.strokeStyle = C.border;
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(pad + cellW * i, footY + 26);
+      ctx.lineTo(pad + cellW * i, footY + footH - 26);
+      ctx.stroke();
+    }
+  });
+  ctx.textAlign = "left";
+
+  ctx.fillStyle = C.text;
+  ctx.font = `700 32px ${FONT_HEAD}`;
+  ctx.fillText(site, pad, H - 40);
+  ctx.textAlign = "right";
+  ctx.fillStyle = C.muted;
+  ctx.font = `500 22px ${FONT_BODY}`;
+  ctx.fillText("18+ · gambleaware.org", W - pad, H - 40);
+  ctx.textAlign = "left";
+  return true;
+};
+
 /**
  * The morning board: ten chase spots for a day, each with the reason it is on the card.
  *

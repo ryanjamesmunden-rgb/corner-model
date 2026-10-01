@@ -1,0 +1,206 @@
+# Today's bets: the day's priced positive-EV calls, as a card, twice.
+#
+# WHAT MAKES THIS DIFFERENT FROM THE MORNING SLATE. The slate shows what is ON today — the
+# fixtures, with the model's fair price where no real one has been typed in, because a
+# slate built only from priced rows would be empty most mornings. This is the other half:
+# only rows with a BOOK price, only rows where that price beats the model, and a result
+# and a unit figure once the games have been played. It is the only card this account
+# posts that claims a profit, and it can only claim one because every row on it carries a
+# price somebody typed in before kick-off.
+#
+# SO IT POSTS NOTHING ON A DAY WITH NO PRICES. That is the common case rather than a
+# failure, and the job says which kind of nothing it was — no prices stored at all, or
+# none clearing the floor. A card headed TODAY'S BETS with no bets on it would be worse
+# than silence.
+#
+# TWO CRONS AND NO CLOCK GATE. daily_slip.yml's header is a post-mortem of gating on the
+# hour: GitHub gives a scheduled run no reliable way to know which of a workflow's crons
+# fired, so an hour check ate three of its first five runs and the workflow went green
+# having done nothing. There is no gate here because there is nothing to gate — both runs
+# do the identical thing, and what differs is the DATA. The morning run finds every row
+# pending; the evening run finds the same rows settled. The heading follows from that
+# rather than from the time of day (see `heading` below), which is the one way to make a
+# card say "results" that cannot be wrong about which run it is on.
+#
+# THE FETCH IS WHAT FREEZES THE DAY. /api/share/bets writes the day's picks into the
+# ledger as it answers, so a bet cannot be published without being recorded — and the
+# evening run redraws whatever the morning froze, losers included. A preview run passes
+# --preview, which reads without writing.
+name: Today's bets
+
+on:
+  schedule:
+    # 09:00 UTC — after the 07:00 slate and before the first European kick-offs, so the
+    # morning card lands when the prices on it can still be taken.
+    - cron: "0 9 * * *"
+    # 22:30 UTC — after the European card has finished. Late South American games are
+    # still pending at this hour and the card says so rather than waiting for them.
+    - cron: "30 22 * * *"
+  workflow_dispatch:
+    inputs:
+      day:
+        description: "Which day, YYYY-MM-DD (blank = today in London)"
+        required: false
+        default: ""
+        type: string
+      min_ev:
+        description: "Minimum model edge, in percent (blank = 0, any positive edge)"
+        required: false
+        default: ""
+        type: string
+      rows:
+        description: "Most bets on the card (1-6)"
+        required: false
+        default: "6"
+        type: string
+      send:
+        # A PREVIEW IS NOT A PUBLICATION. Dispatching with send unticked draws the card and
+        # prints the post into the run summary without anything reaching the channel — and
+        # without freezing anything into the ledger, which a preview must not do.
+        description: "Actually send it to Telegram"
+        required: false
+        default: false
+        type: boolean
+
+concurrency:
+  group: corner-daily-bets
+
+permissions:
+  contents: read
+
+jobs:
+  bets:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      # Render sleeps the free instance. A cold start can take most of a minute, and the
+      # first call failing outright is normal rather than a fault.
+      - name: Wake the backend
+        env:
+          BACKEND: ${{ vars.BACKEND_URL || 'https://corner-model.onrender.com' }}
+        run: |
+          for i in 1 2 3 4 5 6; do
+            code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 60 "$BACKEND/api/" || true)
+            echo "attempt $i: HTTP $code"
+            [ "$code" = "200" ] && break
+            sleep 15
+          done
+
+      - name: Freeze and build today's bets
+        id: build
+        env:
+          BACKEND_URL: ${{ vars.BACKEND_URL || 'https://corner-model.onrender.com' }}
+          SITE_URL: ${{ vars.SITE_URL || 'https://thecornermodel.com' }}
+          TOOLS_TOKEN: ${{ secrets.TOOLS_TOKEN }}
+        run: |
+          set -- --rows "${{ inputs.rows || '6' }}" --min-ev "${{ inputs.min_ev || '0' }}"
+          [ -n "${{ inputs.day }}" ] && set -- "$@" --day "${{ inputs.day }}"
+          # A dispatch that is not sending must not write to the ledger either. A frozen
+          # pick is a published bet as far as the record is concerned, and a rehearsal
+          # that quietly created six of them would put bets on the record that nobody
+          # ever saw.
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.send }}" != "true" ]; then
+            set -- "$@" --preview
+            echo "::notice::preview — reading without freezing anything"
+          fi
+          node tools/bets_card.mjs "$@" --json-out bets.json --args-out card_args.json
+          empty=$(python3 -c "import json;print('true' if json.load(open('bets.json'))['empty'] else 'false')")
+          echo "empty=$empty" >> "$GITHUB_OUTPUT"
+          note=$(python3 -c "import json;print(json.load(open('bets.json'))['note'])")
+          echo "::notice::$note"
+          if [ "$empty" = "true" ]; then
+            echo "## No bets today" >> "$GITHUB_STEP_SUMMARY"
+            echo "$note" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          # WHAT IT ACTUALLY POSTED, in the run itself and in the summary. The card is
+          # otherwise only readable in Telegram, and on a preview run — which sends
+          # nothing — it would be readable nowhere at all.
+          {
+            echo "## $note"
+            echo
+            echo '```'
+            python3 -c "import json;print(json.load(open('bets.json'))['post'])"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "----- post -----"
+          python3 -c "import json;print(json.load(open('bets.json'))['post'])"
+          echo "----- end -----"
+
+      - name: Draw the card
+        id: card
+        if: steps.build.outputs.empty != 'true'
+        # DECORATION, so every failure here is a warning. The post carries every bet, its
+        # price and its result on its own; a job that dies rendering a picture would cost
+        # the day's record for the sake of a graphic.
+        run: |
+          npm i --no-save playwright@1.49.1 >/dev/null 2>&1 || {
+            echo "::warning::could not install playwright — sending text only"; exit 0; }
+          npx playwright install chromium >/dev/null 2>&1 || {
+            echo "::warning::could not install chromium — sending text only"; exit 0; }
+          if node tools/render_story.mjs --kind bets --args card_args.json --out bets.png \
+             && [ -s bets.png ]; then
+            echo "file=bets.png" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::the card did not render — sending text only"
+          fi
+
+      - name: Send it
+        if: >-
+          steps.build.outputs.empty != 'true' && env.TG_TOKEN != ''
+          && (github.event_name != 'workflow_dispatch' || inputs.send)
+        env:
+          TG_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TG_CHAT: ${{ secrets.TELEGRAM_SLIP_CHAT_ID || secrets.TELEGRAM_CHAT_ID }}
+          FILE: ${{ steps.card.outputs.file }}
+        run: |
+          # THE CAPTION CAP IS 1024 AND TELEGRAM ANSWERS A LONGER ONE WITH HTTP 400, so the
+          # length decides the shape of the send rather than being discovered by a
+          # rejection: short enough, one photo with the text on it; too long, the photo
+          # goes first and the text follows as its own message.
+          python3 - <<'PY'
+          import json
+          d = json.load(open("bets.json"))
+          open("caption.txt", "w").write(d["post"])
+          open("shape.txt", "w").write("long" if len(d["post"]) > 1024 else "short")
+          PY
+          SHAPE=$(cat shape.txt)
+          echo "caption is $(wc -c < caption.txt) bytes — sending $SHAPE"
+
+          sent=0
+          if [ -n "$FILE" ] && [ -s "$FILE" ]; then
+            # sendPhoto, not sendDocument: this is meant to be looked at in the channel,
+            # and a document arrives as an attachment nobody opens.
+            set -- -F "chat_id=$TG_CHAT" -F "photo=@$FILE"
+            [ "$SHAPE" = "short" ] && set -- "$@" -F "caption=$(cat caption.txt)"
+            code=$(curl -s -o tg.json -w '%{http_code}' --max-time 120 \
+              -X POST "https://api.telegram.org/bot$TG_TOKEN/sendPhoto" "$@" || true)
+            echo "sendPhoto HTTP $code"
+            if [ "$code" = "200" ]; then
+              sent=1
+            else
+              echo "::warning::sendPhoto failed (HTTP $code) — falling back to text"
+              head -c 300 tg.json || true
+            fi
+          fi
+
+          # The text goes out when the photo carried no caption, and when there was no
+          # photo at all. Both are the same need: the bets and the prices have to arrive.
+          if [ "$sent" = "0" ] || [ "$SHAPE" = "long" ]; then
+          python3 - <<'PY' > text.json
+          import json, os
+          print(json.dumps({"chat_id": os.environ["TG_CHAT"],
+                            "text": open("caption.txt").read(),
+                            "disable_web_page_preview": True}))
+          PY
+            code=$(curl -s -o tg2.json -w '%{http_code}' --max-time 60 \
+              -X POST "https://api.telegram.org/bot$TG_TOKEN/sendMessage" \
+              -H 'Content-Type: application/json' --data @text.json || true)
+            echo "sendMessage HTTP $code"
+            [ "$code" = "200" ] || { echo "::error::could not post today's bets"; head -c 300 tg2.json; exit 1; }
+          fi

@@ -1831,6 +1831,20 @@ async def _snapshot_daily_picks(day: Optional[str] = None) -> dict:
 # one place, so "today" has to mean today where they are. A Brazilian kick-off at 23:30
 # UTC is on the card headed with the next morning's date, which is when it kicks off for
 # the reader.
+# The board's own status slugs, in words, because this line is read by a person deciding
+# what to do next. The first real multi-day preview reported "10 no_fixture", which is the
+# least alarming thing on the list — prices on games that have since been played, kept as
+# a record — and the most alarming-looking. "4 below_floor" was the sentence that mattered:
+# four live priced games, none of them offering anything.
+BOARD_DROP_WORDS = {
+    "below_floor": "priced with no edge",
+    "kicked_off": "already kicked off",
+    "no_fixture": "on a game already played",
+    "no_market": "priced against no market the model builds",
+    "no_teams": "teams not synced yet",
+    "outside_window": "outside the window",
+}
+
 VALUE_PICK_RULE = "priced_positive_ev"
 VALUE_PICK_TZ = ZoneInfo("Europe/London")
 # How many go on the card. A card is read once and scrolled; past about six rows the
@@ -1936,7 +1950,7 @@ async def _value_rows(days: set, min_ev: float = 0.0,
     for row in board:
         best = row.get("best")
         if row.get("status") != "ok" or not best:
-            drop(row.get("status") or "no market")
+            drop(BOARD_DROP_WORDS.get(row.get("status"), row.get("status") or "no market"))
             continue
         if row.get("odds_source") != "manual":
             drop("price not typed in")     # a price the model effectively wrote itself

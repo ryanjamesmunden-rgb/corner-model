@@ -212,6 +212,15 @@ export const streakResultShare = ({ results = [], landed = 0, settled = 0, voide
 // mark nothing.
 export const FIRE_RUN = 8;
 
+// WHAT A RUN HAS TO REACH BEFORE IT GOES OUT IN A POST, and it is deliberately higher than
+// the panel's floor. On screen a reader can weigh a three-game run — it carries its own
+// length and the games behind it. A post is read once and scrolled, so it only carries runs
+// long enough to be worth somebody's attention.
+//
+// DEFINED HERE because this is where the share lives, and fixtureStreaks.js already imports
+// FIRE_RUN from this file — taking it the other way would be a cycle.
+export const SHARE_MIN_RUN = 5;
+
 export const fixtureStreakShare = ({ fixture = {}, streaks = [], form = [],
                                      leagueName = "" }) => (limit) => {
   if (!streaks.length) return "";
@@ -220,7 +229,14 @@ export const fixtureStreakShare = ({ fixture = {}, streaks = [], form = [],
   // see postHeader. It costs a couple of rows' worth of characters on X, which fitToPost
   // absorbs by showing fewer streaks rather than by cutting one short.
   const head = postHeader({ fixture, leagueName }).join("\n");
-  const lines = streaks.slice(0, limit).map((s) => {
+  // THE POST'S OWN FLOOR, applied here rather than upstream. The payload now carries runs
+  // from three up so the on-screen panel can show them — a reader can weigh a short run —
+  // but a post is read once and scrolled, so it only carries the ones long enough to be
+  // worth somebody's attention. Filtered BEFORE the limit, or a three-game run would take
+  // the place of a nine-game one.
+  const worth = streaks.filter((s) => Number(s?.run ?? s?.streak?.length ?? 0) >= SHARE_MIN_RUN);
+  if (!worth.length) return "";
+  const lines = worth.slice(0, limit).map((s) => {
     // "Derby games 10+" for a match total, "Derby 6+" for that team's own corners — the
     // two are different claims and a reader has to be able to tell which is which.
     // "Derby games 10+" for a match total, "Derby 6+" for that team's own corners, and
@@ -240,7 +256,7 @@ export const fixtureStreakShare = ({ fixture = {}, streaks = [], form = [],
     .map((f) => `${f.team} ${f.label} ${f.venue === "away" ? "away" : "at home"}`);
   const tail = state.length ? `\n\n${state.join("\n")}` : "";
   return `${head}\n\nStreaks running into it:\n${lines.join("\n")}`
-    + more(streaks.length, limit) + tail;
+    + more(worth.length, limit) + tail;
 };
 
 // ----------------------------- The picks, reviewed -----------------------------

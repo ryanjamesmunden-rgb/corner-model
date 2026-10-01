@@ -13,7 +13,8 @@
 //   - The fire meaning something different here from everywhere else.
 //   - An under relabelled as an over, which loses in the opposite direction to intent.
 import {
-  FIRE_RUN, MIN_RUN, fixtureStreaks, markFor, streakDetail, streakHeadline, streakRow,
+  FIRE_RUN, MIN_RUN, SHARE_MIN_RUN, fixtureStreaks, markFor, streakDetail, streakHeadline,
+  streakRow,
   subjectLabel,
 } from "./fixtureStreaks.js";
 
@@ -187,5 +188,36 @@ describe("a conceded run", () => {
     ]);
     expect(rows.map((r) => r.run)).toEqual([9, 6]);
     expect(new Set(rows.map((r) => r.key)).size).toBe(2);
+  });
+});
+
+
+// THE PANEL AND THE POST DISAGREE ON PURPOSE. On screen a reader can weigh a three-game run;
+// a post is read once and scrolled, so it keeps the stricter cut. This used to be one
+// threshold of five applied to both, which hid most runs from the panel entirely — and the
+// conceded subject, being the newest and the rarest to reach five, almost never appeared.
+describe("how short a run the panel will show", () => {
+  test("three is a run on screen", () => {
+    expect(MIN_RUN).toBe(3);
+    expect(fixtureStreaks([row("Derby", { run: 3 })])).toHaveLength(1);
+  });
+
+  test("two is not", () => {
+    expect(fixtureStreaks([row("Derby", { run: 2 })])).toEqual([]);
+  });
+
+  test("the post's floor is higher, and it is a different number", () => {
+    expect(SHARE_MIN_RUN).toBe(5);
+    expect(SHARE_MIN_RUN).toBeGreaterThan(MIN_RUN);
+  });
+
+  test("a conceded run of three now reaches the panel", () => {
+    // The case that prompted this: five in a row at the same line on the same venue is rare,
+    // so a conceded streak almost never cleared the old floor.
+    const rows = fixtureStreaks([
+      { ...row("Brighton", { subject: "conceded", line: 5, run: 3 }), opponent: "Arsenal" },
+    ]);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].claim).toBe("Brighton concede 5+");
   });
 });

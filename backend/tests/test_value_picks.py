@@ -290,7 +290,10 @@ class TestTheCardsPayload:
         assert out["cards"] == []
         assert out["drops"] == {"price not typed in": 1, "kicked off": 1, "another day": 1,
                                 "below the floor": 1, "market cannot be settled": 1,
-                                "no_fixture": 1}
+                                # The board's own slug, in words: this line is read by a
+                                # person deciding what to do next, and "no_fixture" is the
+                                # least alarming thing on the list wearing the scariest name.
+                                "on a game already played": 1}
         for phrase in ("price not typed in", "kicked off", "another day",
                        "below the floor", "market cannot be settled"):
             assert phrase in out["note"]

@@ -44,6 +44,7 @@ const KINDS = {
   fixture: "renderFixtureStory",
   slip: "renderDailySlip",
   chase: "renderChaseSlate",
+  bets: "renderBetsCard",
 };
 // Only the fixture story animates: it draws a curve that can grow. The slate is a table,
 // and a table that assembles itself is motion for its own sake.

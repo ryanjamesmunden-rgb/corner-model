@@ -19,7 +19,7 @@ import signup
 import telegram_bot
 from pathlib import Path
 from pydantic import BaseModel
-from typing import List, Optional, Dict
+from typing import List, Optional, Dict, Tuple
 from datetime import datetime, timezone, timedelta
 from zoneinfo import ZoneInfo
 from collections import defaultdict, deque
@@ -1874,38 +1874,61 @@ def value_pick_market(key: str, home: str, away: str):
 
 
 async def _value_shortlist(day: str, min_ev: float = 0.0,
-                           count: int = VALUE_PICK_COUNT) -> List[dict]:
-    """The day's best priced bets, one per fixture, biggest edge first.
+                           count: int = VALUE_PICK_COUNT) -> Tuple[List[dict], Dict[str, int]]:
+    """The day's best priced bets, one per fixture, biggest edge first — and why the rest
+    are not here.
 
     ONE BET PER FIXTURE. value_board already ranks a fixture's whole priced ladder and
     hands back the best plus three alternatives; putting two lines on the same game on a
     card doubles the exposure while reading like two separate calls.
+
+    EVERY DROP IS COUNTED, because an empty card is the common case and the SIX ways of
+    being empty need different answers: a price that has not been typed, a price typed
+    against tomorrow, a price on a game that has kicked off, a seeded price, a line below
+    the floor, a market that cannot be settled. The first real run reported "no priced bet
+    cleared EV 0%" and could not say which — that is the same shape of failure value_board
+    itself was rewritten to end, where five ways for a price to vanish all rendered as the
+    same empty screen.
     """
     board = await value_board(within_days=2, min_ev=min_ev, limit=100, user={})
     now = datetime.now(timezone.utc)
-    out = []
+    out: List[dict] = []
+    drops: Dict[str, int] = {}
+
+    def drop(reason):
+        drops[reason] = drops.get(reason, 0) + 1
+
     for row in board:
         best = row.get("best")
         if row.get("status") != "ok" or not best:
+            drop(row.get("status") or "no market")
             continue
         if row.get("odds_source") != "manual":
-            continue                      # a price the model effectively wrote itself
+            drop("price not typed in")     # a price the model effectively wrote itself
+            continue
         if best.get("ev") is None or best["ev"] < min_ev or not best.get("book_odds"):
+            drop("below the floor")
             continue
         try:
             kick = datetime.fromisoformat((row.get("date") or "").replace("Z", "+00:00"))
         except Exception:
+            drop("no kick-off time")
             continue
         if kick.tzinfo is None:
             kick = kick.replace(tzinfo=timezone.utc)
-        if kick <= now or value_pick_day(kick) != day:
+        if kick <= now:
+            drop("kicked off")
+            continue
+        if value_pick_day(kick) != day:
+            drop("another day")
             continue
         market = value_pick_market(best["key"], row["home_name"], row["away_name"])
         if market is None:
+            drop("market cannot be settled")
             continue
         out.append({**row, "best": best, "market": market, "kickoff": kick.isoformat()})
     out.sort(key=lambda r: -(r["best"]["ev"] or 0))
-    return out[:count]
+    return out[:count], drops
 
 
 async def _snapshot_value_picks(day: Optional[str] = None, min_ev: float = 0.0,
@@ -1918,7 +1941,7 @@ async def _snapshot_value_picks(day: Optional[str] = None, min_ev: float = 0.0,
     its odds. Re-running this an hour later tops the day up; it never revises it.
     """
     day = day or value_pick_day()
-    shortlist = await _value_shortlist(day, min_ev, count)
+    shortlist, drops = await _value_shortlist(day, min_ev, count)
     inserted = []
     for row in shortlist:
         best, market = row["best"], row["market"]
@@ -1940,7 +1963,7 @@ async def _snapshot_value_picks(day: Optional[str] = None, min_ev: float = 0.0,
         doc.pop("_id", None)
         inserted.append(doc)
     return {"day": day, "shortlisted": len(shortlist), "inserted": len(inserted),
-            "picks": inserted}
+            "picks": inserted, "drops": drops}
 
 
 def _ledger_agg(subset: List[dict]) -> dict:
@@ -7561,13 +7584,20 @@ async def share_bets(token: Optional[str] = None, day: Optional[str] = None,
                                 {"_id": 0}).to_list(100)
     picks.sort(key=lambda p: (p.get("kickoff") or "", p.get("home") or ""))
     rows = [{**p, "profit": _pick_profit(p)} for p in picks]
-    note = ""
+    note, drops = "", (frozen or {}).get("drops") or {}
     if not rows:
         stored = await db.odds.count_documents({})
-        note = ("no prices stored at all — nothing can have an EV" if not stored
-                else f"no priced bet cleared EV {min_ev:.0f}% for {day}")
+        if not stored:
+            note = "no prices stored at all — nothing can have an EV"
+        else:
+            # WHICH HURDLE THEY FELL AT. "Nothing cleared the floor" was true and useless:
+            # a price typed for tomorrow, a seeded price and a game already kicked off are
+            # three different things to go and do something about.
+            why = ", ".join(f"{n} {reason}" for reason, n in sorted(drops.items()))
+            note = (f"no priced bet cleared EV {min_ev:.0f}% for {day}"
+                    + (f" — {why}" if why else " — no prices on a fixture in the window"))
     return {"day": day, "min_ev": min_ev, "rows": rows,
-            "summary": _record(picks), "note": note,
+            "summary": _record(picks), "note": note, "drops": drops,
             "frozen": (frozen or {}).get("inserted", 0),
             "generated_at": datetime.now(timezone.utc).isoformat()}
 

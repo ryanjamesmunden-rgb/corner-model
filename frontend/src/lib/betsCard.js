@@ -157,11 +157,23 @@ export const cardRow = (p = {}) => {
 export const cardFrom = ({ rows = [], day = null, summary = null, max = MAX_CARD_ROWS } = {}) => {
   const priced = (rows || []).filter((p) => num(p?.odds));
   if (priced.length < MIN_CARD_ROWS) return null;
-  // Biggest edge first, then by kick-off: the bet that made the card is the one the
-  // reader should meet first, and ties fall into the order the day will play out in.
-  const ordered = [...priced].sort((a, b) =>
-    (num(b.ev) ?? 0) - (num(a.ev) ?? 0) || String(a.kickoff || "").localeCompare(String(b.kickoff || "")));
-  const kept = ordered.slice(0, Math.max(1, max)).map(cardRow);
+  // CHOSEN ON EDGE, SHOWN IN KICK-OFF ORDER, and the two steps are separate on purpose.
+  //
+  // Sorting by kick-off and then cutting to the cap would keep the EARLIEST six and throw
+  // away whatever the day's best bet happened to be if it kicked off late — a selection
+  // rule nobody intended, hidden inside a display decision. So the cut is still made on
+  // the edge, and only what survives it is put into the order the day plays out in.
+  //
+  // The order changed because leading on the biggest edge reads wrong on a card that is
+  // checked against the day as it happens: a reader looking for the next game had to hunt
+  // for it, and the evening re-draw listed results in an order the results did not arrive
+  // in.
+  const kept = [...priced]
+    .sort((a, b) => (num(b.ev) ?? 0) - (num(a.ev) ?? 0))
+    .slice(0, Math.max(1, max))
+    .sort((a, b) => String(a.kickoff || "").localeCompare(String(b.kickoff || ""))
+                    || (num(b.ev) ?? 0) - (num(a.ev) ?? 0))
+    .map(cardRow);
   const settled = kept.filter((r) => r.settled);
   const graded = settled.filter((r) => r.status !== VOID);
   // Units are summed over SETTLED rows only. A pending bet has no result to add, and

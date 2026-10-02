@@ -358,3 +358,52 @@ class TestTheCardsPayload:
         card = share(db, monkeypatch)["cards"][0]
         assert card["summary"]["void"] == 1
         assert card["summary"]["won"] == 0 and card["summary"]["profit"] == 0.0
+
+
+class TestABetYouBackedYourselfReachesTheCard:
+    """THE ONE THAT SENT A CARD WITH A BET MISSING FROM IT.
+
+    The card read `signal: "value"` alone — the model's own selection — so a bet taken at
+    a price the model never saw, because it was never typed in or because the model rated
+    it short, did not exist as far as the card was concerned. POST /api/picks exists
+    precisely so "the site's record is the record you SELL", and the card is the place
+    that record is published.
+    """
+
+    def test_a_hand_logged_pick_appears_beside_the_models_own(self, db, monkeypatch):
+        install(monkeypatch, [row(fid="f1")])
+        share(db, monkeypatch)                      # the model's pick is frozen
+        db.picks.docs.append({
+            "pick_id": "p1", "auto": False, "signal": "manual", "selected_by": "manual",
+            "date": today_of(4), "home": "Eldense", "away": "Albacete", "team": "Eldense",
+            "line": 5, "odds": 1.83, "status": settlement.PENDING,
+            "kickoff": iso(6), "league_id": "esp-2", "league_name": "Segunda",
+        })
+        out = share(db, monkeypatch)
+        teams = [r.get("team") for r in out["cards"][0]["rows"]]
+        assert "Eldense" in teams
+        assert out["cards"][0]["summary"]["picks"] == 2
+
+    def test_and_it_counts_in_the_day_s_units_once_it_settles(self, db, monkeypatch):
+        install(monkeypatch, [])
+        db.picks.docs.append({
+            "pick_id": "p1", "auto": False, "signal": "manual", "date": today_of(4),
+            "home": "Eldense", "away": "Albacete", "team": "Eldense", "line": 5,
+            "odds": 1.83, "status": settlement.WON, "kickoff": iso(6),
+        })
+        out = share(db, monkeypatch)
+        assert out["cards"][0]["summary"]["won"] == 1
+        assert out["cards"][0]["summary"]["profit"] == 0.83
+
+    def test_a_pick_with_no_price_is_still_not_a_bet_this_card_reports(self, db, monkeypatch):
+        # cardFrom drops rows without odds. The backend hands it over either way; the
+        # decision about what may be published belongs in one place, not two.
+        install(monkeypatch, [])
+        db.picks.docs.append({
+            "pick_id": "p1", "auto": False, "signal": "manual", "date": today_of(4),
+            "home": "Eldense", "away": "Albacete", "team": "Eldense", "line": 5,
+            "odds": None, "status": settlement.PENDING, "kickoff": iso(6),
+        })
+        out = share(db, monkeypatch)
+        assert len(out["cards"][0]["rows"]) == 1
+        assert out["cards"][0]["rows"][0]["odds"] is None

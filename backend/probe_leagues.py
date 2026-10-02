@@ -39,6 +39,20 @@ H = {"x-apisports-key": KEY}
 DEFAULT_KEYS = ["nor-d1"]
 
 
+# WHAT THE PROVIDER SAID WENT WRONG, kept where the verdict can read it.
+#
+# THIS COST A WRONG ANSWER ABOUT SIX LEAGUES. The provider answers a quota-exhausted or
+# unauthorised request with HTTP 200, an empty `response` and the reason in `errors` — and
+# this function returned the empty list and dropped the reason. Every probe then read
+# "0 finished games, 0 upcoming, corners 0/0" and printed its most confident verdict:
+# "no corner data — the whole model needs it". Six competitions were written off for a
+# fault that was ours, and a control run against La Liga — a league synced all season —
+# produced the identical line, which is the only reason it was caught.
+#
+# An empty response and a refused one are not the same answer and must not read the same.
+LAST_ERROR = {}
+
+
 async def af(hc, path, params):
     for _ in range(5):
         r = await hc.get(f"{BASE}{path}", params=params, headers=H, timeout=30.0)
@@ -47,12 +61,24 @@ async def af(hc, path, params):
             continue
         r.raise_for_status()
         d = r.json()
-        if isinstance(d.get("errors"), dict) and d["errors"].get("rateLimit"):
+        errs = d.get("errors")
+        if isinstance(errs, dict) and errs.get("rateLimit"):
             await asyncio.sleep(12)
             continue
+        # A LIST IS THE PROVIDER'S WAY OF SAYING "no errors" — it sends `[]` on success and
+        # an object on failure — so only a non-empty dict is a real complaint.
+        if isinstance(errs, dict) and errs:
+            LAST_ERROR.update(errs)
         await asyncio.sleep(0.2)
         return d["response"]
     return []
+
+
+def provider_error():
+    """The provider's own complaint, in one line, or None."""
+    if not LAST_ERROR:
+        return None
+    return "; ".join(f"{k}: {v}" for k, v in sorted(LAST_ERROR.items()))
 
 
 async def identify(hc, api):
@@ -144,6 +170,21 @@ async def probe(hc, lid, meta):
     per_team = (2 * len(ft) / len(teams)) if teams else 0
     ns = [f for f in fx if f["fixture"]["status"]["short"] in ("NS", "TBD")]
     n = len(sample)
+    # NO FIXTURES AT ALL IS NOT A VERDICT ON THE LEAGUE. Zero finished AND zero upcoming
+    # means the provider returned nothing for either season, which is a fact about the
+    # request — a spent quota, a key the plan no longer covers, an outage — and not about
+    # whether this competition files corner statistics. Calling it SKIP would write off a
+    # league for a fault at our end, which is exactly what happened the first time.
+    if not ft and not ns:
+        err = provider_error()
+        print(f"{'':8} season={used} the provider returned NO FIXTURES for this league, in "
+              f"{used} or {used - 1}  => UNKNOWN")
+        print(f"{'':8} reason: {err}" if err else
+              f"{'':8} reason: nothing came back and the provider named no error. Probe a "
+              f"league already on the site: if that is empty too, the fault is the key or "
+              f"the quota rather than the league.")
+        return
+
     verdict = "QUALIFY" if (corner_ok >= 3 and per_team >= 10 and match) else "SKIP"
     print(f"{'':8} season={used} FT={len(ft):3} games/team~{per_team:4.1f} upcoming={len(ns):3} "
           f"corners={corner_ok}/{n} shots={shots_ok}/{n} blocked={blocked_ok}/{n}  => {verdict}")
@@ -156,6 +197,8 @@ async def probe(hc, lid, meta):
         if per_team < 10:
             why.append(f"only ~{per_team:.0f} games a team, too thin to price")
         print(f"{'':8} reason: {'; '.join(why)}")
+        if provider_error():
+            print(f"{'':8} note: the provider also reported — {provider_error()}")
     if verdict == "QUALIFY" and blocked_ok < 3:
         print(f"{'':8} note: blocked shots are thin here, so v3 will fall back to the v2 "
               f"shots intent for these teams")

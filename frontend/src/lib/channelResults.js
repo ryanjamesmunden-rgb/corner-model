@@ -28,8 +28,12 @@
 export const CHANNEL_RESULTS = [
   { period: "June - July", units: 17.14 },
   { period: "August", units: 20.73 },
-  // Month to date. Update as it settles, and remove `partial` once September has closed.
-  { period: "September", units: 16.00, partial: true },
+  // CLOSED AT A LOSS, and it stays on the list. A results table that drops its losing
+  // months is not a record, it is a selection — and the one month that proves the other
+  // two are being reported honestly is the one that went the wrong way. The `partial` flag
+  // is gone because the month is over; it read +16.00 month-to-date on 30 September and
+  // finished here.
+  { period: "September", units: -12.54 },
 ];
 
 /** Where these came from, in one line, for anything that publishes them. */

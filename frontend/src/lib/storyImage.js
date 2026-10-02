@@ -2643,13 +2643,21 @@ export const renderReviewCard = (canvas, {
   ctx.letterSpacing = "4px";
   ctx.fillText("OVERALL", pad + 34, totalY + 46);
   ctx.letterSpacing = "0px";
+  // MEASURED, NOT GUESSED AT. The caption shares this row with the total, and the total's
+  // width changes with its value — "+25.33u" is wider than "+6.1u", and a caption cut to a
+  // fixed width would be correct for one month's figure and run under the next one's.
+  ctx.font = `800 86px ${FONT_HEAD}`;
+  const totalW = ctx.measureText(review.totalText).width;
   ctx.fillStyle = C.text;
   ctx.font = `600 25px ${FONT_BODY}`;
   // The total refuses to read as final while a month is still running, and names which.
-  ctx.fillText(review.partial
+  ctx.fillText(ellipsize(ctx, review.partial
     ? `${review.running.join(" and ")} still running`
-    : `${review.n} months, every pick posted before kick-off`,
-  pad + 34, totalY + 92);
+    // SHORT, because the row shares its width with the total and the claim it used to
+    // carry ("every pick posted before kick-off") is already the source line at the foot
+    // of the card. Said twice it was also said truncated.
+    : `${review.n} months`,
+  inner - 68 - totalW - 24), pad + 34, totalY + 92);
 
   ctx.textAlign = "right";
   ctx.fillStyle = review.total >= 0 ? C.solid : "#F2557E";

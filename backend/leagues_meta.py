@@ -46,6 +46,30 @@ LEAGUE_META = {
     "ita-sa":  {"api": 135, "name": "Serie A",          "country": "Italy", "tier": 1},
     "fra-l1":  {"api": 61,  "name": "Ligue 1",          "country": "France", "tier": 1},
     "esp-ll":  {"api": 140, "name": "La Liga",          "country": "Spain", "tier": 1},
+    # ADDED ON A PROBE THAT SAID SKIP, and the reason is worth writing down because the
+    # verdict and the decision disagree on purpose.
+    #
+    # probe_leagues.py, 2026-10-03: Spain / Segunda División, season 2026, FT=81,
+    # ~7.4 games a team, 380 upcoming, corners=4/4 shots=4/4 blocked=4/4. The verdict was
+    # SKIP, and its only reason was "~7 games a team, too thin to price".
+    #
+    # THAT FLOOR MEASURES THE CURRENT SEASON ALONE, which is not the pool this league gets
+    # priced from. sync_real tops up from `season - 1` whenever the current season has
+    # produced fewer than STATS_CAP finished games — 81 is far under 250 — so every team
+    # arrives with last season behind it rather than with seven games. The probe cannot see
+    # that: it samples one season to answer "does this competition file corner data", and
+    # on that question it answered yes four times out of four.
+    #
+    # WHAT WOULD HAVE KEPT IT OUT is the eng-nl finding — corners=0/4 — and this is its
+    # opposite. Corners, shots AND blocked shots are all present, so v3 prices it properly
+    # rather than falling back.
+    #
+    # AND THE FIRST PROBE OF THIS ID SAID THE OPPOSITE. On 2026-10-02 it read FT=0,
+    # corners=0/0 and "no corner data — the whole model needs it", which was a lapsed
+    # API-Football plan refusing a season-2026 request, not a fact about the league. A
+    # control probe of La Liga printed the identical line. See probe_leagues.py, which no
+    # longer lets a refused request masquerade as a verdict.
+    "esp-s2":  {"api": 141, "name": "Segunda División", "country": "Spain", "tier": 2},
     "ger-bl":  {"api": 78,  "name": "Bundesliga",       "country": "Germany", "tier": 1},
     "ger-bl2": {"api": 79,  "name": "2. Bundesliga",    "country": "Germany", "tier": 2},
     "por-pl":  {"api": 94,  "name": "Primeira Liga",    "country": "Portugal", "tier": 1},

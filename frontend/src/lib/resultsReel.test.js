@@ -131,7 +131,16 @@ describe("the timeline", () => {
   });
 
   test("no reel, no timeline", () => {
-    expect(reelAt(null, 0.5)).toEqual({ shown: 0, tally: 0 });
+    expect(reelAt(null, 0.5)).toEqual({ shown: 0, tally: 0, growth: 1 });
+  });
+
+  test("the newest row's bar grows, and the ones behind it have stopped", () => {
+    // The whole point of the bar is watching it pass the line: one that arrived full would
+    // show the result without ever showing the margin.
+    expect(reelAt(reel, 0).growth).toBeLessThan(1);
+    expect(reelAt(reel, 0.74).growth).toBe(1);
+    // And it settles before the next row lands, rather than being interrupted halfway.
+    expect(reelAt(reel, 0.16).growth).toBe(1);
   });
 });
 

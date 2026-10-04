@@ -59,6 +59,13 @@ export const reelRow = (r = {}) => ({
   lost: r.result === LOSS,
   voided: r.result === VOID,
   value: valueText(r),
+  // THE TWO NUMBERS THE BAR IS DRAWN FROM, kept as numbers. `line_label` is "6+" or
+  // "under 9" — right for a caption and useless for arithmetic — and `value` above is
+  // already prose. A renderer that had to parse either back into a number would be one
+  // bad regex away from drawing a bar at the wrong place on a result that is correct.
+  count: num(r.value),
+  lineValue: num(r.line),
+  direction: r.direction === "under" ? "under" : "over",
   price: num(r.price) > 1 ? num(r.price) : null,
   kickoff: r.kickoff || null,
   key: `${r.name}-${r.line_label}-${r.kickoff}`,
@@ -126,15 +133,25 @@ export const reelFrom = (results = {}, { days = 7, now = Date.now(),
 export const TALLY_SHARE = 0.26;
 
 export const reelAt = (reel = null, progress = 0) => {
-  if (!reel || !reel.n) return { shown: 0, tally: 0 };
+  if (!reel || !reel.n) return { shown: 0, tally: 0, growth: 1 };
   const p = Math.max(0, Math.min(1, Number(progress) || 0));
   const rowsEnd = 1 - TALLY_SHARE;
   if (p >= rowsEnd) {
-    return { shown: reel.n, tally: Math.min(1, (p - rowsEnd) / TALLY_SHARE) };
+    return { shown: reel.n, tally: Math.min(1, (p - rowsEnd) / TALLY_SHARE), growth: 1 };
   }
-  // +1 so the first row is already on screen a moment in, rather than the clip opening on
-  // an empty frame.
-  return { shown: Math.min(reel.n, Math.floor((p / rowsEnd) * reel.n) + 1), tally: 0 };
+  const slot = (p / rowsEnd) * reel.n;
+  // `growth` is how far the NEWEST row's bar has run out to its finishing count — the
+  // whole point of the bar is watching it pass the line, and a bar that arrived already
+  // full would show the result without ever showing the margin. Every row behind it sits
+  // at 1: a list where every line is still moving is a list nobody can read mid-clip.
+  //
+  // It runs at twice the pace of the row slot so the bar settles before the next row
+  // lands, rather than being interrupted halfway by its successor.
+  return {
+    shown: Math.min(reel.n, Math.floor(slot) + 1),
+    tally: 0,
+    growth: Math.max(0, Math.min(1, (slot - Math.floor(slot)) * 2)),
+  };
 };
 
 /** The caption that goes with the clip. The video is the hook; this is the claim. */

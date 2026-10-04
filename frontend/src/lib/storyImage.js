@@ -57,6 +57,18 @@ const C = {
   dim: "#3B4654",         // counts that lose the bet, in the chart
 };
 
+// THE SITE'S THREE FACES, AND THE WEIGHTS IT ACTUALLY SHIPS. index.css imports
+// Outfit 500/600/700, Manrope 400/500/600 and IBM Plex Mono 400/500/600 — nothing heavier
+// exists on this brand.
+//
+// ASKING FOR 800 DOES NOT FAIL, WHICH IS THE PROBLEM. The browser synthesises the missing
+// weight by smearing the 700, and the card comes out heavier and blunter than any heading
+// on the site. Two dozen declarations here were doing that, which is what "the branding is
+// different and bold" turned out to mean. Stay inside these ceilings:
+//
+//     FONT_HEAD  500 600 700        FONT_BODY  400 500 600        FONT_DATA  400 500 600
+//
+// tools/render_story.mjs loads the same URL and now refuses to render silently without it.
 const FONT_HEAD = "'Outfit', 'Manrope', system-ui, sans-serif";
 const FONT_BODY = "'Manrope', system-ui, sans-serif";
 const FONT_DATA = "'IBM Plex Mono', ui-monospace, monospace";
@@ -159,7 +171,7 @@ const drawPriceBox = (ctx, { x, y, w, h = 60, price, kind }) => {
   ctx.textAlign = "center";
   if (book) {
     ctx.fillStyle = C.bg;
-    ctx.font = `800 ${Math.round(h * 0.57)}px ${FONT_DATA}`;
+    ctx.font = `700 ${Math.round(h * 0.57)}px ${FONT_DATA}`;
     ctx.fillText(text, x + w / 2, y + h / 2 + 1);
   } else {
     ctx.fillStyle = C.muted;
@@ -587,7 +599,7 @@ const drawCurve = (ctx, dist, line, { x, y, w, h, progress = 1,
       ctx.moveTo(cx, y + h - bh - 8);
       ctx.lineTo(cx, y - 26);
       ctx.stroke();
-      ctx.font = `700 30px ${FONT_DATA}`;
+      ctx.font = `600 30px ${FONT_DATA}`;
       const cw = ctx.measureText(String(mark)).width + 32;
       ctx.fillStyle = tone;
       roundRect(ctx, cx - cw / 2, y - 66, cw, 44, 22);
@@ -670,7 +682,7 @@ export const renderFixtureStory = (canvas, {
     const count = done ? 1 : seg(P, 0.06, 0.55);
     faded(ctx, done ? 1 : seg(P, 0.04, 0.13), () => {
       ctx.fillStyle = C.primary;
-      ctx.font = `700 150px ${FONT_DATA}`;
+      ctx.font = `600 150px ${FONT_DATA}`;
       ctx.fillText(`${Math.round(head.prob * count)}%`, 72, 560);
       ctx.fillStyle = C.text;
       ctx.font = `600 40px ${FONT_HEAD}`;
@@ -728,14 +740,14 @@ export const renderFixtureStory = (canvas, {
 
     // Probability — the half that goes out in public.
     ctx.fillStyle = C.primary;
-    ctx.font = `700 46px ${FONT_DATA}`;
+    ctx.font = `600 46px ${FONT_DATA}`;
     ctx.textAlign = "right";
     ctx.fillText(`${Math.round(m.prob)}%`, STORY_W - 260, mid);
 
     // Price — the half that does not. Real text under the blur.
     blurred(ctx, () => {
       ctx.fillStyle = C.solid;
-      ctx.font = `700 44px ${FONT_DATA}`;
+      ctx.font = `600 44px ${FONT_DATA}`;
       ctx.fillText(m.price || "0.00", STORY_W - 116, mid - 14);
       ctx.fillStyle = C.muted;
       ctx.font = `500 22px ${FONT_BODY}`;
@@ -973,7 +985,7 @@ export const renderAngleStory = (canvas, {
     ctx.font = fitFont(ctx, name || "", { size: 36, max: halfW - 66, weight: 600, family: FONT_HEAD });
     ctx.fillText(name || "", x + 34, panelY + 104);
     ctx.fillStyle = tone;
-    ctx.font = `700 104px ${FONT_DATA}`;
+    ctx.font = `600 104px ${FONT_DATA}`;
     ctx.fillText(value, x + 34, panelY + 196);
     ctx.fillStyle = C.muted;
     ctx.font = `500 25px ${FONT_BODY}`;
@@ -1038,7 +1050,7 @@ export const renderAngleStory = (canvas, {
   ctx.font = fitFont(ctx, row.name || "", { size: 40, max: W - 320, weight: 700, family: FONT_HEAD });
   ctx.fillText(row.name || "", M + 40, slipY + 116);
   ctx.fillStyle = "#0BA879";
-  ctx.font = `700 46px ${FONT_DATA}`;
+  ctx.font = `600 46px ${FONT_DATA}`;
   ctx.fillText(`${row.line ?? ""}+ corners`, M + 40, slipY + 178);
 
   if (row.prob != null) {
@@ -1055,7 +1067,7 @@ export const renderAngleStory = (canvas, {
   ctx.fill();
   blurred(ctx, () => {
     ctx.fillStyle = "#0B0F14";
-    ctx.font = `700 62px ${FONT_DATA}`;
+    ctx.font = `600 62px ${FONT_DATA}`;
     ctx.textAlign = "center";
     ctx.fillText(Number(row.fair_odds || 0).toFixed(2), boxX + boxW / 2, slipY + 148);
     ctx.textAlign = "left";
@@ -1127,10 +1139,17 @@ export const resultMargin = (value, line, direction = "over") => {
  * the picture came out empty. This says the same thing the curve's pin says — here is the
  * line, here is where the game finished — using only the two numbers every result has.
  */
-const drawNumberLine = (ctx, { line, value, direction, tone, x, y, w, progress = 1 }) => {
+const drawNumberLine = (ctx, { line, value, direction, tone, x, y, w, progress = 1,
+                               h = 22, compact = false }) => {
   const top = Math.max(line, value) + Math.max(2, Math.round(Math.max(line, value) * 0.35));
   const at = (n) => x + (clamp01(n / top)) * w;
-  const h = 22;
+  // COMPACT IS THE SAME DRAWING AT ROW SCALE, not a second one. The results reel needs this
+  // device ten times down one card, where the story has it once with room around it — so
+  // the label under the tick and the pill floating above the bar are dropped and the
+  // finishing count is set beside the bar instead. Everything that carries meaning — which
+  // side of the line wins, where the line is, how far the bar ran past it — is identical,
+  // because two drawings of one idea would eventually disagree about a result.
+  const labelled = !compact;
 
   ctx.fillStyle = C.secondary;
   roundRect(ctx, x, y, w, h, h / 2);
@@ -1157,21 +1176,23 @@ const drawNumberLine = (ctx, { line, value, direction, tone, x, y, w, progress =
   ctx.lineTo(at(line), y + h + 14);
   ctx.stroke();
 
-  ctx.textAlign = "center";
-  ctx.fillStyle = C.muted;
-  ctx.font = `500 26px ${FONT_BODY}`;
-  ctx.fillText(direction === "under" ? `under ${line}` : `${line}+`, at(line), y + h + 46);
+  if (labelled) {
+    ctx.textAlign = "center";
+    ctx.fillStyle = C.muted;
+    ctx.font = `500 26px ${FONT_BODY}`;
+    ctx.fillText(direction === "under" ? `under ${line}` : `${line}+`, at(line), y + h + 46);
 
-  ctx.font = `700 30px ${FONT_DATA}`;
-  const cw = ctx.measureText(String(value)).width + 32;
-  const cx = Math.min(Math.max(reach, x + cw / 2), x + w - cw / 2);
-  ctx.globalAlpha = clamp01(progress);
-  ctx.fillStyle = tone;
-  roundRect(ctx, cx - cw / 2, y - 66, cw, 44, 22);
-  ctx.fill();
-  ctx.fillStyle = C.bg;
-  ctx.fillText(String(value), cx, y - 43);
-  ctx.globalAlpha = 1;
+    ctx.font = `600 30px ${FONT_DATA}`;
+    const cw = ctx.measureText(String(value)).width + 32;
+    const cx = Math.min(Math.max(reach, x + cw / 2), x + w - cw / 2);
+    ctx.globalAlpha = clamp01(progress);
+    ctx.fillStyle = tone;
+    roundRect(ctx, cx - cw / 2, y - 66, cw, 44, 22);
+    ctx.fill();
+    ctx.fillStyle = C.bg;
+    ctx.fillText(String(value), cx, y - 43);
+    ctx.globalAlpha = 1;
+  }
   ctx.textAlign = "left";
 };
 
@@ -1242,7 +1263,7 @@ const drawCornerTimeline = (ctx, { minutes = [], line, tone, x, y, w, progress =
       ctx.moveTo(at(m), y - 26);
       ctx.lineTo(at(m), y - 58);
       ctx.stroke();
-      ctx.font = `700 26px ${FONT_DATA}`;
+      ctx.font = `600 26px ${FONT_DATA}`;
       ctx.fillStyle = tone;
       ctx.textAlign = "center";
       ctx.fillText(`${m}'`, at(m), y - 78);
@@ -1299,12 +1320,12 @@ const drawSlip = (ctx, { selection, market, odds, stake, returns, currency = "£
     ctx.textAlign = "right";
     if (odds != null) {
       ctx.fillStyle = C.text;
-      ctx.font = `700 34px ${FONT_DATA}`;
+      ctx.font = `600 34px ${FONT_DATA}`;
       ctx.fillText(`@ ${Number(odds).toFixed(2)}`, x + w - 36, y + 42);
     }
     if (stake != null && returns != null) {
       ctx.fillStyle = tone;
-      ctx.font = `700 40px ${FONT_DATA}`;
+      ctx.font = `600 40px ${FONT_DATA}`;
       ctx.fillText(`${currency}${Number(returns).toFixed(2)}`, x + w - 36, y + 92);
       ctx.fillStyle = C.muted;
       ctx.font = `500 22px ${FONT_BODY}`;
@@ -1447,7 +1468,7 @@ export const renderResultStory = (canvas, {
   const climb = done ? 1 : seg(P, 0.10, 0.62);
   faded(ctx, done ? 1 : seg(P, 0.08, 0.16), () => {
     ctx.fillStyle = v.tone;
-    ctx.font = `700 230px ${FONT_DATA}`;
+    ctx.font = `600 230px ${FONT_DATA}`;
     ctx.fillText(String(Math.round(value * climb)), 72, 690);
 
     ctx.fillStyle = C.text;
@@ -1487,7 +1508,7 @@ export const renderResultStory = (canvas, {
         ctx.font = `500 26px ${FONT_BODY}`;
         ctx.fillText(label, 72, sy);
         ctx.fillStyle = C.text;
-        ctx.font = `700 44px ${FONT_DATA}`;
+        ctx.font = `600 44px ${FONT_DATA}`;
         ctx.fillText(`${a} - ${b}`, 260, sy);
         sy += 62;
       };
@@ -1647,7 +1668,7 @@ export const renderResultWide = (canvas, {
   const climb = done ? 1 : seg(P, 0.10, 0.62);
   faded(ctx, done ? 1 : seg(P, 0.08, 0.16), () => {
     ctx.fillStyle = v.tone;
-    ctx.font = `700 200px ${FONT_DATA}`;
+    ctx.font = `600 200px ${FONT_DATA}`;
     ctx.fillText(String(Math.round(value * climb)), L, 550);
     ctx.fillStyle = C.text;
     ctx.font = `600 38px ${FONT_HEAD}`;
@@ -1672,7 +1693,7 @@ export const renderResultWide = (canvas, {
       ctx.font = `500 24px ${FONT_BODY}`;
       ctx.fillText(label, L, sy);
       ctx.fillStyle = C.text;
-      ctx.font = `700 36px ${FONT_DATA}`;
+      ctx.font = `600 36px ${FONT_DATA}`;
       ctx.fillText(`${a} - ${b}`, L + 180, sy);
       sy += 54;
     };
@@ -1841,7 +1862,7 @@ export const renderRecordCard = (canvas, {
 
   y += 110;
   ctx.fillStyle = C.solid;
-  ctx.font = `700 52px ${FONT_DATA}`;
+  ctx.font = `600 52px ${FONT_DATA}`;
   ctx.fillText(`${card.rate}%`, pad, y);
   ctx.fillStyle = C.muted;
   ctx.font = `500 34px ${FONT_BODY}`;
@@ -1951,7 +1972,7 @@ export const renderDayCard = (canvas, {
   if (card.units != null) {
     const sign = card.units >= 0 ? "+" : "";
     ctx.fillStyle = card.units >= 0 ? C.solid : "#F2557E";
-    ctx.font = `700 62px ${FONT_DATA}`;
+    ctx.font = `600 62px ${FONT_DATA}`;
     ctx.fillText(`${sign}${card.units.toFixed(2)}u`, pad, y);
   } else if (card.unitsNote) {
     ctx.fillStyle = C.muted;
@@ -2072,14 +2093,14 @@ export const renderDailySlip = (canvas, {
 
   // ---- the band across the top
   ctx.fillStyle = C.text;
-  ctx.font = `800 34px ${FONT_HEAD}`;
+  ctx.font = `700 34px ${FONT_HEAD}`;
   ctx.letterSpacing = "2px";
   ctx.fillText(brand, pad, 78);
   ctx.letterSpacing = "0px";
 
   ctx.textAlign = "right";
   ctx.fillStyle = C.muted;
-  ctx.font = `700 19px ${FONT_BODY}`;
+  ctx.font = `600 19px ${FONT_BODY}`;
   ctx.letterSpacing = "3px";
   tagline.split(" ").forEach((word, i) => {
     ctx.fillText(word, W - pad, 62 + i * 26);
@@ -2119,17 +2140,17 @@ export const renderDailySlip = (canvas, {
   // ---- the headline, in its own block rather than in whatever was left over
   const headCentre = (148 + headBottom) / 2;
   const count = String(slip.n);
-  ctx.font = `800 210px ${FONT_HEAD}`;
+  ctx.font = `700 210px ${FONT_HEAD}`;
   const countW = ctx.measureText(count).width;
-  ctx.font = `800 96px ${FONT_HEAD}`;
+  ctx.font = `700 96px ${FONT_HEAD}`;
   const wordW = ctx.measureText(slip.label).width;
   const headX = (W - (countW + 24 + wordW)) / 2;
 
   ctx.fillStyle = C.primary;
-  ctx.font = `800 210px ${FONT_HEAD}`;
+  ctx.font = `700 210px ${FONT_HEAD}`;
   ctx.fillText(count, headX, headCentre - 18);
   ctx.fillStyle = C.text;
-  ctx.font = `800 96px ${FONT_HEAD}`;
+  ctx.font = `700 96px ${FONT_HEAD}`;
   ctx.fillText(slip.label, headX + countW + 24, headCentre - 34);
   ctx.fillStyle = C.muted;
   ctx.font = `600 52px ${FONT_HEAD}`;
@@ -2193,7 +2214,7 @@ export const renderDailySlip = (canvas, {
       roundRect(ctx, chipX, mid - 21, chipW, 42, 8);
       ctx.fill();
       ctx.fillStyle = C.muted;
-      ctx.font = `700 21px ${FONT_DATA}`;
+      ctx.font = `600 21px ${FONT_DATA}`;
       ctx.textAlign = "center";
       ctx.fillText(code, chipX + chipW / 2, mid + 1);
       ctx.textAlign = "left";
@@ -2318,7 +2339,7 @@ export const renderBetsCard = (canvas, {
 
   // ---- the band across the top
   ctx.fillStyle = C.text;
-  ctx.font = `800 34px ${FONT_HEAD}`;
+  ctx.font = `700 34px ${FONT_HEAD}`;
   ctx.letterSpacing = "2px";
   ctx.fillText(brand, pad, 74);
   ctx.letterSpacing = "0px";
@@ -2332,7 +2353,7 @@ export const renderBetsCard = (canvas, {
   ctx.textAlign = "left";
 
   ctx.fillStyle = C.text;
-  ctx.font = `800 86px ${FONT_HEAD}`;
+  ctx.font = `700 86px ${FONT_HEAD}`;
   ctx.fillText(heading, pad, 158);
 
   // WHAT MADE THESE THE BETS, stated rather than implied. A card headed "today's bets"
@@ -2398,7 +2419,7 @@ export const renderBetsCard = (canvas, {
       roundRect(ctx, chipX, mid - 20, chipW, 40, 8);
       ctx.fill();
       ctx.fillStyle = C.muted;
-      ctx.font = `700 20px ${FONT_DATA}`;
+      ctx.font = `600 20px ${FONT_DATA}`;
       ctx.textAlign = "center";
       ctx.fillText(code, chipX + chipW / 2, mid + 1);
       ctx.textAlign = "left";
@@ -2436,14 +2457,14 @@ export const renderBetsCard = (canvas, {
     ctx.textAlign = "center";
     const cx = statusX + statusW / 2;
     ctx.fillStyle = tone;
-    ctx.font = `800 30px ${FONT_HEAD}`;
+    ctx.font = `700 30px ${FONT_HEAD}`;
     ctx.fillText(r.statusLabel, cx, mid - (r.settled ? 24 : 10));
     if (r.settled) {
       ctx.fillStyle = C.muted;
       ctx.font = `500 22px ${FONT_BODY}`;
       ctx.fillText(r.result || "", cx, mid + 8);
       ctx.fillStyle = tone;
-      ctx.font = `800 30px ${FONT_DATA}`;
+      ctx.font = `600 30px ${FONT_DATA}`;
       ctx.fillText(r.profitText, cx, mid + 42);
     } else {
       ctx.fillStyle = C.dim;
@@ -2479,12 +2500,12 @@ export const renderBetsCard = (canvas, {
   cells.forEach(([label, value, colour], i) => {
     const cx = pad + cellW * (i + 0.5);
     ctx.fillStyle = C.muted;
-    ctx.font = `700 21px ${FONT_BODY}`;
+    ctx.font = `600 21px ${FONT_BODY}`;
     ctx.letterSpacing = "3px";
     ctx.fillText(label, cx, footY + 40);
     ctx.letterSpacing = "0px";
     ctx.fillStyle = colour;
-    ctx.font = `800 46px ${FONT_HEAD}`;
+    ctx.font = `700 46px ${FONT_HEAD}`;
     ctx.fillText(value, cx, footY + 88);
     if (i) {
       ctx.strokeStyle = C.border;
@@ -2557,7 +2578,7 @@ export const renderReviewCard = (canvas, {
 
   // ---- the band across the top
   ctx.fillStyle = C.text;
-  ctx.font = `800 36px ${FONT_HEAD}`;
+  ctx.font = `700 36px ${FONT_HEAD}`;
   ctx.letterSpacing = "2px";
   ctx.fillText(brand, pad, 70);
   ctx.letterSpacing = "0px";
@@ -2569,7 +2590,7 @@ export const renderReviewCard = (canvas, {
 
   ctx.textAlign = "right";
   ctx.fillStyle = C.muted;
-  ctx.font = `700 19px ${FONT_BODY}`;
+  ctx.font = `600 19px ${FONT_BODY}`;
   ctx.letterSpacing = "4px";
   creed.slice(0, 4).forEach((word, i) => {
     ctx.fillText(word, W - pad, 58 + i * 28);
@@ -2579,7 +2600,7 @@ export const renderReviewCard = (canvas, {
 
   // ---- the title
   ctx.fillStyle = C.text;
-  ctx.font = `800 96px ${FONT_HEAD}`;
+  ctx.font = `700 96px ${FONT_HEAD}`;
   ctx.fillText(heading, pad, 208);
   ctx.fillStyle = C.primary;
   ctx.font = `700 28px ${FONT_HEAD}`;
@@ -2610,25 +2631,25 @@ export const renderReviewCard = (canvas, {
     ctx.fill();
 
     ctx.fillStyle = C.text;
-    ctx.font = `800 46px ${FONT_HEAD}`;
+    ctx.font = `700 46px ${FONT_HEAD}`;
     ctx.fillText(b.period, pad + 34, y + 58);
 
     // A MONTH STILL RUNNING SAYS SO ON ITS OWN ROW. The row is what gets screenshotted
     // out of context, so the caveat cannot live only in the total underneath.
     if (b.partial) {
       ctx.fillStyle = "#F2B04E";
-      ctx.font = `700 22px ${FONT_BODY}`;
+      ctx.font = `600 22px ${FONT_BODY}`;
       ctx.fillText(b.note.toUpperCase(), pad + 34, y + 96);
     }
 
     ctx.textAlign = "right";
     ctx.fillStyle = C.muted;
-    ctx.font = `700 21px ${FONT_BODY}`;
+    ctx.font = `600 21px ${FONT_BODY}`;
     ctx.letterSpacing = "4px";
     ctx.fillText("PROFIT", W - pad - 36, y + 50);
     ctx.letterSpacing = "0px";
     ctx.fillStyle = tone;
-    ctx.font = `800 76px ${FONT_HEAD}`;
+    ctx.font = `700 76px ${FONT_HEAD}`;
     ctx.fillText(b.unitsText, W - pad - 36, y + 112);
     ctx.textAlign = "left";
   });
@@ -2643,14 +2664,14 @@ export const renderReviewCard = (canvas, {
   ctx.stroke();
 
   ctx.fillStyle = C.muted;
-  ctx.font = `700 22px ${FONT_BODY}`;
+  ctx.font = `600 22px ${FONT_BODY}`;
   ctx.letterSpacing = "4px";
   ctx.fillText("OVERALL", pad + 34, totalY + 46);
   ctx.letterSpacing = "0px";
   // MEASURED, NOT GUESSED AT. The caption shares this row with the total, and the total's
   // width changes with its value — "+25.33u" is wider than "+6.1u", and a caption cut to a
   // fixed width would be correct for one month's figure and run under the next one's.
-  ctx.font = `800 86px ${FONT_HEAD}`;
+  ctx.font = `700 86px ${FONT_HEAD}`;
   const totalW = ctx.measureText(review.totalText).width;
   ctx.fillStyle = C.text;
   ctx.font = `600 25px ${FONT_BODY}`;
@@ -2665,7 +2686,7 @@ export const renderReviewCard = (canvas, {
 
   ctx.textAlign = "right";
   ctx.fillStyle = review.total >= 0 ? C.solid : "#F2557E";
-  ctx.font = `800 86px ${FONT_HEAD}`;
+  ctx.font = `700 86px ${FONT_HEAD}`;
   ctx.fillText(review.totalText, W - pad - 36, totalY + 76);
   ctx.textAlign = "left";
 
@@ -2680,7 +2701,7 @@ export const renderReviewCard = (canvas, {
     ctx.stroke();
 
     ctx.fillStyle = C.primary;
-    ctx.font = `700 22px ${FONT_BODY}`;
+    ctx.font = `600 22px ${FONT_BODY}`;
     ctx.letterSpacing = "4px";
     ctx.fillText("GRADED ON SITE", pad + 34, vy + 44);
     ctx.letterSpacing = "0px";
@@ -2700,7 +2721,7 @@ export const renderReviewCard = (canvas, {
     // the percentage is the summary of it.
     ctx.textAlign = "right";
     ctx.fillStyle = C.text;
-    ctx.font = `800 72px ${FONT_HEAD}`;
+    ctx.font = `700 72px ${FONT_HEAD}`;
     ctx.fillText(`${review.verified.rate}%`, W - pad - 36, vy + 82);
     ctx.textAlign = "left";
   }
@@ -2753,7 +2774,7 @@ export const renderResultsReel = (canvas, {
   const ctx = canvas.getContext("2d");
   const pad = 72;
   const inner = W - pad * 2;
-  const { shown, tally } = reelAt(reel, progress);
+  const { shown, tally, growth } = reelAt(reel, progress);
 
   ctx.fillStyle = C.bg;
   ctx.fillRect(0, 0, W, H);
@@ -2766,7 +2787,7 @@ export const renderResultsReel = (canvas, {
 
   // ---- the band across the top
   ctx.fillStyle = C.text;
-  ctx.font = `800 40px ${FONT_HEAD}`;
+  ctx.font = `700 40px ${FONT_HEAD}`;
   ctx.letterSpacing = "2px";
   ctx.fillText(brand, pad, 96);
   ctx.letterSpacing = "0px";
@@ -2777,7 +2798,7 @@ export const renderResultsReel = (canvas, {
   ctx.textAlign = "left";
 
   ctx.fillStyle = C.text;
-  ctx.font = `800 118px ${FONT_HEAD}`;
+  ctx.font = `700 118px ${FONT_HEAD}`;
   ctx.fillText(heading, pad, 210);
 
   ctx.strokeStyle = C.border;
@@ -2794,7 +2815,11 @@ export const renderResultsReel = (canvas, {
   const gap = 12;
   const rowH = Math.max(70, Math.min(128, (region - (reel.n - 1) * gap) / reel.n));
   const markW = 92;
-  const valW = 190;
+  // THE BAR TAKES THE RIGHT-HAND HALF, and the finishing count sits on the end of it
+  // rather than in a column of its own: the number and the distance it ran are one fact,
+  // and splitting them put the evidence on one side of the row and the claim on the other.
+  const barW = 300;
+  const valW = 96;
 
   reel.rows.forEach((r, i) => {
     if (i >= shown) return;
@@ -2804,6 +2829,7 @@ export const renderResultsReel = (canvas, {
     // The newest row arrives at full strength; nothing else moves, because a list where
     // every line is still settling is a list nobody can read mid-clip.
     const fresh = i === shown - 1;
+    const fill = fresh ? growth : 1;
 
     ctx.fillStyle = C.card;
     roundRect(ctx, pad, y, inner, rowH, 14);
@@ -2816,27 +2842,46 @@ export const renderResultsReel = (canvas, {
     ctx.fill();
 
     const nameX = pad + 30;
-    const nameW = inner - 30 - markW - valW - 40;
+    const barX = W - pad - markW - valW - barW - 30;
+    const nameW = barX - nameX - 24;
     ctx.fillStyle = C.text;
-    ctx.font = fitFont(ctx, r.name, { size: Math.min(40, rowH * 0.36), max: nameW,
-                                      weight: 700, family: FONT_BODY, min: 24 });
-    ctx.fillText(ellipsize(ctx, r.name, nameW), nameX, mid - (r.line ? 15 : 0));
-    if (r.line) {
+    ctx.font = fitFont(ctx, r.name, { size: Math.min(38, rowH * 0.34), max: nameW,
+                                      weight: 600, family: FONT_BODY, min: 22 });
+    ctx.fillText(ellipsize(ctx, r.name, nameW), nameX, mid - 16);
+
+    // HOW FAR IT WON BY, in words, under the name. The bar shows it and this says it —
+    // "3 clear" is the sentence somebody repeats, and it is the one thing a still frame
+    // of this clip still carries if the bar is cut off in a crop.
+    const by = resultMargin(r.count, r.lineValue, r.direction);
+    ctx.fillStyle = C.muted;
+    ctx.font = `600 25px ${FONT_DATA}`;
+    ctx.fillText([r.line, by].filter(Boolean).join("  ·  "), nameX, mid + 22);
+
+    // THE SAME NUMBER LINE THE INDIVIDUAL RESULT CLIP DRAWS, at row scale — the line as a
+    // hard tick, the winning side shaded, and the bar running out to where the game
+    // actually finished. Only drawn when both numbers are real: an angle logged without a
+    // line has nothing to be far past.
+    if (r.count !== null && r.lineValue !== null) {
+      drawNumberLine(ctx, {
+        line: r.lineValue, value: r.count, direction: r.direction, tone,
+        x: barX, y: mid - 7, w: barW, h: 14, compact: true, progress: fill,
+      });
+      ctx.textAlign = "right";
+      ctx.fillStyle = tone;
+      ctx.font = `600 32px ${FONT_DATA}`;
+      ctx.globalAlpha = clamp01(fill);
+      ctx.fillText(String(r.count), barX + barW + valW - 24, mid);
+      ctx.globalAlpha = 1;
+    } else {
+      ctx.textAlign = "right";
       ctx.fillStyle = C.muted;
-      ctx.font = `600 27px ${FONT_DATA}`;
-      ctx.fillText(r.line, nameX, mid + 22);
+      ctx.font = `600 28px ${FONT_BODY}`;
+      ctx.fillText(r.value || "", barX + barW + valW - 24, mid);
     }
 
-    // WHAT IT LANDED ON, beside the verdict. "Celtic 6+ ✅" is a claim; "Celtic 6+, 9
-    // corners ✅" is one a viewer can check against the match they watched.
-    ctx.textAlign = "right";
-    ctx.fillStyle = C.muted;
-    ctx.font = `600 30px ${FONT_BODY}`;
-    ctx.fillText(r.value || "", W - pad - markW - 34, mid);
-
     ctx.fillStyle = tone;
-    ctx.font = `800 ${Math.round(rowH * 0.46)}px ${FONT_HEAD}`;
-    ctx.fillText(r.won ? "✓" : r.lost ? "✗" : "–", W - pad - 30, mid + 2);
+    ctx.font = `700 ${Math.round(rowH * 0.42)}px ${FONT_HEAD}`;
+    ctx.fillText(r.won ? "✓" : r.lost ? "✗" : "–", W - pad - 26, mid + 2);
     ctx.textAlign = "left";
   });
 
@@ -2854,7 +2899,7 @@ export const renderResultsReel = (canvas, {
 
     ctx.textAlign = "center";
     ctx.fillStyle = reel.clean ? "#39D0A3" : C.text;
-    ctx.font = `800 108px ${FONT_HEAD}`;
+    ctx.font = `700 108px ${FONT_HEAD}`;
     ctx.fillText(reel.big, W / 2, ty + 86);
 
     ctx.fillStyle = C.muted;
@@ -2942,14 +2987,14 @@ export const renderChaseSlate = (canvas, {
   ctx.textBaseline = "middle";
 
   ctx.fillStyle = C.text;
-  ctx.font = `800 32px ${FONT_HEAD}`;
+  ctx.font = `700 32px ${FONT_HEAD}`;
   ctx.letterSpacing = "2px";
   ctx.fillText(brand, pad, 72);
   ctx.letterSpacing = "0px";
 
   ctx.textAlign = "right";
   ctx.fillStyle = C.muted;
-  ctx.font = `700 18px ${FONT_BODY}`;
+  ctx.font = `600 18px ${FONT_BODY}`;
   ctx.letterSpacing = "3px";
   tagline.split(" ").forEach((word, i) => ctx.fillText(word, W - pad, 56 + i * 25));
   ctx.letterSpacing = "0px";
@@ -2965,18 +3010,18 @@ export const renderChaseSlate = (canvas, {
   // ---- the headline
   ctx.textAlign = "center";
   const count = String(slate.n);
-  ctx.font = `800 150px ${FONT_HEAD}`;
+  ctx.font = `700 150px ${FONT_HEAD}`;
   const countW = ctx.measureText(count).width;
-  ctx.font = `800 72px ${FONT_HEAD}`;
+  ctx.font = `700 72px ${FONT_HEAD}`;
   const wordW = ctx.measureText("TODAY").width;
   const headLeft = (W - (countW + 22 + wordW)) / 2;
 
   ctx.textAlign = "left";
   ctx.fillStyle = C.primary;
-  ctx.font = `800 150px ${FONT_HEAD}`;
+  ctx.font = `700 150px ${FONT_HEAD}`;
   ctx.fillText(count, headLeft, 248);
   ctx.fillStyle = C.text;
-  ctx.font = `800 72px ${FONT_HEAD}`;
+  ctx.font = `700 72px ${FONT_HEAD}`;
   ctx.fillText("TODAY", headLeft + countW + 22, 248);
 
   ctx.textAlign = "center";
@@ -2992,7 +3037,7 @@ export const renderChaseSlate = (canvas, {
   let headBottom = 384;
   if (slate.record) {
     ctx.fillStyle = C.solid;
-    ctx.font = `700 30px ${FONT_BODY}`;
+    ctx.font = `600 30px ${FONT_BODY}`;
     ctx.fillText(recordLine(slate.record), W / 2, 378);
     headBottom = 424;
   }
@@ -3036,7 +3081,7 @@ export const renderChaseSlate = (canvas, {
       roundRect(ctx, chipX, mid - 18, chipW, 36, 8);
       ctx.fill();
       ctx.fillStyle = C.muted;
-      ctx.font = `700 19px ${FONT_DATA}`;
+      ctx.font = `600 19px ${FONT_DATA}`;
       ctx.textAlign = "center";
       ctx.fillText(code, chipX + chipW / 2, mid + 1);
       ctx.textAlign = "left";
@@ -3149,7 +3194,7 @@ const drawMismatchHalf = (ctx, { x, y, w, h, kicker, name, hits, n, values, line
 
   // The fraction, not a percentage: "5/5" carries its own sample size and "100%" does not.
   ctx.fillStyle = tone;
-  ctx.font = `700 96px ${FONT_DATA}`;
+  ctx.font = `600 96px ${FONT_DATA}`;
   ctx.fillText(`${hits}/${n}`, x + 34, y + 194);
   ctx.fillStyle = C.muted;
   ctx.font = `500 25px ${FONT_BODY}`;
@@ -3379,7 +3424,7 @@ const drawFormBars = (ctx, values, { x, y, w, h, line, progress = 1, tone = C.pr
     ctx.stroke();
     ctx.setLineDash([]);
     // Labelled on the rule itself. A dashed line with no number on it is a decoration.
-    ctx.font = `700 28px ${FONT_DATA}`;
+    ctx.font = `600 28px ${FONT_DATA}`;
     const label = `${line}+`;
     const lw = ctx.measureText(label).width + 28;
     ctx.fillStyle = C.text;
@@ -3462,7 +3507,7 @@ export const renderFormStory = (canvas, {
   const count = done ? 1 : seg(P, 0.06, 0.55);
   faded(ctx, done ? 1 : seg(P, 0.04, 0.13), () => {
     ctx.fillStyle = C.primary;
-    ctx.font = `700 150px ${FONT_DATA}`;
+    ctx.font = `600 150px ${FONT_DATA}`;
     ctx.fillText(`${Math.round(hits * count)}/${n}`, M, 520);
     ctx.fillStyle = C.text;
     ctx.font = `600 44px ${FONT_HEAD}`;

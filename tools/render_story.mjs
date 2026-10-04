@@ -46,10 +46,13 @@ const KINDS = {
   chase: "renderChaseSlate",
   bets: "renderBetsCard",
   review: "renderReviewCard",
+  results: "renderResultsReel",
 };
-// Only the fixture story animates: it draws a curve that can grow. The slate is a table,
-// and a table that assembles itself is motion for its own sake.
-const ANIMATES = KIND === "fixture";
+// WHICH KINDS ANIMATE. The fixture story draws a curve that can grow; the results reel
+// steps through a week of picks one at a time, which is the one case where the SEQUENCE is
+// the content rather than decoration. The slate and the cards are tables, and a table that
+// assembles itself is motion for its own sake.
+const ANIMATES = KIND === "fixture" || KIND === "results";
 // With --video, the same drawing is rendered frame by frame and encoded instead of
 // snapshotted. Timings match recordStoryVideo's defaults so the automated clip and the one
 // the Share button makes are the same length and the same pace.

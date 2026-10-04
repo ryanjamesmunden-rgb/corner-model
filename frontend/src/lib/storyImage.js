@@ -34,6 +34,10 @@ import { kickoffLabel, kickoffTime, kickoffDay } from "./kickoff.js";
 // second copy of that here would eventually disagree with the first, and the
 // disagreement would be about what the site publicly claims its record is.
 import { recordLine, reasonFor } from "./chaseSlate.js";
+// The reel's timeline, imported rather than reinvented: resultsReel decides what the
+// clip may say AND when each part of it is on screen, so the still at progress 1 and
+// the frames before it cannot disagree about either.
+import { reelAt } from "./resultsReel.js";
 
 export const STORY_W = 1080;
 export const STORY_H = 1920;
@@ -2713,6 +2717,177 @@ export const renderReviewCard = (canvas, {
   ctx.fillStyle = C.muted;
   ctx.font = `500 22px ${FONT_BODY}`;
   ctx.fillText("18+ · gambleaware.org", W - pad, H - 42);
+  ctx.textAlign = "left";
+  return true;
+};
+
+/**
+ * The week's results as one clip: every settled pick in turn, then the tally.
+ *
+ * WHY THIS ANIMATES WHEN THE OTHER CARDS DO NOT. Everywhere else here, motion would be
+ * decoration — a table that assembles itself is a table you have to wait for. A results
+ * reel is the one case where the sequence IS the content: ten picks revealed one at a time
+ * is ten beats a viewer stays for, where the same ten in a static list is one glance. It
+ * also replaces ten separate exports with one file.
+ *
+ * DRAWN AS A FUNCTION OF `progress`, like renderFixtureStory, so the still is simply the
+ * frame at 1 and there is no second implementation to drift. render_story.mjs walks it
+ * frame by frame and hands the JPEGs to ffmpeg.
+ *
+ * THE LOSERS ARE DRAWN THE SAME SIZE AS THE WINNERS. A reel that shrinks its misses is
+ * the stills problem in one file — see lib/resultsReel.js, which decides WHAT may appear;
+ * this only decides how it looks.
+ *
+ * `reel` is whatever lib/resultsReel.reelFrom returned. Null draws nothing and returns
+ * false.
+ */
+export const renderResultsReel = (canvas, {
+  reel = null, progress = 1, site = "thecornermodel.com", brand = "CORNER MODEL",
+  heading = "THIS WEEK",
+} = {}) => {
+  if (!reel || !reel.rows?.length) return false;
+  const W = STORY_W;
+  const H = STORY_H;
+  canvas.width = W;
+  canvas.height = H;
+  const ctx = canvas.getContext("2d");
+  const pad = 72;
+  const inner = W - pad * 2;
+  const { shown, tally } = reelAt(reel, progress);
+
+  ctx.fillStyle = C.bg;
+  ctx.fillRect(0, 0, W, H);
+  const glow = ctx.createRadialGradient(W / 2, 300, 100, W / 2, 300, 900);
+  glow.addColorStop(0, `${C.primary}22`);
+  glow.addColorStop(1, `${C.primary}00`);
+  ctx.fillStyle = glow;
+  ctx.fillRect(0, 0, W, 900);
+  ctx.textBaseline = "middle";
+
+  // ---- the band across the top
+  ctx.fillStyle = C.text;
+  ctx.font = `800 40px ${FONT_HEAD}`;
+  ctx.letterSpacing = "2px";
+  ctx.fillText(brand, pad, 96);
+  ctx.letterSpacing = "0px";
+  ctx.textAlign = "right";
+  ctx.fillStyle = C.muted;
+  ctx.font = `600 28px ${FONT_BODY}`;
+  if (reel.period) ctx.fillText(reel.period, W - pad, 96);
+  ctx.textAlign = "left";
+
+  ctx.fillStyle = C.text;
+  ctx.font = `800 118px ${FONT_HEAD}`;
+  ctx.fillText(heading, pad, 210);
+
+  ctx.strokeStyle = C.border;
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(pad, 282);
+  ctx.lineTo(W - pad, 282);
+  ctx.stroke();
+
+  // ---- the rows, revealed in turn
+  const top = 340;
+  const tallyH = 300;
+  const region = H - top - tallyH - 150;
+  const gap = 12;
+  const rowH = Math.max(70, Math.min(128, (region - (reel.n - 1) * gap) / reel.n));
+  const markW = 92;
+  const valW = 190;
+
+  reel.rows.forEach((r, i) => {
+    if (i >= shown) return;
+    const y = top + i * (rowH + gap);
+    const mid = y + rowH / 2;
+    const tone = r.won ? "#39D0A3" : r.lost ? "#F2557E" : C.muted;
+    // The newest row arrives at full strength; nothing else moves, because a list where
+    // every line is still settling is a list nobody can read mid-clip.
+    const fresh = i === shown - 1;
+
+    ctx.fillStyle = C.card;
+    roundRect(ctx, pad, y, inner, rowH, 14);
+    ctx.fill();
+    ctx.strokeStyle = fresh ? `${tone}99` : C.border;
+    ctx.lineWidth = fresh ? 2.5 : 1.5;
+    ctx.stroke();
+    ctx.fillStyle = tone;
+    roundRect(ctx, pad, y + 14, 5, rowH - 28, 3);
+    ctx.fill();
+
+    const nameX = pad + 30;
+    const nameW = inner - 30 - markW - valW - 40;
+    ctx.fillStyle = C.text;
+    ctx.font = fitFont(ctx, r.name, { size: Math.min(40, rowH * 0.36), max: nameW,
+                                      weight: 700, family: FONT_BODY, min: 24 });
+    ctx.fillText(ellipsize(ctx, r.name, nameW), nameX, mid - (r.line ? 15 : 0));
+    if (r.line) {
+      ctx.fillStyle = C.muted;
+      ctx.font = `600 27px ${FONT_DATA}`;
+      ctx.fillText(r.line, nameX, mid + 22);
+    }
+
+    // WHAT IT LANDED ON, beside the verdict. "Celtic 6+ ✅" is a claim; "Celtic 6+, 9
+    // corners ✅" is one a viewer can check against the match they watched.
+    ctx.textAlign = "right";
+    ctx.fillStyle = C.muted;
+    ctx.font = `600 30px ${FONT_BODY}`;
+    ctx.fillText(r.value || "", W - pad - markW - 34, mid);
+
+    ctx.fillStyle = tone;
+    ctx.font = `800 ${Math.round(rowH * 0.46)}px ${FONT_HEAD}`;
+    ctx.fillText(r.won ? "✓" : r.lost ? "✗" : "–", W - pad - 30, mid + 2);
+    ctx.textAlign = "left";
+  });
+
+  // ---- the tally, on its own beat
+  if (tally > 0) {
+    const ty = H - tallyH - 110;
+    const h = tallyH;
+    ctx.globalAlpha = Math.min(1, tally * 2.2);
+    ctx.fillStyle = C.secondary;
+    roundRect(ctx, pad, ty, inner, h, 20);
+    ctx.fill();
+    ctx.strokeStyle = `${C.primary}66`;
+    ctx.lineWidth = 2;
+    ctx.stroke();
+
+    ctx.textAlign = "center";
+    ctx.fillStyle = reel.clean ? "#39D0A3" : C.text;
+    ctx.font = `800 108px ${FONT_HEAD}`;
+    ctx.fillText(reel.big, W / 2, ty + 86);
+
+    ctx.fillStyle = C.muted;
+    ctx.font = `600 30px ${FONT_BODY}`;
+    const bits = [
+      reel.voided ? `${reel.voided} void` : "",
+      reel.units != null ? `${reel.units > 0 ? "+" : ""}${reel.units}u` : reel.unitsNote,
+      reel.more ? `+${reel.more} more in the period` : "",
+    ].filter(Boolean);
+    if (bits.length) ctx.fillText(bits.join("  ·  "), W / 2, ty + 148);
+
+    // THE RUNNING RECORD, which is what makes a chosen week worth believing. resultsReel
+    // builds it and does not make it optional; this draws it at the same weight as the
+    // week's own number rather than tucking it away.
+    if (reel.context) {
+      ctx.fillStyle = C.text;
+      ctx.font = `700 38px ${FONT_HEAD}`;
+      ctx.fillText(reel.context, W / 2, ty + 206);
+    }
+    ctx.fillStyle = C.muted;
+    ctx.font = `500 25px ${FONT_BODY}`;
+    ctx.fillText(reel.basis, W / 2, ty + 258);
+    ctx.textAlign = "left";
+    ctx.globalAlpha = 1;
+  }
+
+  ctx.fillStyle = C.text;
+  ctx.font = `700 36px ${FONT_HEAD}`;
+  ctx.fillText(site, pad, H - 72);
+  ctx.textAlign = "right";
+  ctx.fillStyle = C.muted;
+  ctx.font = `500 24px ${FONT_BODY}`;
+  ctx.fillText("18+ · begambleaware.org", W - pad, H - 72);
   ctx.textAlign = "left";
   return true;
 };

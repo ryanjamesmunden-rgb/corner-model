@@ -11,9 +11,15 @@ import { reelFrom, reelAt, reelPost, reelRow, valueText, MAX_REEL_ROWS } from ".
 const DAY = 86400000;
 const NOW = Date.parse("2026-10-04T12:00:00Z");
 
+// A DISTINCT KICK-OFF PER CALL unless the test gives one. Two calls to this factory mean
+// two picks, and countedRows now collapses one pick that turns up in both halves of the
+// record — so a factory that minted the same team, line and kick-off every time would
+// hand every test below a pile of copies of a single bet instead of a week's worth.
+let seq = 0;
 const row = (over = {}) => ({
   name: "Celtic", line_label: "6+", result: "win", value: 9,
-  kickoff: new Date(NOW - DAY).toISOString(), price: 1.8, stake: 1, ...over,
+  kickoff: new Date(NOW - DAY - (seq++) * 3600000).toISOString(),
+  price: 1.8, stake: 1, ...over,
 });
 
 // The endpoint's own shape: the overall record in `summary`, the published snapshot rows
@@ -114,6 +120,38 @@ describe("the reel", () => {
     const reel = reelFrom(asWeeks([row(), row({ result: "loss" })]), { now: NOW });
     expect(reel.n).toBe(2);
     expect(reel.big).toBe("1 from 2");
+  });
+
+  test("one pick published in BOTH halves is counted once", () => {
+    // Reading both halves is right and it opens this hazard: an angle that was published
+    // in a snapshot and also logged by hand would be counted twice, and the clip would
+    // claim 2 from 2 on one pick. On a results post the number is the whole claim.
+    const same = row({ name: "Criciuma", line_label: "4+" });
+    const twice = {
+      summary: { landed: 31, settled: 47 },
+      weeks: [{ week: "w", rows: [same, row({ name: "Other" })] }],
+      // The hand-posted copy even disagrees about the corner count — which is exactly
+      // the case that has to collapse rather than be waved through as a second result.
+      posted: { claimed: { rows: [{ ...same, value: 5 }] } },
+    };
+    const reel = reelFrom(twice, { now: NOW });
+    expect(reel.n).toBe(2);
+    expect(reel.big).toBe("2 from 2");
+    expect(reel.rows.filter((r) => r.name === "Criciuma")).toHaveLength(1);
+    // And the snapshot's own grade is the one kept, because that is the provenance the
+    // clip claims: frozen before kick-off, graded off the freeze.
+    expect(reel.rows.find((r) => r.name === "Criciuma").count).toBe(9);
+  });
+
+  test("but two real fixtures for one team both survive", () => {
+    // Midweek and weekend. Same team, same line, different games — the guard keys on
+    // kick-off precisely so this is not mistaken for a duplicate.
+    const reel = reelFrom(results([
+      row({ name: "Criciuma", kickoff: new Date(NOW - DAY).toISOString(), value: 4 }),
+      row({ name: "Criciuma", kickoff: new Date(NOW - 5 * DAY).toISOString(), value: 5 }),
+    ]), { now: NOW });
+    expect(reel.n).toBe(2);
+    expect(reel.big).toBe("2 from 2");
   });
 
   test("and both halves interleave in kick-off order", () => {

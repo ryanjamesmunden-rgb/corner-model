@@ -118,6 +118,19 @@ writeFileSync(ARGS_OUT, JSON.stringify({
   reel, site: SITE.replace(/^https?:\/\//, ""),
   ...(HEADING ? { heading: HEADING.toUpperCase() } : {}),
 }));
+// SAID OUT LOUD WHEN A PICK WAS COUNTED TWICE. countedRows reads both halves of the
+// record and collapses an angle that was published in a snapshot AND logged by hand, and
+// a silent collapse is the wrong kind of quiet: the first clip built off both halves
+// listed one team twice, and whether that was two real fixtures or one pick double-counted
+// could not be answered from anything the run printed. Now it can.
+const raw = ((data?.weeks || []).flatMap((w) => w?.rows || [])).length
+            + ((data?.posted?.claimed?.rows) || []).length;
+const dupes = raw - countedRows(data).length;
+if (dupes > 0) {
+  console.error(`results_reel: ${dupes} pick(s) appeared in both halves of the record `
+                + `(published snapshot and posted by hand) and were counted once`);
+}
+
 // PRINTED, because the clip is the thing nobody can check until it has been watched, and
 // this line is the same claim in a form that survives a failed encode.
 console.error(`results_reel: ${reel.big} over ${DAYS} days — ${reel.n} rows`

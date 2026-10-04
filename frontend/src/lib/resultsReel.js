@@ -88,10 +88,35 @@ export const reelRow = (r = {}) => ({
  * Both sources carry the same fields — name, line_label, line, direction, result, value,
  * kickoff, price — so they interleave in kick-off order without being told apart.
  */
-export const countedRows = (results = {}) => [
-  ...((results?.weeks || []).flatMap((w) => w?.rows || [])),
-  ...((results?.posted?.claimed?.rows) || []),
-];
+const rowKey = (r = {}) => `${r.name || ""}|${r.line_label || ""}|${r.kickoff || ""}`;
+
+export const countedRows = (results = {}) => {
+  const rows = [
+    ...((results?.weeks || []).flatMap((w) => w?.rows || [])),
+    ...((results?.posted?.claimed?.rows) || []),
+  ];
+  // ONE PICK, COUNTED ONCE. Reading both halves of the record is right and it opens a
+  // hazard the single-source version did not have: an angle that was published in a
+  // snapshot AND logged by hand appears in both lists, and a reel that counted it twice
+  // would claim 12 from 12 on eleven picks. On a results post that is the only kind of
+  // error that matters — the number is the whole claim.
+  //
+  // THE KEY IS THE PICK, NOT THE ROW. Team, line and kick-off identify the bet; the
+  // graded `value` is deliberately NOT in it, because two copies of one pick that
+  // disagree about the corner count are exactly the case this has to collapse rather
+  // than wave through. Two real fixtures for the same team differ in kick-off and both
+  // survive, which is why this is a guard and not a filter on the week.
+  //
+  // THE SNAPSHOT ROW WINS, by being first: it was frozen before kick-off and graded off
+  // that freeze, which is the provenance the card claims at the bottom of every clip.
+  const seen = new Set();
+  return rows.filter((r) => {
+    const k = rowKey(r);
+    if (seen.has(k)) return false;
+    seen.add(k);
+    return true;
+  });
+};
 
 export const reelFrom = (results = {}, { days = 7, now = Date.now(),
                                           max = MAX_REEL_ROWS, next = null,

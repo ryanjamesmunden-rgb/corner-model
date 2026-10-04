@@ -1617,6 +1617,17 @@ async def add_pick(body: ManualPickBody, token: Optional[str] = None):
         "status": settlement.PENDING,
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
+    # THE KICK-OFF, WHEN THE FIXTURE CAN BE FOUND. A manual pick carries a date and no
+    # time, which is enough to grade it and not enough to place it on a card that reads in
+    # kick-off order: an unstamped row sorts to the top of the day whatever time it starts.
+    # Matched on the day and both names, so a repeat fixture cannot claim it.
+    fx = await db.fixtures.find_one(
+        {"league_id": body.league_id, "date": {"$regex": f"^{body.date}"},
+         "home_name": doc["home"], "away_name": doc["away"]},
+        {"_id": 0, "fixture_id": 1, "date": 1})
+    if fx:
+        doc["fixture_id"] = fx["fixture_id"]
+        doc["kickoff"] = fx["date"]
     await db.picks.insert_one(dict(doc))
     doc.pop("_id", None)
     return doc
@@ -1844,6 +1855,23 @@ BOARD_DROP_WORDS = {
     "no_teams": "teams not synced yet",
     "outside_window": "outside the window",
 }
+
+# WHOSE BETS GO ON THE CARD. Two kinds, and both belong on something headed "today's bets":
+#
+#   value   the model's own selection — a price typed in that beats its fair value, frozen
+#           before kick-off by _snapshot_value_picks.
+#   manual  a bet you took and logged through POST /api/picks, which exists precisely so
+#           "the site's record is the record you SELL".
+#
+# IT USED TO BE value ALONE, and that made the card a report on the model rather than on
+# the day: a bet backed at a price the model never saw — because the price was never typed
+# in, or because the model rated it short — simply did not exist as far as the card was
+# concerned. The card then went out missing a bet that had been placed, which is the one
+# error a published record cannot make.
+#
+# A manual pick with no price stays off, like everything else here: cardFrom drops rows
+# without odds, because a bet nobody can price is not one this card can report.
+CARD_PICKS = {"signal": {"$in": ["value", "manual"]}}
 
 VALUE_PICK_RULE = "priced_positive_ev"
 VALUE_PICK_TZ = ZoneInfo("Europe/London")
@@ -7648,10 +7676,9 @@ async def share_bets(token: Optional[str] = None, day: Optional[str] = None,
     # Every day already on the ledger for this window, so an evening run redraws what was
     # frozen this morning even though those games have now kicked off and no longer
     # qualify. The card is a record by then, not a shortlist.
+    last = (date.fromisoformat(day) + timedelta(days=horizon - 1)).isoformat()
     known = {p["date"] for p in await db.picks.find(
-        {"auto": True, "signal": "value",
-         "date": {"$gte": day,
-                  "$lte": (date.fromisoformat(day) + timedelta(days=horizon - 1)).isoformat()}},
+        {**CARD_PICKS, "date": {"$gte": day, "$lte": last}},
         {"_id": 0, "date": 1}).to_list(500)}
 
     by_day, drops = await _value_day_map(day, horizon, min_ev, count)
@@ -7669,8 +7696,7 @@ async def share_bets(token: Optional[str] = None, day: Optional[str] = None,
 
     cards = []
     for d in wanted:
-        picks = await db.picks.find({"auto": True, "signal": "value", "date": d},
-                                    {"_id": 0}).to_list(100)
+        picks = await db.picks.find({**CARD_PICKS, "date": d}, {"_id": 0}).to_list(100)
         picks.sort(key=lambda p: (p.get("kickoff") or "", p.get("home") or ""))
         if not picks:
             continue

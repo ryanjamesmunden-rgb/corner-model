@@ -1,0 +1,163 @@
+# The review card: the channel's last few months, for the free group.
+#
+# DISPATCH ONLY, AND THAT IS DELIBERATE. Every other card here is built from data the site
+# computes, so a schedule can be trusted with it. The monthly units on this one are STATED
+# — maintained by hand in frontend/src/lib/channelResults.js, because the site's ledger
+# holds the model's automated selections rather than the picks actually posted. A cron
+# would therefore republish last month's figure every month until somebody remembered to
+# edit the file, and an advert that is quietly out of date is worse than no advert.
+#
+# So it goes out when a person asks for it, which is also when they have just updated the
+# number.
+#
+# IT DRAWS WITHOUT THE BACKEND IF IT HAS TO. The graded block — the site's own record,
+# settled off snapshots frozen before kick-off — is fetched from /api/results and is the
+# half a sceptic can check. If the backend is asleep or the token is wrong, the card still
+# draws with the stated months alone rather than the run failing over an extra block.
+name: The record card
+
+on:
+  workflow_dispatch:
+    inputs:
+      months:
+        description: "How many months (1-4)"
+        required: false
+        default: "3"
+        type: string
+      heading:
+        description: "Card heading (blank = THE RECORD)"
+        required: false
+        default: ""
+        type: string
+      send:
+        # A PREVIEW IS NOT A PUBLICATION. Unticked draws the card and writes the post into
+        # this run's summary, where it can be read before anyone decides to send it. This
+        # one goes to the FREE group, which is the audience least able to check a claim,
+        # so the default is to show you first.
+        description: "Also post it to Telegram"
+        required: false
+        default: false
+        type: boolean
+
+concurrency:
+  group: corner-review-card
+
+permissions:
+  contents: read
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Wake the backend
+        env:
+          BACKEND: ${{ vars.BACKEND_URL || 'https://corner-model.onrender.com' }}
+        run: |
+          for i in 1 2 3 4 5 6; do
+            code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 60 "$BACKEND/api/" || true)
+            echo "attempt $i: HTTP $code"
+            [ "$code" = "200" ] && break
+            sleep 15
+          done
+
+      - name: Build the review
+        env:
+          BACKEND_URL: ${{ vars.BACKEND_URL || 'https://corner-model.onrender.com' }}
+          SITE_URL: ${{ vars.SITE_URL || 'https://thecornermodel.com' }}
+          TOOLS_TOKEN: ${{ secrets.TOOLS_TOKEN }}
+        run: |
+          set -- --months "${{ inputs.months || '3' }}"
+          [ -n "${{ inputs.heading }}" ] && set -- "$@" --heading "${{ inputs.heading }}"
+          node tools/review_card.mjs "$@" --json-out review.json --args-out review_args.json
+          # THE POST, IN THE RUN. The card is otherwise only readable in Telegram, and on a
+          # preview — which sends nothing — it would be readable nowhere at all.
+          {
+            echo "## The record card"
+            echo
+            echo '```'
+            python3 -c "import json;print(json.load(open('review.json'))['post'])"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "----- post -----"
+          python3 -c "import json;print(json.load(open('review.json'))['post'])"
+          echo "----- end -----"
+
+      - name: Draw the card
+        id: card
+        # DECORATION, so every failure here is a warning. The post carries every month and
+        # the graded record on its own.
+        run: |
+          npm i --no-save playwright@1.49.1 >/dev/null 2>&1 || {
+            echo "::warning::could not install playwright — sending text only"; exit 0; }
+          npx playwright install chromium >/dev/null 2>&1 || {
+            echo "::warning::could not install chromium — sending text only"; exit 0; }
+          if node tools/render_story.mjs --kind review --args review_args.json --out review.png \
+             && [ -s review.png ]; then
+            echo "file=review.png" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::the card did not render — sending text only"
+          fi
+
+      # KEPT WHETHER OR NOT IT IS SENT, so a preview run hands you the picture to look at
+      # rather than only a description of one.
+      - name: Keep the picture
+        if: steps.card.outputs.file != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: review-card
+          path: review.png
+          retention-days: 14
+
+      - name: Send it
+        if: inputs.send && env.TG_TOKEN != ''
+        env:
+          TG_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          # The free group is a different audience from the VIP channel, and a different
+          # secret. Falls back to the usual chat until that secret exists, so a send never
+          # goes silently nowhere.
+          TG_CHAT: ${{ secrets.TELEGRAM_FREE_CHAT_ID || secrets.TELEGRAM_CHAT_ID }}
+          FILE: ${{ steps.card.outputs.file }}
+        run: |
+          python3 - <<'PY'
+          import json
+          d = json.load(open("review.json"))
+          open("caption.txt", "w").write(d["post"])
+          open("shape.txt", "w").write("long" if len(d["post"]) > 1024 else "short")
+          PY
+          SHAPE=$(cat shape.txt)
+          echo "caption is $(wc -c < caption.txt) bytes — sending $SHAPE"
+
+          sent=0
+          if [ -n "$FILE" ] && [ -s "$FILE" ]; then
+            set -- -F "chat_id=$TG_CHAT" -F "photo=@$FILE"
+            [ "$SHAPE" = "short" ] && set -- "$@" -F "caption=$(cat caption.txt)"
+            code=$(curl -s -o tg.json -w '%{http_code}' --max-time 120 \
+              -X POST "https://api.telegram.org/bot$TG_TOKEN/sendPhoto" "$@" || true)
+            echo "sendPhoto HTTP $code"
+            if [ "$code" = "200" ]; then
+              sent=1
+            else
+              echo "::warning::sendPhoto failed (HTTP $code) — falling back to text"
+              head -c 300 tg.json || true
+            fi
+          fi
+
+          if [ "$sent" = "0" ] || [ "$SHAPE" = "long" ]; then
+          python3 - <<'PY' > text.json
+          import json, os
+          print(json.dumps({"chat_id": os.environ["TG_CHAT"],
+                            "text": open("caption.txt").read(),
+                            "disable_web_page_preview": True}))
+          PY
+            code=$(curl -s -o tg2.json -w '%{http_code}' --max-time 60 \
+              -X POST "https://api.telegram.org/bot$TG_TOKEN/sendMessage" \
+              -H 'Content-Type: application/json' --data @text.json || true)
+            echo "sendMessage HTTP $code"
+            [ "$code" = "200" ] || { echo "::error::could not post the review"; head -c 300 tg2.json; exit 1; }
+          fi

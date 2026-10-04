@@ -148,8 +148,21 @@ jobs:
           # on the join page. This endpoint makes the call Stripe would make at checkout.
           sk_code=$(curl -s -o stripe.json -w '%{http_code}' --max-time 90 \
             "$BACKEND/api/billing/status?token=$TOOLS_TOKEN" || echo 000)
+          # IS THE DATA FEED ALIVE. Everything else on this checklist can be green while the
+          # site quietly serves a frozen database: the sync runs, the provider refuses every
+          # call, and the only visible symptom is boards that look a little stale. That
+          # state ran for days — the subscription had lapsed to a Free plan, which serves
+          # seasons 2022-2024 only, so a season-2026 request came back empty and every
+          # league probe read as "this competition files no corner data".
+          #
+          # No token: /api/sync/runs answers the public user, and it is the one place the
+          # provider's own refusal is written down.
+          sync_code=$(curl -s -o sync.json -w '%{http_code}' --max-time 60 \
+            "$BACKEND/api/sync/runs?limit=3" || echo 000)
           echo "config: HTTP $cfg_code | telegram: HTTP $tg_code | stripe: HTTP $sk_code"
+          echo "sync: HTTP $sync_code"
           printf '%s %s %s' "$cfg_code" "$tg_code" "$sk_code" > codes.txt
+          [ "$sync_code" = "200" ] || echo '[]' > sync.json
           # Checking a candidate id costs one Telegram call and saves a redeploy cycle. The
           # id is not secret — it is in the web.telegram.org URL of the channel — and it is
           # typed into the dispatch form by the person asking, so echoing it back is how
@@ -173,6 +186,7 @@ jobs:
           # nothing about what it found. The same text goes to both.
           python3 - <<'PY' | tee -a "$GITHUB_STEP_SUMMARY"
           import json
+          import sys
 
           def load(p):
               try:
@@ -281,6 +295,42 @@ jobs:
               row(False, "Stripe accepts them",
                   f"could not check (HTTP {sk_code}) — deploy the backend, or check TOOLS_TOKEN",
                   mark="⚠️")
+          # ---- the data feed, which every board on the site is downstream of
+          #
+          # PARSED BY report_sync, NOT BY A SECOND READER OF THE SAME PAYLOAD. That file
+          # already knows which field holds the error count and where the per-league
+          # messages hide; a copy here would drift, and the thing the two copies would
+          # disagree about is whether the site's data is alive.
+          sys.path.insert(0, ".github/workflows")
+          try:
+              import report_sync
+              runs = json.load(open("sync.json")) or []
+              runs = runs if isinstance(runs, list) else runs.get("runs", [])
+          except Exception as exc:
+              runs, report_sync = [], None
+              print(f"| ⚠️ | Data feed | could not read the sync log ({exc}) |")
+          if report_sync and runs:
+              last = runs[0]
+              when = str(last.get("started_at") or "")[:16].replace("T", " ")
+              fails = report_sync._failures(last)
+              errs = last.get("error_count") or 0
+              if not fails and str(last.get("status", "")).lower() in ("success", "running"):
+                  row(True, "Data feed", f"last sync {when} UTC, no league errors")
+              else:
+                  # THE PROVIDER'S OWN WORDS, not a summary of them. "errors=30" says
+                  # something is wrong and nothing about what, and the next move is
+                  # completely different for a lapsed plan, a spent quota and a bug.
+                  worst = max(fails.items(), key=lambda kv: len(kv[1]), default=("", []))
+                  row(False, "Data feed",
+                      f"last sync {when} UTC failed on {len(worst[1]) or errs} league(s) — "
+                      f"{worst[0][:150]}")
+                  print("| | | Every board is served from the database, so the site keeps "
+                        "working and keeps getting staler. If that message mentions the "
+                        "PLAN, it is the API-Football subscription and nothing here can "
+                        "fix it. |")
+          elif report_sync:
+              row(False, "Data feed", "no sync run on record at all", mark="⚠️")
+
           days = cfg.get("trial_days")
           row(bool(days), "Free trial", f"{days} days" if days else "off")
           # ALWAYS A TICK, because both states are correct and only one of them was being

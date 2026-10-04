@@ -1,0 +1,191 @@
+# The week's results as one clip, instead of one card per pick.
+#
+# WHY IT IS A VIDEO AND NOT TEN STILLS. Ten graphics is ten exports, ten uploads and ten
+# chances to quietly not publish the one that lost. One clip off one list is less work and
+# harder to shade: the rows come from /api/results in kick-off order, losers and voids
+# included, and the tally at the end counts exactly what went past.
+#
+# DISPATCH ONLY. A weekly cron would post a clip on the weeks that had nothing to say as
+# well as the ones that did — and the honest version of that is no post, which a schedule
+# cannot decide. The tool already refuses a week with fewer than two settled picks; the
+# rest is a judgement about whether this week is worth a reel, and that is a person's.
+#
+# AND IT DOES NOT SEND BY DEFAULT. A clip cannot be unposted. An off-schedule run builds
+# it, writes the caption into the run summary and keeps the file as an artifact, where it
+# can be watched before anyone decides to send it.
+name: The week in results
+
+on:
+  workflow_dispatch:
+    inputs:
+      days:
+        description: "How many days back (7 = the week)"
+        required: false
+        default: "7"
+        type: string
+      heading:
+        description: "Card heading (blank = THIS WEEK)"
+        required: false
+        default: ""
+        type: string
+      ahead:
+        description: "How far ahead the end card looks, in days (blank = 7)"
+        required: false
+        default: "7"
+        type: string
+      join:
+        # THE LINK PEOPLE ARE MEANT TO LAND ON, and it is an input because the clip may go
+        # to the free group, to X or to a story — and the right destination is not always
+        # /join. Blank uses the site's own join page.
+        description: "Sign-up link on the end card (blank = <site>/join)"
+        required: false
+        default: ""
+        type: string
+      send:
+        description: "Also post it to Telegram"
+        required: false
+        default: false
+        type: boolean
+
+concurrency:
+  group: corner-results-reel
+
+permissions:
+  contents: read
+
+jobs:
+  reel:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Wake the backend
+        env:
+          BACKEND: ${{ vars.BACKEND_URL || 'https://corner-model.onrender.com' }}
+        run: |
+          for i in 1 2 3 4 5 6; do
+            code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 60 "$BACKEND/api/" || true)
+            echo "attempt $i: HTTP $code"
+            [ "$code" = "200" ] && break
+            sleep 15
+          done
+
+      - name: Build the reel
+        id: build
+        env:
+          BACKEND_URL: ${{ vars.BACKEND_URL || 'https://corner-model.onrender.com' }}
+          SITE_URL: ${{ vars.SITE_URL || 'https://thecornermodel.com' }}
+          TOOLS_TOKEN: ${{ secrets.TOOLS_TOKEN }}
+        run: |
+          set -- --days "${{ inputs.days || '7' }}" --ahead "${{ inputs.ahead || '7' }}"
+          [ -n "${{ inputs.heading }}" ] && set -- "$@" --heading "${{ inputs.heading }}"
+          [ -n "${{ inputs.join }}" ] && set -- "$@" --join "${{ inputs.join }}"
+          node tools/results_reel.mjs "$@" --json-out reel.json --args-out reel_args.json
+          empty=$(python3 -c "import json;print('true' if json.load(open('reel.json'))['empty'] else 'false')")
+          echo "empty=$empty" >> "$GITHUB_OUTPUT"
+          if [ "$empty" = "true" ]; then
+            echo "::notice::fewer than two settled picks in the window — no reel"
+            echo "## No reel this week" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          # THE CAPTION, IN THE RUN. The clip is only watchable after a download, and on a
+          # preview — which sends nothing — the claim would otherwise be readable nowhere.
+          {
+            echo "## The week in results"
+            echo
+            echo '```'
+            python3 -c "import json;print(json.load(open('reel.json'))['post'])"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "----- caption -----"
+          python3 -c "import json;print(json.load(open('reel.json'))['post'])"
+          echo "----- end -----"
+
+      - name: Draw it
+        id: draw
+        if: steps.build.outputs.empty != 'true'
+        # A STILL IS MOST OF THE VALUE AND NONE OF THE ENCODING RISK, so a failed video
+        # falls back to the final frame rather than costing the post entirely. The caption
+        # carries every row on its own either way.
+        run: |
+          can=$(bash tools/install_render.sh | tail -1)
+          echo "renderer: $can"
+          if [ "$can" = "none" ]; then
+            echo "::warning::no renderer available — caption only"; exit 0
+          fi
+          if command -v ffmpeg >/dev/null 2>&1 \
+             && node tools/render_story.mjs --kind results --args reel_args.json \
+                     --video reel.mp4 --duration 9500 --hold 1800; then
+            echo "file=reel.mp4" >> "$GITHUB_OUTPUT"
+            echo "kind=video" >> "$GITHUB_OUTPUT"
+          elif node tools/render_story.mjs --kind results --args reel_args.json --out reel.png; then
+            echo "::warning::could not encode the clip — sending the final frame instead"
+            echo "file=reel.png" >> "$GITHUB_OUTPUT"
+            echo "kind=image" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::the render failed — caption only"
+          fi
+
+      # KEPT WHETHER OR NOT IT IS SENT, so a preview hands you the clip to watch rather
+      # than a description of one.
+      - name: Keep it
+        if: steps.draw.outputs.file != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: results-reel
+          path: ${{ steps.draw.outputs.file }}
+          retention-days: 14
+
+      - name: Send it
+        if: steps.build.outputs.empty != 'true' && inputs.send && env.TG_TOKEN != ''
+        env:
+          TG_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TG_CHAT: ${{ secrets.TELEGRAM_FREE_CHAT_ID || secrets.TELEGRAM_CHAT_ID }}
+          FILE: ${{ steps.draw.outputs.file }}
+          KIND: ${{ steps.draw.outputs.kind }}
+        run: |
+          python3 - <<'PY'
+          import json
+          d = json.load(open("reel.json"))
+          open("caption.txt", "w").write(d["post"])
+          open("shape.txt", "w").write("long" if len(d["post"]) > 1024 else "short")
+          PY
+          SHAPE=$(cat shape.txt)
+          echo "caption is $(wc -c < caption.txt) bytes — sending $SHAPE"
+
+          sent=0
+          if [ -n "$FILE" ] && [ -s "$FILE" ]; then
+            # sendVideo, not sendAnimation: an animation is muted and loops, which suits a
+            # three-second curve and not a ten-row reel somebody needs to read to the end.
+            METHOD=sendVideo; FIELD=video
+            [ "$KIND" = "image" ] && { METHOD=sendPhoto; FIELD=photo; }
+            set -- -F "chat_id=$TG_CHAT" -F "$FIELD=@$FILE"
+            [ "$SHAPE" = "short" ] && set -- "$@" -F "caption=$(cat caption.txt)"
+            code=$(curl -s -o tg.json -w '%{http_code}' --max-time 180 \
+              -X POST "https://api.telegram.org/bot$TG_TOKEN/$METHOD" "$@" || true)
+            echo "$METHOD HTTP $code"
+            if [ "$code" = "200" ]; then
+              sent=1
+            else
+              echo "::warning::$METHOD failed (HTTP $code) — falling back to text"
+              head -c 300 tg.json || true
+            fi
+          fi
+
+          if [ "$sent" = "0" ] || [ "$SHAPE" = "long" ]; then
+          python3 - <<'PY' > text.json
+          import json, os
+          print(json.dumps({"chat_id": os.environ["TG_CHAT"],
+                            "text": open("caption.txt").read(),
+                            "disable_web_page_preview": True}))
+          PY
+            code=$(curl -s -o tg2.json -w '%{http_code}' --max-time 60 \
+              -X POST "https://api.telegram.org/bot$TG_TOKEN/sendMessage" \
+              -H 'Content-Type: application/json' --data @text.json || true)
+            echo "sendMessage HTTP $code"
+            [ "$code" = "200" ] || { echo "::error::could not post the reel"; head -c 300 tg2.json; exit 1; }
+          fi

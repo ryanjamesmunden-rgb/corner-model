@@ -45,10 +45,14 @@ const KINDS = {
   slip: "renderDailySlip",
   chase: "renderChaseSlate",
   bets: "renderBetsCard",
+  review: "renderReviewCard",
+  results: "renderResultsReel",
 };
-// Only the fixture story animates: it draws a curve that can grow. The slate is a table,
-// and a table that assembles itself is motion for its own sake.
-const ANIMATES = KIND === "fixture";
+// WHICH KINDS ANIMATE. The fixture story draws a curve that can grow; the results reel
+// steps through a week of picks one at a time, which is the one case where the SEQUENCE is
+// the content rather than decoration. The slate and the cards are tables, and a table that
+// assembles itself is motion for its own sake.
+const ANIMATES = KIND === "fixture" || KIND === "results";
 // With --video, the same drawing is rendered frame by frame and encoded instead of
 // snapshotted. Timings match recordStoryVideo's defaults so the automated clip and the one
 // the Share button makes are the same length and the same pace.
@@ -80,8 +84,29 @@ try {
 
 const TYPES = { ".js": "text/javascript", ".mjs": "text/javascript", ".html": "text/html" };
 
+// THE SITE'S OWN FONTS, AND THIS HARNESS NEVER HAD THEM.
+//
+// storyImage.js names Outfit, Manrope and IBM Plex Mono — "lifted from index.css so the
+// story looks like the site rather than merely near it" — and then this page loaded no
+// fonts at all. Chromium silently fell back to its default face for every card and every
+// story this repo has ever rendered headlessly, and because canvas never errors on a
+// missing family, nothing anywhere said so. The giveaway was the branding looking heavier
+// than the site: a weight the fallback had to synthesise.
+//
+// THE SAME URL index.css IMPORTS, weights included. Copying the families but not their
+// weights would put the cards back where they started — asking for a weight the brand does
+// not have and letting the browser fake it.
+const FONTS = "https://fonts.googleapis.com/css2?family=Outfit:wght@500;600;700"
+  + "&family=Manrope:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap";
+
 const HARNESS = `<!doctype html><meta charset="utf-8">
-<style>html,body{margin:0;background:#000}</style>
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="${FONTS}">
+<style>html,body{margin:0;background:#000}
+  /* Named in CSS as well as in canvas, so the faces are actually fetched: a family that
+     nothing on the page renders is one the browser is entitled not to download. */
+  .f{font-family:'Outfit','Manrope','IBM Plex Mono'}</style>
+<span class="f" style="position:absolute;left:-9999px">.</span>
 <canvas id="c"></canvas>
 <script type="module">
   import * as story from "/lib/storyImage.js";
@@ -104,7 +129,16 @@ const HARNESS = `<!doctype html><meta charset="utf-8">
     draw(c, { ...a, progress });
     return c.toDataURL("image/jpeg", 0.95);
   };
-  window.__ready = true;
+  // READY MEANS THE FONTS HAVE ARRIVED, not merely that the module has. A canvas drawn
+  // before they load silently uses the fallback — which is the bug this whole block is
+  // here to fix, and it would come back as a race on a cold runner.
+  document.fonts.load("700 48px Outfit")
+    .then(() => document.fonts.load("600 32px Manrope"))
+    .then(() => document.fonts.load("600 32px 'IBM Plex Mono'"))
+    .then(() => document.fonts.ready)
+    .then(() => { window.__fonts = [...document.fonts].map((f) => f.family + " " + f.weight); })
+    .catch((e) => { window.__fontError = String(e); })
+    .finally(() => { window.__ready = true; });
 </script>`;
 
 const server = createServer((req, res) => {
@@ -139,8 +173,21 @@ try {
   const errors = [];
   page.on("pageerror", (e) => errors.push(String(e)));
   await page.goto(`http://127.0.0.1:${port}/`, { waitUntil: "networkidle" });
-  await page.waitForFunction(() => window.__ready === true, { timeout: 15000 })
+  await page.waitForFunction(() => window.__ready === true, { timeout: 20000 })
     .catch(() => fail(`the harness never loaded${errors.length ? ` — ${errors[0]}` : ""}`));
+
+  // SAID OUT LOUD, because a missing webfont is invisible in the output: the card still
+  // draws, in the wrong face, and looks like a design choice. A runner with no network to
+  // Google Fonts is a warning rather than a failure — the card is worth more in the wrong
+  // face than not at all — but it will never again happen quietly.
+  const loaded = await page.evaluate(() => ({ faces: window.__fonts || [],
+                                              err: window.__fontError || null }));
+  if (loaded.err || !loaded.faces.length) {
+    console.error(`render_story: WARNING — the site's fonts did not load`
+      + `${loaded.err ? ` (${loaded.err})` : ""}; drawing in the fallback face`);
+  } else {
+    console.error(`render_story: fonts ${loaded.faces.join(", ")}`);
+  }
 
   if (VIDEO && ANIMATES) {
     // FRAMES AND FFMPEG, NOT MediaRecorder.

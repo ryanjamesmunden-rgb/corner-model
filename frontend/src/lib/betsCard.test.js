@@ -91,9 +91,30 @@ describe("the card", () => {
     expect(cardFrom({ rows: [pick({ odds: null })] })).toBeNull();
   });
 
-  test("the biggest edge leads", () => {
-    const card = cardFrom({ rows: [pick({ ev: 2 }), pick({ fixture_id: "f2", ev: 11 })] });
+  test("the earliest kick-off leads, whatever the edge", () => {
+    // The card is checked against the day as it happens, so it reads in the order the
+    // day plays out — not in the order the model ranks it.
+    const card = cardFrom({
+      rows: [pick({ ev: 11, kickoff: "2026-10-03T19:45:00Z" }),
+             pick({ fixture_id: "f2", ev: 2, kickoff: "2026-10-03T12:30:00Z" })],
+    });
     expect(card.rows.map((r) => r.key)).toEqual(["f2-home_over_5.5", "f1-home_over_5.5"]);
+  });
+
+  test("but the CUT is still made on the edge, not on the clock", () => {
+    // Ordering by kick-off and then trimming would quietly drop the day's best bet for
+    // the crime of kicking off late — a selection rule hidden inside a display decision.
+    const rows = [
+      pick({ fixture_id: "best", ev: 40, kickoff: "2026-10-03T21:00:00Z" }),
+      ...Array.from({ length: 8 }, (_, i) => pick({
+        fixture_id: `f${i}`, ev: 1 + i, kickoff: `2026-10-03T1${i}:00:00Z`,
+      })),
+    ];
+    const card = cardFrom({ rows });
+    expect(card.n).toBe(MAX_CARD_ROWS);
+    expect(card.rows.some((r) => r.key.startsWith("best"))).toBe(true);
+    // ...and it is last, because it kicks off last.
+    expect(card.rows[card.rows.length - 1].key).toBe("best-home_over_5.5");
   });
 
   test("losers stay on the card", () => {
@@ -133,7 +154,9 @@ describe("the card", () => {
   });
 
   test("the card is capped, and says how many it is holding back", () => {
-    const rows = Array.from({ length: 9 }, (_, i) => pick({ fixture_id: `f${i}`, ev: i }));
+    const rows = Array.from({ length: 9 }, (_, i) => pick({
+      fixture_id: `f${i}`, ev: i, kickoff: `2026-10-03T1${i % 10}:00:00Z`,
+    }));
     const card = cardFrom({ rows });
     expect(card.n).toBe(MAX_CARD_ROWS);
     expect(card.hidden).toBe(3);

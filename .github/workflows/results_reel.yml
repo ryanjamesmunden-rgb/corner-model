@@ -28,6 +28,19 @@ on:
         required: false
         default: ""
         type: string
+      ahead:
+        description: "How far ahead the end card looks, in days (blank = 7)"
+        required: false
+        default: "7"
+        type: string
+      join:
+        # THE LINK PEOPLE ARE MEANT TO LAND ON, and it is an input because the clip may go
+        # to the free group, to X or to a story — and the right destination is not always
+        # /join. Blank uses the site's own join page.
+        description: "Sign-up link on the end card (blank = <site>/join)"
+        required: false
+        default: ""
+        type: string
       send:
         description: "Also post it to Telegram"
         required: false
@@ -68,8 +81,9 @@ jobs:
           SITE_URL: ${{ vars.SITE_URL || 'https://thecornermodel.com' }}
           TOOLS_TOKEN: ${{ secrets.TOOLS_TOKEN }}
         run: |
-          set -- --days "${{ inputs.days || '7' }}"
+          set -- --days "${{ inputs.days || '7' }}" --ahead "${{ inputs.ahead || '7' }}"
           [ -n "${{ inputs.heading }}" ] && set -- "$@" --heading "${{ inputs.heading }}"
+          [ -n "${{ inputs.join }}" ] && set -- "$@" --join "${{ inputs.join }}"
           node tools/results_reel.mjs "$@" --json-out reel.json --args-out reel_args.json
           empty=$(python3 -c "import json;print('true' if json.load(open('reel.json'))['empty'] else 'false')")
           echo "empty=$empty" >> "$GITHUB_OUTPUT"
@@ -105,7 +119,7 @@ jobs:
           fi
           if command -v ffmpeg >/dev/null 2>&1 \
              && node tools/render_story.mjs --kind results --args reel_args.json \
-                     --video reel.mp4 --duration 7000 --hold 1800; then
+                     --video reel.mp4 --duration 9500 --hold 1800; then
             echo "file=reel.mp4" >> "$GITHUB_OUTPUT"
             echo "kind=video" >> "$GITHUB_OUTPUT"
           elif node tools/render_story.mjs --kind results --args reel_args.json --out reel.png; then

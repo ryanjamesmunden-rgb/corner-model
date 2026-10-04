@@ -79,7 +79,8 @@ export const reelRow = (r = {}) => ({
  * are published on the site; only one may be animated into a highlight reel.
  */
 export const reelFrom = (results = {}, { days = 7, now = Date.now(),
-                                          max = MAX_REEL_ROWS } = {}) => {
+                                          max = MAX_REEL_ROWS, next = null,
+                                          join = "" } = {}) => {
   const claimed = results?.posted?.claimed || {};
   const since = now - days * 86400000;
   const inWindow = (claimed.rows || []).filter((r) => {
@@ -120,6 +121,43 @@ export const reelFrom = (results = {}, { days = 7, now = Date.now(),
     context: overall ? `${overall.big} overall` : "",
     basis: "Graded from a snapshot frozen before kick-off",
     legal: "18+ · begambleaware.org · Past results do not predict future ones",
+    // Both optional. No fixtures fetched, or no join link configured, and the clip simply
+    // ends on the tally — which is what it did before and is still a complete post.
+    next,
+    join: join || "",
+  };
+};
+
+/**
+ * What is coming, as a tease rather than a team sheet.
+ *
+ * THE CALLS ARE THE PRODUCT, AND THIS CLIP IS FREE. /value-board is members-only for a
+ * stated reason — "it is not a list of teams in form, it is a ranked list of LIVE PRICES
+ * THE MODEL DISAGREES WITH — the finished product" — and the fixture stories blur the
+ * model's price for the same one. An end card that listed next weekend's lines would hand
+ * over the thing the channel sells, in the post whose job is to make people want it.
+ *
+ * So this carries FIXTURES and SCALE: how many games the model has projections on, across
+ * how many leagues, and the few with the most corners expected. Every one of those is a
+ * fact about the fixture list. None of them is a bet.
+ */
+export const MAX_NEXT_GAMES = 3;
+
+export const nextFrom = (fixtures = [], { max = MAX_NEXT_GAMES } = {}) => {
+  const rows = (fixtures || []).filter((f) => f && f.home && f.away);
+  if (!rows.length) return null;
+  const leagues = new Set(rows.map((f) => f.league_name).filter(Boolean));
+  // Ordered by projected total, which is a property of the fixture rather than a
+  // selection among them — "the biggest corner games on the card", not "our picks".
+  const games = [...rows]
+    .sort((a, b) => (Number(b.lambda_total) || 0) - (Number(a.lambda_total) || 0))
+    .slice(0, Math.max(1, max))
+    .map((f) => ({ home: f.home, away: f.away, league: f.league_name || "" }));
+  return {
+    count: rows.length,
+    leagues: leagues.size,
+    games,
+    when: periodOf(rows.map((f) => ({ kickoff: f.date }))),
   };
 };
 
@@ -131,13 +169,28 @@ export const reelFrom = (results = {}, { days = 7, now = Date.now(),
  * render holds on it afterwards, and this is what hands it something to hold.
  */
 export const TALLY_SHARE = 0.26;
+/** The end card gets its own beat, and takes it from the rows rather than from the tally. */
+export const NEXT_SHARE = 0.22;
 
 export const reelAt = (reel = null, progress = 0) => {
-  if (!reel || !reel.n) return { shown: 0, tally: 0, growth: 1 };
+  if (!reel || !reel.n) return { shown: 0, tally: 0, next: 0, growth: 1 };
   const p = Math.max(0, Math.min(1, Number(progress) || 0));
-  const rowsEnd = 1 - TALLY_SHARE;
+  const hasNext = Boolean(reel.next || reel.join);
+  const nextShare = hasNext ? NEXT_SHARE : 0;
+  const tallyEnd = 1 - nextShare;
+  const rowsEnd = tallyEnd - TALLY_SHARE;
+  if (p >= tallyEnd) {
+    // The tally stays at full once the end card starts: it is still the frame underneath,
+    // and a number that fades out as the advert arrives reads as a number being taken away.
+    // THE LAST FRAME IS PINNED RATHER THAN DIVIDED. (1 - 0.78) / 0.22 is 0.9999999999999999
+    // in binary floating point, so the end card finished a hair short of full on the one
+    // frame that matters most: the held frame of the video, and the still.
+    return { shown: reel.n, tally: 1, growth: 1,
+             next: nextShare ? (p >= 1 ? 1 : Math.min(1, (p - tallyEnd) / nextShare)) : 0 };
+  }
   if (p >= rowsEnd) {
-    return { shown: reel.n, tally: Math.min(1, (p - rowsEnd) / TALLY_SHARE), growth: 1 };
+    return { shown: reel.n, tally: Math.min(1, (p - rowsEnd) / TALLY_SHARE),
+             next: 0, growth: 1 };
   }
   const slot = (p / rowsEnd) * reel.n;
   // `growth` is how far the NEWEST row's bar has run out to its finishing count — the
@@ -150,6 +203,7 @@ export const reelAt = (reel = null, progress = 0) => {
   return {
     shown: Math.min(reel.n, Math.floor(slot) + 1),
     tally: 0,
+    next: 0,
     growth: Math.max(0, Math.min(1, (slot - Math.floor(slot)) * 2)),
   };
 };
@@ -173,6 +227,15 @@ export const reelPost = ({ reel = null, site = "", heading = "" } = {}) => {
   else if (reel.unitsNote) lines.push(reel.unitsNote);
   if (reel.context) lines.push(reel.context);
   lines.push(reel.basis);
+  if (reel.next) {
+    lines.push("");
+    lines.push(`Next up: ${reel.next.count} games across ${reel.next.leagues} leagues`
+               + (reel.next.when ? `, ${reel.next.when}` : ""));
+  }
+  if (reel.join) {
+    // The lines themselves are not in the caption either, for the reason at nextFrom.
+    lines.push(`Calls go out in the channel before kick-off — ${reel.join}`);
+  }
   if (site) {
     lines.push("");
     lines.push(site);

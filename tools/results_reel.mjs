@@ -24,7 +24,7 @@ import { dirname, resolve } from "node:path";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const LIB = resolve(HERE, "..", "frontend", "src", "lib");
-const { reelFrom, reelPost, MAX_REEL_ROWS } = await import(resolve(LIB, "resultsReel.js"));
+const { reelFrom, reelPost, nextFrom, MAX_REEL_ROWS } = await import(resolve(LIB, "resultsReel.js"));
 
 const arg = (name, fallback = null) => {
   const i = process.argv.indexOf(`--${name}`);
@@ -37,6 +37,10 @@ const TOKEN = process.env.TOOLS_TOKEN;
 const DAYS = Number(arg("days", "7"));
 const MAX = Number(arg("max", String(MAX_REEL_ROWS)));
 const HEADING = arg("heading", null);
+// How far ahead the end card looks. 4 days from a Monday run reaches the weekend; the
+// default matches the window the fixture board is built for.
+const AHEAD = Number(arg("ahead", "7"));
+const JOIN = arg("join", `${SITE.replace(/^https?:\/\//, "")}/join`);
 const JSON_OUT = arg("json-out", "reel.json");
 const ARGS_OUT = arg("args-out", "reel_args.json");
 
@@ -61,7 +65,33 @@ try {
   clearTimeout(timer);
 }
 
-const reel = reelFrom(data, { days: DAYS, max: MAX });
+// WHAT IS COMING, AND NEVER FATAL. The reel is a record of what happened; the end card is
+// an advert for what is next, and a clip that refused to exist because the fixture board
+// was slow would be the wrong trade. No fixtures, no end card — the clip ends on the
+// tally, which is what it did before this and is still a complete post.
+const upcoming = async () => {
+  const ctl2 = new AbortController();
+  const t = setTimeout(() => ctl2.abort(), 90000);
+  try {
+    const res = await fetch(
+      `${BACKEND}/api/share/rows?token=${TOKEN}&days=${AHEAD}&limit=200&boards=fixtures`,
+      { signal: ctl2.signal });
+    if (!res.ok) {
+      console.error(`results_reel: fixtures answered HTTP ${res.status} — no end card`);
+      return null;
+    }
+    const d = await res.json();
+    return nextFrom(d.fixtures || []);
+  } catch (err) {
+    console.error(`results_reel: could not read the fixture board (${err.message}) — no end card`);
+    return null;
+  } finally {
+    clearTimeout(t);
+  }
+};
+
+const next = await upcoming();
+const reel = reelFrom(data, { days: DAYS, max: MAX, next, join: JOIN });
 if (!reel) {
   // A QUIET WEEK IS NOT A FAILURE. Fewer than two settled picks in the window is a week
   // without a clip in it, and the caller posts nothing rather than animating one result.
@@ -88,4 +118,6 @@ console.error(`results_reel: ${reel.big} over ${DAYS} days — ${reel.n} rows`
               + (reel.more ? ` (+${reel.more} trimmed)` : "")
               + (reel.voided ? `, ${reel.voided} void` : "")
               + (reel.units != null ? `, ${reel.units}u` : "")
-              + ` · ${reel.context}`);
+              + ` · ${reel.context}`
+              + (reel.next ? ` · next up ${reel.next.count} games in ${reel.next.leagues} leagues`
+                           : " · no end card"));

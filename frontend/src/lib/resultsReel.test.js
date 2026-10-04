@@ -123,6 +123,20 @@ describe("the timeline", () => {
     expect(reelAt(reel, 0.3).tally).toBe(0);
   });
 
+  test("without an end card the tally owns the tail", () => {
+    // A clip with nothing to advertise ends on the record, which is a complete post.
+    expect(reelAt(reel, 1).tally).toBe(1);
+    expect(reelAt(reel, 1).next).toBe(0);
+  });
+
+  test("with one, the end card takes its beat from the rows and the tally stays up", () => {
+    // A number that fades out as the advert arrives reads as a number being taken away.
+    const selling = { n: 4, join: "thecornermodel.com/join" };
+    expect(reelAt(selling, 1).next).toBe(1);
+    expect(reelAt(selling, 1).tally).toBe(1);
+    expect(reelAt(selling, 0.5).next).toBe(0);
+  });
+
   test("the tally gets its own beat at the end", () => {
     // A number that arrives on the final frame is a number nobody reads.
     expect(reelAt(reel, 0.8).shown).toBe(4);
@@ -131,7 +145,7 @@ describe("the timeline", () => {
   });
 
   test("no reel, no timeline", () => {
-    expect(reelAt(null, 0.5)).toEqual({ shown: 0, tally: 0, growth: 1 });
+    expect(reelAt(null, 0.5)).toEqual({ shown: 0, tally: 0, next: 0, growth: 1 });
   });
 
   test("the newest row's bar grows, and the ones behind it have stopped", () => {

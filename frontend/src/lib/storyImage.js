@@ -2774,7 +2774,7 @@ export const renderResultsReel = (canvas, {
   const ctx = canvas.getContext("2d");
   const pad = 72;
   const inner = W - pad * 2;
-  const { shown, tally, growth } = reelAt(reel, progress);
+  const { shown, tally, growth, next } = reelAt(reel, progress);
 
   ctx.fillStyle = C.bg;
   ctx.fillRect(0, 0, W, H);
@@ -2922,6 +2922,96 @@ export const renderResultsReel = (canvas, {
     ctx.fillStyle = C.muted;
     ctx.font = `500 25px ${FONT_BODY}`;
     ctx.fillText(reel.basis, W / 2, ty + 258);
+    ctx.textAlign = "left";
+    ctx.globalAlpha = 1;
+  }
+
+  // ---- the end card: what is coming, and where to get it
+  //
+  // IT COVERS THE REEL RATHER THAN SITTING UNDER IT. There is no room for a fourth panel
+  // on a card already carrying ten rows and a tally, and a clip that ends by scrolling its
+  // own results off the top loses the number it just earned. So the rows dim behind a
+  // final frame and the tally is redrawn on it — the record stays visible while the ask is
+  // made, which is the whole reason the ask lands.
+  //
+  // NO LINES ON IT. The calls are what the channel sells; see lib/resultsReel.nextFrom.
+  // What is shown is the size of the card and the games with the most corners expected —
+  // facts about the fixture list, not bets.
+  if (next > 0 && (reel.next || reel.join)) {
+    const a = Math.min(1, next * 1.6);
+    // 0.96 RATHER THAN A FLAT COVER. Enough of the reel shows through to say what the card
+    // is sitting on top of, and not enough for the ghosted row text to compete with the
+    // fixtures in front of it — at 0.92 the dimmed "10 from 10" read straight through the
+    // middle of the sign-up button.
+    ctx.globalAlpha = a * 0.96;
+    ctx.fillStyle = C.bg;
+    ctx.fillRect(0, 282, W, H - 282);
+    ctx.globalAlpha = a;
+
+    let y = 420;
+    ctx.textAlign = "center";
+    if (reel.next) {
+      ctx.fillStyle = C.primary;
+      ctx.font = `600 34px ${FONT_BODY}`;
+      ctx.letterSpacing = "8px";
+      ctx.fillText("NEXT UP", W / 2, y);
+      ctx.letterSpacing = "0px";
+
+      y += 86;
+      ctx.fillStyle = C.text;
+      ctx.font = `700 92px ${FONT_HEAD}`;
+      ctx.fillText(String(reel.next.count), W / 2, y + 10);
+      y += 78;
+      ctx.fillStyle = C.muted;
+      ctx.font = `500 32px ${FONT_BODY}`;
+      ctx.fillText(`games across ${reel.next.leagues} leagues`
+                   + (reel.next.when ? `  ·  ${reel.next.when}` : ""), W / 2, y);
+
+      y += 78;
+      reel.next.games.forEach((g) => {
+        ctx.fillStyle = C.card;
+        roundRect(ctx, pad, y, inner, 96, 14);
+        ctx.fill();
+        ctx.strokeStyle = C.border;
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
+        ctx.fillStyle = C.text;
+        ctx.font = fitFont(ctx, `${g.home} v ${g.away}`,
+                           { size: 40, max: inner - 60, weight: 600,
+                             family: FONT_BODY, min: 26 });
+        ctx.fillText(`${g.home} v ${g.away}`, W / 2, y + 38);
+        ctx.fillStyle = C.muted;
+        ctx.font = `500 25px ${FONT_BODY}`;
+        ctx.fillText(g.league, W / 2, y + 72);
+        y += 110;
+      });
+
+      // WHAT IS DELIBERATELY NOT ON THIS CARD, said out loud. Without it the end card
+      // reads as a fixture list; with it, the fixture list is the tease and the thing
+      // being withheld is named.
+      y += 10;
+      ctx.fillStyle = C.muted;
+      ctx.font = `500 29px ${FONT_BODY}`;
+      ctx.fillText("Lines and prices go out before kick-off", W / 2, y);
+      y += 64;
+    }
+
+    if (reel.join) {
+      ctx.fillStyle = C.primary;
+      roundRect(ctx, pad + 40, y, inner - 80, 104, 52);
+      ctx.fill();
+      ctx.fillStyle = C.bg;
+      ctx.font = fitFont(ctx, reel.join, { size: 40, max: inner - 160, weight: 700,
+                                           family: FONT_HEAD, min: 26 });
+      ctx.fillText(reel.join, W / 2, y + 54);
+      y += 150;
+    }
+
+    // THE RECORD, STILL ON SCREEN WHILE THE ASK IS MADE. An advert that has replaced its
+    // own evidence is just an advert.
+    ctx.fillStyle = C.muted;
+    ctx.font = `500 30px ${FONT_BODY}`;
+    ctx.fillText(`${reel.big} this week  ·  ${reel.context}`, W / 2, y);
     ctx.textAlign = "left";
     ctx.globalAlpha = 1;
   }

@@ -24,7 +24,8 @@ import { dirname, resolve } from "node:path";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const LIB = resolve(HERE, "..", "frontend", "src", "lib");
-const { reelFrom, reelPost, nextFrom, MAX_REEL_ROWS } = await import(resolve(LIB, "resultsReel.js"));
+const { reelFrom, reelPost, nextFrom, countedRows, MAX_REEL_ROWS } =
+  await import(resolve(LIB, "resultsReel.js"));
 
 const arg = (name, fallback = null) => {
   const i = process.argv.indexOf(`--${name}`);
@@ -95,9 +96,14 @@ const reel = reelFrom(data, { days: DAYS, max: MAX, next, join: JOIN });
 if (!reel) {
   // A QUIET WEEK IS NOT A FAILURE. Fewer than two settled picks in the window is a week
   // without a clip in it, and the caller posts nothing rather than animating one result.
-  const n = (data?.posted?.claimed?.rows || []).length;
+  // BOTH SOURCES NAMED, because the first version of this line said "1 claimed rows on
+  // file" and was read as "the record is empty" when the record was almost entirely the
+  // other half. A diagnostic that counts one of two sources invites exactly that.
+  const weeks = (data?.weeks || []).reduce((n, w) => n + (w.rows || []).length, 0);
+  const hand = (data?.posted?.claimed?.rows || []).length;
   console.error(`results_reel: nothing to animate — fewer than 2 settled picks in the last `
-                + `${DAYS} days (${n} claimed rows on file in total)`);
+                + `${DAYS} days (${countedRows(data).length} counted rows on file: `
+                + `${weeks} published in snapshots, ${hand} posted by hand)`);
   writeFileSync(JSON_OUT, JSON.stringify({ empty: true, days: DAYS }, null, 2));
   process.exit(0);
 }

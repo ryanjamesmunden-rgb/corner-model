@@ -16,8 +16,19 @@ const row = (over = {}) => ({
   kickoff: new Date(NOW - DAY).toISOString(), price: 1.8, stake: 1, ...over,
 });
 
+// The endpoint's own shape: the overall record in `summary`, the published snapshot rows
+// in `weeks[].rows`, and the hand-posted angles in `posted.claimed.rows`.
 const results = (rows, over = {}) => ({
-  posted: { claimed: { rows, landed: 31, settled: 47, voided: 0, pending: 0, ...over } },
+  summary: { landed: 31, settled: 47, ...over },
+  weeks: [],
+  posted: { claimed: { rows, voided: 0, pending: 0 } },
+});
+
+/** The same rows, published as snapshot rows instead — the half the record is mostly made of. */
+const asWeeks = (rows, over = {}) => ({
+  summary: { landed: 31, settled: 47, ...over },
+  weeks: [{ week: "2026-09-28", rows }],
+  posted: { claimed: { rows: [] } },
 });
 
 describe("a row", () => {
@@ -94,6 +105,25 @@ describe("the reel", () => {
     expect(reel.more).toBe(3);
     // The headline still counts every settled row in the window, trimmed or not.
     expect(reel.settled).toBe(MAX_REEL_ROWS + 3);
+  });
+
+  test("the snapshot rows count, not just the hand-posted ones", () => {
+    // THE FIRST REAL RUN FOUND ONE ROW ON THE WHOLE RECORD. The site's headline counts the
+    // streaks it published week by week PLUS the angles posted by hand; the reel was
+    // reading the second half alone, which is the smaller one by far.
+    const reel = reelFrom(asWeeks([row(), row({ result: "loss" })]), { now: NOW });
+    expect(reel.n).toBe(2);
+    expect(reel.big).toBe("1 from 2");
+  });
+
+  test("and both halves interleave in kick-off order", () => {
+    const mixed = {
+      summary: { landed: 31, settled: 47 },
+      weeks: [{ week: "w", rows: [row({ name: "Snapshot", kickoff: new Date(NOW - 5 * DAY).toISOString() })] }],
+      posted: { claimed: { rows: [row({ name: "ByHand" })] } },
+    };
+    expect(reelFrom(mixed, { now: NOW }).rows.map((r) => r.name))
+      .toEqual(["Snapshot", "ByHand"]);
   });
 
   test("the overall record rides along, because a week is a chosen period", () => {

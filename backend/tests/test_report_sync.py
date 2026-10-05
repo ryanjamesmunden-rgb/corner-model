@@ -261,3 +261,84 @@ def test_nothing_started_yet_still_reports_a_position():
     """0/30 is the most useful reading there is — the sync launched and did nothing."""
     _, out = _run([_progressing(0)])
     assert "0/30 competitions" in out
+
+
+# --- a league, too, can succeed and store nothing -----------------------------------
+#
+# This is the cup hazard above on the competitions nobody thought it applied to, and it
+# bites hardest the day a league is ADDED. The Segunda's first sync reported `success`,
+# `progress: 1/1` and no error lines, and whether it had actually put anything in the
+# database was unanswerable from the log — a board run and a measurement harness later,
+# still unanswerable, because a league missing from a ranked, truncated list is not a
+# league missing from the database. sync_real had returned the counts all along.
+
+def _lg(lid, teams=22, fixtures=380, status="ok"):
+    return {"league_id": lid, "status": status, "teams": teams, "fixtures": fixtures}
+
+
+def test_a_named_run_says_what_the_league_stored():
+    """What a per-league dispatch is FOR: somebody has just added it and wants to know."""
+    _, out = _run([_run_doc(status="success", targets=["esp-s2"], leagues=[_lg("esp-s2")])])
+    assert "esp-s2" in out
+    assert "stored 22 teams and 380 upcoming fixtures" in out
+
+
+def test_a_league_that_reported_ok_and_stored_nothing_says_so_loudly():
+    """`success`, 1/1, no errors — and an empty database. The state that cost a day."""
+    _, out = _run([_run_doc(status="success", targets=["esp-s2"],
+                            leagues=[_lg("esp-s2", teams=0, fixtures=0)])])
+    assert "::warning::" in out
+    assert "esp-s2" in out
+    # And it names the next move, because "0 teams" alone reads as a league with no data
+    # rather than as a plan that does not cover this season.
+    assert "force" in out
+
+
+def test_the_twice_daily_run_does_not_list_thirty_healthy_leagues():
+    """A line per competition would bury the failure lines above it — which are the ones
+    that matter on the run where thirty of them are wrong at once."""
+    _, out = _run([_run_doc(status="success",
+                            targets=[f"lg-{i}" for i in range(30)],
+                            leagues=[_lg(f"lg-{i}") for i in range(30)])])
+    assert "stored" not in out
+
+
+def test_but_a_zero_is_reported_on_any_run():
+    """Nothing else in this report can see it, whoever started the sync."""
+    _, out = _run([_run_doc(status="success",
+                            targets=[f"lg-{i}" for i in range(30)],
+                            leagues=[_lg(f"lg-{i}") for i in range(29)]
+                                    + [_lg("lg-29", teams=0, fixtures=0)])])
+    assert "::warning::" in out
+    assert "lg-29" in out
+    assert "lg-0" not in out
+
+
+def test_a_missing_count_is_not_a_count_of_zero():
+    """Older run documents predate these fields, and an entry written before the league
+    finished carries some of them. Inferring a zero would raise this alarm on exactly
+    the runs that are going fine."""
+    _, out = _run([_run_doc(status="running", targets=["eng-pl"],
+                            leagues=[{"league_id": "eng-pl", "status": "ok", "teams": 20}])])
+    assert "::warning::" not in out
+    assert "stored" not in out
+
+
+def test_a_failed_league_is_not_also_reported_as_empty():
+    """It already has a line above, with the provider's reason on it."""
+    code, out = _run([_run_doc(status="failed", targets=["esp-s2"], error_count=1,
+                               leagues=[{"league_id": "esp-s2", "status": "error",
+                                         "teams": 0, "fixtures": 0,
+                                         "error": QUOTA}])])
+    assert code == 1
+    assert "request limit" in out
+    assert "stored" not in out
+
+
+def test_cups_are_not_reported_twice():
+    """They have their own section, with their own skip reasons — and a cup stores no
+    teams by design, so the league section's zero-teams alarm must never reach one."""
+    _, out = _run([_run_doc(status="success", targets=["ucl"], leagues=[_cup("ucl", 8)])])
+    assert "8 fixture(s) stored" in out
+    assert "stored 0 teams" not in out
+    assert "::warning::" not in out

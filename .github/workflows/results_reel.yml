@@ -130,6 +130,25 @@ jobs:
             echo "::warning::the render failed — caption only"
           fi
 
+      # THE RENDER INPUT, IN THE LOG. An artifact is the only copy of the clip, and it is
+      # served from a storage host that plenty of things cannot reach — a locked-down
+      # network, a phone, an agent in a sandbox. All of them can read a run log.
+      #
+      # These few hundred bytes are what render_story.mjs was handed, so the identical
+      # clip can be rebuilt anywhere ffmpeg and a browser exist, with no second request to
+      # the backend and no retyping of a result off a caption. Base64 on one line because
+      # the log is a line-oriented store and JSON wraps.
+      #
+      # Nothing secret rides in here: it is the graded record that the site publishes and
+      # the caption repeats. The token stays in the step above.
+      - name: Print the render input
+        if: steps.build.outputs.empty != 'true'
+        run: |
+          echo "----- reel_args.json (base64) -----"
+          base64 -w0 reel_args.json
+          echo
+          echo "----- end -----"
+
       # KEPT WHETHER OR NOT IT IS SENT, so a preview hands you the clip to watch rather
       # than a description of one.
       - name: Keep it

@@ -24,7 +24,8 @@ import { dirname, resolve } from "node:path";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const LIB = resolve(HERE, "..", "frontend", "src", "lib");
-const { reelFrom, reelPost, nextFrom, MAX_REEL_ROWS } = await import(resolve(LIB, "resultsReel.js"));
+const { reelFrom, reelPost, nextFrom, countedRows, MAX_REEL_ROWS } =
+  await import(resolve(LIB, "resultsReel.js"));
 
 const arg = (name, fallback = null) => {
   const i = process.argv.indexOf(`--${name}`);
@@ -95,9 +96,14 @@ const reel = reelFrom(data, { days: DAYS, max: MAX, next, join: JOIN });
 if (!reel) {
   // A QUIET WEEK IS NOT A FAILURE. Fewer than two settled picks in the window is a week
   // without a clip in it, and the caller posts nothing rather than animating one result.
-  const n = (data?.posted?.claimed?.rows || []).length;
+  // BOTH SOURCES NAMED, because the first version of this line said "1 claimed rows on
+  // file" and was read as "the record is empty" when the record was almost entirely the
+  // other half. A diagnostic that counts one of two sources invites exactly that.
+  const weeks = (data?.weeks || []).reduce((n, w) => n + (w.rows || []).length, 0);
+  const hand = (data?.posted?.claimed?.rows || []).length;
   console.error(`results_reel: nothing to animate — fewer than 2 settled picks in the last `
-                + `${DAYS} days (${n} claimed rows on file in total)`);
+                + `${DAYS} days (${countedRows(data).length} counted rows on file: `
+                + `${weeks} published in snapshots, ${hand} posted by hand)`);
   writeFileSync(JSON_OUT, JSON.stringify({ empty: true, days: DAYS }, null, 2));
   process.exit(0);
 }
@@ -112,6 +118,19 @@ writeFileSync(ARGS_OUT, JSON.stringify({
   reel, site: SITE.replace(/^https?:\/\//, ""),
   ...(HEADING ? { heading: HEADING.toUpperCase() } : {}),
 }));
+// SAID OUT LOUD WHEN A PICK WAS COUNTED TWICE. countedRows reads both halves of the
+// record and collapses an angle that was published in a snapshot AND logged by hand, and
+// a silent collapse is the wrong kind of quiet: the first clip built off both halves
+// listed one team twice, and whether that was two real fixtures or one pick double-counted
+// could not be answered from anything the run printed. Now it can.
+const raw = ((data?.weeks || []).flatMap((w) => w?.rows || [])).length
+            + ((data?.posted?.claimed?.rows) || []).length;
+const dupes = raw - countedRows(data).length;
+if (dupes > 0) {
+  console.error(`results_reel: ${dupes} pick(s) appeared in both halves of the record `
+                + `(published snapshot and posted by hand) and were counted once`);
+}
+
 // PRINTED, because the clip is the thing nobody can check until it has been watched, and
 // this line is the same claim in a form that survives a failed encode.
 console.error(`results_reel: ${reel.big} over ${DAYS} days — ${reel.n} rows`

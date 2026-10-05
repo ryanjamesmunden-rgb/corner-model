@@ -72,18 +72,57 @@ export const reelRow = (r = {}) => ({
 });
 
 /**
- * The reel, from one /api/results payload.
+ * Every row the record COUNTS, from one /api/results payload.
  *
- * `claimed` ONLY, for the reason that endpoint states: `recalled` rows were logged after
- * kick-off, and an angle written down once the result is known is not a prediction. Both
- * are published on the site; only one may be animated into a highlight reel.
+ * TWO SOURCES, AND THE FIRST ONE IS THE RECORD. The site's headline is `_tally(everything
+ * + claimed)`: the snapshot rows the site PUBLISHED, week by week, plus the angles posted
+ * by hand before kick-off. The reel read `claimed` alone on its first real run and found
+ * one row on the whole record, because almost everything the results page counts is the
+ * other half — the streaks frozen before kick-off and graded off that snapshot.
+ *
+ * `recalled` IS STILL EXCLUDED, which is the distinction that actually matters: those were
+ * logged after the game, they are published on the site because hiding them would be
+ * worse, and an angle written down once the result is known is not a prediction. The
+ * endpoint separates them; this inherits that and nothing else.
+ *
+ * Both sources carry the same fields — name, line_label, line, direction, result, value,
+ * kickoff, price — so they interleave in kick-off order without being told apart.
  */
+const rowKey = (r = {}) => `${r.name || ""}|${r.line_label || ""}|${r.kickoff || ""}`;
+
+export const countedRows = (results = {}) => {
+  const rows = [
+    ...((results?.weeks || []).flatMap((w) => w?.rows || [])),
+    ...((results?.posted?.claimed?.rows) || []),
+  ];
+  // ONE PICK, COUNTED ONCE. Reading both halves of the record is right and it opens a
+  // hazard the single-source version did not have: an angle that was published in a
+  // snapshot AND logged by hand appears in both lists, and a reel that counted it twice
+  // would claim 12 from 12 on eleven picks. On a results post that is the only kind of
+  // error that matters — the number is the whole claim.
+  //
+  // THE KEY IS THE PICK, NOT THE ROW. Team, line and kick-off identify the bet; the
+  // graded `value` is deliberately NOT in it, because two copies of one pick that
+  // disagree about the corner count are exactly the case this has to collapse rather
+  // than wave through. Two real fixtures for the same team differ in kick-off and both
+  // survive, which is why this is a guard and not a filter on the week.
+  //
+  // THE SNAPSHOT ROW WINS, by being first: it was frozen before kick-off and graded off
+  // that freeze, which is the provenance the card claims at the bottom of every clip.
+  const seen = new Set();
+  return rows.filter((r) => {
+    const k = rowKey(r);
+    if (seen.has(k)) return false;
+    seen.add(k);
+    return true;
+  });
+};
+
 export const reelFrom = (results = {}, { days = 7, now = Date.now(),
                                           max = MAX_REEL_ROWS, next = null,
                                           join = "" } = {}) => {
-  const claimed = results?.posted?.claimed || {};
   const since = now - days * 86400000;
-  const inWindow = (claimed.rows || []).filter((r) => {
+  const inWindow = countedRows(results).filter((r) => {
     const t = ms(r?.kickoff);
     return t >= since && t <= now;
   });
@@ -101,7 +140,14 @@ export const reelFrom = (results = {}, { days = 7, now = Date.now(),
   const rows = ordered.slice(-Math.max(MIN_REEL_ROWS, max)).map(reelRow);
   const landed = graded.filter((r) => r.result === WIN).length;
   const { units, unpriced } = unitsFor(settled);
-  const overall = headlineOf(claimed);
+  // THE SAME SET, SUMMED. headlineOf(claimed) would have put one record on the rows and a
+  // different one under them — the week drawn from everything the site published, and the
+  // "overall" beneath it counting only the hand-posted few.
+  const all = countedRows(results);
+  const overall = headlineOf(results?.summary?.settled != null ? results.summary : {
+    landed: all.filter((r) => r.result === WIN).length,
+    settled: all.filter((r) => r.result === WIN || r.result === LOSS).length,
+  });
 
   return {
     rows,

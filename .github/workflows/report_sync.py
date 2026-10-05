@@ -109,6 +109,59 @@ def _report_progress(run):
               f"the run will sit on 'running' for ever.")
 
 
+# A run whose target list is this short was dispatched BY HAND, at a named competition —
+# and the person who did that has just added it and is about to ask "did it land". A
+# scheduled run walks thirty-odd, and gets the short form.
+NAMED_RUN_MAX = 6
+
+
+def _report_stored(run):
+    """What each league actually PUT IN THE DATABASE.
+
+    A LEAGUE CAN SUCCEED AND STORE NOTHING, which is the hazard _report_cups below already
+    describes for cups, and it bites hardest on a league that has just been added. The run
+    says `success`, progress says `1/1`, there are no error lines — and the boards stay
+    empty, because every request for the new season was refused, af() returned the empty
+    list and sync_real stored twenty-two teams' worth of nothing. In every other line of
+    this report that is indistinguishable from a league that synced properly.
+
+    THE COUNTS WERE IN THE PAYLOAD THE WHOLE TIME. sync_real returns teams and fixtures per
+    competition and the run document keeps them; nothing printed them unless the
+    competition happened to be a cup. Answering "did the Segunda land" took a board run and
+    a measurement harness, and neither could actually settle it — a league missing from a
+    ranked, truncated list is not a league missing from the database.
+
+    PRINTED IN FULL FOR A NAMED RUN, AND FOR A ZERO ALWAYS. A line per competition on the
+    twice-daily run would bury the failure lines above it, which are the ones that matter
+    when thirty of them are wrong at once. A zero is the exception: that one is worth a
+    warning whenever it happens, because nothing else in this report can see it.
+    """
+    cups = set(_cup_ids())
+    targets = run.get("targets") or []
+    named = bool(targets) and len(targets) <= NAMED_RUN_MAX
+    for lg in run.get("leagues") or []:
+        if not isinstance(lg, dict):
+            continue
+        lid = str(lg.get("league_id", "?"))
+        if lid in cups or str(lg.get("status", "")).lower() == "error":
+            continue                    # cups below; failures above, with their message
+        teams, fixtures = lg.get("teams"), lg.get("fixtures")
+        # BOTH KEYS OR NOTHING. A missing count is not a count of zero: older run
+        # documents predate these fields, and an entry written before the league
+        # finished carries some of them. Inferring a zero from an absent key would
+        # raise the one alarm here on exactly the runs that are going fine.
+        if not isinstance(teams, int) or not isinstance(fixtures, int):
+            continue
+        if not named and teams and fixtures:
+            continue
+        print(f"  {lid:7} stored {teams} teams and {fixtures} upcoming fixtures")
+        if not teams or not fixtures:
+            missing = "no teams" if not teams else "no upcoming fixtures"
+            print(f"::warning::{lid} reported ok and stored {missing}. The provider "
+                  f"answered empty rather than failing — check the plan covers this "
+                  f"season, then re-run with force enabled.")
+
+
 def _report_cups(run):
     """What the cups did, called out on their own line.
 
@@ -191,6 +244,7 @@ def main() -> int:
         where = ", ".join(lids[:4]) + (f" +{len(lids) - 4} more" if len(lids) > 4 else "")
         print(f"  {len(lids):>2} league(s) [{where}]: {msg}")
     _report_progress(newest)
+    _report_stored(newest)
     _report_cups(newest)
     status = str(newest.get("status", "")).lower()
 

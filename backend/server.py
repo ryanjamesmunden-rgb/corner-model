@@ -2470,6 +2470,7 @@ TOOL_SCRIPTS = {"backfill_shots": "backfill_shots.py", "measure_features": "meas
                 "audit_bets": "audit_bets.py",
                 "audit_signups": "audit_signups.py",
                 "watchlist": "watchlist.py",
+                "press_board": "press_board.py",
                 "backfill_fh": "backfill_fh.py",
                 "backfill_goal_events": "backfill_goal_events.py",
                 "probe_corner_halves": "probe_corner_halves.py",
@@ -2490,6 +2491,7 @@ TOOL_COOLDOWN = {"backfill_shots": 600, "measure_features": 120,
                  "audit_settlement": 120, "audit_pick_lines": 120,
                  "audit_bets": 120, "audit_signups": 120,
                  "watchlist": 120,
+                 "press_board": 120,
                  "backfill_fh": 120,
                  "backfill_goal_events": 600,
                  "probe_corner_halves": 600,
@@ -2559,6 +2561,14 @@ MEASURE_MODES = {
     # watchlist for setting price alerts, never a card: nothing in the window is
     # priced yet, which is the whole premise.
     "watchlist": ("watchlist", [], True),
+    # AN ATTACK IN FORM AGAINST A DEFENCE THAT CONCEDES NOTHING AWAY. The inverse of the
+    # mismatch screen, which looks for a defence that leaks CORNERS: this looks for one
+    # whose away goals-against column is empty, on the reading that such a side survives
+    # by blocking and clearing rather than by keeping the ball — and a blocked shot is
+    # where a corner comes from. Every figure on it is a venue split over a handful of
+    # games, so thin rows are ranked apart rather than allowed to lead. Not measured
+    # against a control, and says so on every run. Reads db.fixtures and db.teams.
+    "press_board": ("press_board", [], True),
     # IS THERE ANYTHING FOR THE PREVIOUS MEETINGS PANEL TO SHOW. The panel renders nothing
     # when a pairing has no stored meeting — correctly, since an empty one would have to
     # choose between "no history on file" and "they have never met" — and that makes a

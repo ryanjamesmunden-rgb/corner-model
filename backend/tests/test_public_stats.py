@@ -1,29 +1,28 @@
-"""The stats are public. The model's opinion is not.
+"""The stats are public — all of them. Two SCREENS are not.
 
-WHAT CHANGED AND WHY IT NEEDS GUARDING. The split used to be how many ROWS a reader got:
-three signed out, six signed in, the rest with the numbers stripped. It is now which
-COLUMNS: everybody sees every row, and only a member sees the probability, the fair price,
-the edge and the tier.
+THE LINE HAS MOVED TWICE AND THIS FILE IS THE RECORD OF BOTH. It was first how many ROWS a
+reader got: three signed out, six signed in, the rest stripped. Then it became which
+COLUMNS: every row public, the probability, fair price, edge and tier held back. It is now
+neither — the boards and the fixture page are public in full, numbers included.
 
-The old shape gave away the wrong half. Three fully readable rows are the three best spots
-on the board — priced, with an edge attached — going out free every day, while the other
-forty teams' RECORDS, which cost nothing to show, were the part held back.
+WHAT IS SOLD IS /value-board AND THE BETS BOARD. The value board is the ranked list of live
+prices the model disagrees with; the Bets board is the weekend's slips. Everything else is
+the evidence for those two, and evidence nobody can check sells nothing.
 
-AND THE FIXTURE PAGE WAS WORSE THAN THE BOARDS. `fixture_detail` took `user` as a dependency
-and never read it, so a signed-out visitor got the complete model for any fixture: every
-market's probability, fair odds, EV and tier. The boards were being trimmed to three rows
-while a URL one click away handed over the priced angle on the same games.
+A FAIR PRICE IS AN EV, AND THAT WAS SAID BEFORE THE CHANGE WAS MADE. A reader holding a
+bookmaker's price does one division and has the edge. So publishing the fair price while
+withholding `ev` would have been a lock with the key beside it, and the decision taken was
+the coherent one: the edge is public, the finished list of where it currently sits is not.
 
-WHAT THESE GUARD:
+WHAT THESE GUARD NOW:
 
-  - Every row reaches a signed-out reader. A regression to a row cap is a silent loss of
-    the thing that does the selling.
-  - No model number reaches a non-member, on a board row OR a fixture. One field slipping
-    back into a payload is invisible from the UI and is the whole product.
-  - The curve goes with the numbers. A probability mass function is the percentages drawn,
-    so leaving it would be a lock with the key beside it.
-  - A member still gets everything. A gate that also blocks the paying reader is worse than
-    no gate.
+  - Every row reaches a signed-out reader, with every number on it. A regression to a trim
+    or a strip is a silent loss of the thing that does the selling.
+  - The fixture page is public too, curve included — it was gated by the same switch.
+  - The two paid screens stay hard walls. Not previewed, not blurred: 401/402 at the door,
+    because a blurred value board is an empty screen rather than a taste.
+  - The MECHANISM survives unused. _preview and _blur_model still work, so the decision is
+    one line to reverse, and the tests that pin their behaviour are kept for that reason.
   - What describes WHAT HAPPENED stays public — the streaks, the records, the form.
 """
 import os
@@ -65,13 +64,14 @@ class TestEveryRowIsPublic:
         # deliberately the same. An account still buys saved fixtures, slips and the group.
         assert len(server._preview(rows(40), SIGNED_IN, Res())) == 40
 
-    def test_the_readable_count_is_reported_as_zero_rather_than_omitted(self):
-        # The strip under the board reads these. A missing header makes it invent copy.
+    def test_nobody_is_previewed_any_more(self):
+        # The strip under the board reads these headers. X-Preview false is what tells it
+        # there is nothing withheld to advertise, so it draws no wall.
         res = Res()
         server._preview(rows(40), SIGNED_OUT, res)
         assert res.headers["X-Total-Rows"] == "40"
-        assert res.headers["X-Readable-Rows"] == "0"
-        assert res.headers["X-Preview"] == "true"
+        assert res.headers["X-Preview"] == "false"
+        assert "X-Readable-Rows" not in res.headers
 
     def test_a_member_is_not_previewed_at_all(self):
         res = Res()
@@ -80,21 +80,33 @@ class TestEveryRowIsPublic:
         assert all("blurred" not in r for r in out)
 
 
-class TestNoModelNumberReachesANonMember:
-    def test_every_blurred_field_is_gone_from_a_row(self):
+class TestEveryModelNumberNowReachesEverybody:
+    def test_a_signed_out_reader_gets_the_model_numbers(self):
+        # The reversal. Each of these was stripped until the boards were opened up, and a
+        # regression here would look identical from the UI to a quiet day.
         out = server._preview(rows(3), SIGNED_OUT, Res())
         for r in out:
-            for field in server.BLURRED_FIELDS:
-                assert field not in r, f"{field} survived the blur"
-            assert r["blurred"] is True
+            for field in ("prob", "fair_odds", "ev", "tier"):
+                assert field in r, f"{field} was stripped — the boards are meant to be open"
+            assert "blurred" not in r
 
-    def test_it_reaches_into_the_nested_places_too(self):
-        # A probability hiding under `projection` is the same giveaway as one at the top.
+    def test_the_nested_places_too(self):
+        # A probability under `projection` was blurred by the same pass that blurred the
+        # top level, so it is the same switch and needs the same guard.
         out = server._preview(rows(3), SIGNED_OUT, Res())
         for r in out:
-            assert "prob" not in r["projection"]
-            assert "fair_odds" not in r["projection"]
-            assert all("prob" not in a for a in r["angles"])
+            assert r["projection"]["prob"] == 70.0
+            assert r["projection"]["fair_odds"] == 1.4
+            assert all("prob" in a for a in r["angles"])
+
+    def test_the_blur_itself_still_works(self):
+        # KEPT DELIBERATELY. _blur is no longer reached, because _row_limit returns None
+        # for everyone — but it is one line from being reached again, and a mechanism that
+        # rotted while unused would fail on the day it was needed.
+        blurred = server._blur(rows(1)[0])
+        for field in server.BLURRED_FIELDS:
+            assert field not in blurred
+        assert blurred["blurred"] is True
 
     def test_what_happened_is_left_alone(self):
         # The point of the change: the record is public. If this starts failing, the board
@@ -159,15 +171,25 @@ class TestTheFixturePageWithholdsTheSameThings:
 
 
 class TestTheGateIsOnTheServer:
-    def test_the_fixture_endpoint_actually_reads_the_user(self):
-        # THE REGRESSION GUARD. `user` was a declared dependency that nothing used, which is
-        # exactly why the leak was invisible: the signature looked gated.
+    def test_the_fixture_page_is_open(self):
+        # NOT A GREP OVER THE SOURCE, and the earlier version of this test is why. It
+        # asserted `'user.get("member")' in src`, which kept passing after the gate was
+        # removed because the COMMENT explaining the removal contains that same string. A
+        # test that a comment can satisfy is not a test.
         import inspect
         src = inspect.getsource(server.fixture_detail)
-        assert "_blur_model" in src, \
-            "fixture_detail no longer withholds the model — every visitor gets the " \
-            "priced angle on every fixture"
-        assert 'user.get("member")' in src
+        body = "\n".join(l for l in src.splitlines() if not l.strip().startswith("#"))
+        assert "full = True" in body, \
+            "the fixture model is gated again — say so deliberately and move this test"
+
+    def test_the_bets_board_stays_a_hard_wall_too(self):
+        # The weekend's slips, which is the other half of what is actually sold. Public
+        # boards are the evidence; this is the thing being tested on them.
+        import inspect
+        params = inspect.signature(server.bets_this_week).parameters
+        assert any(getattr(p.default, "dependency", None) is server.require_member
+                   for p in params.values()), \
+            "the Bets board is no longer members-only"
 
     def test_the_value_board_stays_a_hard_wall(self):
         # It is not a board of records with numbers on top; it IS the numbers, ranked. A

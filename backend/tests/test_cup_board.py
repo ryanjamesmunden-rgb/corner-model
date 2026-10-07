@@ -510,14 +510,18 @@ class TestPreviousMeetings:
         comps = [r["league_name"] for r in d["h2h"]["meetings"]]
         assert comps == ["Champions League", "Bundesliga"]
 
-    def test_previous_meetings_are_not_behind_the_member_wall(self, monkeypatch):
-        """Games already played, like the streaks and the form beside them. What stays
-        behind the wall is the model's read of them, which _blur_model strips."""
+    def test_previous_meetings_reach_a_non_member(self, monkeypatch):
+        """Games already played, like the streaks and the form beside them.
+
+        THE SECOND HALF OF THIS USED TO ASSERT THE MODEL WAS BLURRED. It is not any more:
+        the fixture page is public in full, and what is sold is /value-board and the Bets
+        board. Both halves are checked here because they were gated by one switch and a
+        change to it should have to come past this test."""
         monkeypatch.setattr(server, "db",
                             FakeDB([BUSY, BUSY2], [self._fx()],
                                    fixture_stats=[self.stat(42, 47, 2, 1, 7, 4)]))
         d = run(server.fixture_detail(self.DOM, user={"user_id": "u1", "member": False}))
-        assert d["model"]["blurred"] is True
+        assert "blurred" not in d["model"]
         assert len(d["h2h"]["meetings"]) == 1
 
 

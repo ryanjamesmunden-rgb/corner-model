@@ -3660,7 +3660,15 @@ async def fixture_detail(fixture_id: str, token: Optional[str] = None,
     # only". That reads like a quiet day rather than a break, which is the worst way for a
     # regression to present. Same pattern and same reasoning as set_odds: the token is
     # already the credential for every other automation here.
-    full = user.get("member") or _has_tools_token(token)
+    # PUBLIC NOW, LIKE THE BOARDS. This used to be `user.get("member") or
+    # _has_tools_token(token)` and the paragraph above explains what that was protecting.
+    # The model's price is no longer the paid half of this site — /value-board and the
+    # Bets board are — so withholding it here would hide from a visitor the one number
+    # that lets them check whether any of the records above it mean anything.
+    #
+    # _blur_model is left in place for the same reason _preview is: this is one line to
+    # put back.
+    full = True
     return {"fixture": fx,
             "model": model if full else _blur_model(model),
             "league_avg_corners": round(lg_avg, 2),
@@ -4200,8 +4208,25 @@ MIN_STREAK_LEN = 2
 # spots on the board — priced, with an edge attached — went out free every day, while the
 # other forty teams' RECORDS, which cost nothing to show, were the part held back. That is
 # backwards on both counts.
-READABLE_ROWS = 0         # anyone who has not paid: every row, no model numbers
-                          # a member gets the lot, numbers included
+# AND NOW THE COLUMNS ARE PUBLIC TOO. The paragraphs above describe the shape this used
+# to have — every row, no model numbers — and the split has moved again: the boards are
+# public in full, probability, fair price and lambda included.
+#
+# WHAT IS SOLD IS NO LONGER A COLUMN, IT IS TWO SCREENS. /value-board stays members-only
+# and so does the Bets board, and between them they are the product: the value board is
+# the ranked list of live prices the model disagrees with, and the Bets board is the
+# weekend's slips. The boards here are the EVIDENCE for those, and evidence that cannot
+# be checked sells nothing.
+#
+# A FAIR PRICE IS AN EV, AND THAT WAS SAID BEFORE THIS WAS CHANGED. Anyone holding a
+# bookmaker's price does one division and has the edge, so publishing `fair_odds` while
+# withholding `ev` would be a lock with the key beside it — the same mistake the
+# `distribution` note below calls out. This does not pretend otherwise: the edge is out,
+# on purpose, and what is kept back is the finished list of where it currently is.
+#
+# REVERSIBLE IN ONE LINE. _preview and _blur are left in place and still work; put a
+# number here and _row_limit will start trimming again.
+READABLE_ROWS = None      # None = no trim for anybody: the stats are public
 
 # What gets taken OFF a row that is shown but not readable. These are the model's own
 # numbers, which are the product — see the note on gameShare for why a probability and a
@@ -4213,10 +4238,14 @@ BLURRED_FIELDS = ("prob", "fair_odds", "ev", "tier", "lambda", "lambda_total",
 def _row_limit(user: dict) -> Optional[int]:
     """How many rows this reader may read WITH the model's numbers. None means all of them.
 
-    Signed out and signed in are no longer different here, and that is deliberate: the
-    stats are public either way, so there is nothing left for an account alone to unlock.
-    What an account still buys is everything else it always did — saved fixtures, your own
-    slips, the group board.
+    NOBODY IS TRIMMED NOW. Signed out, signed in and paid all read the same board, numbers
+    and all — see READABLE_ROWS for why the line moved off the columns and onto /value-board
+    and the Bets board instead.
+
+    `user` is kept in the signature rather than removed. It is the one place the policy
+    lives, and a reader asking "who sees what" should find the question asked here even
+    while the answer is "everyone"; deleting the parameter would scatter that decision back
+    across nine call sites the day it changes again.
     """
     return None if user.get("member") else READABLE_ROWS
 

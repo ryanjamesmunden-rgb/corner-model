@@ -1,0 +1,38 @@
+<!--
+  The corner arc, which is the one image this site is actually about.
+
+  WHY A MARK AND NOT A LETTER. There was no icon here at all, so every browser tab, every
+  bookmark and every link preview fell back to the letter the host derives from
+  thecornermodel.com — a grey T.
+
+  DRAWN FOR 16 PIXELS FIRST, AND THE FIRST ATTEMPT FAILED THAT TEST. It had the pitch
+  lines, the quarter arc and a corner flag on a pole, which is the right picture and three
+  ideas too many: at tab size the pole and the pennant fused with the arc and the whole
+  thing read as a lower-case "t". Swapping one letter for another letter is not a rebrand.
+
+  So there is one idea left. A thick quarter-ring struck from the corner, and the ball
+  sitting in the pocket it makes. At 16px that is a cyan sweep and a pale dot — no strokes
+  thin enough to disappear, nothing that resolves into a glyph.
+
+  COLOURS ARE THE BRAND'S, lifted from the same place storyImage.js lifts them so a tab, a
+  story and the page all look like one product: #0B0F14 ground, #14DBF5 accent.
+
+  SQUARE, WITH THE MARK INSIDE A SAFE AREA. Android masks icons to a circle and crops
+  roughly 10% from each edge, so nothing load-bearing goes near the border.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img"
+     aria-label="Corner Model">
+  <title>Corner Model</title>
+  <rect width="512" height="512" rx="112" fill="#0B0F14"/>
+
+  <!-- THE QUADRANT, FILLED RATHER THAN STROKED. A thick quarter-RING was the second
+       attempt and it floated: with no straight edges to sit against it read as a crescent
+       and the corner went out of it. Filling the wedge puts the two pitch lines back as
+       the shape's own edges, which cannot thin out or disappear at tab size. -->
+  <path d="M112 170 A230 230 0 0 1 342 400 L112 400 Z" fill="#14DBF5"/>
+
+  <!-- The ball, in the open, where one is about to be delivered from. Kept clear of the
+       wedge: overlapping it fused the two into one blob at 16px. Pale rather than white
+       so it sits in the palette beside the accent instead of punching through it. -->
+  <circle cx="360" cy="168" r="46" fill="#F3F5F7"/>
+</svg>

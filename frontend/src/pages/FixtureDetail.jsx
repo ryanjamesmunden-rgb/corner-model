@@ -9,6 +9,7 @@ import StarButton from "@/components/StarButton";
 import ShareButtons from "@/components/ShareButtons";
 import PostPick from "@/components/PostPick";
 import { fixtureStreakShare, mismatchShare } from "@/lib/shareText";
+import { fixtureMatchup, hasMatchup } from "@/lib/shotMatchup";
 import StoryButton from "@/components/StoryButton";
 import { renderFormStory, renderMismatchStory } from "@/lib/storyImage";
 import { canRecord, extFor, recordStoryVideo } from "@/lib/storyVideo";
@@ -331,6 +332,12 @@ export default function FixtureDetail() {
           apart. */}
       <RecordUnderForecast fixture={fixture} model={model} homeTeam={home_team}
                            awayTeam={away_team} leagueName={data.league_name} />
+
+      {/* AND WHO THEY ARE PLAYING. "They have done it in 8 of their last 10" and "this
+          opponent is the kind that lets it happen" are consecutive questions, so the
+          matchup sits directly under the record rather than down with the per-team
+          cards, where reading it meant scrolling between two of them. */}
+      <ShotMatchup fixture={fixture} homeTeam={home_team} awayTeam={away_team} />
 
       {/* Who is playing, in words. */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-3 sm:gap-4">
@@ -1277,6 +1284,93 @@ function WhyItHit({ games, line, highlight }) {
   );
 }
 
+/**
+ * The shot matchup: what one side takes against what the other allows.
+ *
+ * WHY IT IS ITS OWN PANEL. Both numbers were already on the page after the shot block
+ * started drawing conceded, but they were on two different cards — so reading the matchup
+ * meant scrolling between them and holding four figures in your head. "A side that has
+ * shot 20+ times a game for four on the trot" is only a bet when you know what the
+ * opponent allows, and that comparison should not be homework.
+ *
+ * NO EXPECTED NUMBER, deliberately. Averaging the two columns would be a new figure with
+ * nothing behind it, and the model does not price shots that way. Two measured averages,
+ * side by side.
+ *
+ * The pairing itself lives in lib/shotMatchup.js, because a figure labelled with one
+ * team's name while belonging to the other looks exactly like a figure that is right.
+ */
+function ShotMatchup({ fixture, homeTeam, awayTeam }) {
+  const [overall, setOverall] = useState(false);
+  const blocks = fixtureMatchup({
+    home: homeTeam, away: awayTeam,
+    homeName: fixture.home_name, awayName: fixture.away_name, overall,
+  });
+  if (!hasMatchup(blocks)) return null;
+  const venueLabel = overall ? "overall" : "at the venue";
+
+  return (
+    <section className="bg-card border border-border rounded-lg overflow-hidden"
+             data-testid="shot-matchup">
+      <div className="px-4 py-3 border-b border-border flex items-center gap-2 flex-wrap">
+        <Swords className="h-4 w-4 text-primary" />
+        <h3 className="font-head font-semibold text-sm">Shot matchup</h3>
+        <span className="text-[11px] text-muted-foreground">what one takes · what the other allows</span>
+        <div className="ml-auto flex rounded-md bg-secondary p-0.5">
+          {[[false, "Venue"], [true, "Overall"]].map(([v, label]) => (
+            <button key={String(v)} data-testid={`sm-split-${v ? "overall" : "venue"}`}
+              onClick={() => setOverall(v)}
+              className={`text-[11px] px-2 py-1 rounded transition-colors ${
+                overall === v ? "bg-primary text-primary-foreground font-medium"
+                              : "text-muted-foreground"}`}>
+              {label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 lg:grid-cols-2 divide-y lg:divide-y-0 lg:divide-x divide-border">
+        {blocks.map((b) => (
+          <div key={b.side} className="px-4 py-3" data-testid={`sm-${b.side}`}>
+            <div className="text-[10px] uppercase tracking-wider text-muted-foreground mb-2.5">
+              <span className="text-foreground font-semibold">{b.team}</span> attacking
+              {" · "}{b.opponent} defending {venueLabel}
+            </div>
+            <div className="space-y-2">
+              {b.rows.map((r) => (
+                <div key={r.key} className="flex items-center gap-2">
+                  <span className="text-xs text-muted-foreground w-[74px] shrink-0">{r.label}</span>
+                  <span className="font-mono-data text-base font-semibold text-foreground w-[52px] text-right">
+                    {r.takes != null ? r.takes.toFixed(1) : "—"}
+                  </span>
+                  <span className="text-[10px] text-muted-foreground">taken</span>
+                  <span className="text-muted-foreground text-xs px-1">vs</span>
+                  <span className="font-mono-data text-base font-semibold text-foreground w-[52px] text-right">
+                    {r.allows != null ? r.allows.toFixed(1) : "—"}
+                  </span>
+                  <span className="text-[10px] text-muted-foreground">allowed</span>
+                  {/* AN AVERAGE OVER THREE GAMES IS NOT THE SAME EVIDENCE as one over
+                      twelve, and a pairing hides that twice over — once per side. */}
+                  {r.paired && r.thin && (
+                    <span className="ml-auto text-[10px] text-amber-400 font-mono-data"
+                          title={`Covered in ${r.takesCover} and ${r.allowsCover} games`}>
+                      {Math.min(r.takesCover, r.allowsCover)}g
+                    </span>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+        ))}
+      </div>
+      <div className="px-4 py-2 border-t border-border text-[10px] text-muted-foreground">
+        Averages from the games that carried the stat. No expected figure is computed —
+        these are two measured numbers, not a forecast.
+      </div>
+    </section>
+  );
+}
+
 function RecordUnderForecast({ fixture, model, homeTeam, awayTeam, leagueName }) {
   const sides = [
     ["home", fixture.home_name, homeTeam],
@@ -1284,15 +1378,26 @@ function RecordUnderForecast({ fixture, model, homeTeam, awayTeam, leagueName })
   ];
   const [side, setSide] = useState("home");
   const [window, setWindow] = useState(null);
+  // VENUE IS STILL THE DEFAULT, AND OVERALL IS NOW REACHABLE. The venue is what the ladder
+  // prices and what the reader is being asked about, so it stays the thing the panel opens
+  // on. But it was the ONLY thing: this filtered to the venue with no way out, and a venue
+  // split holds at most half a short history. Six league games in August is three here,
+  // and the panel could not be made to show the other three however the slider was dragged
+  // — the question "how often has it happened" simply had no answer over the whole run.
+  const [overall, setOverall] = useState(false);
   const active = sides.find(([k]) => k === side) || sides[0];
   const [key, name, team] = active;
 
-  // The venue this side is playing, which is what the ladder prices and what the reader is
-  // being asked about — not their overall form.
-  const venueGames = (team?.recent || []).filter((m) => m.home === (key === "home"));
-  const count = clampWindow(window, venueGames.length);
-  const games = venueGames.slice(0, count);
+  const pool = (team?.recent || []).filter((m) => overall || m.home === (key === "home"));
+  const count = clampWindow(window, pool.length);
+  const games = pool.slice(0, count);
   if (!games.length) return null;
+  // SAID IN THE LABEL, not left to be inferred from a toggle elsewhere on the row. The
+  // chart looks identical either way, and a run of 8 over both venues is a different claim
+  // from 8 at home — this is the only thing on screen that distinguishes them.
+  const windowLabel = overall
+    ? `last ${count} games (home and away)`
+    : `last ${count} ${key} games`;
 
   return (
     <section className="bg-card border border-border rounded-lg overflow-hidden"
@@ -1301,15 +1406,30 @@ function RecordUnderForecast({ fixture, model, homeTeam, awayTeam, leagueName })
         <BarChart3 className="h-4 w-4 text-primary" />
         <h3 className="font-head font-semibold text-sm">How often has it happened?</h3>
         <div className="ml-auto flex items-center gap-2">
-          {venueGames.length > MIN_WINDOW && (
+          {pool.length > MIN_WINDOW && (
             <input
-              type="range" min={MIN_WINDOW} max={venueGames.length} step={1} value={count}
+              type="range" min={MIN_WINDOW} max={pool.length} step={1} value={count}
               data-testid="ruf-window"
               aria-label={`How many recent games to show — currently ${count}`}
               onChange={(e) => setWindow(Number(e.target.value))}
               className="w-20 accent-primary cursor-pointer"
             />
           )}
+          {/* The venue it is playing, or everything. Two states rather than three: which
+              venue is already decided by which side is selected, so a home/away/overall
+              control here would offer "away" on the home team and mean the away team's
+              games, which is a different panel. */}
+          <div className="flex rounded-md bg-secondary p-0.5">
+            {[[false, key === "home" ? "At home" : "Away"], [true, "Overall"]].map(([v, label]) => (
+              <button key={String(v)} data-testid={`ruf-split-${v ? "overall" : "venue"}`}
+                onClick={() => setOverall(v)}
+                className={`text-[11px] px-2 py-1 rounded transition-colors ${
+                  overall === v ? "bg-primary text-primary-foreground font-medium"
+                                : "text-muted-foreground"}`}>
+                {label}
+              </button>
+            ))}
+          </div>
           <div className="flex rounded-md bg-secondary p-0.5">
             {sides.map(([k, label]) => (
               <button key={k} data-testid={`ruf-side-${k}`} onClick={() => setSide(k)}
@@ -1323,7 +1443,7 @@ function RecordUnderForecast({ fixture, model, homeTeam, awayTeam, leagueName })
         </div>
       </div>
       <Consistency games={games} highlight={key} teamName={name}
-                   split={key} windowLabel={`last ${count} ${key} games`}
+                   split={overall ? "overall" : key} windowLabel={windowLabel}
                    fixture={fixture} leagueName={leagueName}
                    currentSeason={team?.current_season} />
     </section>
@@ -1574,6 +1694,39 @@ const SHOT_COLS = [
   // leagues (0/40 on the coverage check), so a column for it would only ever read "—"
 ];
 
+/**
+ * One shot column, for AND conceded.
+ *
+ * ONE NUMBER WAS HALF A FIXTURE. This showed the "for" figure only, so a side shooting 20
+ * a game read as a monster whether its opponent allows 20 or allows 7 — and the second of
+ * those is the game worth having. The conceded figure has been on the payload since the
+ * shot features shipped (team_features writes `{feature}_against` beside every `_for`);
+ * nothing was drawing it.
+ *
+ * THE OPPONENT'S CONCEDED IS THE OTHER CARD. Both teams' blocks are on the fixture, so the
+ * matchup is read ACROSS them: this side's `for` against the other side's `conceded`. The
+ * pairing is not computed here because a figure labelled with one team's name while
+ * belonging to the other is the kind of thing nobody notices is wrong.
+ *
+ * Conceded is drawn quieter than for. They are not equally interesting on most rows, and
+ * two numbers at the same weight read as a number and its error bar.
+ */
+const ShotPair = ({ label, forVal, againstVal, accent }) => (
+  <div className="flex flex-col items-center justify-center px-3 py-2 bg-secondary rounded-md min-w-[78px]">
+    <span className="text-[10px] text-muted-foreground uppercase tracking-wider mb-1">{label}</span>
+    <div className="flex items-baseline gap-1.5">
+      <span className={`font-mono-data text-base font-semibold ${accent ? "text-primary" : "text-foreground"}`}>
+        {forVal != null ? forVal.toFixed(1) : "—"}
+      </span>
+      <span className="text-muted-foreground text-xs">/</span>
+      <span className="font-mono-data text-sm text-muted-foreground">
+        {againstVal != null ? againstVal.toFixed(1) : "—"}
+      </span>
+    </div>
+    <span className="text-[9px] text-muted-foreground tracking-wide mt-0.5">for / conc</span>
+  </div>
+);
+
 function ShotBlock({ feats, intent, highlight, split }) {
   if (!feats) return null;
   const covered = feats.covered?.shots ?? 0;
@@ -1592,7 +1745,7 @@ function ShotBlock({ feats, intent, highlight, split }) {
     <div className="px-4 py-3 border-t border-border space-y-2.5" data-testid={`bd-shots-${highlight}`}>
       <div className="flex items-center gap-2">
         <span className="text-[10px] uppercase tracking-wider text-muted-foreground flex-1">
-          Shot volume ({split})
+          Shots for &amp; conceded ({split})
         </span>
         <span className="text-[10px] text-muted-foreground font-mono-data"
           title="Games on this split that actually carry the stat">
@@ -1602,8 +1755,8 @@ function ShotBlock({ feats, intent, highlight, split }) {
 
       <div className="flex flex-wrap gap-2">
         {SHOT_COLS.map(([key, label]) => (
-          <Metric key={key} label={label}
-            value={feats[`${key}_for`] != null ? feats[`${key}_for`].toFixed(1) : "—"}
+          <ShotPair key={key} label={label} forVal={feats[`${key}_for`]}
+            againstVal={feats[`${key}_against`]}
             accent={key === "blocked_shots" && intent?.source === "blocked"} />
         ))}
       </div>

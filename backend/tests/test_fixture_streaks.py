@@ -71,8 +71,12 @@ def test_a_single_game_is_not_a_streak():
 def test_an_under_is_labelled_as_an_under():
     """A run of quiet games is the same kind of story as a run of busy ones, and posting
     it as an over would be a public, wrong claim about what is being suggested."""
-    quiet = team("Y", [m(True, 1, 2, "2026-08-01"), m(True, 2, 1, "2026-08-08"),
-                       m(True, 0, 2, "2026-08-15")])
+    # LOUD PAST, QUIET RECENT GAMES, which is what an under streak now has to be: the line
+    # must sit on the demanding side of this team's own average, so a side that is quiet
+    # every week has no under to report — being held under 3 is not news about a team that
+    # never wins 3.
+    quiet = team("Y", [m(True, 9, 2, "2026-07-25"), m(True, 1, 2, "2026-08-01"),
+                       m(True, 2, 1, "2026-08-08"), m(True, 1, 2, "2026-08-15")])
     r = live_streak(quiet, "home", "team", "under")
     assert r["direction"] == "under"
     assert r["line_label"].startswith("under ")
@@ -115,36 +119,42 @@ def test_an_under_too_loose_to_mean_anything_is_never_suggested():
 
 
 # --- what a SHARE is allowed to carry, and what the PANEL is ---
-def test_a_short_run_reaches_the_panel_and_the_post_cuts_it():
-    """This test's own docstring had the rule right and its assertion pointed at the wrong
-    thing. "The board can show a 3-game run because on screen you can weigh it yourself; a
-    post is read once and scrolled" — but it then asserted that fixture_streaks, which FEEDS
-    THE PANEL, excluded it. So the panel inherited the post's threshold and most fixtures
-    showed nothing; the conceded subject, rarest to reach five, almost never appeared.
+def test_the_panel_floor_is_five_and_the_board_keeps_its_own():
+    """THE PANEL'S FLOOR WENT UP TO FIVE and it is no longer BOARD_MIN_RUN.
 
-    The two floors are now separate. fixture_streaks builds at the board's, and the share
-    builder applies the post's — tested on the frontend, where the post is written."""
-    from server import BOARD_MIN_RUN, SHARE_MIN_RUN
-    assert SHARE_MIN_RUN > BOARD_MIN_RUN, "a post must be stricter than a panel"
-    assert BOARD_MIN_RUN == 3
+    It defaulted to the board's three on the reasoning that a reader can weigh a short run
+    themselves where a post cannot be weighed. That was right when the panel held four or
+    five rows; it now carries both directions, three subjects, both sides AND the overall
+    pool beside each venue one, and a dozen rows of which half are three games long is not
+    a richer panel, it is the useful ones buried in the rest.
+
+    SEPARATE FROM BOARD_MIN_RUN rather than a change to it, because that constant has a
+    second consumer — angle_is_strong, which decides what the BOARD publishes. Moving one
+    number to fix a display would quietly have changed what gets posted."""
+    from server import BOARD_MIN_RUN, PANEL_MIN_RUN, SHARE_MIN_RUN
+    assert PANEL_MIN_RUN == 5
+    assert BOARD_MIN_RUN == 3, "the board's own floor must not have moved with the panel's"
+    assert SHARE_MIN_RUN == PANEL_MIN_RUN, "a post and the panel now agree"
     short = team("Z", [m(True, 9, 3, f"2026-08-{d:02d}") for d in (1, 8, 15)])   # 3 in a row
-    rows = fixture_streaks(short, short, "Z", "Z")
-    assert rows, "a three-game run should reach the panel"
-    assert all(r["run"] >= BOARD_MIN_RUN for r in rows)
+    assert fixture_streaks(short, short, "Z", "Z") == [], \
+        "a three-game run is no longer enough for the panel"
+    long_enough = team("Z", [m(True, 9, 3, f"2026-08-{d:02d}") for d in (1, 8, 15, 22, 29)])
+    rows = fixture_streaks(long_enough, long_enough, "Z", "Z")
+    assert rows, "five in a row has to reach it"
+    assert all(r["run"] >= PANEL_MIN_RUN for r in rows)
 
 
 def test_two_games_is_still_not_a_run():
-    """The floor moved down, not away."""
-    from server import BOARD_MIN_RUN
+    from server import PANEL_MIN_RUN
     pair = team("Z", [m(True, 9, 3, f"2026-08-{d:02d}") for d in (1, 8)])
-    assert all(r["run"] >= BOARD_MIN_RUN
+    assert all(r["run"] >= PANEL_MIN_RUN
                for r in fixture_streaks(pair, pair, "Z", "Z"))
 
 
 def test_a_conceded_run_reaches_the_panel_with_its_opponent():
     """The subject this change exists for. A side shipping corners in three straight is the
     angle; the bet is whoever plays them, so the row has to carry the other name."""
-    leaky = team("Z", [m(True, 2, 7, f"2026-08-{d:02d}") for d in (1, 8, 15)])
+    leaky = team("Z", [m(True, 2, 7, f"2026-08-{d:02d}") for d in (1, 8, 15, 22, 29)])
     rows = fixture_streaks(leaky, leaky, "Leaky", "Sharp")
     conceded = [r for r in rows if r["subject"] == "conceded"]
     assert conceded, "no conceded run reached the panel"
@@ -314,12 +324,15 @@ def test_the_overall_run_is_on_the_fixture_now():
     assert "overall" in venues, "the overall run never reaches the fixture panel"
 
 
-def test_and_it_is_longer_than_the_venue_one_when_the_split_is_short():
+def test_early_in_a_season_the_overall_run_is_the_only_one_long_enough():
+    """Six league games, three at each venue. Neither venue split can reach the panel's
+    floor of five — only the pool that holds both can, which is the case the overall run
+    was added for."""
     rows = [r for r in fixture_streaks(EARLY, team("Other", []), "Luton", "Other")
             if r["team"] == "Luton" and r["subject"] == "team" and r["direction"] == "over"]
     by_venue = {r["venue"]: r for r in rows}
+    assert set(by_venue) == {"overall"}
     assert by_venue["overall"]["run"] == 6
-    assert by_venue["home"]["run"] == 3
 
 
 def test_every_row_still_says_which_pool_it_came_from():
@@ -387,17 +400,77 @@ def test_a_long_home_run_and_a_shorter_overall_one_BOTH_reach_the_panel():
     the one a reader cannot work out from the first.
     """
     side = team("Luton", [
-        m(True, 7, 3, "2026-08-01"),
+        m(True, 7, 3, "2026-07-04"),
+        m(True, 8, 4, "2026-07-11"),
+        m(True, 9, 2, "2026-07-18"),
+        m(True, 7, 5, "2026-07-25"),
+        m(True, 8, 3, "2026-08-01"),
         m(False, 2, 6, "2026-08-05"),      # the away blank that breaks the overall run
-        m(True, 8, 4, "2026-08-10"),
-        m(True, 9, 2, "2026-08-17"),
-        m(True, 7, 5, "2026-08-24"),
+        m(True, 7, 3, "2026-08-10"),
+        m(True, 8, 4, "2026-08-17"),
+        m(True, 9, 2, "2026-08-24"),
+        m(True, 7, 5, "2026-08-31"),
+        m(True, 8, 3, "2026-09-07"),
     ])
     rows = [r for r in fixture_streaks(side, team("Other", []), "Luton", "Other")
             if r["team"] == "Luton" and r["subject"] == "team" and r["direction"] == "over"]
     by_venue = {r["venue"]: r for r in rows}
     assert set(by_venue) == {"home", "overall"}
-    assert by_venue["home"]["run"] == 4
-    assert by_venue["overall"]["run"] == 3
+    assert by_venue["home"]["run"] == 10
+    assert by_venue["overall"]["run"] == 5
     # And they are measured over different pools, which is what makes them two findings.
     assert by_venue["home"]["games"] != by_venue["overall"]["games"]
+
+
+# --- a line has to be demanding FOR THIS TEAM ---------------------------------------
+#
+# "UNDER 8 TEAM CORNERS IN 8 GAMES" was the complaint, and it is a true sentence that says
+# nothing: a side averaging five corners is under eight almost every week, so the run
+# describes the sport rather than the team. UNDER_LINE_CAP cannot see it — 8 is inside the
+# cap by one — because it is the same rung for a side winning nine a game and one winning
+# three. The team's own average is the yardstick that adapts.
+
+def test_an_under_above_the_teams_own_average_is_not_an_angle():
+    """The exact shape reported. Eight straight games under 8, from a side that averages
+    about five: true, and worth nobody's attention."""
+    ordinary = team("Mid", [m(True, c, 4, f"2026-08-{d:02d}")
+                            for d, c in zip(range(1, 25, 3), [5, 4, 6, 5, 4, 6, 5, 4])])
+    r = live_streak(ordinary, "home", "team", "under")
+    # par is 4.875, so nothing above 5 is offered — and 7 and 8, the lines that prompted
+    # this, cannot appear however long the run at them is.
+    assert r is None or r["line"] <= 5, \
+        "an under well above the team's own par is not a claim about the team"
+
+
+def test_but_a_genuinely_tight_run_still_counts():
+    """A side that normally wins six being held under three for five straight is the same
+    kind of story as a long over — and it survives, because the line is on the demanding
+    side of what this team usually does."""
+    throttled = team("Quiet", [
+        m(True, 9, 3, "2026-07-04"), m(True, 8, 4, "2026-07-11"),
+        m(True, 7, 2, "2026-07-18"), m(True, 2, 5, "2026-07-25"),
+        m(True, 1, 6, "2026-08-01"), m(True, 2, 4, "2026-08-08"),
+        m(True, 1, 5, "2026-08-15"), m(True, 2, 6, "2026-08-22"),
+    ])
+    r = live_streak(throttled, "home", "team", "under")
+    assert r is not None, "a run well under this team's own par has to survive"
+    assert r["run"] >= 5
+    assert r["line"] <= 3
+
+
+def test_an_elite_record_is_not_deleted_by_the_same_rule():
+    """The allowance of one rung, and why it is there. A side conceding exactly one corner
+    a week has a par of 1, so a strict `line <= par` would offer nothing at all — deleting
+    the best defensive records on the board, which are the ones worth having."""
+    solid = team("Solid", [m(True, 6, 1, f"2026-08-{d:02d}") for d in (1, 8, 15, 22, 29)])
+    r = live_streak(solid, "home", "conceded", "under")
+    assert r is not None and r["run"] == 5 and r["line"] == 2
+
+
+def test_the_over_side_is_deliberately_untouched():
+    """Applied to overs the same rule did harm: ranking is (length, line), so an over a
+    rung below par is beaten only on the line and still wins on LENGTH. Cutting those
+    turned a four-game run at one line into a three-game run at the next one up — a
+    shorter run for a marginally harder line, which is not a trade to make for a reader."""
+    r = live_streak(HOME_RUN, "home", "match", "over")
+    assert r["line"] == 10 and r["run"] == 4

@@ -4448,11 +4448,42 @@ def live_streak(team: dict, venue: str, subject: str, direction: str,
     # tight enough on an under.
     floor = OVER_LINE_FLOOR.get(subject, 3)
     cap = UNDER_LINE_CAP.get(subject, 8)
+    # AND THE LINE HAS TO BE DEMANDING FOR THIS TEAM, not merely inside a fixed rung.
+    #
+    # "UNDER 8 TEAM CORNERS IN 8 GAMES" was the complaint, and it is a true sentence that
+    # says nothing: a side averaging five corners is under eight almost every week, so the
+    # run is a description of the sport rather than of the team. The fixed caps cannot see
+    # that — 8 is inside UNDER_LINE_CAP by one — because they are the same rung for a side
+    # winning nine a game and a side winning three.
+    #
+    # The team's own average is the yardstick that adapts: an under may sit no more than
+    # ONE above what this side usually produces.
+    #
+    # WHY THE ALLOWANCE OF ONE AND NOT A STRICT `line <= par`. A side conceding exactly one
+    # corner a week has a par of 1, and "under 2" is the only sentence that describes it —
+    # a strict test deletes the best defensive records on the board, which are precisely
+    # the ones worth having. One rung of slack keeps those and still kills the complaint:
+    # a side averaging five is allowed under 6, never under 8.
+    #
+    # UNDERS ONLY, AND THE ASYMMETRY IS THE REASON. The loop keeps the HIGHEST line that
+    # held for an over, so a trivially low over is already outranked by a better one — but
+    # it keeps the LOWEST for an under, and the lowest is forced UP by the biggest game in
+    # the run. One seven-corner match and the tightest under that survives is 8, which is
+    # exactly how a meaningless line reaches the panel.
+    #
+    # Applied to overs as well it did harm: ranking is (length, line), so an over a rung
+    # below par is beaten only on the line and still wins on LENGTH. Cutting those turned
+    # "over 10 in the match, 4 straight" into "over 11, 3 straight" — a shorter run for a
+    # marginally harder line, which is not the trade a reader wants made for them.
+    vals = [streak_value(m, subject) for m in history]
+    par = (sum(vals) / len(vals)) if vals else 0.0
     best = None
     for line in STREAK_LADDERS.get(subject, STREAK_LADDERS["team"]):
         if direction == "over" and line < floor:
             continue
         if direction == "under" and line > cap:
+            continue
+        if direction == "under" and line > par + 1:
             continue
         cur = streak_runs(streak_legs(history, line, direction, subject))["current"]
         if cur["status"] != "active" or cur["length"] < min_len:
@@ -4554,6 +4585,19 @@ SHARE_MIN_RUN = 5
 # definition, above every use.
 BOARD_MIN_RUN = 3                  # a streak must be a run; 2 is merely the floor for being one
 
+# THE FIXTURE PANEL'S OWN FLOOR, and it is five now.
+#
+# This used to default to BOARD_MIN_RUN on the reasoning that a reader can weigh a
+# three-game run themselves, where a post cannot be weighed. That was right when the panel
+# held four or five rows. It now carries both directions, three subjects, both sides AND
+# the overall pool beside each venue one, and a dozen rows of which half are three games
+# long is not a richer panel — it is the useful ones buried in the rest.
+#
+# SEPARATE FROM BOARD_MIN_RUN rather than a change to it, because that constant has a
+# second consumer: angle_is_strong, which decides what the BOARD will publish. Moving one
+# number to fix a display would have quietly changed what gets posted.
+PANEL_MIN_RUN = 5
+
 
 # AND THE FIXTURE PANEL IS THE BOARD, NOT THE SHARE. This defaulted to SHARE_MIN_RUN, which
 # applied a POST's threshold to an on-screen panel — the exact distinction the note above
@@ -4595,7 +4639,7 @@ def _venue_and_overall(venue_row: Optional[dict],
 
 
 def fixture_streaks(home: dict, away: dict, home_name: str, away_name: str,
-                    min_run: int = BOARD_MIN_RUN) -> List[dict]:
+                    min_run: int = PANEL_MIN_RUN) -> List[dict]:
     """Every live run both sides bring into this fixture, best first.
 
     WHAT THIS IS FOR: a fixture is worth posting when something is ALREADY running into

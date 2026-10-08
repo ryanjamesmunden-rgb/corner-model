@@ -54,6 +54,25 @@ export const SUBJECTS = [
   { key: "shots", label: "Shots", short: "Shots", noun: "shots",
     claim: (line) => `had ${line}+ shots`,
     pick: (m) => (m.shots_for ? m.shots_for : null), tone: "shots" },
+  // GOALS, WHICH ARE NOT CORNERS AND ARE NOT PRICED HERE. The panel has always been able
+  // to answer "how often does this hold" for anything countable per game, and goals were
+  // simply never offered — so "have they scored in 8 of their last 10" had to be read off
+  // the recent-games table a row at a time.
+  //
+  // THE LINE OF 1 IS THE WHOLE POINT and it is why these two own their phrasing. "scored
+  // 1+ goals in 8 of 10" is the same fact as "scored in 8 of 10" written badly, and the
+  // second is the sentence anybody actually says. Higher rungs keep the ladder's wording.
+  //
+  // A ZERO IS A REAL ZERO HERE, unlike shots: a goalless game is the commonest result in
+  // football and dropping it would delete exactly the games these records are about. A
+  // game the scores never synced for arrives as null and is dropped like any other
+  // uncovered game — see team_form, which refuses to read an unsynced score as a draw.
+  { key: "scored", label: "Scored", short: "Scored", noun: "goals scored",
+    claim: (line) => (line === 1 ? "scored" : `scored ${line}+ goals`),
+    pick: (m) => (m.gf === null || m.gf === undefined ? null : m.gf), tone: "for" },
+  { key: "goals_against", label: "Goals conceded", short: "Goals ag.", noun: "goals conceded",
+    claim: (line) => (line === 1 ? "conceded" : `conceded ${line}+ goals`),
+    pick: (m) => (m.ga === null || m.ga === undefined ? null : m.ga), tone: "against" },
 ];
 
 // The windows the panel offers, smallest first. A window is only offered when the split

@@ -15,8 +15,7 @@
 import {
   FIRE_RUN, MIN_RUN, SHARE_MIN_RUN, fixtureStreaks, markFor, streakDetail, streakHeadline,
   streakRow,
-  subjectLabel,
-} from "./fixtureStreaks.js";
+  subjectLabel, streakSummary } from "./fixtureStreaks.js";
 
 /** A row exactly as backend fixture_streaks emits it — flat, from live_streak. */
 const row = (team, { line = 5, run = 6, subject = "team", direction = "over",
@@ -257,5 +256,66 @@ describe("which pool the run came from", () => {
     ]);
     expect(rows).toHaveLength(2);
     expect(new Set(rows.map((r) => r.key)).size).toBe(2);
+  });
+});
+
+describe("the summary of what is running in", () => {
+  // The list answers "what is running" and answers "how much, and whose" only by being
+  // counted by hand. A busy fixture now carries ten or twelve rows.
+  const rows = () => fixtureStreaks([
+    row("Bodo/Glimt", { subject: "team", run: 9, venue: "home" }),
+    row("Bodo/Glimt", { subject: "team", run: 4, venue: "overall" }),
+    row("Bodo/Glimt", { subject: "match", run: 6, venue: "home" }),
+    row("Kristiansund BK", { subject: "conceded", run: 5, venue: "away" }),
+    row("Kristiansund BK", { subject: "team", run: 3, venue: "away",
+                             direction: "under" }),
+  ]);
+
+  test("nothing running is no summary, not a row of zeros", () => {
+    expect(streakSummary([])).toBeNull();
+  });
+
+  test("the total counts every row the panel shows", () => {
+    // A summary filtered differently from the list underneath is a number the reader
+    // cannot reconcile with what they can see — and they will trust the number.
+    const s = streakSummary(rows());
+    expect(s.total).toBe(5);
+    expect(s.total).toBe(rows().length);
+  });
+
+  test("it splits by team, busiest first", () => {
+    expect(streakSummary(rows()).byTeam).toEqual([
+      { key: "Bodo/Glimt", n: 3 }, { key: "Kristiansund BK", n: 2 },
+    ]);
+  });
+
+  test("and by subject, in a fixed order so the block does not reshuffle", () => {
+    expect(streakSummary(rows()).bySubject).toEqual([
+      { key: "team", n: 3, label: "Corners won" },
+      { key: "conceded", n: 1, label: "Corners against" },
+      { key: "match", n: 1, label: "Match totals" },
+    ]);
+  });
+
+  test("the venue split is there so the total can be read correctly", () => {
+    // Several rows are the same side over two overlapping pools. Without this the total
+    // reads as that many independent findings.
+    expect(streakSummary(rows()).byVenue).toEqual([
+      { key: "home", n: 2 }, { key: "away", n: 2 }, { key: "overall", n: 1 },
+    ]);
+  });
+
+  test("overs and unders are counted apart", () => {
+    const s = streakSummary(rows());
+    expect(s.overs).toBe(4);
+    expect(s.unders).toBe(1);
+  });
+
+  test("the longest run is found, not assumed to be first", () => {
+    // The list happens to be sorted longest-first; a summary that depended on that would
+    // break the day the order changed.
+    const unsorted = [row("A", { run: 3 }), row("B", { run: 11 }), row("C", { run: 5 })]
+      .map((r) => streakRow(r));
+    expect(streakSummary(unsorted).longest.run).toBe(11);
   });
 });

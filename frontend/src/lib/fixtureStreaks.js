@@ -165,3 +165,55 @@ export const streakHeadline = (rows = []) => {
   const n = `${rows.length} streak${rows.length === 1 ? "" : "s"} running into this game`;
   return hot ? `${n} · ${hot} on ${FIRE_RUN}+` : n;
 };
+
+/** What each subject is called in a count, where there is no room for a sentence. */
+export const SUBJECT_COUNT_LABEL = {
+  team: "Corners won",
+  conceded: "Corners against",
+  match: "Match totals",
+};
+
+/**
+ * The shape of what is running into this fixture, before any of it is read.
+ *
+ * WHY A SUMMARY AT ALL. The panel lists runs longest-first and a busy fixture now carries
+ * ten or twelve of them — both sides, corners won, corners conceded, match totals, overs
+ * and unders, venue and overall. That list answers "what is running" perfectly and answers
+ * "how much, and whose" only by being counted by hand every time.
+ *
+ * IT COUNTS EXACTLY WHAT THE PANEL SHOWS, which is the only version that cannot mislead:
+ * a summary filtered differently from the list underneath it is a number the reader cannot
+ * reconcile with what they can see, and they will trust the number.
+ *
+ * THAT MEANS THE TOTAL IS LARGER THAN IT USED TO BE, because overall runs now ride beside
+ * venue ones. The venue breakdown is here so the total can be read correctly rather than
+ * taken as twelve independent findings — several of them are the same side measured over
+ * two overlapping pools, and the panel says so.
+ */
+export const streakSummary = (rows = []) => {
+  if (!rows.length) return null;
+  const tally = (key, order) => {
+    const seen = new Map();
+    rows.forEach((r) => seen.set(r[key], (seen.get(r[key]) || 0) + 1));
+    const got = [...seen.entries()].map(([k, n]) => ({ key: k, n }));
+    return order
+      ? order.filter((k) => seen.has(k)).map((k) => ({ key: k, n: seen.get(k) }))
+      : got.sort((a, b) => b.n - a.n);
+  };
+  const overs = rows.filter((r) => r.direction === "over").length;
+  return {
+    total: rows.length,
+    // The share threshold, so "worth somebody's attention" means the same here as it does
+    // in a post. See FIRE_RUN.
+    hot: rows.filter((r) => r.hot).length,
+    // Explicit rather than rows[0]: the list happens to be sorted longest-first and a
+    // summary that silently depended on that would break the day the order changed.
+    longest: rows.reduce((best, r) => (!best || r.run > best.run ? r : best), null),
+    byTeam: tally("team"),
+    bySubject: tally("subject", ["team", "conceded", "match"])
+      .map((s) => ({ ...s, label: SUBJECT_COUNT_LABEL[s.key] || s.key })),
+    byVenue: tally("venue", ["home", "away", "overall"]),
+    overs,
+    unders: rows.length - overs,
+  };
+};

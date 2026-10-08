@@ -265,8 +265,14 @@ describe("the subject vocabulary", () => {
   });
 
   test("each picks its own column off a game row", () => {
-    const row = g(6, 3);
-    expect(SUBJECTS.map((s) => s.pick(row))).toEqual([6, 3, 9, 14]);
+    // KEYED RATHER THAN POSITIONAL. The old version compared a bare array, so adding a
+    // subject failed the test for the wrong reason — it said nothing about whether the
+    // new one read the right column, only that the list had grown.
+    const row = { ...g(6, 3), gf: 2, ga: 1 };
+    const picked = Object.fromEntries(SUBJECTS.map((s) => [s.key, s.pick(row)]));
+    expect(picked).toEqual({
+      won: 6, conceded: 3, total: 9, shots: 14, scored: 2, goals_against: 1,
+    });
   });
 });
 
@@ -462,5 +468,53 @@ describe("the window a card actually uses", () => {
 
   test("the floor is three, because two results are not a window", () => {
     expect(MIN_WINDOW).toBe(3);
+  });
+});
+
+describe("goals, scored and conceded", () => {
+  // "Have they scored in 8 of their last 10" had to be read off the recent-games table a
+  // row at a time. The panel could always answer it — goals were simply never offered.
+  const g = (gf, ga) => ({ gf, ga, won: 5, conceded: 4, total: 9 });
+  const sub = (key) => SUBJECTS.find((s) => s.key === key);
+
+  test("a line of 1 is phrased the way people say it", () => {
+    // "scored 1+ goals in 8 of 10" is the same fact written badly.
+    expect(sub("scored").claim(1)).toBe("scored");
+    expect(sub("goals_against").claim(1)).toBe("conceded");
+  });
+
+  test("and the higher rungs keep the ladder's wording", () => {
+    expect(sub("scored").claim(2)).toBe("scored 2+ goals");
+    expect(sub("goals_against").claim(3)).toBe("conceded 3+ goals");
+  });
+
+  test("a goalless game is a real zero, not a dropped game", () => {
+    // Unlike shots, where 0 means "not reported". A goalless game is the commonest result
+    // in football and dropping it would delete the games these records are about.
+    const games = [g(0, 1), g(2, 0), g(1, 1)];
+    expect(valuesFor(games, sub("scored").pick)).toEqual([0, 2, 1]);
+  });
+
+  test("an unsynced score is dropped, not read as nil", () => {
+    const games = [g(1, 0), g(null, null), g(2, 1)];
+    expect(valuesFor(games, sub("scored").pick)).toEqual([1, 2]);
+    expect(valuesFor(games, sub("goals_against").pick)).toEqual([0, 1]);
+  });
+
+  test("the default line lands on 1, which is the question being asked", () => {
+    // A side with any goalless game has a floor of 0, and "0+ goals" is true of every
+    // game ever played.
+    expect(defaultLine(valuesFor([g(0, 0), g(2, 1), g(1, 0)], sub("scored").pick))).toBe(1);
+  });
+
+  test("scored and conceded do not read the same column", () => {
+    const games = [g(3, 0), g(0, 2)];
+    expect(valuesFor(games, sub("scored").pick)).toEqual([3, 0]);
+    expect(valuesFor(games, sub("goals_against").pick)).toEqual([0, 2]);
+  });
+
+  test("so 'scored in 2 of 3' comes out of hitsAt at line 1", () => {
+    const vals = valuesFor([g(1, 0), g(0, 1), g(2, 2)], sub("scored").pick);
+    expect(hitsAt(vals, 1)).toMatchObject({ hits: 2, n: 3 });
   });
 });

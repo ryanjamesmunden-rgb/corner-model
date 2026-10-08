@@ -17,7 +17,7 @@ import { FORM_GAMES, formLabel, formRun } from "@/lib/formRun";
 import { anglePanel } from "@/lib/angleFactors";
 import { whyItHit } from "@/lib/whyItHit";
 import { kickoffLabel } from "@/lib/kickoff";
-import { fixtureStreaks, streakDetail, streakHeadline } from "@/lib/fixtureStreaks";
+import { FIRE_RUN, fixtureStreaks, streakDetail, streakHeadline, streakSummary } from "@/lib/fixtureStreaks";
 import { hasH2H, meetingRows, recordLine, summaryLine, unbeatenRows } from "@/lib/h2h";
 import {
   SUBJECTS as CONSISTENCY_SUBJECTS, consistencyHeadline, consistencyRows, defaultLine,
@@ -1963,6 +1963,66 @@ function TeamRead({ name, profile, where }) {
  * is the current run, "9 of 9 settled" is how the window closed — and they diverge exactly
  * when it matters.
  */
+/**
+ * How much is running into this fixture, before any of it is read.
+ *
+ * ONE SECTION, NOT TWO. The obvious shape was a separate panel above the list, and two
+ * adjacent boxes counting the same rows is how a summary and its list start disagreeing —
+ * somebody filters one of them later and nothing points at the other. This is the head of
+ * the panel it counts.
+ *
+ * IT COUNTS EXACTLY WHAT IS LISTED BELOW IT, which is the only version that cannot
+ * mislead. The totals are larger than they used to be because overall runs now sit beside
+ * venue ones, so the venue split is drawn too: several of these are one side measured over
+ * two overlapping pools, and the block has to let that be read rather than presenting
+ * twelve independent findings.
+ */
+const Count = ({ label, n, accent }) => (
+  <div className="flex items-baseline gap-1.5">
+    <span className={`font-mono-data text-sm font-semibold ${accent ? "text-primary" : "text-foreground"}`}>{n}</span>
+    <span className="text-[11px] text-muted-foreground">{label}</span>
+  </div>
+);
+
+function StreakSummary({ summary }) {
+  if (!summary) return null;
+  return (
+    <div className="rounded-md border border-border bg-secondary/30 px-3 py-2.5 space-y-2"
+         data-testid="streak-summary">
+      <div className="flex items-baseline gap-2 flex-wrap">
+        <span className="font-mono-data text-2xl font-semibold text-primary"
+              data-testid="streak-summary-total">{summary.total}</span>
+        <span className="text-sm">running into this game</span>
+        {summary.hot > 0 && (
+          <span className="text-[11px] text-tone-streak-fg">· {summary.hot} on {FIRE_RUN}+</span>
+        )}
+        {summary.longest && (
+          <span className="ml-auto text-[11px] text-muted-foreground">
+            longest {summary.longest.run} — {summary.longest.claim}
+          </span>
+        )}
+      </div>
+      <div className="flex flex-wrap gap-x-5 gap-y-1.5">
+        {summary.byTeam.map((t) => (
+          <Count key={t.key} label={t.key} n={t.n} accent />
+        ))}
+      </div>
+      <div className="flex flex-wrap gap-x-5 gap-y-1.5 pt-0.5 border-t border-border/60">
+        {summary.bySubject.map((s) => <Count key={s.key} label={s.label} n={s.n} />)}
+        {summary.unders > 0 && <Count label="unders" n={summary.unders} />}
+      </div>
+      {/* THE POOLS, SAID OUT LOUD. Without this the total reads as that many separate
+          findings, when a home run and an overall run for the same side are the same
+          matches counted twice over different windows. */}
+      <div className="flex flex-wrap gap-x-5 gap-y-1.5 pt-0.5 border-t border-border/60">
+        {summary.byVenue.map((v) => (
+          <Count key={v.key} label={v.key === "overall" ? "overall" : `at ${v.key}`} n={v.n} />
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function RunningStreaks({ streaks, share }) {
   const rows = fixtureStreaks(streaks);
   if (!rows.length) return null;
@@ -1973,6 +2033,7 @@ function RunningStreaks({ streaks, share }) {
         <span className="text-sm font-medium">{streakHeadline(rows)}</span>
         <ShareButtons buildX={share} xRows={4} text={share(4)} />
       </div>
+      <StreakSummary summary={streakSummary(rows)} />
       <div className="space-y-2">
         {rows.map((r) => (
           <div key={r.key} data-testid={`fixture-streak-${r.key}`}

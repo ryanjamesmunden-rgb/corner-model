@@ -492,7 +492,9 @@ describe("what X is allowed to see", () => {
   const out = fixtureStreakShare({ fixture, streaks, form })(4);
 
   test("the streak and the game state are the whole of it", () => {
-    expect(out).toContain("Operario-PR 6+ corners — 7 in a row");
+    // "at home" is new and deliberate: overall runs now ride beside venue ones in this
+    // payload, and an unqualified line could be either.
+    expect(out).toContain("Operario-PR 6+ corners at home — 7 in a row");
     expect(out).toContain("Operario-PR unbeaten in 4 at home");
   });
 
@@ -1352,5 +1354,38 @@ describe("the mismatch caption", () => {
 
   test("no mismatch is an empty string rather than a post about nothing", () => {
     expect(mismatchShare({ mismatch: null, fixture })(2)).toBe("");
+  });
+});
+
+describe("a post says where the run was earned", () => {
+  // The fixture payload carries overall runs beside the venue ones. This line named
+  // neither, so two rows for the same team at the same line went out as two identical
+  // sentences with different numbers after them — a typo at best, double-counting at
+  // worst, in something published and permanent.
+  const fx = { home_name: "Bodo/Glimt", away_name: "Kristiansund BK",
+               date: "2026-10-10T15:00:00Z", league_id: "nor-d1" };
+  const run = (over = {}) => ({ team: "Bodo/Glimt", subject: "team", direction: "over",
+                                line: 4, line_label: "4+", run: 9, venue: "home", ...over });
+  // It returns a BUILDER taking a row limit, not a string.
+  const post = (streaks) =>
+    fixtureStreakShare({ fixture: fx, streaks, form: [], leagueName: "Eliteserien" })(4);
+
+  test("a venue run is qualified", () => {
+    expect(post([run()])).toContain("4+ corners at home — 9 in a row");
+    expect(post([run({ venue: "away" })])).toContain("4+ corners away — 9 in a row");
+  });
+
+  test("an overall run is NOT dressed up as a venue one", () => {
+    // The bug this is really guarding: the row used to be coerced to "home", so an
+    // overall run published as a claim about home games it had never looked at.
+    const out = post([run({ venue: "overall", run: 14 })]);
+    expect(out).toContain("4+ corners — 14 in a row");
+    expect(out).not.toContain("at home");
+  });
+
+  test("so the two are distinguishable in one post", () => {
+    const out = post([run({ venue: "overall", run: 14 }), run()]);
+    expect(out).toContain("4+ corners — 14 in a row");
+    expect(out).toContain("4+ corners at home — 9 in a row");
   });
 });

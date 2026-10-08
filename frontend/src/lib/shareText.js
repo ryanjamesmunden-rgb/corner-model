@@ -246,7 +246,16 @@ export const fixtureStreakShare = ({ fixture = {}, streaks = [], form = [],
       : s.subject === "conceded" ? `${s.team} conc ${s.line_label}`
       : `${s.team} ${s.line_label}`;
     const mark = s.run >= FIRE_RUN ? "🔥 " : "";
-    return `${mark}${what} corners — ${s.run} in a row`;
+    // WHERE THE RUN WAS EARNED, because the payload now carries overall runs beside the
+    // venue ones and this line named neither. Two rows for the same team at the same line
+    // would have gone out as two identical sentences with different numbers after them,
+    // which reads as a typo at best and as double-counting at worst.
+    //
+    // Only the venue ones are qualified. "at home" and "away" narrow the claim and have to
+    // be said; "home and away" IS the unqualified reading of "6 in a row", so spelling it
+    // out on every other line would cost characters on X to add nothing.
+    const where = s.venue === "home" ? " at home" : s.venue === "away" ? " away" : "";
+    return `${mark}${what} corners${where} — ${s.run} in a row`;
   });
   // GAME STATE, under the lines. A side unbeaten at home plays on the front foot and wins
   // corners; a side that cannot win away ends up chasing, which also produces them. The

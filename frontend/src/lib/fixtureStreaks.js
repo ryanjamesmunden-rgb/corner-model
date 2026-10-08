@@ -75,6 +75,23 @@ export const subjectLabel = (subject) =>
 // opposite of what it is, on a row that otherwise looks correct.
 const SUBJECTS = ["team", "match", "conceded"];
 
+// WHICH POOL THE RUN CAME FROM, in words. The fixture payload carries overall runs beside
+// the venue ones now, and this used to read `s.venue === "away" ? "away" : "home"` — which
+// did not merely lose the distinction, it ASSERTED the wrong one: every overall run was
+// relabelled as a home run, in the detail line and in anything else reading this row.
+//
+// A whitelist for the same reason SUBJECTS is one. Silently mapping an unknown value onto
+// a real venue is how a row ends up making a confident claim about games it never looked
+// at.
+const VENUES = {
+  home: "at home",
+  away: "away",
+  // Not "overall": the panel is read a line at a time and "home and away" cannot be
+  // misread as a venue, where "overall" sits next to "at home" and looks like one.
+  overall: "home and away",
+};
+const VENUE_TAGS = { home: "Home", away: "Away", overall: "Overall" };
+
 /** One streak, reduced to what the panel prints. */
 export const streakRow = (s = {}) => {
   const run = num(s.run) || 0;
@@ -83,6 +100,7 @@ export const streakRow = (s = {}) => {
   const subject = SUBJECTS.includes(s.subject) ? s.subject : "team";
   const team = s.team || "";
   const label = s.line_label || "";
+  const venue = VENUES[s.venue] ? s.venue : "home";
   return {
     team,
     // Straight from the API rather than rebuilt from the number: mislabelling an under as
@@ -98,7 +116,12 @@ export const streakRow = (s = {}) => {
     claim: subject === "conceded" ? `${team} concede ${label}` : `${team} ${label}`,
     // The side actually taking those corners next, when the API named them.
     opponent: s.opponent || null,
-    venue: s.venue === "away" ? "away" : "home",
+    venue,
+    // The long form for the detail line, and a one-word tag for the badge. The badge is
+    // what actually answers "which of these is which" — the detail line is small grey
+    // text under the claim, and on a panel with six rows nobody reads it six times.
+    venueText: VENUES[venue],
+    venueTag: VENUE_TAGS[venue],
     run,
     mark: markFor(run),
     hot: run >= FIRE_RUN,
@@ -106,7 +129,10 @@ export const streakRow = (s = {}) => {
     // denominator this payload carries — without it "9 in a row" has no sample beside it.
     games: num(s.games),
     since: s.since || null,
-    key: `${s.team}-${s.subject}-${direction}-${line}`,
+    // VENUE IS IN THE KEY. Without it a venue run and an overall run at the same line
+    // collide — React renders duplicate keys and the two rows are no longer reliably
+    // distinct, which is the same bug as the label one wearing different clothes.
+    key: `${s.team}-${s.subject}-${direction}-${line}-${venue}`,
   };
 };
 
@@ -124,7 +150,7 @@ export const fixtureStreaks = (streaks = [], minRun = MIN_RUN) =>
 
 /** "their own corners at home · 9 in a row of 20 on file" — the sample beside the claim. */
 export const streakDetail = (r = {}) => [
-  `${r.subjectText} ${r.venue}`,
+  `${r.subjectText} ${r.venueText || "at home"}`,
   // Names the bet on a conceded row. The run is the defence's; the slip is the other
   // side's team corners, and that inversion is the one thing a reader must not have to
   // work out for themselves.

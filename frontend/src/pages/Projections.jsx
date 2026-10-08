@@ -1,4 +1,4 @@
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { Loader2, ArrowUp, ArrowDown, Info } from "lucide-react";
@@ -59,15 +59,32 @@ export default function Projections() {
   );
 }
 
+// One page of the ranking. The server defaults to the same number and caps far above any
+// real window, so the ceiling is a runaway guard rather than a decision about what the
+// reader may rank.
+const PAGE = 200;
+
 function ProjectionsBoard() {
   const navigate = useNavigate();
   const [sort, setSort] = useState("total");
   const [days, setDays] = useState(7);
   const [asc, setAsc] = useState(false);
+  // HOW MANY ROWS HAVE BEEN ASKED FOR. The board requested a flat 200 and the header said
+  // "200 of 291 games", with no way to see the other 91 — on a page whose first line
+  // promises EVERY upcoming fixture ranked, and whose whole purpose is that the quiet end
+  // of the list is reachable, because that is the end an under is bet on.
+  const [limit, setLimit] = useState(PAGE);
+  // Back to the first page whenever the question changes. A reader who widens to 28 days
+  // after pressing "show more" twice is asking a new question, and carrying 600 rows into
+  // it makes the slowest possible request on their behalf.
+  useEffect(() => { setLimit(PAGE); }, [sort, days]);
 
   const { data, isLoading, error } = useQuery({
-    queryKey: ["projections", sort, days],
-    queryFn: () => api.projections({ sort, days, limit: 200 }),
+    queryKey: ["projections", sort, days, limit],
+    queryFn: () => api.projections({ sort, days, limit }),
+    // The previous page stays on screen while a longer one loads, so "show more" extends
+    // the table instead of blanking it.
+    keepPreviousData: true,
   });
 
   const rows = useMemo(() => {
@@ -240,6 +257,29 @@ function ProjectionsBoard() {
         {data?.preview && (
           <PreviewWall total={data.total} shown={rows.length}
             locked={lockCounts(rows).locked} noun="games" />
+        )}
+        {/* MORE OF THE SAME RANKING, not a second page that loses the numbering. The rank
+            column means "position in the full ranking", so the rows simply continue. */}
+        {data && data.total > rows.length && (
+          <div className="px-3 py-3 border-t border-border flex items-center gap-3 flex-wrap">
+            <button
+              data-testid="projections-more"
+              onClick={() => setLimit((n) => Math.min(n + PAGE, data.total))}
+              className="text-xs px-3 py-1.5 rounded-md bg-secondary hover:bg-secondary/70
+                         transition-colors">
+              Show {Math.min(PAGE, data.total - rows.length)} more
+            </button>
+            <button
+              data-testid="projections-all"
+              onClick={() => setLimit(data.total)}
+              className="text-xs px-3 py-1.5 rounded-md border border-border
+                         text-muted-foreground hover:text-foreground transition-colors">
+              Show all {data.total}
+            </button>
+            <span className="text-[11px] text-muted-foreground">
+              showing {rows.length} of {data.total}
+            </span>
+          </div>
         )}
       </div>
 

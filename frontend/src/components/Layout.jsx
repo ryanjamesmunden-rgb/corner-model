@@ -2,7 +2,7 @@ import { useState, useEffect } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import MobileNav from "@/components/MobileNav";
 import { CornerDownRight, LayoutDashboard, Radar, Flame, Zap, Star, Sparkles, Receipt, Trophy,
-         TrendingUp } from "lucide-react";
+         TrendingUp, Globe } from "lucide-react";
 import { LeagueContext } from "@/context/LeagueContext";
 import ExportMenu from "@/components/ExportMenu";
 import { api } from "@/lib/api";
@@ -51,6 +51,7 @@ export default function Layout({ children }) {
   };
 
   const nav = [
+    { to: "/", label: "Fixtures", icon: Globe },
     { to: "/scanner", label: "Value Finder", icon: Radar },
     { to: "/quick-scan", label: "Quick Scan", icon: Zap },
     { to: "/dashboard", label: "Leagues", icon: LayoutDashboard },
@@ -89,7 +90,7 @@ export default function Layout({ children }) {
             {/* SHOWN ON THE PHONE NOW, because the nav no longer is: without it the
                 header opened on an anonymous row of controls with nothing saying where
                 you were. */}
-            <Link to="/scanner" className="flex items-center gap-2 shrink-0">
+            <Link to="/" className="flex items-center gap-2 shrink-0">
               <div className="h-8 w-8 rounded-md bg-primary flex items-center justify-center">
                 <CornerDownRight className="h-4 w-4 text-black" strokeWidth={2.5} />
               </div>

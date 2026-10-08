@@ -9,6 +9,7 @@ import StarButton from "@/components/StarButton";
 import ShareButtons from "@/components/ShareButtons";
 import PostPick from "@/components/PostPick";
 import { fixtureStreakShare, mismatchShare } from "@/lib/shareText";
+import { fixtureMatchup, hasMatchup } from "@/lib/shotMatchup";
 import StoryButton from "@/components/StoryButton";
 import { renderFormStory, renderMismatchStory } from "@/lib/storyImage";
 import { canRecord, extFor, recordStoryVideo } from "@/lib/storyVideo";
@@ -331,6 +332,12 @@ export default function FixtureDetail() {
           apart. */}
       <RecordUnderForecast fixture={fixture} model={model} homeTeam={home_team}
                            awayTeam={away_team} leagueName={data.league_name} />
+
+      {/* AND WHO THEY ARE PLAYING. "They have done it in 8 of their last 10" and "this
+          opponent is the kind that lets it happen" are consecutive questions, so the
+          matchup sits directly under the record rather than down with the per-team
+          cards, where reading it meant scrolling between two of them. */}
+      <ShotMatchup fixture={fixture} homeTeam={home_team} awayTeam={away_team} />
 
       {/* Who is playing, in words. */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-3 sm:gap-4">
@@ -1274,6 +1281,93 @@ function WhyItHit({ games, line, highlight }) {
         What was different about those games — not a reason to expect the next one.
       </p>
     </div>
+  );
+}
+
+/**
+ * The shot matchup: what one side takes against what the other allows.
+ *
+ * WHY IT IS ITS OWN PANEL. Both numbers were already on the page after the shot block
+ * started drawing conceded, but they were on two different cards — so reading the matchup
+ * meant scrolling between them and holding four figures in your head. "A side that has
+ * shot 20+ times a game for four on the trot" is only a bet when you know what the
+ * opponent allows, and that comparison should not be homework.
+ *
+ * NO EXPECTED NUMBER, deliberately. Averaging the two columns would be a new figure with
+ * nothing behind it, and the model does not price shots that way. Two measured averages,
+ * side by side.
+ *
+ * The pairing itself lives in lib/shotMatchup.js, because a figure labelled with one
+ * team's name while belonging to the other looks exactly like a figure that is right.
+ */
+function ShotMatchup({ fixture, homeTeam, awayTeam }) {
+  const [overall, setOverall] = useState(false);
+  const blocks = fixtureMatchup({
+    home: homeTeam, away: awayTeam,
+    homeName: fixture.home_name, awayName: fixture.away_name, overall,
+  });
+  if (!hasMatchup(blocks)) return null;
+  const venueLabel = overall ? "overall" : "at the venue";
+
+  return (
+    <section className="bg-card border border-border rounded-lg overflow-hidden"
+             data-testid="shot-matchup">
+      <div className="px-4 py-3 border-b border-border flex items-center gap-2 flex-wrap">
+        <Swords className="h-4 w-4 text-primary" />
+        <h3 className="font-head font-semibold text-sm">Shot matchup</h3>
+        <span className="text-[11px] text-muted-foreground">what one takes · what the other allows</span>
+        <div className="ml-auto flex rounded-md bg-secondary p-0.5">
+          {[[false, "Venue"], [true, "Overall"]].map(([v, label]) => (
+            <button key={String(v)} data-testid={`sm-split-${v ? "overall" : "venue"}`}
+              onClick={() => setOverall(v)}
+              className={`text-[11px] px-2 py-1 rounded transition-colors ${
+                overall === v ? "bg-primary text-primary-foreground font-medium"
+                              : "text-muted-foreground"}`}>
+              {label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 lg:grid-cols-2 divide-y lg:divide-y-0 lg:divide-x divide-border">
+        {blocks.map((b) => (
+          <div key={b.side} className="px-4 py-3" data-testid={`sm-${b.side}`}>
+            <div className="text-[10px] uppercase tracking-wider text-muted-foreground mb-2.5">
+              <span className="text-foreground font-semibold">{b.team}</span> attacking
+              {" · "}{b.opponent} defending {venueLabel}
+            </div>
+            <div className="space-y-2">
+              {b.rows.map((r) => (
+                <div key={r.key} className="flex items-center gap-2">
+                  <span className="text-xs text-muted-foreground w-[74px] shrink-0">{r.label}</span>
+                  <span className="font-mono-data text-base font-semibold text-foreground w-[52px] text-right">
+                    {r.takes != null ? r.takes.toFixed(1) : "—"}
+                  </span>
+                  <span className="text-[10px] text-muted-foreground">taken</span>
+                  <span className="text-muted-foreground text-xs px-1">vs</span>
+                  <span className="font-mono-data text-base font-semibold text-foreground w-[52px] text-right">
+                    {r.allows != null ? r.allows.toFixed(1) : "—"}
+                  </span>
+                  <span className="text-[10px] text-muted-foreground">allowed</span>
+                  {/* AN AVERAGE OVER THREE GAMES IS NOT THE SAME EVIDENCE as one over
+                      twelve, and a pairing hides that twice over — once per side. */}
+                  {r.paired && r.thin && (
+                    <span className="ml-auto text-[10px] text-amber-400 font-mono-data"
+                          title={`Covered in ${r.takesCover} and ${r.allowsCover} games`}>
+                      {Math.min(r.takesCover, r.allowsCover)}g
+                    </span>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+        ))}
+      </div>
+      <div className="px-4 py-2 border-t border-border text-[10px] text-muted-foreground">
+        Averages from the games that carried the stat. No expected figure is computed —
+        these are two measured numbers, not a forecast.
+      </div>
+    </section>
   );
 }
 

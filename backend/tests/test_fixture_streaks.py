@@ -284,3 +284,81 @@ def test_the_card_meets_each_side_with_the_defence_it_actually_faces():
     assert card["home"]["opp_conceded"]["hits"]["6"] == 6     # the away leak, not the home tightness
     assert card["home"]["opponent"] == "A"
     assert card["away"]["team"] == "A" and card["away"]["venue"] == "away"
+
+
+# --- the overall run, beside the venue one ------------------------------------------
+#
+# The panel showed the VENUE run only. For most of a season exactly one of the two is
+# worth anything and which one changes: in August a venue split is three games and the
+# overall run is the only one long enough to mean anything; by April a side can be on a
+# long home run that says nothing about its form generally. Showing one and calling it
+# "the streak" picks the wrong half about half the time.
+
+from server import _venue_and_overall  # noqa: E402
+
+# Six league games, three at each venue — the shape that prompted this. The venue split
+# is too short to say much; across both it is a run of six.
+EARLY = team("Luton", [
+    m(True, 7, 3, "2026-08-01"),
+    m(False, 8, 4, "2026-08-05"),
+    m(True, 6, 2, "2026-08-10"),
+    m(False, 9, 5, "2026-08-15"),
+    m(True, 7, 4, "2026-08-20"),
+    m(False, 6, 3, "2026-08-25"),
+])
+
+
+def test_the_overall_run_is_on_the_fixture_now():
+    rows = fixture_streaks(EARLY, team("Other", []), "Luton", "Other")
+    venues = {r["venue"] for r in rows if r["team"] == "Luton"}
+    assert "overall" in venues, "the overall run never reaches the fixture panel"
+
+
+def test_and_it_is_longer_than_the_venue_one_when_the_split_is_short():
+    rows = [r for r in fixture_streaks(EARLY, team("Other", []), "Luton", "Other")
+            if r["team"] == "Luton" and r["subject"] == "team" and r["direction"] == "over"]
+    by_venue = {r["venue"]: r for r in rows}
+    assert by_venue["overall"]["run"] == 6
+    assert by_venue["home"]["run"] == 3
+
+
+def test_every_row_still_says_which_pool_it_came_from():
+    """The chart looks identical either way — `venue` is the only thing distinguishing
+    '6 in a row' from '6 in a row at home'."""
+    rows = fixture_streaks(EARLY, team("Other", []), "Luton", "Other")
+    assert all(r.get("venue") in ("home", "away", "overall") for r in rows)
+
+
+class TestASubsetIsNotASecondFinding:
+    """The overall pool CONTAINS the venue pool, so the two runs are very often the same
+    games. Printed twice they read as two independent findings on a panel whose job is to
+    say what is running into the fixture."""
+
+    def test_the_same_line_and_no_longer_is_dropped(self):
+        venue = {"line": 6, "run": 4, "venue": "home"}
+        same = {"line": 6, "run": 4, "venue": "overall"}
+        assert _venue_and_overall(venue, same) == [venue]
+
+    def test_a_longer_run_is_kept(self):
+        venue = {"line": 6, "run": 4, "venue": "home"}
+        longer = {"line": 6, "run": 9, "venue": "overall"}
+        assert _venue_and_overall(venue, longer) == [venue, longer]
+
+    def test_a_more_demanding_line_is_kept(self):
+        venue = {"line": 4, "run": 5, "venue": "home"}
+        higher = {"line": 7, "run": 5, "venue": "overall"}
+        assert _venue_and_overall(venue, higher) == [venue, higher]
+
+    def test_the_venue_row_survives_even_when_overall_is_bigger(self):
+        # It is the pool the model prices this fixture against, and "9 in a row at home"
+        # is the sentence the reader came for.
+        venue = {"line": 5, "run": 3, "venue": "home"}
+        bigger = {"line": 5, "run": 11, "venue": "overall"}
+        assert _venue_and_overall(venue, bigger)[0] == venue
+
+    def test_overall_alone_when_the_venue_split_has_no_run(self):
+        over = {"line": 5, "run": 6, "venue": "overall"}
+        assert _venue_and_overall(None, over) == [over]
+
+    def test_and_nothing_at_all_is_fine(self):
+        assert _venue_and_overall(None, None) == []

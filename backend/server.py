@@ -4565,6 +4565,32 @@ BOARD_MIN_RUN = 3                  # a streak must be a run; 2 is merely the flo
 # games it came from. The SHARE still cuts at five, in the share builder, so a post is
 # unaffected — it is one payload read by two consumers with different standards, and the
 # stricter one belongs where the reader cannot answer back.
+def _venue_and_overall(venue_row: Optional[dict],
+                       overall_row: Optional[dict]) -> List[dict]:
+    """Both runs, unless the overall one says nothing the venue one did not.
+
+    A SUBSET IS NOT A SECOND PIECE OF EVIDENCE. The overall pool CONTAINS the venue pool,
+    so the two runs very often describe the same games — a side whose last four were all
+    at home has one run, and printing it twice would read as two independent findings on
+    a panel whose whole job is to say what is already running into the fixture.
+
+    So the overall row is dropped when it is strictly no better: the same line and no
+    longer. Anything else is kept — a longer run, or the same length at a more demanding
+    line, is a different claim and worth its own row.
+
+    The venue row is never dropped for the opposite reason: it is the pool the model
+    prices this fixture against, and "9 in a row at home" is the sentence the reader came
+    for even when the overall number happens to be bigger.
+    """
+    out = [r for r in (venue_row,) if r]
+    if not overall_row:
+        return out
+    if venue_row and (overall_row["line"] == venue_row["line"]
+                      and overall_row["run"] <= venue_row["run"]):
+        return out
+    return out + [overall_row]
+
+
 def fixture_streaks(home: dict, away: dict, home_name: str, away_name: str,
                     min_run: int = BOARD_MIN_RUN) -> List[dict]:
     """Every live run both sides bring into this fixture, best first.
@@ -4582,12 +4608,23 @@ def fixture_streaks(home: dict, away: dict, home_name: str, away_name: str,
     # CONCEDED CARRIES THE OPPONENT'S NAME, because the run belongs to one side and the
     # bet belongs to the other. Every other subject reads "<team> <line>"; this one has to
     # read "<opponent> <line>, against <team>", so the opponent travels with the row.
-    for team, name, venue, opp_name in ((home, home_name, "home", away_name),
-                                        (away, away_name, "away", home_name)):
+    for team, name, side, opp_name in ((home, home_name, "home", away_name),
+                                       (away, away_name, "away", home_name)):
         for subject in ("team", "match", "conceded"):
             for direction in ("over", "under"):
-                r = live_streak(team, venue, subject, direction, min_len=min_run)
-                if r:
+                # THE VENUE RUN AND THE OVERALL RUN, because for most of a season only one
+                # of them is worth anything and which one changes. In August a venue split
+                # is three games and the overall run is the only one long enough to mean
+                # anything; by April a side can be on a long home run that says nothing
+                # about its form in general. Showing one and calling it "the streak" picks
+                # the wrong half roughly half the time, and the panel gave no way to tell
+                # which half you were looking at.
+                #
+                # Every row already carries `venue` from live_streak, so a reader can see
+                # which it is rather than having to know.
+                for r in _venue_and_overall(
+                        live_streak(team, side, subject, direction, min_len=min_run),
+                        live_streak(team, "overall", subject, direction, min_len=min_run)):
                     rows.append({**r, "team": name,
                                  **({"opponent": opp_name} if subject == "conceded" else {})})
     # Longest run first; the reader only wants the top few and they should be the best few.

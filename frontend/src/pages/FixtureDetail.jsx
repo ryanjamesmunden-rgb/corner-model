@@ -11,7 +11,7 @@ import PostPick from "@/components/PostPick";
 import { fixtureStreakShare, mismatchShare } from "@/lib/shareText";
 import { fixtureMatchup, hasMatchup } from "@/lib/shotMatchup";
 import StoryButton from "@/components/StoryButton";
-import { renderFormStory, renderMismatchStory } from "@/lib/storyImage";
+import { renderFormStory, renderFormWide, renderMismatchStory } from "@/lib/storyImage";
 import { canRecord, extFor, recordStoryVideo } from "@/lib/storyVideo";
 import { FORM_GAMES, formLabel, formRun } from "@/lib/formRun";
 import { anglePanel } from "@/lib/angleFactors";
@@ -1455,6 +1455,12 @@ function Consistency({ games, highlight, teamName, split, windowLabel, fixture, 
   const [subjectKey, setSubjectKey] = useState("won");
   const [line, setLine] = useState(null);
   const [hover, setHover] = useState(null);
+  // WHICH SHAPE THE POST IS. Story is the default because that is where these actually get
+  // posted; wide exists because X pillarboxes a portrait file — it plays as a narrow strip
+  // with black columns either side and the fraction ends up a third of the size it was
+  // drawn at. One control for both buttons: the still and the clip of the same record
+  // should never come out in different shapes.
+  const [wide, setWide] = useState(false);
 
   const rows = consistencyRows(games);
   // ONLY THE SUBJECTS THAT HAVE DATA GET A BUTTON. Shots are the case: the provider covers
@@ -1503,6 +1509,11 @@ function Consistency({ games, highlight, teamName, split, windowLabel, fixture, 
     // picture travels without the panel it was made from.
     staleNote: stale,
     prior: bars.map((b) => b.prior),
+    // THE RICHER PER-GAME ROWS, for the wide card's tile strip. The story card draws bars
+    // and needs only the values; the wide one names the opponent under each game, which is
+    // the half of "9 from 10" that says anything about WHO.
+    games: bars.map((b) => ({ value: b.value, opponent: b.opponent,
+                              home: b.home, prior: b.prior })),
   };
   const shown = hover != null ? bars.find((b) => b.key === hover) : null;
   const everyGame = at.hits === at.n;
@@ -1516,24 +1527,40 @@ function Consistency({ games, highlight, teamName, split, windowLabel, fixture, 
             chart at the top of the page offers, over the opposite content. Both render from
             the LINE AND WINDOW currently selected, so the picture is the chart the reader is
             looking at rather than a second opinion about it. */}
+        {/* STORY OR WIDE, and the key below carries it so a shape change redraws rather
+            than handing back the cached file from the other shape. */}
+        <div className="flex rounded-md bg-secondary p-0.5" data-testid={`form-shape-${highlight}`}>
+          {[[false, "Story"], [true, "Wide"]].map(([v, label]) => (
+            <button key={String(v)} onClick={() => setWide(v)}
+              data-testid={`form-shape-${highlight}-${v ? "wide" : "story"}`}
+              title={v ? "16:9 for X — a portrait file gets pillarboxed there"
+                       : "9:16 for an Instagram or WhatsApp story"}
+              className={`text-[11px] px-2 py-1 rounded transition-colors ${
+                wide === v ? "bg-primary text-primary-foreground font-medium"
+                           : "text-muted-foreground"}`}>
+              {label}
+            </button>
+          ))}
+        </div>
         <StoryButton
-          days={[{ key: `form-${highlight}-${active}-${bars.length}` }]}
+          days={[{ key: `form-${highlight}-${active}-${bars.length}-${wide ? "wide" : "story"}` }]}
           testId={`form-story-${highlight}`}
           label="Image"
           title="A picture of this record for Telegram — no price on it"
-          render={(canvas) => renderFormStory(canvas, storyArgs)}
+          render={(canvas) => (wide ? renderFormWide : renderFormStory)(canvas, storyArgs)}
         />
         {canRecord() && (
           <StoryButton
-            days={[{ key: `form-${highlight}-${active}-${bars.length}` }]}
+            days={[{ key: `form-${highlight}-${active}-${bars.length}-${wide ? "wide" : "story"}` }]}
             testId={`form-video-${highlight}`}
             icon={Video}
             label="Video"
             title="A 5-second video — the bars draw in and the count climbs"
             makeFile={async (day) => {
               const canvas = document.createElement("canvas");
+              const draw = wide ? renderFormWide : renderFormStory;
               const { blob, mime, type, ext } = await recordStoryVideo(canvas, (p) =>
-                renderFormStory(canvas, { ...storyArgs, progress: p }));
+                draw(canvas, { ...storyArgs, progress: p }));
               // `type`, not `mime`: a file typed "video/mp4;codecs=avc1…" is refused by the
               // Android share sheet. Same reason the fixture story does this.
               const container = extFor(mime);

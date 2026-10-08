@@ -3529,6 +3529,260 @@ const drawFormBars = (ctx, values, { x, y, w, h, line, progress = 1, tone = C.pr
 };
 
 /**
+ * The per-game strip: one tile a game, with what it landed on and who it was against.
+ *
+ * THE BARS ARE THE RIGHT PICTURE FOR A TALL IMAGE and the wrong one for a wide strip —
+ * twenty bars across 1800px are twenty slivers, and the thing a reader wants off this card
+ * is not the shape of the distribution but WHICH games, against WHOM. So the wide card
+ * tiles instead: the count, the opponent, and home or away, colour-coded against the line.
+ *
+ * HIT AND MISS ARE NOT COLOUR ALONE. Every tile carries its number, so the card still
+ * reads correctly in greyscale and to anyone who cannot separate the two hues.
+ *
+ * A PRIOR-SEASON GAME IS DRAWN HOLLOW, the same signal the bars use, because a 9/10 with
+ * two of them from last April is the overclaim the whole panel exists to stop.
+ */
+const drawGameTiles = (ctx, games, { x, y, w, h, line, progress = 1 }) => {
+  const n = games.length;
+  if (!n) return;
+  const gap = n > 14 ? 10 : 14;
+  const tw = (w - gap * (n - 1)) / n;
+  games.forEach((g, i) => {
+    // Left to right, in the order they were played, arriving one at a time.
+    const at = progress >= 1 ? 1 : clamp01((progress * n) - i);
+    if (at <= 0) return;
+    const hit = g.value >= line;
+    const tone = hit ? C.solid : "#E0564F";
+    const tx = x + i * (tw + gap);
+    ctx.globalAlpha = at * (g.prior ? 0.55 : 1);
+
+    ctx.fillStyle = `${tone}1F`;
+    roundRect(ctx, tx, y, tw, h, 14);
+    ctx.fill();
+    ctx.strokeStyle = `${tone}66`;
+    ctx.lineWidth = 2;
+    if (g.prior) ctx.setLineDash([6, 5]);
+    roundRect(ctx, tx, y, tw, h, 14);
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    ctx.textAlign = "center";
+    const cx = tx + tw / 2;
+    // HOME OR AWAY, because "4 corners" against the same side reads differently depending
+    // on where it was won, and the window may be a mixed pool now.
+    ctx.fillStyle = C.muted;
+    ctx.font = `500 20px ${FONT_DATA}`;
+    ctx.fillText(g.home ? "H" : "A", cx, y + 32);
+
+    ctx.fillStyle = tone;
+    ctx.font = `600 ${tw > 72 ? 54 : 42}px ${FONT_DATA}`;
+    ctx.fillText(String(g.value), cx, y + h * 0.46);
+
+    if (g.opponent) {
+      ctx.fillStyle = C.muted;
+      ctx.font = `500 19px ${FONT_BODY}`;
+      ctx.fillText(abbrev(g.opponent), cx, y + h - 28);
+    }
+    ctx.globalAlpha = 1;
+    ctx.textAlign = "left";
+  });
+};
+
+/** "Kristiansund BK" -> "KRI". Three letters is what fits under a tile and is what the
+ *  reference layout this was drawn from uses. */
+const abbrev = (name = "") =>
+  String(name).replace(/[^A-Za-z0-9 ]/g, "").trim().slice(0, 3).toUpperCase() || "—";
+
+/** Hit rate over the last N of a window, or null when the window is shorter than N. */
+export const recentRate = (values = [], line = 0, n = 0) => {
+  if (!Array.isArray(values) || values.length < n || n <= 0) return null;
+  const last = values.slice(-n);
+  const hits = last.filter((v) => v >= line).length;
+  return { n, hits, pct: Math.round((hits / n) * 100) };
+};
+
+/**
+ * The same record, 16:9, for X.
+ *
+ * WHY A SECOND COMPOSITION RATHER THAN A SCALE. renderResultWide already wrote this
+ * reasoning for the result card and it holds here unchanged: posting the portrait file to
+ * X pillarboxes it — the image sits as a narrow strip down the middle with black columns
+ * either side, and the fraction that is the entire point ends up about a third of the size
+ * it was drawn at. Cropping is worse, because the count and the games are at opposite ends
+ * of a tall image and any 16:9 window loses one of them.
+ *
+ * SO THE ELEMENTS ARE RE-PLACED, NOT RESIZED, and the strip across the bottom replaces the
+ * bar chart rather than squashing it — see drawGameTiles for why bars are the wrong
+ * picture at this shape.
+ *
+ * ONE SET OF ARGUMENTS WITH THE STORY VERSION, deliberately. A caller picks a shape, not a
+ * different picture, and the two cannot come to disagree about which games they drew.
+ * `progress` behaves identically, so the video works in either shape.
+ */
+export const renderFormWide = (canvas, {
+  teamName = "", values = [], games = null, line = 0, hits = 0, n = 0,
+  claim = "", windowLabel = "", venueLabel = "", opponentLabel = "",
+  staleNote = "", prior = [],
+  leagueId = "", leagueName = "", kickoff = "",
+  cta = "Full lines on the site", brand = "CORNER MODEL", progress = 1,
+} = {}) => {
+  const P = clamp01(progress);
+  const done = P >= 1;
+  canvas.width = WIDE_W;
+  canvas.height = WIDE_H;
+  const ctx = canvas.getContext("2d");
+  const M = 72;
+  const W = WIDE_W - M * 2;
+  // The caller passes the richer per-game rows where it has them; `values` alone still
+  // draws, so an older caller does not break — it simply loses the opponents.
+  const tiles = (games && games.length ? games : values.map((v, i) => ({
+    value: v, opponent: "", home: true, prior: Boolean(prior[i]),
+  })));
+
+  ctx.fillStyle = C.bg;
+  ctx.fillRect(0, 0, WIDE_W, WIDE_H);
+  const glow = ctx.createRadialGradient(360, 260, 60, 360, 260, 1000);
+  glow.addColorStop(0, "rgba(20,219,245,0.17)");
+  glow.addColorStop(1, "rgba(20,219,245,0)");
+  ctx.fillStyle = glow;
+  ctx.fillRect(0, 0, WIDE_W, WIDE_H);
+
+  ctx.textBaseline = "middle";
+  const useFlags = flagsRender(ctx);
+
+  // THE FIXTURE BAR. Who, where and when, on one strip across the top — the card is read
+  // in a timeline beside other people's, so it has to say what game it is immediately.
+  faded(ctx, done ? 1 : seg(P, 0, 0.07), () => {
+    ctx.fillStyle = C.card;
+    roundRect(ctx, M, 54, W, 92, 18);
+    ctx.fill();
+    ctx.fillStyle = C.text;
+    ctx.font = `600 36px ${FONT_HEAD}`;
+    const nameW = ctx.measureText(teamName).width;
+    ctx.fillText(teamName, M + 30, 100);
+    const where = [
+      (useFlags ? flagFor(leagueId) : null) || countryCodeFor(leagueId),
+      leagueName, opponentLabel, kickoff,
+    ].filter(Boolean).join("  ·  ");
+    if (where) {
+      ctx.fillStyle = C.muted;
+      ctx.font = `500 25px ${FONT_BODY}`;
+      ctx.fillText(where, M + 30 + nameW + 28, 101);
+    }
+    ctx.fillStyle = C.primary;
+    ctx.font = `700 22px ${FONT_HEAD}`;
+    ctx.letterSpacing = "5px";
+    ctx.textAlign = "right";
+    ctx.fillText(brand, WIDE_W - M - 30, 101);
+    ctx.letterSpacing = "0px";
+    ctx.textAlign = "left";
+  });
+
+  // THE NUMBER, counting up, with the claim under it.
+  const count = done ? 1 : seg(P, 0.06, 0.55);
+  faded(ctx, done ? 1 : seg(P, 0.04, 0.13), () => {
+    ctx.fillStyle = C.primary;
+    ctx.font = `600 128px ${FONT_DATA}`;
+    ctx.fillText(`${Math.round(hits * count)}/${n}`, M, 268);
+    ctx.fillStyle = C.text;
+    ctx.font = fitFont(ctx, claim || `${line}+ corners`, { size: 46, max: 980, family: FONT_HEAD });
+    ctx.fillText(claim || `${line}+ corners`, M, 362);
+    const sub = [windowLabel, venueLabel].filter(Boolean).join("  ·  ");
+    if (sub) {
+      ctx.fillStyle = C.muted;
+      ctx.font = `500 27px ${FONT_BODY}`;
+      ctx.fillText(sub, M, 412);
+    }
+  });
+
+  // RECENCY, AS ITS OWN COLUMN. A 9/10 built on a run that ended four games ago is a
+  // different proposition from one still going, and the headline fraction cannot show the
+  // difference. Only the windows the pool can actually fill are drawn — an "L20" over
+  // twelve games would be a label making a claim the data cannot.
+  faded(ctx, done ? 1 : seg(P, 0.55, 0.72), () => {
+    // STRICTLY SHORTER THAN THE WINDOW. Over ten games a "LAST 10" pill restates the
+    // headline fraction in a second typeface — two numbers that cannot disagree, taking up
+    // the space of one that could have said something.
+    const pills = [5, 10, 20]
+      .filter((k) => k < values.length)
+      .map((k) => recentRate(values, line, k))
+      .filter(Boolean);
+    const pw = 196;
+    const gap = 18;
+    let px = WIDE_W - M - pills.length * pw - (pills.length - 1) * gap;
+    pills.forEach((r) => {
+      ctx.fillStyle = C.card;
+      roundRect(ctx, px, 196, pw, 118, 16);
+      ctx.fill();
+      ctx.strokeStyle = C.border;
+      ctx.lineWidth = 2;
+      roundRect(ctx, px, 196, pw, 118, 16);
+      ctx.stroke();
+      ctx.textAlign = "center";
+      ctx.fillStyle = C.muted;
+      ctx.font = `500 20px ${FONT_BODY}`;
+      ctx.letterSpacing = "2px";
+      ctx.fillText(`LAST ${r.n}`, px + pw / 2, 226);
+      ctx.letterSpacing = "0px";
+      ctx.fillStyle = r.pct >= 70 ? C.solid : C.text;
+      ctx.font = `600 42px ${FONT_DATA}`;
+      ctx.fillText(`${r.pct}%`, px + pw / 2, 268);
+      ctx.fillStyle = C.muted;
+      ctx.font = `500 22px ${FONT_DATA}`;
+      ctx.fillText(`${r.hits}/${r.n}`, px + pw / 2, 300);
+      ctx.textAlign = "left";
+      px += pw + gap;
+    });
+  });
+
+  drawGameTiles(ctx, tiles, {
+    x: M, y: 474, w: W, h: 268, line,
+    progress: done ? 1 : clamp01((P - 0.07) / 0.52),
+  });
+
+  faded(ctx, done ? 1 : seg(P, 0.72, 0.9), () => {
+    ctx.fillStyle = C.muted;
+    ctx.font = `500 28px ${FONT_BODY}`;
+    const miss = n - hits;
+    ctx.fillText(
+      miss ? `${hits} over the line, ${miss} under it.` : `Every one of the last ${n}.`,
+      M, 800);
+    // Both caveats travel with the picture, for the same reason they do on the story: an
+    // image is shared without the panel it was made from.
+    let y = 848;
+    if (staleNote) {
+      ctx.fillStyle = "#F99B2F";
+      ctx.font = `600 25px ${FONT_BODY}`;
+      const lines = wrapText(ctx, `${staleNote}. Hollow tiles are those games.`, 1060);
+      lines.forEach((ln, i) => ctx.fillText(ln, M, y + i * 34));
+      y += lines.length * 34 + 10;
+    }
+    ctx.fillStyle = C.muted;
+    ctx.font = `500 26px ${FONT_BODY}`;
+    ctx.fillText("What already happened — not a tip.", M, y);
+  });
+
+  faded(ctx, done ? 1 : seg(P, 0.8, 0.95), () => {
+    const cw = 520;
+    const cx = WIDE_W - M - cw;
+    const cy = WIDE_H - 184;
+    ctx.fillStyle = C.primary;
+    roundRect(ctx, cx, cy, cw, 92, 46);
+    ctx.fill();
+    ctx.fillStyle = "#00181C";
+    ctx.font = fitFont(ctx, cta, { size: 34, max: cw - 100, family: FONT_HEAD });
+    ctx.textAlign = "center";
+    ctx.fillText(cta, cx + cw / 2, cy + 48);
+    ctx.fillStyle = C.muted;
+    ctx.font = `500 24px ${FONT_BODY}`;
+    ctx.fillText("corner-model", cx + cw / 2, cy + 134);
+    ctx.textAlign = "left";
+  });
+
+  return canvas;
+};
+
+/**
  * A team's last N games against one line, as a Story — still or animated.
  *
  * `progress = 1` is the finished frame, which is what the PNG wants, so the still and the

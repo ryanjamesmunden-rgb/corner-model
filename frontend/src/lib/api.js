@@ -70,6 +70,10 @@ export const api = {
   addFavouriteTeam: (teamId) => axios.post(`${API}/favourites/teams/${teamId}`).then((r) => r.data),
   removeFavouriteTeam: (teamId) => axios.delete(`${API}/favourites/teams/${teamId}`).then((r) => r.data),
   leagues: () => axios.get(`${API}/leagues`).then((r) => r.data),
+  // The front door: countries, their competitions and the games coming up, in one tree.
+  // One request because the page expands in place — a reader comparing two countries
+  // should not pay a round trip per country.
+  browse: (params) => axios.get(`${API}/browse`, { params }).then((r) => r.data),
   teams: (id, split, window) => axios.get(`${API}/leagues/${id}/teams`, { params: { split, window } }).then((r) => r.data),
   fixtures: (id) => axios.get(`${API}/leagues/${id}/fixtures`).then((r) => r.data),
   fixture: (id) => axios.get(`${API}/fixtures/${id}`).then((r) => r.data),

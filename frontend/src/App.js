@@ -8,6 +8,7 @@ import { AuthProvider } from "@/context/AuthContext";
 
 // Each route is its own chunk: landing on the Scanner shouldn't download and parse
 // Streaks and the fixture detail page before it can paint.
+const Browse = lazy(() => import("@/pages/Browse"));
 const Dashboard = lazy(() => import("@/pages/Dashboard"));
 const Scanner = lazy(() => import("@/pages/Scanner"));
 const Streaks = lazy(() => import("@/pages/Streaks"));
@@ -44,6 +45,10 @@ function AppRouter() {
     // themselves too, so a broken board loses its own panel rather than its page.
     <ErrorBoundary label="This page">
     <Routes>
+      {/* THE LANDING PAGE. It was /scanner, which answers "what should I bet" — a good
+          question, and not the one somebody arriving has. The index comes first now and
+          Value Finder keeps its own page. */}
+      <Route path="/" element={page(Browse)} />
       <Route path="/dashboard" element={page(Dashboard)} />
       <Route path="/scanner" element={page(Scanner)} />
       <Route path="/quick-scan" element={page(QuickScan)} />
@@ -65,7 +70,7 @@ function AppRouter() {
       <Route path="/faq" element={
         <Suspense fallback={<RouteFallback />}><FaqPage /></Suspense>
       } />
-      <Route path="*" element={<Navigate to="/scanner" replace />} />
+      <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
     </ErrorBoundary>
   );

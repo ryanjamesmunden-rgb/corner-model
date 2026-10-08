@@ -6035,6 +6035,173 @@ PROJECTION_PAGE = 200
 PROJECTION_MAX_ROWS = 2000
 
 
+# ----------------------------- Browse, by country -----------------------------
+#
+# THE FRONT DOOR. Every other board here answers "what should I bet", which assumes the
+# reader has already decided to be shown a selection. This answers the question somebody
+# arriving actually has — "what is on, and where" — by the shape football is organised in:
+# country, then competition, then games.
+#
+# ONE REQUEST FOR THE WHOLE TREE, because the page expands in place and a reader comparing
+# England with Norway should not pay a round trip per country. The games ride along rather
+# than being fetched per league: thirty-odd competitions over a week is a few hundred rows,
+# which is smaller than the fixture board this page replaces as the landing screen.
+
+# How far a team's recent corner rate has to have moved from its own season rate to count
+# as trending. Measured in corners per game, against the team's OWN average rather than the
+# league's — a side going from four to six has changed; a side that always wins six has not.
+BROWSE_TREND_MIN = 1.5
+BROWSE_TREND_WINDOW = 3
+# Below this there is no "recent" to compare against the rest: three of five games IS the
+# season, and the delta would be noise with a direction printed on it.
+BROWSE_TREND_MIN_GAMES = 6
+
+
+def _browse_streak(team: dict, league_avg: float) -> Optional[dict]:
+    """The run going into this side's next game, if it is one worth opening a game for.
+
+    STRICTER THAN THE FIXTURE PANEL, DELIBERATELY, and the two answer different questions.
+    The panel says what is running into a game you have already chosen; this decides
+    whether to put the game in front of you at all.
+
+    Left at the panel's bar the filter does nothing: OVER_LINE_FLOOR is 3, so almost every
+    side in football is on a run of "3+ corners in N straight", and "show me games with a
+    streak" would hand back the entire fixture list with a badge on it. A filter that
+    keeps everything has been turned off.
+
+    THE BAR IS THE LEAGUE'S AVERAGE, NOT THE TEAM'S, and that is the second attempt. A
+    team-relative bar looked right and let an ordinary side through: a run is reported at
+    the HIGHEST line it held, which for a low-variance side is simply its floor — so
+    "4+ in six straight" from a team that wins four or five every week cleared its own
+    average and read as a streak. It is not one; it is a description of that team.
+    Unusual has to be measured against the division, which is what makes "8+ in eight"
+    worth a reader's time and "4+ in six" not.
+    """
+    run = live_streak(team, "overall", "team", "over", min_len=PANEL_MIN_RUN)
+    if not run:
+        return None
+    return run if run["line"] >= league_avg else None
+
+
+def _trend_of(team: dict) -> Optional[str]:
+    """up / down / None — where this side's corner rate has been going lately."""
+    vals = [m["corners_for"] for m in _src(team)]
+    if len(vals) < BROWSE_TREND_MIN_GAMES:
+        return None
+    recent = vals[-BROWSE_TREND_WINDOW:]
+    delta = (sum(recent) / len(recent)) - (sum(vals) / len(vals))
+    if delta >= BROWSE_TREND_MIN:
+        return "up"
+    if delta <= -BROWSE_TREND_MIN:
+        return "down"
+    return None
+
+
+BROWSE_SHOWS = ("all", "streaks", "trends")
+
+
+@api_router.get("/browse")
+async def browse(days: int = 7, show: str = "all",
+                 user: dict = Depends(get_current_user)):
+    """Countries, their competitions, and the games coming up in each.
+
+    `show` FILTERS THE GAMES THEMSELVES, not just how they are drawn:
+
+      all      every upcoming fixture
+      streaks  only games with a live run of PANEL_MIN_RUN+ going into them
+      trends   only games where one side's corner rate has moved from its own norm
+
+    THE COUNTS FOLLOW THE FILTER. A league that reads "12 games" and opens to show two is
+    worse than one that reads two — the number is what a reader decides to open on, so it
+    has to be the number they will find.
+
+    AND EMPTY LEAGUES ARE KEPT, with a count of zero. Dropping them would reshuffle the
+    country list every time the filter changed, so the thing you were about to tap moves
+    out from under you.
+
+    THE STREAK FLAG IS STRICTER THAN THE FIXTURE PANEL and _browse_streak says why: left
+    at the panel's bar this filter would return the whole fixture list with a badge on it.
+    One subject and one direction — a team's own corners, over — because this decides
+    which game to open, not what the panel will then say about it.
+    """
+    days = max(1, min(int(days), BOARD_MAX_DAYS))
+    show = show if show in BROWSE_SHOWS else "all"
+
+    teams = await db.teams.find({}, {"_id": 0}).to_list(5000)
+    by_id = {t["team_id"]: t for t in teams}
+    leagues = {l["league_id"]: l for l in await db.leagues.find({}, {"_id": 0}).to_list(200)}
+
+    # Computed once per team rather than once per fixture: a side plays at most a couple of
+    # games in the window and the ladder walk is the expensive half.
+    # Corners won per team per game, per league — the same yardstick mismatch_angle
+    # measures a side against, so "unusual" means one thing across the site.
+    by_league = defaultdict(list)
+    for t in teams:
+        by_league[t["league_id"]] += [m["corners_for"] for m in _src(t)]
+    league_avg = {k: (sum(v) / len(v) if v else 5.0) for k, v in by_league.items()}
+
+    flags = {}
+    for t in teams:
+        avg = league_avg.get(t["league_id"], 5.0)
+        flags[t["team_id"]] = {"streak": _browse_streak(t, avg), "trend": _trend_of(t)}
+
+    now = datetime.now(timezone.utc)
+    horizon = now + timedelta(days=days)
+    out: Dict[str, dict] = {}
+    for fx in await db.fixtures.find({}, {"_id": 0}).to_list(5000):
+        try:
+            dt = datetime.fromisoformat((fx.get("date") or "").replace("Z", "+00:00"))
+        except Exception:                                        # noqa: BLE001
+            continue
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        if dt < now or dt > horizon:
+            continue
+        home, away = by_id.get(fx["home_team_id"]), by_id.get(fx["away_team_id"])
+        if not home or not away:
+            continue
+        hf, af = flags.get(home["team_id"], {}), flags.get(away["team_id"], {})
+        # The longest run going in, carrying WHOSE it is — a row on a filtered list has to
+        # say why it is there, not merely that it survived the filter.
+        runs = [{**r, "team": name} for r, name in
+                ((hf.get("streak"), home["name"]), (af.get("streak"), away["name"])) if r]
+        trends = [(home["name"], hf.get("trend")), (away["name"], af.get("trend"))]
+        trends = [{"team": n, "direction": d} for n, d in trends if d]
+        if show == "streaks" and not runs:
+            continue
+        if show == "trends" and not trends:
+            continue
+        lid = fx["league_id"]
+        lg = leagues.get(lid, {})
+        meta = LEAGUE_META.get(lid) or {}
+        country = meta.get("country") or lg.get("country") or "Other"
+        c = out.setdefault(country, {"country": country, "leagues": {}})
+        l = c["leagues"].setdefault(lid, {
+            "league_id": lid, "name": lg.get("name", lid),
+            "tier": meta.get("tier"), "is_cup": cups.is_cup(lid), "games": [],
+        })
+        l["games"].append({
+            "fixture_id": fx["fixture_id"], "date": fx["date"],
+            "home": fx["home_name"], "away": fx["away_name"],
+            "round": fx.get("round"),
+            "streak": max(runs, key=lambda r: r["run"]) if runs else None,
+            "trends": trends,
+        })
+
+    countries = []
+    for c in out.values():
+        ls = sorted(c["leagues"].values(),
+                    key=lambda l: (l["is_cup"], l["tier"] or 99, l["name"]))
+        for l in ls:
+            l["games"].sort(key=lambda g: g["date"])
+            l["count"] = len(l["games"])
+        countries.append({"country": c["country"], "leagues": ls,
+                          "count": sum(l["count"] for l in ls)})
+    countries.sort(key=lambda c: (-c["count"], c["country"]))
+    return {"days": days, "show": show,
+            "total": sum(c["count"] for c in countries), "countries": countries}
+
+
 @api_router.get("/projections")
 async def projections(days: int = 7, league_id: Optional[str] = None,
                       sort: str = "total", limit: int = PROJECTION_PAGE,

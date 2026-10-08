@@ -47,6 +47,10 @@ const KINDS = {
   bets: "renderBetsCard",
   review: "renderReviewCard",
   results: "renderResultsReel",
+  // The 16:9 cut of a team's record, for X. Reachable here so it can be rendered and read
+  // back the way every other card in this repo is, rather than being shipped on the word
+  // of a build that compiled.
+  form_wide: "renderFormWide",
 };
 // WHICH KINDS ANIMATE. The fixture story draws a curve that can grow; the results reel
 // steps through a week of picks one at a time, which is the one case where the SEQUENCE is

@@ -1959,6 +1959,19 @@ function RunningStreaks({ streaks, share }) {
               <span className={`text-sm ${r.hot ? "text-tone-streak-fg" : "text-muted-foreground"}`}>
                 — {r.run} in a row
               </span>
+              {/* WHICH POOL, ON THE LINE PEOPLE ACTUALLY READ. The fixture carries overall
+                  runs beside the venue ones now, so two rows can name the same team at the
+                  same line and differ only in where the games came from. That distinction
+                  was in the small grey detail line underneath, which on a six-row panel
+                  nobody reads six times — so the rows looked identical and the panel got
+                  worse, not better, for having more in it. */}
+              <span data-testid={`fixture-streak-venue-${r.key}`}
+                    className={`text-[10px] px-1.5 py-0.5 rounded border font-mono-data ${
+                      r.venue === "overall"
+                        ? "bg-primary/10 text-primary border-primary/30"
+                        : "bg-secondary text-muted-foreground border-border"}`}>
+                {r.venueTag}
+              </span>
             </div>
             {/* WHOSE corners, and where. "5+" alone is a team line and a match total at
                 once, and the match number is about twice the team one. */}

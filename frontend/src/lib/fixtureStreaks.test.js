@@ -221,3 +221,41 @@ describe("how short a run the panel will show", () => {
     expect(rows[0].claim).toBe("Brighton concede 5+");
   });
 });
+
+describe("which pool the run came from", () => {
+  // The panel carries overall runs beside venue ones now. `venue` used to be
+  // `s.venue === "away" ? "away" : "home"`, which did not merely lose the distinction —
+  // it asserted the wrong one, relabelling every overall run as a home run.
+  const of = (venue) => fixtureStreaks([row("Bodo/Glimt", { venue })])[0];
+
+  test("an overall run is not relabelled as a home one", () => {
+    expect(of("overall").venue).toBe("overall");
+    expect(of("overall").venueText).toBe("home and away");
+    expect(of("overall").venueTag).toBe("Overall");
+  });
+
+  test("the venues still say what they always said", () => {
+    expect(of("home").venueText).toBe("at home");
+    expect(of("away").venueText).toBe("away");
+  });
+
+  test("an unknown venue falls back rather than inventing one", () => {
+    expect(of("mars").venue).toBe("home");
+  });
+
+  test("the detail line reads properly for each", () => {
+    expect(streakDetail(of("overall"))).toContain("their own corners home and away");
+    expect(streakDetail(of("home"))).toContain("their own corners at home");
+  });
+
+  test("two rows that differ only by pool get different keys", () => {
+    // Without the venue in the key these collide: React renders duplicate keys and the
+    // rows stop being reliably distinct — the same bug as the label, in other clothes.
+    const rows = fixtureStreaks([
+      row("Bodo/Glimt", { venue: "home", run: 9 }),
+      row("Bodo/Glimt", { venue: "overall", run: 14 }),
+    ]);
+    expect(rows).toHaveLength(2);
+    expect(new Set(rows.map((r) => r.key)).size).toBe(2);
+  });
+});

@@ -329,36 +329,75 @@ def test_every_row_still_says_which_pool_it_came_from():
     assert all(r.get("venue") in ("home", "away", "overall") for r in rows)
 
 
-class TestASubsetIsNotASecondFinding:
-    """The overall pool CONTAINS the venue pool, so the two runs are very often the same
-    games. Printed twice they read as two independent findings on a panel whose job is to
-    say what is running into the fixture."""
+class TestOnlyATrueDuplicateIsDropped:
+    """THE FIRST VERSION OF THIS RULE DROPPED FAR TOO MUCH. It removed the overall row
+    whenever it was "strictly no better" — same line, no longer — which was written when
+    the two rows were indistinguishable on screen. They carry a Home/Away/Overall badge
+    now, so the rule was only hiding things: a side 9-in-a-row at home whose overall run
+    is 4 showed the home row alone, and the overall question had no row at all.
 
-    def test_the_same_line_and_no_longer_is_dropped(self):
-        venue = {"line": 6, "run": 4, "venue": "home"}
-        same = {"line": 6, "run": 4, "venue": "overall"}
+    What is dropped now is an actual duplicate, identified by the POOL rather than the
+    claim: equal `games` means the venue pool is the whole history, so the two rows are
+    the same matches counted twice."""
+
+    def test_the_same_pool_is_one_finding_not_two(self):
+        # A side that has only played at home so far: both runs read the same games.
+        venue = {"line": 6, "run": 4, "venue": "home", "games": 4}
+        same = {"line": 6, "run": 4, "venue": "overall", "games": 4}
         assert _venue_and_overall(venue, same) == [venue]
 
+    def test_a_shorter_overall_run_is_KEPT_now(self):
+        # The case the old rule hid. 9 at home, 4 across everything: those are two
+        # different facts and the second is the one a reader cannot infer.
+        venue = {"line": 6, "run": 9, "venue": "home", "games": 9}
+        shorter = {"line": 6, "run": 4, "venue": "overall", "games": 18}
+        assert _venue_and_overall(venue, shorter) == [venue, shorter]
+
     def test_a_longer_run_is_kept(self):
-        venue = {"line": 6, "run": 4, "venue": "home"}
-        longer = {"line": 6, "run": 9, "venue": "overall"}
+        venue = {"line": 6, "run": 4, "venue": "home", "games": 6}
+        longer = {"line": 6, "run": 9, "venue": "overall", "games": 12}
         assert _venue_and_overall(venue, longer) == [venue, longer]
 
     def test_a_more_demanding_line_is_kept(self):
-        venue = {"line": 4, "run": 5, "venue": "home"}
-        higher = {"line": 7, "run": 5, "venue": "overall"}
+        venue = {"line": 4, "run": 5, "venue": "home", "games": 7}
+        higher = {"line": 7, "run": 5, "venue": "overall", "games": 14}
         assert _venue_and_overall(venue, higher) == [venue, higher]
 
     def test_the_venue_row_survives_even_when_overall_is_bigger(self):
         # It is the pool the model prices this fixture against, and "9 in a row at home"
         # is the sentence the reader came for.
-        venue = {"line": 5, "run": 3, "venue": "home"}
-        bigger = {"line": 5, "run": 11, "venue": "overall"}
+        venue = {"line": 5, "run": 3, "venue": "home", "games": 5}
+        bigger = {"line": 5, "run": 11, "venue": "overall", "games": 11}
         assert _venue_and_overall(venue, bigger)[0] == venue
 
     def test_overall_alone_when_the_venue_split_has_no_run(self):
-        over = {"line": 5, "run": 6, "venue": "overall"}
+        over = {"line": 5, "run": 6, "venue": "overall", "games": 12}
         assert _venue_and_overall(None, over) == [over]
 
     def test_and_nothing_at_all_is_fine(self):
         assert _venue_and_overall(None, None) == []
+
+
+def test_a_long_home_run_and_a_shorter_overall_one_BOTH_reach_the_panel():
+    """The shape the old rule hid, end to end.
+
+    Four home games all clearing the line, with one bad away game in between: the home run
+    is four, the overall run is three because the away game broke it. Those are two
+    different facts about the same side and the panel has to carry both — the second is
+    the one a reader cannot work out from the first.
+    """
+    side = team("Luton", [
+        m(True, 7, 3, "2026-08-01"),
+        m(False, 2, 6, "2026-08-05"),      # the away blank that breaks the overall run
+        m(True, 8, 4, "2026-08-10"),
+        m(True, 9, 2, "2026-08-17"),
+        m(True, 7, 5, "2026-08-24"),
+    ])
+    rows = [r for r in fixture_streaks(side, team("Other", []), "Luton", "Other")
+            if r["team"] == "Luton" and r["subject"] == "team" and r["direction"] == "over"]
+    by_venue = {r["venue"]: r for r in rows}
+    assert set(by_venue) == {"home", "overall"}
+    assert by_venue["home"]["run"] == 4
+    assert by_venue["overall"]["run"] == 3
+    # And they are measured over different pools, which is what makes them two findings.
+    assert by_venue["home"]["games"] != by_venue["overall"]["games"]

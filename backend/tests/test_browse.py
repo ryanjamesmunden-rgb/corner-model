@@ -236,3 +236,66 @@ class TestTheStreakBarIsTheLeaguesNotTheTeams:
         # league's number.
         big = team("b", "Big", "l", [8, 8, 9, 8, 9, 8, 9, 8])
         assert server._browse_streak(big, 9.5) is None
+
+
+class TestTheDayFilter:
+    """A window answers "what is on this week"; a day answers "what is on Saturday", and
+    the second is the question somebody has when they are actually going to bet."""
+
+    def day_of(self, monkeypatch, fid):
+        d = browse(monkeypatch)
+        for c in d["countries"]:
+            for l in c["leagues"]:
+                for g in l["games"]:
+                    if g["fixture_id"] == fid:
+                        return g["day"]
+        return None
+
+    def test_every_game_carries_the_day_it_is_played_in_london(self, monkeypatch):
+        d = browse(monkeypatch)
+        for c in d["countries"]:
+            for l in c["leagues"]:
+                for g in l["games"]:
+                    assert len(g["day"]) == 10 and g["day"].count("-") == 2
+
+    def test_the_calendar_lists_the_window_with_counts(self, monkeypatch):
+        d = browse(monkeypatch)
+        assert d["calendar"], "the chips have nothing to render"
+        assert sum(x["count"] for x in d["calendar"]) == d["total"]
+        assert [x["day"] for x in d["calendar"]] == sorted(x["day"] for x in d["calendar"])
+
+    def test_picking_a_day_narrows_to_it(self, monkeypatch):
+        target = self.day_of(monkeypatch, "f-pl")
+        d = browse(monkeypatch, day=target)
+        seen = {g["day"] for c in d["countries"] for l in c["leagues"] for g in l["games"]}
+        assert seen == {target}
+
+    def test_the_calendar_still_shows_the_other_days(self, monkeypatch):
+        # Built BEFORE the day filter, so the chips keep saying what else is on rather
+        # than collapsing to the one that is selected.
+        target = self.day_of(monkeypatch, "f-pl")
+        full = browse(monkeypatch)["calendar"]
+        assert browse(monkeypatch, day=target)["calendar"] == full
+
+    def test_counts_still_match_what_opening_it_shows(self, monkeypatch):
+        target = self.day_of(monkeypatch, "f-pl")
+        d = browse(monkeypatch, day=target)
+        for c in d["countries"]:
+            assert c["count"] == sum(l["count"] for l in c["leagues"])
+            for l in c["leagues"]:
+                assert l["count"] == len(l["games"])
+        assert d["total"] == sum(c["count"] for c in d["countries"])
+
+    def test_a_country_with_nothing_that_day_is_dropped(self, monkeypatch):
+        # An empty LEAGUE inside an open country is information. An empty COUNTRY is a row
+        # that can only be opened to be disappointed, and on one day most are empty.
+        target = self.day_of(monkeypatch, "f-pl")
+        d = browse(monkeypatch, day=target)
+        assert all(c["count"] > 0 for c in d["countries"])
+
+    def test_a_day_with_nothing_on_it_is_empty_rather_than_everything(self, monkeypatch):
+        d = browse(monkeypatch, day="1999-01-01")
+        assert d["total"] == 0 and d["countries"] == []
+
+    def test_no_day_is_the_whole_window(self, monkeypatch):
+        assert browse(monkeypatch, day="")["total"] == browse(monkeypatch)["total"]

@@ -22,7 +22,7 @@ from pydantic import BaseModel
 from typing import List, Optional, Dict, Tuple
 from datetime import datetime, date, timezone, timedelta
 from zoneinfo import ZoneInfo
-from collections import defaultdict, deque
+from collections import Counter, defaultdict, deque
 
 import settlement
 import angle_of_day
@@ -6101,7 +6101,7 @@ BROWSE_SHOWS = ("all", "streaks", "trends")
 
 
 @api_router.get("/browse")
-async def browse(days: int = 7, show: str = "all",
+async def browse(days: int = 7, show: str = "all", day: Optional[str] = None,
                  user: dict = Depends(get_current_user)):
     """Countries, their competitions, and the games coming up in each.
 
@@ -6119,6 +6119,20 @@ async def browse(days: int = 7, show: str = "all",
     country list every time the filter changed, so the thing you were about to tap moves
     out from under you.
 
+    `day` NARROWS TO ONE DATE inside that window, as YYYY-MM-DD in London time. A window
+    answers "what is on this week"; a day answers "what is on Saturday", and the second is
+    the question somebody has when they are actually going to bet. The same tree comes
+    back either way so the page does not change shape when a day is picked.
+
+    LONDON, NOT UTC. A 20:00 kick-off in Brazil is 23:00 UTC on the same day and a 01:30
+    one is the NEXT day in UTC — so a reader tapping "Saturday" would lose half the South
+    American card to a timezone they are not in. The site shows London times everywhere
+    else; the day filter has to agree with the clock beside it.
+
+    `calendar` RIDES ALONG WHATEVER IS PICKED: every day in the window with a count,
+    computed after `show` and BEFORE `day`, so the chips say what is available rather than
+    collapsing to the one that is selected.
+
     THE STREAK FLAG IS STRICTER THAN THE FIXTURE PANEL and _browse_streak says why: left
     at the panel's bar this filter would return the whole fixture list with a badge on it.
     One subject and one direction — a team's own corners, over — because this decides
@@ -6126,6 +6140,7 @@ async def browse(days: int = 7, show: str = "all",
     """
     days = max(1, min(int(days), BOARD_MAX_DAYS))
     show = show if show in BROWSE_SHOWS else "all"
+    day = (day or "").strip() or None
 
     teams = await db.teams.find({}, {"_id": 0}).to_list(5000)
     by_id = {t["team_id"]: t for t in teams}
@@ -6182,23 +6197,39 @@ async def browse(days: int = 7, show: str = "all",
         })
         l["games"].append({
             "fixture_id": fx["fixture_id"], "date": fx["date"],
+            "day": dt.astimezone(VALUE_PICK_TZ).date().isoformat(),
             "home": fx["home_name"], "away": fx["away_name"],
             "round": fx.get("round"),
             "streak": max(runs, key=lambda r: r["run"]) if runs else None,
             "trends": trends,
         })
 
+    # THE CALENDAR IS BUILT BEFORE THE DAY FILTER, so the chips keep saying what else is
+    # on. Built after `show`, so the counts on them match what picking one will produce.
+    tally = Counter(g["day"] for c in out.values()
+                    for l in c["leagues"].values() for g in l["games"])
+    calendar = [{"day": d, "count": n} for d, n in sorted(tally.items())]
+
     countries = []
     for c in out.values():
-        ls = sorted(c["leagues"].values(),
-                    key=lambda l: (l["is_cup"], l["tier"] or 99, l["name"]))
-        for l in ls:
+        ls = []
+        for l in sorted(c["leagues"].values(),
+                        key=lambda l: (l["is_cup"], l["tier"] or 99, l["name"])):
+            if day:
+                l["games"] = [g for g in l["games"] if g["day"] == day]
             l["games"].sort(key=lambda g: g["date"])
             l["count"] = len(l["games"])
+            ls.append(l)
+        # A COUNTRY WITH NOTHING ON THE CHOSEN DAY GOES, rather than sitting as a zero.
+        # An empty LEAGUE inside an open country is information — "nothing here, look
+        # elsewhere in England" — but an empty country is a row that can only be opened to
+        # be disappointed, and on a single day most of them are empty.
+        if day and not any(l["count"] for l in ls):
+            continue
         countries.append({"country": c["country"], "leagues": ls,
                           "count": sum(l["count"] for l in ls)})
     countries.sort(key=lambda c: (-c["count"], c["country"]))
-    return {"days": days, "show": show,
+    return {"days": days, "show": show, "day": day, "calendar": calendar,
             "total": sum(c["count"] for c in countries), "countries": countries}
 
 

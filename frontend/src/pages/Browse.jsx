@@ -5,6 +5,7 @@ import { useSearchParams } from "react-router-dom";
 import { Loader2, ChevronRight, Flame, TrendingUp, TrendingDown, Globe } from "lucide-react";
 import { api } from "@/lib/api";
 import { kickoffLabel } from "@/lib/kickoff";
+import { flagFor } from "@/lib/countryFlag";
 import ErrorBoundary from "@/components/ErrorBoundary";
 
 /**
@@ -26,6 +27,31 @@ import ErrorBoundary from "@/components/ErrorBoundary";
  */
 
 const DAYS = [3, 7, 14, 28];
+
+/**
+ * The flag for a country row.
+ *
+ * DERIVED FROM A LEAGUE ID, NOT THE COUNTRY NAME, because that is what countryFlag.js is
+ * keyed on and its note says why: ids carry a stable three-letter country prefix, while
+ * names collide across borders. A second lookup keyed on the name would be a second map
+ * to keep in step, and the one it disagreed with would be the one nobody tested.
+ *
+ * The backend sorts cups last, so leagues[0] is a domestic competition wherever one
+ * exists — and where none does, the group IS the European competitions and the trophy
+ * countryFlag returns for them is the right badge anyway.
+ */
+const countryFlag = (country) => flagFor(country?.leagues?.[0]?.league_id || "");
+
+/** "Sat 11 Oct", and "Today" / "Tomorrow" where that is friendlier to scan. */
+const dayChipLabel = (iso) => {
+  const d = new Date(`${iso}T12:00:00`);
+  const today = new Date();
+  const diff = Math.round((d - new Date(today.getFullYear(), today.getMonth(), today.getDate(), 12))
+                          / 86400000);
+  if (diff === 0) return "Today";
+  if (diff === 1) return "Tomorrow";
+  return d.toLocaleDateString(undefined, { weekday: "short", day: "numeric", month: "short" });
+};
 
 const SHOWS = [
   { v: "all", label: "All games",
@@ -132,6 +158,7 @@ function Country({ country, open, onToggle, openLeagues, toggleLeague }) {
       >
         <ChevronRight className={`h-4 w-4 text-muted-foreground transition-transform
                                   ${open ? "rotate-90" : ""}`} />
+        <span className="text-base leading-none" aria-hidden="true">{countryFlag(country)}</span>
         <span className="font-head font-semibold text-sm">{country.country}</span>
         <span className="text-[11px] text-muted-foreground">
           {country.leagues.length} competition{country.leagues.length === 1 ? "" : "s"}
@@ -151,20 +178,26 @@ function BrowseBoard() {
   const [params, setParams] = useSearchParams();
   const show = SHOWS.some((s) => s.v === params.get("show")) ? params.get("show") : "all";
   const days = DAYS.includes(Number(params.get("days"))) ? Number(params.get("days")) : 7;
+  // One date inside the window, as YYYY-MM-DD in London. Empty means the whole window.
+  const day = /^\d{4}-\d{2}-\d{2}$/.test(params.get("day") || "") ? params.get("day") : "";
   // Open rows live in component state rather than the URL: which countries you have
   // expanded is a reading position, not a thing to share or to restore a week later.
   const [openCountries, setOpenCountries] = useState({});
   const [openLeagues, setOpenLeagues] = useState({});
 
-  const set = (k, v) => {
+  const setBoth = (patch) => {
     const next = new URLSearchParams(params);
-    next.set(k, String(v));
+    Object.entries(patch).forEach(([k, v]) => {
+      if (v === "" || v === null || v === undefined) next.delete(k);
+      else next.set(k, String(v));
+    });
     setParams(next, { replace: true });
   };
+  const set = (k, v) => setBoth({ [k]: v });
 
   const { data, isLoading, error } = useQuery({
-    queryKey: ["browse", days, show],
-    queryFn: () => api.browse({ days, show }),
+    queryKey: ["browse", days, show, day],
+    queryFn: () => api.browse({ days, show, ...(day ? { day } : {}) }),
     keepPreviousData: true,
   });
 
@@ -197,7 +230,7 @@ function BrowseBoard() {
         </div>
         <div className="flex rounded-md bg-secondary p-0.5">
           {DAYS.map((d) => (
-            <button key={d} onClick={() => set("days", d)}
+            <button key={d} onClick={() => setBoth({ days: d, day: "" })}
               data-testid={`browse-days-${d}`}
               className={`text-xs px-2.5 py-1.5 rounded transition-colors ${
                 days === d ? "bg-primary text-primary-foreground font-medium"
@@ -212,6 +245,30 @@ function BrowseBoard() {
           </span>
         )}
       </div>
+      {/* ONE DAY, OR THE WHOLE WINDOW. The chips are built from the window BEFORE the day
+          filter is applied, so picking Saturday still shows that Sunday has eleven on —
+          a filter that hides what else exists makes you clear it to find out. */}
+      {(data?.calendar || []).length > 1 && (
+        <div className="flex gap-1.5 overflow-x-auto pb-1 -mx-1 px-1">
+          <button onClick={() => set("day", "")} data-testid="browse-day-all"
+            className={`shrink-0 text-xs px-3 py-1.5 rounded-md transition-colors ${
+              !day ? "bg-primary text-primary-foreground font-medium"
+                   : "bg-secondary text-muted-foreground"}`}>
+            All {days}d
+          </button>
+          {data.calendar.map((c) => (
+            <button key={c.day} onClick={() => set("day", c.day)}
+              data-testid={`browse-day-${c.day}`}
+              className={`shrink-0 text-xs px-3 py-1.5 rounded-md transition-colors
+                          flex items-center gap-1.5 ${
+                day === c.day ? "bg-primary text-primary-foreground font-medium"
+                              : "bg-secondary text-muted-foreground"}`}>
+              {dayChipLabel(c.day)}
+              <span className="font-mono-data opacity-70">{c.count}</span>
+            </button>
+          ))}
+        </div>
+      )}
       {blurb && <p className="text-[11px] text-muted-foreground">{blurb}</p>}
 
       {isLoading && !data ? (
@@ -224,7 +281,7 @@ function BrowseBoard() {
         </p>
       ) : !data?.countries?.length ? (
         <p className="text-sm text-muted-foreground py-8" data-testid="browse-empty">
-          Nothing in the next {days} days matches this filter.
+          Nothing {day ? `on ${dayChipLabel(day)}` : `in the next ${days} days`} matches this filter.
         </p>
       ) : (
         <div className="space-y-2">

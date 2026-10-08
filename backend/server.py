@@ -6029,9 +6029,15 @@ async def fixture_board(days: int = 7, per_day: int = FIXTURE_BOARD_PER_DAY,
 PROJECTION_SORTS = ("total", "edge", "home", "away")
 
 
+# How many rows a projections request returns by default, and the most it will ever
+# return. The page asks for a page at a time and says how many of the total it is showing.
+PROJECTION_PAGE = 200
+PROJECTION_MAX_ROWS = 2000
+
+
 @api_router.get("/projections")
 async def projections(days: int = 7, league_id: Optional[str] = None,
-                      sort: str = "total", limit: int = 200,
+                      sort: str = "total", limit: int = PROJECTION_PAGE,
                       min_games: int = 0,
                       response: Response = None,
                       user: dict = Depends(get_current_user)):
@@ -6087,7 +6093,12 @@ async def projections(days: int = 7, league_id: Optional[str] = None,
     keep.sort(key=lambda r: (r.get(key) or 0, r.get("lambda_total") or 0), reverse=True)
 
     out = []
-    for i, r in enumerate(keep[:max(1, min(int(limit), 500))]):
+    # THE CEILING WAS 500 AND THE BOARD ASKED FOR 200, so "every upcoming fixture ranked"
+    # — which is this endpoint's first line — stopped being true at 200 and could never be
+    # true past 500. Twenty-eight days across thirty-one competitions is well over a
+    # thousand games. The cap exists to stop a runaway response, not to decide what the
+    # reader may rank, so it sits above any real window rather than inside one.
+    for i, r in enumerate(keep[:max(1, min(int(limit), PROJECTION_MAX_ROWS))]):
         out.append({
             "rank": i + 1,
             "fixture_id": r["fixture_id"], "date": r["date"],

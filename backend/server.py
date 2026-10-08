@@ -4567,26 +4567,29 @@ BOARD_MIN_RUN = 3                  # a streak must be a run; 2 is merely the flo
 # stricter one belongs where the reader cannot answer back.
 def _venue_and_overall(venue_row: Optional[dict],
                        overall_row: Optional[dict]) -> List[dict]:
-    """Both runs, unless the overall one says nothing the venue one did not.
+    """Both runs, unless they are literally the same games.
 
-    A SUBSET IS NOT A SECOND PIECE OF EVIDENCE. The overall pool CONTAINS the venue pool,
-    so the two runs very often describe the same games — a side whose last four were all
-    at home has one run, and printing it twice would read as two independent findings on
-    a panel whose whole job is to say what is already running into the fixture.
+    THE FIRST VERSION OF THIS DROPPED FAR TOO MUCH. It removed the overall row whenever it
+    was "strictly no better" — same line, no longer — on the reasoning that a subset is not
+    a second piece of evidence. That was written when the two rows were INDISTINGUISHABLE on
+    screen, and suppressing one was the only way to stop the panel reading as a duplicate.
 
-    So the overall row is dropped when it is strictly no better: the same line and no
-    longer. Anything else is kept — a longer run, or the same length at a more demanding
-    line, is a different claim and worth its own row.
+    The rows carry a Home / Away / Overall badge now, so the reason is gone and the rule was
+    only hiding things: a side 9-in-a-row at home whose overall run is 4 would show the home
+    row alone, and "what has this team done lately across everything" — the question the
+    overall run exists to answer — had no row on the panel.
 
-    The venue row is never dropped for the opposite reason: it is the pool the model
-    prices this fixture against, and "9 in a row at home" is the sentence the reader came
-    for even when the overall number happens to be bigger.
+    WHAT IS STILL DROPPED IS AN ACTUAL DUPLICATE, identified by the pool rather than by the
+    claim. `games` is the size of the history each run was measured over, so when the two
+    match, the venue pool IS the whole history — a side that has only played at one venue so
+    far — and the two rows are the same games counted twice. Comparing pools rather than
+    lines is also the honest test: two runs that happen to agree on a line are not the same
+    finding, and the old rule could not tell those apart.
     """
     out = [r for r in (venue_row,) if r]
     if not overall_row:
         return out
-    if venue_row and (overall_row["line"] == venue_row["line"]
-                      and overall_row["run"] <= venue_row["run"]):
+    if venue_row and overall_row.get("games") == venue_row.get("games"):
         return out
     return out + [overall_row]
 

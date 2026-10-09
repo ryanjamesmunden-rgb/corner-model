@@ -2472,6 +2472,8 @@ TOOL_SCRIPTS = {"backfill_shots": "backfill_shots.py", "measure_features": "meas
                 "watchlist": "watchlist.py",
                 "press_board": "press_board.py",
                 "browse_audit": "browse_audit.py",
+                "chase_angle": "chase_angle.py",
+                "history_export": "history_export.py",
                 "backfill_fh": "backfill_fh.py",
                 "backfill_goal_events": "backfill_goal_events.py",
                 "probe_corner_halves": "probe_corner_halves.py",
@@ -2494,6 +2496,8 @@ TOOL_COOLDOWN = {"backfill_shots": 600, "measure_features": 120,
                  "watchlist": 120,
                  "press_board": 120,
                  "browse_audit": 120,
+                 "chase_angle": 120,
+                 "history_export": 300,
                  "backfill_fh": 120,
                  "backfill_goal_events": 600,
                  "probe_corner_halves": 600,
@@ -2579,6 +2583,25 @@ MEASURE_MODES = {
     # db.fixtures. It counts what the filter does; it does not measure whether the
     # filter is right, which would need a control.
     "browse_audit": ("browse_audit", [], True),
+    # A CORNER SIDE THAT LEAKS GOALS, against a solid winner that gives corners up.
+    # The inverse premise to press_board: there, our attack cannot convert and the
+    # pressure becomes corners; here our DEFENCE fails, so our side spends the game
+    # behind and chases. Corner bars are league-relative, goal bars absolute, and
+    # the sample floors are press_board's. Reads db.fixtures and db.teams.
+    # UNMEASURED, and says so on every run: the per-game form of this premise was
+    # tested five times and came out flat, and the season-shape form has not been
+    # tested at all. A list of fixtures to look at, never a card.
+    "chase_angle": ("chase_angle", [], True),
+    # EVERYTHING THE SITE HAS PUBLISHED, GRADED, WEEK BY WEEK. Two sections are the
+    # real record — the frozen projections board and the frozen streak board, the
+    # second carrying the mismatch evidence each row rested on. One is a walk-forward
+    # REPLAY of the 20-of-20 board, which was never snapshotted and so has no record
+    # to read; it is labelled as a replay everywhere it appears. Prints a weekly
+    # summary and a coverage table, because a week with no snapshot and a week with
+    # nothing on look identical in a table that counts rows. The row level comes from
+    # /tools/history.csv — the harness output cap truncates, and "every game" does
+    # not fit. Reads db.projection_snapshots, db.streak_snapshots and db.teams.
+    "history_export": ("history_export", [], True),
     # IS THERE ANYTHING FOR THE PREVIOUS MEETINGS PANEL TO SHOW. The panel renders nothing
     # when a pairing has no stored meeting — correctly, since an empty one would have to
     # choose between "no history on file" and "they have never met" — and that makes a
@@ -2922,6 +2945,40 @@ async def tool_runs(token: Optional[str] = None, script: Optional[str] = None, l
     runs = await db.script_runs.find(q, {"_id": 0, "argv": 0}).sort("started_at", -1) \
         .limit(max(1, min(limit, 20))).to_list(20)
     return {"enabled": True, "runs": runs}
+
+
+@api_router.get("/tools/history.csv")
+async def tools_history_csv(token: Optional[str] = None, kind: str = "projections",
+                            weeks: int = 26, window: int = 20,
+                            user: dict = Depends(get_current_user)):
+    """Everything the site has published, graded, one row per claim, as a CSV.
+
+    A DOWNLOAD RATHER THAN A HARNESS RUN, because the harness stores at most
+    TOOL_OUTPUT_CAP characters and truncates from the front — which is fine for a
+    summary and silently useless for "every game". The summary lives in
+    history_export's printed output; this is the thing you open in a spreadsheet.
+
+    `kind` is one of projections, streaks, consistency. The first two are the RECORDED
+    snapshots and are the real published record; the third is a walk-forward REPLAY of a
+    board that was never frozen, and history_export's module docstring sets out the
+    three ways a replay differs from a record. Do not quote one as the other.
+
+    Token-gated like the rest of /tools: it is the whole publishing history in one file,
+    including rows that never reached a card.
+    """
+    from fastapi.responses import PlainTextResponse
+    import history_export                                  # local: it imports server
+
+    _check_tools_token(token)
+    if kind not in history_export.KINDS:
+        raise HTTPException(400, f"kind must be one of {', '.join(history_export.KINDS)}")
+    data = await history_export.gather(max(1, min(weeks, 260)),
+                                       max(2, min(window, 40)))
+    body = history_export.to_csv(data.get(kind) or [])
+    return PlainTextResponse(
+        body or "no rows\n", media_type="text/csv",
+        headers={"Content-Disposition":
+                 f'attachment; filename="corner-model-{kind}.csv"'})
 
 
 @api_router.get("/backtest")
@@ -6148,12 +6205,18 @@ PROJECTION_MAX_ROWS = 2000
 # trending. Measured in corners per game, against the team's OWN average rather than the
 # league's — a side going from four to six has changed; a side that always wins six has not.
 #
-# ONE CORNER A GAME, NOT ONE AND A HALF. At 1.5 the filter was close to empty: a corner and
-# a half per game over three games is most of a standard deviation, so it caught the odd
-# blow-out and nothing else, and a reader who picked "Trends" got four games out of two
-# hundred and reasonably concluded the thing was broken. A corner a game, sustained over
-# three, is a real move and there are dozens of them in a week.
-BROWSE_TREND_MIN = 1.0
+# TWO AND A HALF CORNERS A GAME, AND THAT NUMBER IS MEASURED. browse_audit sweeps this
+# knob against the share of the card that survives, and the three windows agree closely:
+#
+#     >= 1.0   90%     >= 2.0   50%     >= 2.5   28%     >= 3.0   17%
+#
+# 1.5 was the original guess and left the filter near empty on the old narrow rule; 1.0
+# was the overcorrection and kept nine games in ten, which is not a filter. 2.5 lands in
+# the quarter-to-a-third band that browse_audit argues for, at all of 3, 7 and 14 days.
+#
+# It is a big move to ask for and it should be: a side going from five corners a game to
+# seven and a half over three games has changed, and a side drifting by one has not.
+BROWSE_TREND_MIN = 2.5
 BROWSE_TREND_WINDOW = 3
 # Below this there is no "recent" to compare against the rest: three of five games IS the
 # season, and the delta would be noise with a direction printed on it.
@@ -6183,6 +6246,22 @@ BROWSE_SUBJECTS = ("team", "match", "conceded")
 # the game for you.
 BROWSE_MAX_MIN_RUN = 10
 
+# How far past its division's average a run's line has to sit to be worth a reader's
+# time, in corners per game. MEASURED, not guessed — browse_audit sweeps it:
+#
+#     > 0.0   53%     > 0.75   37%     > 1.0   32%     > 1.25   26%     > 1.5   18%
+#
+# The first version used "strictly past the average" (> 0.0) and kept over half the card,
+# which is a filter that has stopped selecting. A full corner clear of what the division
+# does lands at 32%, consistently across 3, 7 and 14 days, and says something a reader
+# can check: not "above average" but "a corner a game above average".
+#
+# RAISING THIS RATHER THAN THE MINIMUM RUN is deliberate. Both reach the same share — 6+
+# alone gets to 31% — but raising the run deletes SHORT runs at remarkable lines, which
+# are the rows worth having, while this deletes LONG runs at ordinary lines, which are
+# the rows that were drowning them. The run is the reader's knob now; this is the floor.
+BROWSE_MIN_MARGIN = 1.0
+
 
 def _browse_margin(run: dict, par: Dict[str, float]) -> Optional[float]:
     """How far this run's line sits past what the division does, in corners — or None.
@@ -6206,9 +6285,11 @@ def _browse_margin(run: dict, par: Dict[str, float]) -> Optional[float]:
     if avg is None:
         return None
     margin = (run["line"] - avg) if run["direction"] == "over" else (avg - (run["line"] - 1))
-    # STRICTLY PAST IT. A line sitting exactly ON the division's average is the ordinary
-    # result described at length — "conceded 4+ in six" in a league that concedes four.
-    return margin if margin > 0 else None
+    # CLEAR OF IT, NOT MERELY PAST IT. A line sitting on the division's average is the
+    # ordinary result — "conceded 4+ in six" in a league that concedes four — and a line
+    # a quarter of a corner past it is the same sentence with rounding. See the note on
+    # BROWSE_MIN_MARGIN for the measurement that set the distance.
+    return margin if margin >= BROWSE_MIN_MARGIN else None
 
 
 def _browse_streak(team: dict, par: Dict[str, float], venue: str,

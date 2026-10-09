@@ -92,11 +92,11 @@ const SHOWS = [
     blurb: "Every fixture in the window." },
   { v: "streaks", label: "Streaks",
     blurb: "Games with a run going in — corners won, conceded or the match total, over "
-         + "or under — at a line the division itself does not reach. Raise the run to "
-         + "shorten the list." },
+         + "or under — at a line a full corner a game clear of what the division does. "
+         + "Raise the run to shorten the list." },
   { v: "trends", label: "Trends",
-    blurb: "Games where a side's corners won or conceded have moved a corner a game or "
-         + "more from their own season rate." },
+    blurb: "Games where a side's corners won or conceded have moved two and a half a "
+         + "game or more from their own season rate over their last three." },
 ];
 
 /** Home / Away / Overall, so "5 in a row" says which five. */

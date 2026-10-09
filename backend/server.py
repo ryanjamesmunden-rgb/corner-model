@@ -6246,6 +6246,11 @@ BROWSE_SUBJECTS = ("team", "match", "conceded")
 # the game for you.
 BROWSE_MAX_MIN_RUN = 10
 
+# How many runs a game carries for its preview panel. Six covers a fixture where both
+# sides are running on several subjects at once; past that the panel is a page, and a
+# reader who wants everything wants the fixture itself.
+BROWSE_PREVIEW_RUNS = 6
+
 # How far past its division's average a run's line has to sit to be worth a reader's
 # time, in corners per game. MEASURED, not guessed — browse_audit sweeps it:
 #
@@ -6496,6 +6501,17 @@ async def browse(days: int = 7, show: str = "all", day: Optional[str] = None,
             # up, and the row has no space to print all four.
             "streak": max(runs, key=lambda r: (r["run"], r.get("margin") or 0)) if runs else None,
             "streak_count": len(runs),
+            # AND THE REST OF THEM, so the row can be opened instead of navigated to.
+            #
+            # These were computed and thrown away. A reader who sees "+3 more" has been
+            # told something exists and given no way to look at it short of loading the
+            # whole fixture page — which is the trip this is meant to save. They are a
+            # few hundred bytes a game and the alternative is a round trip per game.
+            #
+            # CAPPED, because a side can carry a dozen qualifying lines across three
+            # subjects and two venues, and a preview that scrolls is a page.
+            "streaks": sorted(runs, key=lambda r: (r["run"], r.get("margin") or 0),
+                              reverse=True)[:BROWSE_PREVIEW_RUNS],
             "trends": trends,
         })
 

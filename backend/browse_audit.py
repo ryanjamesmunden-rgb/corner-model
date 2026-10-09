@@ -1,6 +1,6 @@
 """Offline: how much the front door's Streaks and Trends filters actually keep.
 
-WHY THIS EXISTS. The streak filter on /browse has now been tuned three times, each time
+WHY THIS EXISTS. The streak filter on /browse has now been tuned four times, each time
 on reasoning rather than on a count:
 
   1. At the fixture panel's bar it kept EVERYTHING — OVER_LINE_FLOOR is 3, so almost
@@ -9,26 +9,34 @@ on reasoning rather than on a count:
      reported at the HIGHEST line it held, which for a low-variance side is its floor.
   3. Tightened to a league-relative bar AND narrowed to one slice — a team's own corners,
      over, overall. That is a sixth of what the fixture panel shows, and the filter came
-     back nearly empty. The user's words: "the streaks and trends only come up with a few
-     options, there should be loads, why is this".
+     back nearly empty: "the streaks and trends only come up with a few options".
+  4. Widened to every subject, both directions, both venues, and taught to read every
+     candidate line rather than live_streak's single headline pick.
 
-Every one of those was a guess about a number nobody had looked at. This prints the
-number. Run it after a change to BROWSE_SUBJECTS, _browse_margin, PANEL_MIN_RUN or
-BROWSE_TREND_MIN and the next decision is made on evidence.
+The first run of this harness then found the fifth problem: it keeps 54% of the card,
+where the note at the bottom of this file says a quarter to a third is the shape to want.
+That is a filter that has stopped selecting, and the trend filter at 90% has stopped
+being a filter at all.
+
+AND THE FIRST VERSION OF THIS HARNESS MEASURED THE WRONG FUNCTION. Its breakdown called
+live_streak — the single best-by-length pick — while the endpoint walks
+live_streak_candidates. So the per-subject tables described the bug that had already
+been fixed, and read as though overs were being rejected at 98%. The headline shares
+were right because they came from browse() itself; the breakdown was fiction. It now
+calls the same function the endpoint does, and the sweep below exists so the NEXT
+threshold is read off a curve instead of guessed a fifth time.
 
 WHAT IT PRINTS, per window:
 
   - how many games survive `all`, `streaks` and `trends`, and what share that is
-  - the streaks broken down by subject, direction and venue, which is the breakdown that
-    would have caught the one-slice mistake on the day it was made
-  - what the margin rule REJECTED, counted the same way — a filter is as much the runs it
-    throws away as the ones it keeps, and the rejected pile is where "too strict" shows
-  - the trends by subject and direction
+  - SWEEPS: how the surviving share moves as the division bar, the trend bar and the
+    minimum run length are varied, so a threshold can be chosen rather than invented
+  - what the filter actually shows, by subject, direction and venue — the best passing
+    candidate per side, which is the row a reader gets
+  - and what it threw away: sides that carried a run but nothing unusual enough
 
 A SHARE, NOT A COUNT, is what to read. "41 games" means nothing without the card it came
-from; "41 of 212" says whether the filter is a filter. Roughly a quarter to a third on
-streaks is the shape to want: below a tenth it is hiding the site, and above a half it is
-not selecting anything.
+from; "41 of 212" says whether the filter is a filter.
 
 Reads the database only. No API calls, no writes.
 
@@ -43,14 +51,20 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-from server import (BROWSE_SUBJECTS, BROWSE_TREND_MIN, PANEL_MIN_RUN, _browse_margin,
-                    _src, _trends_of, browse, db, live_streak, streak_value)
+from server import (BROWSE_SUBJECTS, BROWSE_TREND_MIN, BROWSE_TREND_WINDOW,
+                    BROWSE_TREND_MIN_GAMES, BROWSE_MAX_MIN_RUN, PANEL_MIN_RUN,
+                    _browse_margin, _src, _trends_of, browse, db,
+                    live_streak_candidates, streak_value)
 
 ROOT = Path(__file__).parent
 load_dotenv(ROOT / ".env")
 
 DEFAULT_WINDOWS = (3, 7, 14)
 BAR = "-" * 78
+
+# The curves. Each is the knob as it could be set, not as it is set.
+MARGIN_STEPS = (0.0, 0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 2.5, 3.0)
+TREND_STEPS = (1.0, 1.25, 1.5, 1.75, 2.0, 2.5, 3.0)
 
 
 def _pct(n, d):
@@ -66,15 +80,48 @@ def _table(title, counter, total):
         print(f"    {key:<34} {n:>5}  {_pct(n, total)}")
 
 
+def _curve(title, knob, pairs, total):
+    """One sweep: the knob, how many games survive, and the share."""
+    print(f"\n  {title}")
+    print(f"    {knob:<10} {'games':>7}  share")
+    for value, n in pairs:
+        print(f"    {value:<10} {n:>7}  {_pct(n, total)}")
+
+
+def _raw_margin(run, par):
+    """The margin BEFORE the keep/reject test, so a sweep has something to sweep.
+
+    Mirrors _browse_margin's arithmetic deliberately rather than importing it, because
+    that one collapses everything at or below zero to None. The two are checked against
+    each other on every row below — if this drifts from production the run says so
+    rather than reporting a curve for a rule nobody ships.
+    """
+    avg = par.get(run["subject"])
+    if avg is None:
+        return None
+    return (run["line"] - avg) if run["direction"] == "over" else (avg - (run["line"] - 1))
+
+
+def _trend_deltas(team):
+    """Every |recent - season| this side offers, whatever the current bar is."""
+    out = []
+    for subject in ("team", "conceded"):
+        vals = [streak_value(m, subject) for m in _src(team)]
+        if len(vals) < BROWSE_TREND_MIN_GAMES:
+            continue
+        recent = vals[-BROWSE_TREND_WINDOW:]
+        out.append(abs((sum(recent) / len(recent)) - (sum(vals) / len(vals))))
+    return out
+
+
 async def run(windows):
     teams = await db.teams.find({}, {"_id": 0}).to_list(5000)
     by_id = {t["team_id"]: t for t in teams}
 
-    # The same yardstick browse() builds, rebuilt here rather than imported, because the
-    # endpoint computes it inline. If that ever drifts this harness reports the wrong bar,
-    # so the two are checked against each other at the bottom of this run.
-    par = {}
-    pool = {}
+    # The same yardstick browse() builds, rebuilt here because the endpoint computes it
+    # inline. _raw_margin is cross-checked against _browse_margin on every row, so a
+    # drift between the two shows up as a loud mismatch rather than a quiet wrong curve.
+    par, pool = {}, {}
     for t in teams:
         d = pool.setdefault(t["league_id"], {s: [] for s in BROWSE_SUBJECTS})
         for m in _src(t):
@@ -87,10 +134,11 @@ async def run(windows):
     print("WHAT THE FRONT DOOR'S FILTERS KEEP")
     print("=" * 78)
     print(f"  subjects      {', '.join(BROWSE_SUBJECTS)}, both directions")
-    print(f"  min run       {PANEL_MIN_RUN}")
+    print(f"  min run       {PANEL_MIN_RUN} (ceiling {BROWSE_MAX_MIN_RUN})")
     print(f"  trend bar     {BROWSE_TREND_MIN} corners a game off a side's own rate")
     print(f"  teams on file {len(teams)} across {len(par)} competitions")
 
+    mismatches = [0]      # a list so the inner loops can bump it without a global
     for days in windows:
         every = await browse(days=days, show="all", user=None)
         streaks = await browse(days=days, show="streaks", user=None)
@@ -103,12 +151,14 @@ async def run(windows):
         if not total:
             continue
 
-        # The breakdown, recomputed per side rather than read off the row, because the row
-        # carries only the BEST run and the question here is what the whole pass found.
-        kept, rejected, seen = Counter(), Counter(), set()
-        tr = Counter()
         now = datetime.now(timezone.utc)
         horizon = now + timedelta(days=days)
+        shown, starved = Counter(), Counter()
+        # Per GAME, the best thing available — which is what decides whether the game
+        # survives, and therefore what a sweep has to be computed over.
+        game_margin, game_run, game_trend = [], [], []
+        seen_side = set()
+
         for fx in await db.fixtures.find({}, {"_id": 0}).to_list(5000):
             try:
                 dt = datetime.fromisoformat((fx.get("date") or "").replace("Z", "+00:00"))
@@ -118,43 +168,79 @@ async def run(windows):
                 dt = dt.replace(tzinfo=timezone.utc)
             if dt < now or dt > horizon:
                 continue
+
+            best_margin, best_run, best_trend = None, 0, None
             for key, side in (("home_team_id", "home"), ("away_team_id", "away")):
                 t = by_id.get(fx[key])
-                if not t or (t["team_id"], side) in seen:
+                if not t:
                     continue
-                seen.add((t["team_id"], side))
                 p = par.get(t["league_id"], {})
+
+                deltas = _trend_deltas(t)
+                if deltas:
+                    best_trend = max([best_trend or 0.0] + deltas)
+
+                # THE SAME WALK THE ENDPOINT DOES: every candidate line, both venues.
+                side_best, side_had_any = None, False
                 for subject in BROWSE_SUBJECTS:
                     for direction in ("over", "under"):
                         for venue in (side, "overall"):
-                            r = live_streak(t, venue, subject, direction,
-                                            min_len=PANEL_MIN_RUN)
-                            if not r:
-                                continue
-                            label = f"{subject} {direction} ({venue})"
-                            if _browse_margin(r, p) is None:
-                                rejected[label] += 1
-                            else:
-                                kept[label] += 1
-                for x in _trends_of(t):
-                    tr[f"{x['label']} {x['direction']}"] += 1
+                            for r in live_streak_candidates(t, venue, subject, direction,
+                                                            min_len=PANEL_MIN_RUN):
+                                side_had_any = True
+                                raw = _raw_margin(r, p)
+                                if raw is None:
+                                    continue
+                                # The cross-check: production's verdict must agree with
+                                # this one's sign, or the curve below is for another rule.
+                                kept = _browse_margin(r, p) is not None
+                                if kept != (raw > 0):
+                                    mismatches[0] += 1
+                                if best_margin is None or raw > best_margin:
+                                    best_margin = raw
+                                if kept and r["run"] > best_run:
+                                    best_run = r["run"]
+                                label = f"{subject} {direction} ({venue})"
+                                if kept and (side_best is None
+                                             or (r["run"], raw) > side_best[0]):
+                                    side_best = ((r["run"], raw), label)
+                if (t["team_id"], side) not in seen_side:
+                    seen_side.add((t["team_id"], side))
+                    if side_best:
+                        shown[side_best[1]] += 1
+                    elif side_had_any:
+                        starved["carried a run, none unusual enough"] += 1
 
-        total_runs = sum(kept.values()) + sum(rejected.values())
-        print(f"\n  {total_runs} runs of {PANEL_MIN_RUN}+ exist across the sides playing; "
-              f"{sum(kept.values())} clear the division bar")
-        _table("KEPT — past what the division does", kept, total_runs)
-        _table("REJECTED — a run, but an ordinary one for that league", rejected,
-               total_runs)
-        _table("TRENDS", tr, sum(tr.values()))
+            game_margin.append(best_margin)
+            game_run.append(best_run)
+            game_trend.append(best_trend)
+
+        _curve("STREAKS — raise the division bar", "margin",
+               [(f"> {m}", sum(1 for x in game_margin if x is not None and x > m))
+                for m in MARGIN_STEPS], total)
+        _curve("STREAKS — raise the minimum run", "run",
+               [(f"{n}+", sum(1 for x in game_run if x >= n))
+                for n in range(PANEL_MIN_RUN, BROWSE_MAX_MIN_RUN + 1)], total)
+        _curve("TRENDS — raise the move required", "corners/g",
+               [(f">= {b}", sum(1 for x in game_trend if x is not None and x >= b))
+                for b in TREND_STEPS], total)
+
+        total_sides = sum(shown.values()) + sum(starved.values())
+        _table("SHOWN — the row a reader actually gets, per side", shown, total_sides)
+        _table("NOTHING TO SHOW", starved, total_sides)
 
     print(f"\n{BAR}")
+    if mismatches[0]:
+        print(f"!! {mismatches[0]} rows where this harness and _browse_margin disagreed — the")
+        print("   curves above are for a rule the site does not ship. Fix before reading.")
+    else:
+        print("The margin arithmetic here agrees with _browse_margin on every row.")
     print("HOW TO READ IT. The share is the number, not the count. A streak filter under")
     print("a tenth is hiding the site from the one screen meant to surface it; over a")
-    print("half it is not selecting anything. The REJECTED table is the other half of")
-    print("the question: if one subject is almost entirely rejected, its bar is wrong for")
-    print("that subject rather than the filter being strict — conceded and match totals")
-    print("run on different scales from a team's own corners and were, at one point, all")
-    print("being measured against the same number.")
+    print("half it is not selecting anything. Pick the knob off the curve where the share")
+    print("lands between a quarter and a third, and prefer raising the DIVISION BAR over")
+    print("the minimum run: a long run at an ordinary line is the thing worth removing,")
+    print("and raising the run removes short runs at remarkable lines as well.")
     print("NOTHING HERE IS A CONFIDENCE. It counts what the filter does. Whether a run")
     print("past the division's average predicts anything is a separate question that")
     print("measure_chase_board's method would have to answer.")

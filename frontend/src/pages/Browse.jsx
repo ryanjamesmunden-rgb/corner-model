@@ -10,6 +10,7 @@ import ErrorBoundary from "@/components/ErrorBoundary";
 import StarButton from "@/components/StarButton";
 import TeamStar from "@/components/TeamStar";
 import { flattenGames, byDay, dayIsOpen } from "@/lib/browseOrder";
+import { streakClaim } from "@/lib/fixtureStreaks";
 
 /**
  * The front door: what is on, and where.
@@ -103,14 +104,18 @@ const SHOWS = [
 const VENUE_TAG = { home: "Home", away: "Away", overall: "Overall" };
 
 /**
- * What a run is counting, in words.
+ * A run as a phrase, from fixtureStreaks so the two screens cannot word it differently.
  *
- * "6+" ALONE IS AMBIGUOUS across three subjects: six of their own corners, six in the
- * match, or six conceded are different claims and the row prints them identically. On
- * the collapsed line the team name carries enough context to guess; in a list of five
- * side by side it does not.
+ * "6+" ALONE IS AMBIGUOUS across three subjects — six of their own corners, six in the
+ * match, or six conceded are different claims and the row was printing them
+ * identically. Worse than ambiguous on a conceded run: "Arsenal under 4" reads as
+ * Arsenal winning under four, when it means Arsenal SHIPPING under four, which is the
+ * opposite side of the same game. fixtureStreaks had already fixed exactly this for the
+ * fixture panel and said so in a comment; the browse row reproduced it anyway, and I
+ * wrote in the commit that the team name "carries enough context to guess". It does not.
  */
-const SUBJECT_WORD = { team: "corners", match: "match total", conceded: "conceded" };
+const claimOf = (r) => streakClaim({ team: r.team, subject: r.subject,
+                                     label: r.line_label });
 
 const TrendMark = ({ direction }) =>
   direction === "up"
@@ -203,7 +208,7 @@ function Game({ game, onOpen, showWhere = false }) {
           {game.streak && (
             <span className="flex items-center gap-1 text-[11px] text-tone-streak-fg">
               <Flame className="h-3 w-3" />
-              {game.streak.team} {game.streak.line_label} · {game.streak.run} in a row
+              {claimOf(game.streak)} · {game.streak.run} in a row
               {/* WHICH FIVE. A run reported without its venue reads as home form when it
                   is overall form, which is a claim the page would be making up — and it
                   was made up, in published posts, before the panel started labelling. */}
@@ -246,9 +251,8 @@ function Game({ game, onOpen, showWhere = false }) {
                 <div key={`${r.team}-${r.subject}-${r.direction}-${r.line}-${r.venue}`}
                      className="flex items-baseline gap-x-2 gap-y-0.5 flex-wrap text-[11px]">
                   <Flame className="h-3 w-3 shrink-0 text-tone-streak-fg translate-y-0.5" />
-                  <span className="text-foreground whitespace-nowrap">{r.team}</span>
                   <span className="text-tone-streak-fg font-medium whitespace-nowrap">
-                    {SUBJECT_WORD[r.subject] || r.subject} {r.line_label}
+                    {claimOf(r)}
                   </span>
                   <span className="font-mono-data whitespace-nowrap">{r.run} in a row</span>
                   <span className="text-muted-foreground whitespace-nowrap">

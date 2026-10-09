@@ -69,6 +69,38 @@ export const subjectLabel = (subject) =>
     : subject === "conceded" ? "corners against them"
     : "their own corners");
 
+/**
+ * The verb that separates a run a side is ON from one it is SHIPPING.
+ *
+ * SINGLE-SOURCED because it is the whole difference between two opposite bets, and it
+ * is now needed in two places. "Brighton 5+" off a Brighton CONCEDED streak reads as
+ * backing Brighton's corners — the other side of the exact angle the row exists to
+ * find — and only the verb separates them.
+ */
+export const CONCEDE_VERB = "concede";
+
+/**
+ * A run as a phrase that stands on its own, for rows with no second line to carry the
+ * subject.
+ *
+ * DISTINCT FROM `claim` BELOW, which is the fixture panel's, and the difference is the
+ * context rather than taste. The panel prints `subjectText` underneath every row, so
+ * "Derby 10+" there sits above "in the match" and is unambiguous. A browse row has one
+ * line and no room for a second, so the subject has to be inside the phrase or it is
+ * simply missing — which it was: a conceded run rendered as "Arsenal under 4", a true
+ * sentence about a claim nobody made.
+ *
+ * `win` and `concede` are deliberately opposites. A match total gets no verb because
+ * there is no one doing it — it is a property of the fixture, not of either side.
+ */
+const CLAIM_WORD = { team: "win", conceded: CONCEDE_VERB, match: "match total" };
+
+export function streakClaim({ team, subject, label } = {}) {
+  const word = CLAIM_WORD[subject];
+  const parts = [team, word, label].filter(Boolean);
+  return parts.join(" ");
+}
+
 // The subjects the API actually sends. A WHITELIST, not a two-way normalisation: the
 // original `subject === "match" ? "match" : "team"` turned every unrecognised subject
 // into "team", so a conceded run would have printed "their own corners" — the exact
@@ -113,7 +145,7 @@ export const streakRow = (s = {}) => {
     // WHO THE BET IS ON, which on a conceded run is not whose run it is. "Brighton 5+"
     // off a Brighton CONCEDED streak reads as backing Brighton's corners — the opposite
     // side of the exact angle the row exists to find. The verb is what separates them.
-    claim: subject === "conceded" ? `${team} concede ${label}` : `${team} ${label}`,
+    claim: subject === "conceded" ? `${team} ${CONCEDE_VERB} ${label}` : `${team} ${label}`,
     // The side actually taking those corners next, when the API named them.
     opponent: s.opponent || null,
     venue,

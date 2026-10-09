@@ -257,3 +257,62 @@ def test_history_depth_says_why_a_replay_window_may_be_empty():
     d = hx.history_depth(teams)
     assert d["teams"] == 3 and d["min"] == 4 and d["max"] == 25 and d["median"] == 12
     assert d["with_20"] == 1 and d["with_10"] == 2
+
+
+class TestTheResidualIsTheResult:
+    """A hit rate on its own says nothing. 89% landed sounds like a result until you
+    notice the board priced those rows at 85% — the question is never "how often did it
+    land" but "how often did it land compared with what we said"."""
+
+    def test_it_is_actual_minus_what_the_board_claimed(self):
+        rows = [{"result": WIN, "prob": 50.0}, {"result": WIN, "prob": 50.0},
+                {"result": LOSS, "prob": 50.0}, {"result": LOSS, "prob": 50.0}]
+        t = hx.tally(rows)
+        assert t["hit_rate"] == 50.0 and t["mean_prob"] == 50.0
+        assert t["residual"] == 0.0, "landing exactly as often as claimed is zero"
+
+    def test_a_high_hit_rate_on_short_odds_is_not_an_edge(self):
+        rows = [{"result": WIN, "prob": 95.0}] * 9 + [{"result": LOSS, "prob": 95.0}]
+        t = hx.tally(rows)
+        assert t["hit_rate"] == 90.0
+        assert t["residual"] == -5.0, "90% against a 95% claim is a SHORTFALL"
+
+    def test_probabilities_stored_as_fractions_are_read_as_such(self):
+        # Snapshots carry prob as a fraction on some rows and a percentage on others.
+        # Guessing wrong moves the residual by a factor of a hundred.
+        frac = hx.tally([{"result": WIN, "prob": 0.7}, {"result": LOSS, "prob": 0.7}])
+        pct = hx.tally([{"result": WIN, "prob": 70.0}, {"result": LOSS, "prob": 70.0}])
+        assert frac["mean_prob"] == pct["mean_prob"] == 70.0
+        assert frac["residual"] == pct["residual"] == -20.0
+
+    def test_pending_rows_are_never_averaged_into_the_claim(self):
+        # A forecast on a game that has not happened cannot be compared with a result.
+        rows = [{"result": WIN, "prob": 50.0}, {"result": "pending", "prob": 99.0}]
+        t = hx.tally(rows)
+        assert t["priced"] == 1 and t["mean_prob"] == 50.0 and t["residual"] == 50.0
+
+    def test_rows_with_no_stored_probability_have_no_residual(self):
+        t = hx.tally([{"result": WIN}, {"result": LOSS}])
+        assert t["residual"] is None and t["mean_prob"] is None
+        assert t["hit_rate"] == 50.0, "the rate still stands; only the comparison goes"
+
+
+class TestTheIntervalRidesWithTheRate:
+    """46 settled is a small record and a bare percentage invites reading it as settled
+    fact. measure_calibration quotes Wilson for the same reason."""
+
+    def test_a_small_sample_gets_a_wide_interval(self):
+        t = hx.tally([{"result": WIN}] * 9 + [{"result": LOSS}])
+        assert t["hit_rate"] == 90.0
+        assert t["lo"] < 90.0 < t["hi"]
+        assert t["hi"] <= 100.0, "the interval must not run past certainty"
+
+    def test_a_bigger_sample_at_the_same_rate_narrows_it(self):
+        small = hx.tally([{"result": WIN}] * 9 + [{"result": LOSS}])
+        big = hx.tally([{"result": WIN}] * 90 + [{"result": LOSS}] * 10)
+        assert big["hit_rate"] == small["hit_rate"] == 90.0
+        assert (big["hi"] - big["lo"]) < (small["hi"] - small["lo"])
+
+    def test_nothing_settled_has_no_interval(self):
+        t = hx.tally([{"result": "pending"}])
+        assert t["lo"] is None and t["hi"] is None

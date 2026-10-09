@@ -58,6 +58,7 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
+from measure_calibration import wilson
 from server import (LOSS, OVER_LINE_FLOOR, WIN, _grade_entries, _grade_projections,
                     _src, _teams_for, db)
 
@@ -97,10 +98,32 @@ def _rate(landed, settled):
 def tally(rows, result_key="result"):
     landed = sum(1 for r in rows if r.get(result_key) == WIN)
     missed = sum(1 for r in rows if r.get(result_key) == LOSS)
-    pending = len(rows) - landed - missed
+    settled = landed + missed
+    # THE RESIDUAL, which is the number that decides whether a hit rate means anything.
+    # 89% landed sounds like a result until you notice the board was pricing those rows
+    # at 85% — the question is never "how often did it land" but "how often did it land
+    # COMPARED WITH WHAT WE SAID". measure_calibration is built entirely around this.
+    #
+    # Over the SETTLED rows with a stored probability only. Averaging in a pending row's
+    # forecast would compare a claim against a result that does not exist yet.
+    priced = [r for r in rows if r.get(result_key) in (WIN, LOSS)
+              and isinstance(r.get("prob"), (int, float))]
+    mean_p = (sum(r["prob"] for r in priced) / len(priced)) if priced else None
+    # Snapshots store prob as a percentage on some rows and a fraction on others; the
+    # mean tells us which, and guessing wrong would move the residual by a factor of 100.
+    if mean_p is not None and mean_p <= 1.0:
+        mean_p *= 100
+    actual = _rate(sum(1 for r in priced if r[result_key] == WIN), len(priced))
+    lo, hi = wilson(landed, settled)
     return {"rows": len(rows), "landed": landed, "missed": missed,
-            "settled": landed + missed, "pending": pending,
-            "hit_rate": _rate(landed, landed + missed)}
+            "settled": settled, "pending": len(rows) - settled,
+            "hit_rate": _rate(landed, settled),
+            "lo": round(lo, 1) if settled else None,
+            "hi": round(hi, 1) if settled else None,
+            "priced": len(priced),
+            "mean_prob": round(mean_p, 1) if mean_p is not None else None,
+            "residual": (round(actual - mean_p, 1)
+                         if mean_p is not None and actual is not None else None)}
 
 
 def projection_tally(rows):
@@ -300,14 +323,24 @@ async def gather(weeks=DEFAULT_WEEKS, window=DEFAULT_CONSISTENCY_WINDOW):
         streaks += [streak_row(s.get("tag"), g) for g in graded]
 
     teams = await db.teams.find({}, {"_id": 0}).to_list(5000)
-    consistency = [r for r in consistency_replay(teams, window)
+    depth = history_depth(teams)
+    # A WINDOW OF N NEEDS N+1 GAMES — N behind the fixture and the fixture itself. The
+    # sync stores a rolling twenty per team, so a twenty-game window can never grade
+    # anything, and the first run of this printed "nothing recorded in this range" for
+    # exactly that reason. That reads as "no side was ever 20 of 20", which is a claim
+    # about football; the truth is a claim about our storage. So the window drops to
+    # what the stored history can actually support, and the run says that it did.
+    used = window
+    if depth and depth.get("max", 0) <= window:
+        used = max(3, depth["max"] - 1)
+    consistency = [r for r in consistency_replay(teams, used)
                    if r["played_at"] >= cutoff]
 
     return {"projections": projections, "streaks": streaks,
-            "consistency": consistency,
+            "consistency": consistency, "window_used": used,
             "coverage": {"projection_tags": [s.get("tag") for s in psnaps],
                          "streak_tags": [s.get("tag") for s in ssnaps]},
-            "depth": history_depth(teams), "window": window, "weeks": weeks}
+            "depth": depth, "window": window, "weeks": weeks}
 
 
 def to_csv(rows):
@@ -377,12 +410,25 @@ def _show_weekly(title, rows, note=""):
         return
     t = tally(rows)
     print(f"  {t['rows']} rows · {t['settled']} settled · {t['landed']} landed · "
-          f"{t['pending']} pending · "
-          f"{'hit rate ' + str(t['hit_rate']) + '%' if t['hit_rate'] is not None else 'no rate yet'}")
-    print(f"\n  {'week':<10}{'rows':>6}{'settled':>9}{'landed':>8}{'rate':>8}")
+          f"{t['pending']} pending")
+    if t["hit_rate"] is not None:
+        print(f"  hit rate {t['hit_rate']}%  (95% interval {t['lo']}-{t['hi']}%"
+              f" on {t['settled']})")
+    if t["residual"] is not None:
+        verdict = ("beat its own price" if t["residual"] > 0 else
+                   "fell short of its own price" if t["residual"] < 0 else "matched it")
+        print(f"  the board priced these at {t['mean_prob']}% on average over "
+              f"{t['priced']} rows")
+        print(f"  RESIDUAL {t['residual']:+.1f} points — {verdict}. This, not the hit "
+              f"rate, is the result.")
+    print(f"\n  {'week':<10}{'rows':>6}{'settled':>9}{'landed':>8}{'rate':>8}"
+          f"{'priced':>8}{'resid':>8}")
     for w, s in weekly(rows):
         rate = f"{s['hit_rate']}%" if s["hit_rate"] is not None else "   -"
-        print(f"  {w:<10}{s['rows']:>6}{s['settled']:>9}{s['landed']:>8}{rate:>8}")
+        pr = f"{s['mean_prob']}%" if s["mean_prob"] is not None else "   -"
+        rs = f"{s['residual']:+.1f}" if s["residual"] is not None else "   -"
+        print(f"  {w:<10}{s['rows']:>6}{s['settled']:>9}{s['landed']:>8}{rate:>8}"
+              f"{pr:>8}{rs:>8}")
 
 
 async def run(weeks=DEFAULT_WEEKS, window=DEFAULT_CONSISTENCY_WINDOW, csv_kind=None):
@@ -426,12 +472,22 @@ async def run(weeks=DEFAULT_WEEKS, window=DEFAULT_CONSISTENCY_WINDOW, csv_kind=N
                  "wider than what was shown. Counting this as the record would count "
                  "claims\n  the site never made.")
 
-    _show_weekly(f"{window} OF {window} — REPLAYED, never snapshotted",
-                 data["consistency"],
-                 "NOT A RECORD. Rebuilt from each side's games strictly before each "
-                 "kick-off,\n  under today's rule, from today's stored history. It is "
-                 "the only way to see this\n  board at all, and it is not evidence of "
-                 "what anybody was shown.")
+    used = data.get("window_used", window)
+    note = ("NOT A RECORD. Rebuilt from each side's games strictly before each "
+            "kick-off,\n  under today's rule, from today's stored history. It is "
+            "the only way to see this\n  board at all, and it is not evidence of "
+            "what anybody was shown.")
+    if used != window:
+        note += (f"\n\n  ASKED FOR {window} OF {window} AND COULD NOT: a window of N "
+                 f"needs N+1 games — N behind\n  the fixture and the fixture itself — "
+                 f"and the sync stores at most "
+                 f"{(data.get('depth') or {}).get('max', '?')} per team.\n  Dropped to "
+                 f"{used} of {used}, which the stored history does support. An empty "
+                 f"section here\n  would have read as 'no side was ever "
+                 f"{window} of {window}', which is a claim about football;\n  the "
+                 f"truth is a claim about our storage.")
+    _show_weekly(f"{used} OF {used} — REPLAYED, never snapshotted",
+                 data["consistency"], note)
 
     print(f"\n{BAR}")
     print("HOW TO READ IT. The two recorded sections are the published record and are")

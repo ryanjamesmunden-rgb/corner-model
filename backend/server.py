@@ -6159,12 +6159,18 @@ PROJECTION_MAX_ROWS = 2000
 # trending. Measured in corners per game, against the team's OWN average rather than the
 # league's — a side going from four to six has changed; a side that always wins six has not.
 #
-# ONE CORNER A GAME, NOT ONE AND A HALF. At 1.5 the filter was close to empty: a corner and
-# a half per game over three games is most of a standard deviation, so it caught the odd
-# blow-out and nothing else, and a reader who picked "Trends" got four games out of two
-# hundred and reasonably concluded the thing was broken. A corner a game, sustained over
-# three, is a real move and there are dozens of them in a week.
-BROWSE_TREND_MIN = 1.0
+# TWO AND A HALF CORNERS A GAME, AND THAT NUMBER IS MEASURED. browse_audit sweeps this
+# knob against the share of the card that survives, and the three windows agree closely:
+#
+#     >= 1.0   90%     >= 2.0   50%     >= 2.5   28%     >= 3.0   17%
+#
+# 1.5 was the original guess and left the filter near empty on the old narrow rule; 1.0
+# was the overcorrection and kept nine games in ten, which is not a filter. 2.5 lands in
+# the quarter-to-a-third band that browse_audit argues for, at all of 3, 7 and 14 days.
+#
+# It is a big move to ask for and it should be: a side going from five corners a game to
+# seven and a half over three games has changed, and a side drifting by one has not.
+BROWSE_TREND_MIN = 2.5
 BROWSE_TREND_WINDOW = 3
 # Below this there is no "recent" to compare against the rest: three of five games IS the
 # season, and the delta would be noise with a direction printed on it.
@@ -6194,6 +6200,22 @@ BROWSE_SUBJECTS = ("team", "match", "conceded")
 # the game for you.
 BROWSE_MAX_MIN_RUN = 10
 
+# How far past its division's average a run's line has to sit to be worth a reader's
+# time, in corners per game. MEASURED, not guessed — browse_audit sweeps it:
+#
+#     > 0.0   53%     > 0.75   37%     > 1.0   32%     > 1.25   26%     > 1.5   18%
+#
+# The first version used "strictly past the average" (> 0.0) and kept over half the card,
+# which is a filter that has stopped selecting. A full corner clear of what the division
+# does lands at 32%, consistently across 3, 7 and 14 days, and says something a reader
+# can check: not "above average" but "a corner a game above average".
+#
+# RAISING THIS RATHER THAN THE MINIMUM RUN is deliberate. Both reach the same share — 6+
+# alone gets to 31% — but raising the run deletes SHORT runs at remarkable lines, which
+# are the rows worth having, while this deletes LONG runs at ordinary lines, which are
+# the rows that were drowning them. The run is the reader's knob now; this is the floor.
+BROWSE_MIN_MARGIN = 1.0
+
 
 def _browse_margin(run: dict, par: Dict[str, float]) -> Optional[float]:
     """How far this run's line sits past what the division does, in corners — or None.
@@ -6217,9 +6239,11 @@ def _browse_margin(run: dict, par: Dict[str, float]) -> Optional[float]:
     if avg is None:
         return None
     margin = (run["line"] - avg) if run["direction"] == "over" else (avg - (run["line"] - 1))
-    # STRICTLY PAST IT. A line sitting exactly ON the division's average is the ordinary
-    # result described at length — "conceded 4+ in six" in a league that concedes four.
-    return margin if margin > 0 else None
+    # CLEAR OF IT, NOT MERELY PAST IT. A line sitting on the division's average is the
+    # ordinary result — "conceded 4+ in six" in a league that concedes four — and a line
+    # a quarter of a corner past it is the same sentence with rounding. See the note on
+    # BROWSE_MIN_MARGIN for the measurement that set the distance.
+    return margin if margin >= BROWSE_MIN_MARGIN else None
 
 
 def _browse_streak(team: dict, par: Dict[str, float], venue: str,

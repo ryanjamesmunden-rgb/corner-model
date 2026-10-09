@@ -302,17 +302,37 @@ class TestTheStreakBarIsTheLeaguesNotTheTeams:
         assert server._browse_margin(over8, par(9.5)) is None
 
     def test_an_under_is_judged_on_the_ceiling_it_held_not_its_line(self):
-        # "under 6" wins at five or fewer and voids at six, so the ceiling actually held is
-        # FIVE, and five is what has to beat the division. The two readings differ by
-        # exactly one corner and disagree on sign for a whole band of divisions — 5.5 here
-        # — so this is not a quibble: comparing the line would throw away every under that
-        # holds a side one rung below average, which is most of the real ones.
+        # "under 6" wins at five or fewer and voids at six, so the ceiling actually held
+        # is FIVE, and five is what has to clear the division. The two readings differ by
+        # exactly one corner, so for a whole band of divisions they disagree about
+        # whether the row survives at all — this is not a quibble. Comparing the line
+        # would throw away every under holding a side a rung below average, which is most
+        # of the real ones.
+        #
+        # STATED AGAINST THE CONSTANT, not against a number copied out of it, so that
+        # moving the bar on evidence does not silently turn this into a test of nothing.
+        bar = server.BROWSE_MIN_MARGIN
+        avg = 6.0
         under6 = {"subject": "team", "direction": "under", "line": 6}
-        assert server._browse_margin(under6, par(5.5)) == 0.5
-        # And one rung higher is NOT a finding in the same division: "under 7" is a ceiling
-        # of six, above what the division does, so it says nothing about the side.
+        ceiling_view = avg - 5          # what the rule measures
+        line_view = avg - 6             # what comparing the line would measure
+        assert ceiling_view >= bar > line_view, "the fixture no longer separates the two"
+        assert server._browse_margin(under6, par(avg)) == ceiling_view
+
+    def test_and_a_rung_looser_says_nothing_in_the_same_division(self):
+        # "under 7" is a ceiling of six in a division that does six: a true sentence
+        # about the sport rather than about the side.
         assert server._browse_margin(
-            {"subject": "team", "direction": "under", "line": 7}, par(5.5)) is None
+            {"subject": "team", "direction": "under", "line": 7}, par(6.0)) is None
+
+    def test_a_line_merely_past_the_average_is_not_enough(self):
+        # The measured change: "strictly past it" kept over half the card. A quarter of a
+        # corner past the division average is the same sentence with rounding.
+        assert server._browse_margin(
+            {"subject": "team", "direction": "over", "line": 6}, par(5.75)) is None
+        assert server._browse_margin(
+            {"subject": "team", "direction": "over", "line": 6},
+            par(6.0 - server.BROWSE_MIN_MARGIN)) == server.BROWSE_MIN_MARGIN
 
     def test_a_line_exactly_on_the_average_is_not_past_it(self):
         assert server._browse_margin(

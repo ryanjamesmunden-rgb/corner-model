@@ -2472,6 +2472,7 @@ TOOL_SCRIPTS = {"backfill_shots": "backfill_shots.py", "measure_features": "meas
                 "watchlist": "watchlist.py",
                 "press_board": "press_board.py",
                 "browse_audit": "browse_audit.py",
+                "chase_angle": "chase_angle.py",
                 "backfill_fh": "backfill_fh.py",
                 "backfill_goal_events": "backfill_goal_events.py",
                 "probe_corner_halves": "probe_corner_halves.py",
@@ -2494,6 +2495,7 @@ TOOL_COOLDOWN = {"backfill_shots": 600, "measure_features": 120,
                  "watchlist": 120,
                  "press_board": 120,
                  "browse_audit": 120,
+                 "chase_angle": 120,
                  "backfill_fh": 120,
                  "backfill_goal_events": 600,
                  "probe_corner_halves": 600,
@@ -2579,6 +2581,15 @@ MEASURE_MODES = {
     # db.fixtures. It counts what the filter does; it does not measure whether the
     # filter is right, which would need a control.
     "browse_audit": ("browse_audit", [], True),
+    # A CORNER SIDE THAT LEAKS GOALS, against a solid winner that gives corners up.
+    # The inverse premise to press_board: there, our attack cannot convert and the
+    # pressure becomes corners; here our DEFENCE fails, so our side spends the game
+    # behind and chases. Corner bars are league-relative, goal bars absolute, and
+    # the sample floors are press_board's. Reads db.fixtures and db.teams.
+    # UNMEASURED, and says so on every run: the per-game form of this premise was
+    # tested five times and came out flat, and the season-shape form has not been
+    # tested at all. A list of fixtures to look at, never a card.
+    "chase_angle": ("chase_angle", [], True),
     # IS THERE ANYTHING FOR THE PREVIOUS MEETINGS PANEL TO SHOW. The panel renders nothing
     # when a pairing has no stored meeting — correctly, since an empty one would have to
     # choose between "no history on file" and "they have never met" — and that makes a

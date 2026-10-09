@@ -3111,28 +3111,71 @@ async def get_teams(league_id: str, split: str = "overall", window: int = 5, use
     return out
 
 
+CORNER_TABLE_SPLITS = ("overall", "home", "away")
+
+
+def _corner_table_split(matches: List[dict], split: str) -> dict:
+    """One venue's row for a team: corners both ways, and the shot columns behind them.
+
+    `covered` RIDES ON EVERY SHOT FIGURE, because the provider's coverage of shots is not
+    the coverage of corners — a side can have twelve games of corner data and four of
+    shots on target, and an average over four games sorted into a league table looks
+    exactly like an average over twelve. A column that can quietly be a four-game sample
+    has to say so, and the figure is None rather than zero where nothing is covered:
+    "no data" and "no shots" are different claims and only one of them is true.
+    """
+    pool = (matches if split == "overall"
+            else [m for m in matches if bool(m.get("home")) == (split == "home")])
+    n = len(pool)
+    feats = team_features(pool)
+    return {
+        "games": n,
+        "corners_won": round(sum(m["corners_for"] for m in pool) / n, 2) if n else None,
+        "corners_conceded": round(sum(m["corners_against"] for m in pool) / n, 2) if n else None,
+        "shots": feats["shots_for"],
+        "shots_against": feats["shots_against"],
+        "shots_on_target": feats["shots_on_target_for"],
+        "shots_on_target_against": feats["shots_on_target_against"],
+        "covered": {"shots": feats["covered"]["shots"],
+                    "shots_on_target": feats["covered"]["shots_on_target"]},
+    }
+
+
 @api_router.get("/leagues/{league_id}/corner-table")
 async def corner_table(league_id: str, user: dict = Depends(get_current_user)):
-    """Corner-league standings: teams ranked by corners won/game, with shots taken/game (real data)."""
+    """Corner-league standings: teams with corners won and conceded, and the shot columns.
+
+    ALL THREE VENUES IN ONE PAYLOAD. A league has twenty-odd teams and three splits of a
+    handful of numbers each, which is smaller than the page already carries — and sending
+    them together means switching to "away" is instant and cannot show a split that
+    disagrees with the one beside it. A per-venue request would also have to decide what
+    to show while it was in flight, which is a problem this does not have.
+
+    AND THE SORT IS THE CALLER'S. Everything needed to rank by any column is here, so the
+    table reorders in the browser. A server-side sort would be a round trip to reorder
+    twenty rows that are already on screen.
+
+    The top-level corners/shots fields are the OVERALL split, kept flat because that is
+    the shape this endpoint has always had.
+    """
     teams = await db.teams.find({"league_id": league_id}, {"_id": 0}).to_list(200)
     league = await db.leagues.find_one({"league_id": league_id}, {"_id": 0}) or {}
     out = []
     for t in teams:
         real = t.get("real_matches") or []
-        n = len(real)
-        if n == 0:
-            won = concd = shots = 0.0
-        else:
-            won = sum(m["corners_for"] for m in real) / n
-            concd = sum(m["corners_against"] for m in real) / n
-            shots = sum(m.get("shots_for", 0) for m in real) / n
+        splits = {s: _corner_table_split(real, s) for s in CORNER_TABLE_SPLITS}
+        o = splits["overall"]
         feats = team_features(real)
-        out.append({"team_id": t["team_id"], "name": t["name"], "games": n,
-                    "corners_won": round(won, 2), "corners_conceded": round(concd, 2),
-                    "shots": round(shots, 1), "real_samples": t.get("real_samples", 0),
+        out.append({"team_id": t["team_id"], "name": t["name"], "games": o["games"],
+                    # Flat and zero-filled, as this endpoint has always returned them.
+                    "corners_won": o["corners_won"] or 0.0,
+                    "corners_conceded": o["corners_conceded"] or 0.0,
+                    "shots": o["shots"] or 0.0,
+                    "real_samples": t.get("real_samples", 0),
                     "shots_on_target": feats["shots_on_target_for"],
                     "blocked_shots": feats["blocked_shots_for"],
                     "dangerous_attacks": feats["dangerous_attacks_for"],
+                    "splits": splits,
                     "features": feats})
     out.sort(key=lambda x: x["corners_won"], reverse=True)
     return {"league_id": league_id, "league_name": league.get("name", league_id),

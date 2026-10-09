@@ -5,6 +5,7 @@ import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { Toaster } from "sonner";
 import Layout from "@/components/Layout";
 import { AuthProvider } from "@/context/AuthContext";
+import { Analytics } from "@vercel/analytics/react";
 
 // Each route is its own chunk: landing on the Scanner shouldn't download and parse
 // Streaks and the fixture detail page before it can paint.
@@ -85,6 +86,7 @@ function App() {
           <Toaster theme="dark" position="top-right" richColors />
         </BrowserRouter>
       </AuthProvider>
+      <Analytics />
     </div>
   );
 }

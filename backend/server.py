@@ -2471,6 +2471,7 @@ TOOL_SCRIPTS = {"backfill_shots": "backfill_shots.py", "measure_features": "meas
                 "audit_signups": "audit_signups.py",
                 "watchlist": "watchlist.py",
                 "press_board": "press_board.py",
+                "browse_audit": "browse_audit.py",
                 "backfill_fh": "backfill_fh.py",
                 "backfill_goal_events": "backfill_goal_events.py",
                 "probe_corner_halves": "probe_corner_halves.py",
@@ -2492,6 +2493,7 @@ TOOL_COOLDOWN = {"backfill_shots": 600, "measure_features": 120,
                  "audit_bets": 120, "audit_signups": 120,
                  "watchlist": 120,
                  "press_board": 120,
+                 "browse_audit": 120,
                  "backfill_fh": 120,
                  "backfill_goal_events": 600,
                  "probe_corner_halves": 600,
@@ -2569,6 +2571,14 @@ MEASURE_MODES = {
     # games, so thin rows are ranked apart rather than allowed to lead. Not measured
     # against a control, and says so on every run. Reads db.fixtures and db.teams.
     "press_board": ("press_board", [], True),
+    # HOW MUCH THE FRONT DOOR'S FILTERS ACTUALLY KEEP. The streak filter on /browse
+    # has been tuned three times on reasoning and never once on a count — it kept
+    # everything, then kept ordinary sides, then came back nearly empty. This prints
+    # the share each filter keeps and, as importantly, the runs the margin rule threw
+    # away, broken down by subject, direction and venue. Reads db.teams and
+    # db.fixtures. It counts what the filter does; it does not measure whether the
+    # filter is right, which would need a control.
+    "browse_audit": ("browse_audit", [], True),
     # IS THERE ANYTHING FOR THE PREVIOUS MEETINGS PANEL TO SHOW. The panel renders nothing
     # when a pairing has no stored meeting — correctly, since an empty one would have to
     # choose between "no history on file" and "they have never met" — and that makes a
@@ -6047,54 +6057,107 @@ PROJECTION_MAX_ROWS = 2000
 # than being fetched per league: thirty-odd competitions over a week is a few hundred rows,
 # which is smaller than the fixture board this page replaces as the landing screen.
 
-# How far a team's recent corner rate has to have moved from its own season rate to count
-# as trending. Measured in corners per game, against the team's OWN average rather than the
+# How far a team's recent rate has to have moved from its own season rate to count as
+# trending. Measured in corners per game, against the team's OWN average rather than the
 # league's — a side going from four to six has changed; a side that always wins six has not.
-BROWSE_TREND_MIN = 1.5
+#
+# ONE CORNER A GAME, NOT ONE AND A HALF. At 1.5 the filter was close to empty: a corner and
+# a half per game over three games is most of a standard deviation, so it caught the odd
+# blow-out and nothing else, and a reader who picked "Trends" got four games out of two
+# hundred and reasonably concluded the thing was broken. A corner a game, sustained over
+# three, is a real move and there are dozens of them in a week.
+BROWSE_TREND_MIN = 1.0
 BROWSE_TREND_WINDOW = 3
 # Below this there is no "recent" to compare against the rest: three of five games IS the
 # season, and the delta would be noise with a direction printed on it.
 BROWSE_TREND_MIN_GAMES = 6
 
+# BOTH ENDS OF A TEAM, not just the corners they win. A side suddenly conceding two more
+# corners a game is exactly as interesting as one suddenly winning them, and it is the half
+# that finds the fixture — the trend belongs to the defence and the bet to their opponent.
+# Leaving it out halved the list for no reason anybody could have defended.
+BROWSE_TREND_SUBJECTS = (("team", "corners"), ("conceded", "corners conceded"))
 
-def _browse_streak(team: dict, league_avg: float) -> Optional[dict]:
-    """The run going into this side's next game, if it is one worth opening a game for.
+# Every subject a browse row will flag a run on. The same three the fixture panel walks:
+# this filter decides which game to open, and "the opponent has conceded 6+ in seven" is
+# as good a reason to open one as anything a team's own attack has done.
+BROWSE_SUBJECTS = ("team", "match", "conceded")
 
-    STRICTER THAN THE FIXTURE PANEL, DELIBERATELY, and the two answer different questions.
-    The panel says what is running into a game you have already chosen; this decides
-    whether to put the game in front of you at all.
 
-    Left at the panel's bar the filter does nothing: OVER_LINE_FLOOR is 3, so almost every
-    side in football is on a run of "3+ corners in N straight", and "show me games with a
-    streak" would hand back the entire fixture list with a badge on it. A filter that
-    keeps everything has been turned off.
+def _browse_margin(run: dict, par: Dict[str, float]) -> Optional[float]:
+    """How far this run's line sits past what the division does, in corners — or None.
 
     THE BAR IS THE LEAGUE'S AVERAGE, NOT THE TEAM'S, and that is the second attempt. A
     team-relative bar looked right and let an ordinary side through: a run is reported at
     the HIGHEST line it held, which for a low-variance side is simply its floor — so
     "4+ in six straight" from a team that wins four or five every week cleared its own
     average and read as a streak. It is not one; it is a description of that team.
-    Unusual has to be measured against the division, which is what makes "8+ in eight"
-    worth a reader's time and "4+ in six" not.
+
+    AN UNDER IS MEASURED ON THE CEILING IT ACTUALLY HELD, which is one below its line:
+    "under 6" wins at five or fewer and voids at six. Measuring the line itself would let
+    "under 6" through in a division averaging five and a half, where keeping a side under
+    six is the ordinary result rather than a finding.
+
+    None means the run is not unusual for its division, whatever its length — which is the
+    whole reason this exists, because every side in football is on some run at
+    OVER_LINE_FLOOR and a filter that keeps everything has been turned off.
     """
-    run = live_streak(team, "overall", "team", "over", min_len=PANEL_MIN_RUN)
-    if not run:
+    avg = par.get(run["subject"])
+    if avg is None:
         return None
-    return run if run["line"] >= league_avg else None
+    margin = (run["line"] - avg) if run["direction"] == "over" else (avg - (run["line"] - 1))
+    # STRICTLY PAST IT. A line sitting exactly ON the division's average is the ordinary
+    # result described at length — "conceded 4+ in six" in a league that concedes four.
+    return margin if margin > 0 else None
 
 
-def _trend_of(team: dict) -> Optional[str]:
-    """up / down / None — where this side's corner rate has been going lately."""
-    vals = [m["corners_for"] for m in _src(team)]
-    if len(vals) < BROWSE_TREND_MIN_GAMES:
-        return None
-    recent = vals[-BROWSE_TREND_WINDOW:]
-    delta = (sum(recent) / len(recent)) - (sum(vals) / len(vals))
-    if delta >= BROWSE_TREND_MIN:
-        return "up"
-    if delta <= -BROWSE_TREND_MIN:
-        return "down"
-    return None
+def _browse_streak(team: dict, par: Dict[str, float], venue: str) -> Optional[dict]:
+    """The best run this side brings to a game at `venue`, if any is worth opening it for.
+
+    EVERY SUBJECT AND BOTH DIRECTIONS, which is the fix for a filter that came back nearly
+    empty. It began as one slice — a team's own corners, over, overall — which is a sixth
+    of what the fixture panel shows and under a third of what the streak board publishes,
+    so "show me games with a streak" hid most of the streaks on the site. The panel's
+    reasoning applies unchanged here: unders are the same kind of story as overs, and a
+    defence being got at is the same kind of story as an attack getting at one.
+
+    STILL STRICTER THAN THE PANEL, via _browse_margin. The panel says what is running into
+    a game you have already chosen; this decides whether to put the game in front of you.
+
+    Best means longest, then furthest past the division's average — so of two six-game
+    runs the reader is offered the more unusual one.
+    """
+    best, best_key = None, None
+    for subject in BROWSE_SUBJECTS:
+        for direction in ("over", "under"):
+            run = live_streak(team, venue, subject, direction, min_len=PANEL_MIN_RUN)
+            if not run:
+                continue
+            margin = _browse_margin(run, par)
+            if margin is None:
+                continue
+            key = (run["run"], margin)
+            if best_key is None or key > best_key:
+                best, best_key = {**run, "margin": round(margin, 2)}, key
+    return best
+
+
+def _trends_of(team: dict) -> List[dict]:
+    """Where this side's corner rates have been going lately, both ends of them."""
+    out = []
+    for subject, label in BROWSE_TREND_SUBJECTS:
+        vals = [streak_value(m, subject) for m in _src(team)]
+        if len(vals) < BROWSE_TREND_MIN_GAMES:
+            continue
+        recent = vals[-BROWSE_TREND_WINDOW:]
+        delta = (sum(recent) / len(recent)) - (sum(vals) / len(vals))
+        if abs(delta) < BROWSE_TREND_MIN:
+            continue
+        out.append({"subject": subject, "label": label,
+                    "direction": "up" if delta > 0 else "down",
+                    "recent": round(sum(recent) / len(recent), 2),
+                    "season": round(sum(vals) / len(vals), 2)})
+    return out
 
 
 BROWSE_SHOWS = ("all", "streaks", "trends")
@@ -6108,8 +6171,9 @@ async def browse(days: int = 7, show: str = "all", day: Optional[str] = None,
     `show` FILTERS THE GAMES THEMSELVES, not just how they are drawn:
 
       all      every upcoming fixture
-      streaks  only games with a live run of PANEL_MIN_RUN+ going into them
-      trends   only games where one side's corner rate has moved from its own norm
+      streaks  only games with a live run of PANEL_MIN_RUN+ going into them, at a line
+               the division itself does not reach
+      trends   only games where a side's corners won or conceded have moved from its norm
 
     THE COUNTS FOLLOW THE FILTER. A league that reads "12 games" and opens to show two is
     worse than one that reads two — the number is what a reader decides to open on, so it
@@ -6133,10 +6197,11 @@ async def browse(days: int = 7, show: str = "all", day: Optional[str] = None,
     computed after `show` and BEFORE `day`, so the chips say what is available rather than
     collapsing to the one that is selected.
 
-    THE STREAK FLAG IS STRICTER THAN THE FIXTURE PANEL and _browse_streak says why: left
+    THE STREAK FLAG IS STRICTER THAN THE FIXTURE PANEL and _browse_margin says why: left
     at the panel's bar this filter would return the whole fixture list with a badge on it.
-    One subject and one direction — a team's own corners, over — because this decides
-    which game to open, not what the panel will then say about it.
+    It walks the same three subjects and both directions the panel does, though — see
+    _browse_streak — because a narrower slice than that hid most of the site's streaks
+    from the one filter whose job is to find them.
     """
     days = max(1, min(int(days), BOARD_MAX_DAYS))
     show = show if show in BROWSE_SHOWS else "all"
@@ -6146,23 +6211,25 @@ async def browse(days: int = 7, show: str = "all", day: Optional[str] = None,
     by_id = {t["team_id"]: t for t in teams}
     leagues = {l["league_id"]: l for l in await db.leagues.find({}, {"_id": 0}).to_list(200)}
 
-    # Computed once per team rather than once per fixture: a side plays at most a couple of
-    # games in the window and the ladder walk is the expensive half.
-    # Corners won per team per game, per league — the same yardstick mismatch_angle
-    # measures a side against, so "unusual" means one thing across the site.
-    by_league = defaultdict(list)
+    # What each division does per game, per streak subject — the yardstick a run's line has
+    # to beat to be worth putting a game in front of somebody. Corners won is the same
+    # yardstick mismatch_angle measures a side against, so "unusual" means one thing
+    # across the site; conceded and match totals are computed rather than inferred from it
+    # because a league with partial data does not balance.
+    by_league: Dict[str, Dict[str, list]] = defaultdict(lambda: defaultdict(list))
     for t in teams:
-        by_league[t["league_id"]] += [m["corners_for"] for m in _src(t)]
-    league_avg = {k: (sum(v) / len(v) if v else 5.0) for k, v in by_league.items()}
-
-    flags = {}
-    for t in teams:
-        avg = league_avg.get(t["league_id"], 5.0)
-        flags[t["team_id"]] = {"streak": _browse_streak(t, avg), "trend": _trend_of(t)}
+        for m in _src(t):
+            for subject in BROWSE_SUBJECTS:
+                by_league[t["league_id"]][subject].append(streak_value(m, subject))
+    league_par = {lid: {s: (sum(v) / len(v) if v else None) for s, v in subs.items()}
+                  for lid, subs in by_league.items()}
 
     now = datetime.now(timezone.utc)
     horizon = now + timedelta(days=days)
-    out: Dict[str, dict] = {}
+    # Fixtures first, so the ladder walk below runs over the few hundred teams playing in
+    # the window rather than every team the model carries. It is 18 runs per team now, and
+    # on a three-day window most of the database is not playing.
+    upcoming = []
     for fx in await db.fixtures.find({}, {"_id": 0}).to_list(5000):
         try:
             dt = datetime.fromisoformat((fx.get("date") or "").replace("Z", "+00:00"))
@@ -6175,13 +6242,35 @@ async def browse(days: int = 7, show: str = "all", day: Optional[str] = None,
         home, away = by_id.get(fx["home_team_id"]), by_id.get(fx["away_team_id"])
         if not home or not away:
             continue
-        hf, af = flags.get(home["team_id"], {}), flags.get(away["team_id"], {})
-        # The longest run going in, carrying WHOSE it is — a row on a filtered list has to
-        # say why it is there, not merely that it survived the filter.
-        runs = [{**r, "team": name} for r, name in
-                ((hf.get("streak"), home["name"]), (af.get("streak"), away["name"])) if r]
-        trends = [(home["name"], hf.get("trend")), (away["name"], af.get("trend"))]
-        trends = [{"team": n, "direction": d} for n, d in trends if d]
+        upcoming.append((fx, dt, home, away))
+
+    # Computed once per team rather than once per fixture: a side plays at most a couple of
+    # games in the window and the ladder walk is the expensive half. Both venues as well as
+    # overall, because for most of a season only one of them is long enough to mean anything
+    # and which one changes — fixture_streaks' note has the argument in full.
+    flags: Dict[str, dict] = {}
+    for _fx, _dt, *sides in upcoming:
+        for t in sides:
+            if t["team_id"] in flags:
+                continue
+            par = league_par.get(t["league_id"], {})
+            flags[t["team_id"]] = {
+                **{v: _browse_streak(t, par, v) for v in ("overall", "home", "away")},
+                "trends": _trends_of(t),
+            }
+
+    out: Dict[str, dict] = {}
+    for fx, dt, home, away in upcoming:
+        # EVERY RUN BOTH SIDES BRING IN, carrying WHOSE it is and at which venue — a row on
+        # a filtered list has to say why it is there, not merely that it survived the
+        # filter, and "4 in a row" without "at home" was the complaint that made the panel
+        # label its venues in the first place.
+        runs, trends = [], []
+        for t, name, side in ((home, home["name"], "home"), (away, away["name"], "away")):
+            f = flags.get(t["team_id"], {})
+            for r in _venue_and_overall(f.get(side), f.get("overall")):
+                runs.append({**r, "team": name})
+            trends += [{**tr, "team": name} for tr in f.get("trends") or []]
         if show == "streaks" and not runs:
             continue
         if show == "trends" and not trends:
@@ -6199,8 +6288,16 @@ async def browse(days: int = 7, show: str = "all", day: Optional[str] = None,
             "fixture_id": fx["fixture_id"], "date": fx["date"],
             "day": dt.astimezone(VALUE_PICK_TZ).date().isoformat(),
             "home": fx["home_name"], "away": fx["away_name"],
+            # THE TEAM IDS, so a row can offer "follow this club" beside "save this game".
+            # The two are different bookmarks — one is spent when the game kicks off and
+            # the other is not — and the page cannot offer the second without an id.
+            "home_team_id": home["team_id"], "away_team_id": away["team_id"],
             "round": fx.get("round"),
-            "streak": max(runs, key=lambda r: r["run"]) if runs else None,
+            # The best one on the row, and how many there are behind it. "+3 more" is the
+            # difference between a game with one quirk and a game where everything lines
+            # up, and the row has no space to print all four.
+            "streak": max(runs, key=lambda r: (r["run"], r.get("margin") or 0)) if runs else None,
+            "streak_count": len(runs),
             "trends": trends,
         })
 

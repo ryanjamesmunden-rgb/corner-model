@@ -7,6 +7,8 @@ import { api } from "@/lib/api";
 import { kickoffLabel } from "@/lib/kickoff";
 import { flagFor } from "@/lib/countryFlag";
 import ErrorBoundary from "@/components/ErrorBoundary";
+import StarButton from "@/components/StarButton";
+import TeamStar from "@/components/TeamStar";
 
 /**
  * The front door: what is on, and where.
@@ -24,6 +26,16 @@ import ErrorBoundary from "@/components/ErrorBoundary";
  * lists, and the counts beside every country and league follow the filter — a league
  * reading "12" that opens to two is worse than one reading two, because the count is what
  * a reader decides to open on.
+ *
+ * OPEN SECTIONS ARE TINTED, not only chevron-rotated. With eight countries expanded the
+ * chevrons are the only thing saying where one open block ends and the next begins, and a
+ * 90° rotation is a poor edge to find while scrolling. A lifted background gives the open
+ * block a body, so the header you are looking at belongs to something visible.
+ *
+ * A ROW CARRIES BOTH BOOKMARKS. Starring the fixture and following a club are different
+ * intentions — one is spent when the game kicks off and the other is not — so the row
+ * offers the star once and the bell once per side. Different icons on purpose; see
+ * TeamStar's note.
  */
 
 const DAYS = [3, 7, 14, 28];
@@ -57,28 +69,55 @@ const SHOWS = [
   { v: "all", label: "All games",
     blurb: "Every fixture in the window." },
   { v: "streaks", label: "Streaks",
-    blurb: "Only games with a live run going in, at a line above what the division does." },
+    blurb: "Games with a run of five or more going in — corners won, conceded or the match "
+         + "total, over or under — at a line the division itself does not reach." },
   { v: "trends", label: "Trends",
-    blurb: "Only games where a side's corner rate has moved from its own norm." },
+    blurb: "Games where a side's corners won or conceded have moved a corner a game or "
+         + "more from their own season rate." },
 ];
+
+/** Home / Away / Overall, so "5 in a row" says which five. */
+const VENUE_TAG = { home: "Home", away: "Away", overall: "Overall" };
 
 const TrendMark = ({ direction }) =>
   direction === "up"
     ? <TrendingUp className="h-3.5 w-3.5 text-tone-strong-fg" />
     : <TrendingDown className="h-3.5 w-3.5 text-amber-400" />;
 
+/**
+ * One fixture.
+ *
+ * A DIV WITH role="button", NOT A BUTTON, because it contains three of its own — the
+ * fixture star and a bell per side. A button inside a button is invalid markup that the
+ * HTML parser silently unnests, which is a strange way to find out. Same shape as
+ * FixtureBoard's row, keyboard included.
+ */
 function Game({ game, onOpen }) {
   return (
-    <button
+    <div
+      role="button"
+      tabIndex={0}
       onClick={onOpen}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onOpen(); }
+      }}
       data-testid={`browse-game-${game.fixture_id}`}
-      className="w-full text-left px-3 py-2.5 rounded-md hover:bg-secondary/60
+      className="w-full text-left px-3 py-2.5 rounded-md hover:bg-secondary/60 cursor-pointer
                  transition-colors border border-transparent hover:border-border"
     >
-      <div className="flex items-baseline gap-2 flex-wrap">
+      {/* items-center, not items-baseline: the star and the bells are buttons, and a
+          button has no text baseline to align to, so they floated a few pixels high. */}
+      <div className="flex items-center gap-1.5 flex-wrap">
+        <StarButton fixtureId={game.fixture_id} />
         <span className="text-sm font-medium">{game.home}</span>
+        {game.home_team_id && (
+          <TeamStar teamId={game.home_team_id} teamName={game.home} />
+        )}
         <span className="text-[11px] text-muted-foreground">v</span>
         <span className="text-sm font-medium">{game.away}</span>
+        {game.away_team_id && (
+          <TeamStar teamId={game.away_team_id} teamName={game.away} />
+        )}
         <span className="ml-auto text-[11px] text-muted-foreground font-mono-data">
           {kickoffLabel(game.date)}
         </span>
@@ -91,32 +130,49 @@ function Game({ game, onOpen }) {
             <span className="flex items-center gap-1 text-[11px] text-tone-streak-fg">
               <Flame className="h-3 w-3" />
               {game.streak.team} {game.streak.line_label} · {game.streak.run} in a row
+              {/* WHICH FIVE. A run reported without its venue reads as home form when it
+                  is overall form, which is a claim the page would be making up — and it
+                  was made up, in published posts, before the panel started labelling. */}
+              <span className="text-muted-foreground">
+                ({(VENUE_TAG[game.streak.venue] || "Overall").toLowerCase()})
+              </span>
+              {game.streak_count > 1 && (
+                <span className="text-muted-foreground">+{game.streak_count - 1} more</span>
+              )}
             </span>
           )}
           {(game.trends || []).map((t) => (
-            <span key={t.team} className="flex items-center gap-1 text-[11px] text-muted-foreground">
+            <span key={`${t.team}-${t.subject}`}
+                  className="flex items-center gap-1 text-[11px] text-muted-foreground">
               <TrendMark direction={t.direction} />
-              {t.team} corners {t.direction}
+              {t.team} {t.label || "corners"} {t.direction}
+              <span className="font-mono-data opacity-70">
+                {t.recent?.toFixed ? t.recent.toFixed(1) : t.recent}
+                {" v "}
+                {t.season?.toFixed ? t.season.toFixed(1) : t.season}
+              </span>
             </span>
           ))}
         </div>
       )}
-    </button>
+    </div>
   );
 }
 
 function League({ league, open, onToggle }) {
   const navigate = useNavigate();
   return (
-    <div className="border-t border-border/60">
+    <div className={`border-t border-border/60 transition-colors ${
+                     open ? "bg-secondary/40" : ""}`}
+         data-open={open ? "1" : "0"}>
       <button
         onClick={onToggle}
         data-testid={`browse-league-${league.league_id}`}
-        className="w-full flex items-center gap-2 px-3 py-2.5 hover:bg-secondary/40
-                   transition-colors text-left"
+        className={`w-full flex items-center gap-2 px-3 py-2.5 text-left transition-colors ${
+          open ? "bg-secondary/80" : "hover:bg-secondary/40"}`}
       >
-        <ChevronRight className={`h-3.5 w-3.5 text-muted-foreground transition-transform
-                                  ${open ? "rotate-90" : ""}`} />
+        <ChevronRight className={`h-3.5 w-3.5 transition-transform ${
+                                  open ? "rotate-90 text-primary" : "text-muted-foreground"}`} />
         <span className="text-sm">{league.name}</span>
         {league.tier > 1 && (
           <span className="text-[10px] text-muted-foreground font-mono-data">T{league.tier}</span>
@@ -149,15 +205,21 @@ function League({ league, open, onToggle }) {
 
 function Country({ country, open, onToggle, openLeagues, toggleLeague }) {
   return (
-    <section className="bg-card border border-border rounded-lg overflow-hidden"
-             data-testid={`browse-country-${country.country}`}>
+    <section className={`bg-card border rounded-lg overflow-hidden transition-colors ${
+                         open ? "border-primary/30" : "border-border"}`}
+             data-testid={`browse-country-${country.country}`}
+             data-open={open ? "1" : "0"}>
+      {/* FULL bg-secondary, not a fraction of it. The tokens are four points of lightness
+          apart (card 9%, secondary 13%) and the first attempt at 60% alpha landed inside
+          two — which is to say invisible, which is to say it did not do the one thing it
+          was added for. Rendered and looked at, which is how that was found. */}
       <button
         onClick={onToggle}
-        className="w-full flex items-center gap-2.5 px-4 py-3 hover:bg-secondary/40
-                   transition-colors text-left"
+        className={`w-full flex items-center gap-2.5 px-4 py-3 text-left transition-colors ${
+          open ? "bg-secondary" : "hover:bg-secondary/40"}`}
       >
-        <ChevronRight className={`h-4 w-4 text-muted-foreground transition-transform
-                                  ${open ? "rotate-90" : ""}`} />
+        <ChevronRight className={`h-4 w-4 transition-transform ${
+                                  open ? "rotate-90 text-primary" : "text-muted-foreground"}`} />
         <span className="text-base leading-none" aria-hidden="true">{countryFlag(country)}</span>
         <span className="font-head font-semibold text-sm">{country.country}</span>
         <span className="text-[11px] text-muted-foreground">

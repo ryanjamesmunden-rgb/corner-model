@@ -52,7 +52,8 @@ def scan(**kw):
     args = dict(corner_edge=ca.DEFAULT_CORNER_EDGE, min_leaking=ca.DEFAULT_MIN_LEAKING,
                 min_win_rate=ca.DEFAULT_MIN_WIN_RATE,
                 max_conceded=ca.DEFAULT_MAX_CONCEDED,
-                opp_corner_edge=ca.DEFAULT_OPP_CORNER_EDGE)
+                opp_corner_edge=ca.DEFAULT_OPP_CORNER_EDGE,
+                min_clean_sheets=ca.DEFAULT_MIN_CLEAN_SHEETS)
     args.update(kw)
     teams = {t["team_id"]: t for t in TEAMS}
     return ca.scan(FIXTURES, teams, PARS, **args)
@@ -207,3 +208,90 @@ def test_both_sides_of_a_fixture_are_tested():
                    opp_corner_edge=ca.DEFAULT_OPP_CORNER_EDGE)
     assert [r["team"] for r in rows] == ["AwayLeaky"]
     assert rows[0]["venue"] == "away"
+
+
+class TestCleanSheetsAreTheirOwnLeg:
+    """NOT A RESTATEMENT OF THE GOALS AVERAGE, and the difference is the mechanism. A
+    side conceding exactly one most weeks and a side alternating shutouts with a 2-0
+    both average one a game, and only the second is a defence you expect to keep your
+    team off the scoreboard for ninety minutes."""
+
+    def test_the_rate_is_over_synced_scores_only(self):
+        rows = [m(False, 4, 7, 2, 0), m(False, 4, 7, 1, 1),
+                {"home": False, "corners_for": 4, "corners_against": 7, "date": "x"}]
+        rate, n = ca.clean_sheet_rate(rows)
+        assert (rate, n) == (0.5, 2), "an unsynced game is not a goal conceded"
+
+    def test_no_scores_at_all_is_unknown_rather_than_zero(self):
+        rate, n = ca.clean_sheet_rate([{"home": False, "date": "x"}])
+        assert rate is None and n == 0
+
+    def test_two_defences_with_the_SAME_average_split_on_it(self):
+        # Both concede exactly 1.0 a game away. One shuts out half its games, the other
+        # never does. The screen must be able to tell them apart.
+        steady = [m(False, 4, 7, 2, 1)] * 8                     # 1 every week, 0 sheets
+        streaky = [m(False, 4, 7, 2, 0)] * 4 + [m(False, 4, 7, 2, 2)] * 4   # half shut out
+        assert ca.per_game(steady, "goals_against") == ca.per_game(streaky, "goals_against")
+        assert ca.clean_sheet_rate(steady)[0] == 0.0
+        assert ca.clean_sheet_rate(streaky)[0] == 0.5
+
+    def test_the_leg_vetoes_a_side_that_never_shuts_anybody_out(self):
+        assert scan(min_clean_sheets=0.9) == []
+
+    def test_and_passes_one_that_does(self):
+        # Solid shut out 5 of 8 away.
+        assert [r["team"] for r in scan(min_clean_sheets=0.6)] == ["Leaky"]
+
+    def test_the_rate_is_reported_on_the_row(self):
+        r = scan()[0]
+        assert r["their_sheets"] == 0.625 and r["their_sheet_games"] == 8
+
+
+class TestAnEmptyBoardSaysWhichBarEmptiedIt:
+    """Without it the reader's only move is to loosen all six at once, which is how a
+    screen ends up with thresholds nobody can defend."""
+
+    def pairs(self, **kw):
+        v = {}
+        args = dict(corner_edge=ca.DEFAULT_CORNER_EDGE,
+                    min_leaking=ca.DEFAULT_MIN_LEAKING,
+                    min_win_rate=ca.DEFAULT_MIN_WIN_RATE,
+                    max_conceded=ca.DEFAULT_MAX_CONCEDED,
+                    opp_corner_edge=ca.DEFAULT_OPP_CORNER_EDGE,
+                    min_clean_sheets=ca.DEFAULT_MIN_CLEAN_SHEETS)
+        args.update(kw)
+        teams = {t["team_id"]: t for t in TEAMS}
+        rows = ca.scan(FIXTURES, teams, PARS, vetoes=v, **args)
+        return rows, v
+
+    def test_it_names_the_leg_that_did_the_rejecting(self):
+        rows, v = self.pairs(min_clean_sheets=0.9)
+        assert rows == [] and v.get("their clean sheets") == 1
+
+    def test_a_different_bar_names_a_different_leg(self):
+        # EVERY FIXTURE IS TWO PAIRS, since both sides are tested — so an impossible
+        # corner bar rejects both of them on the same leg.
+        _, v = self.pairs(corner_edge=9.0)
+        assert v == {"our corner edge": 2}
+
+    def test_each_rejected_pair_is_counted_once_not_once_per_failed_leg(self):
+        # A side missing on four bars is one rejected pair, not four. Counted on the
+        # first failing leg so the tally sums to the pairs thrown out — two here.
+        _, v = self.pairs(corner_edge=9.0, min_leaking=9.0, min_win_rate=1.1,
+                          min_clean_sheets=1.1)
+        assert sum(v.values()) == 2
+
+    def test_the_surviving_pair_is_not_counted(self):
+        # One fixture, two pairs: Leaky-against-Solid fits, and the reverse does not
+        # (Solid are not a strong corner side). One row out, one veto recorded.
+        rows, v = self.pairs()
+        assert len(rows) == 1 and sum(v.values()) == 1
+        assert v == {"our corner edge": 1}, "the reverse pair, failing on the first leg"
+
+    def test_the_tally_is_optional_so_callers_that_do_not_want_it_still_work(self):
+        teams = {t["team_id"]: t for t in TEAMS}
+        assert ca.scan(FIXTURES, teams, PARS, corner_edge=ca.DEFAULT_CORNER_EDGE,
+                       min_leaking=ca.DEFAULT_MIN_LEAKING,
+                       min_win_rate=ca.DEFAULT_MIN_WIN_RATE,
+                       max_conceded=ca.DEFAULT_MAX_CONCEDED,
+                       opp_corner_edge=ca.DEFAULT_OPP_CORNER_EDGE)

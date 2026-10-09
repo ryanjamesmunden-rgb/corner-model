@@ -1,8 +1,13 @@
-import { rankTeams, cellFor, maxOf, barWidth, barFor, splitOf, isSplit, isCol, THIN,
-         COLS, SPLITS }
-  from "./cornerTable";
+import { rankTeams, cellFor, maxOf, barWidth, barFor, splitOf, isSplit, isCol, isWindow,
+         THIN, COLS, SPLITS, WINDOWS } from "./cornerTable";
 
-const team = (name, splits) => ({ team_id: name, name, splits });
+// Every team carries venue -> window -> row, as the endpoint sends it. `w` lets a test
+// give one window different numbers from the season where that is the point.
+const team = (name, splits, w = {}) => ({
+  team_id: name, name,
+  splits: Object.fromEntries(Object.entries(splits).map(
+    ([venue, row]) => [venue, { all: row, 10: row, 5: row, ...(w[venue] || {}) }])),
+});
 const s = (games, won, conceded, shots, sot, covered = {}) =>
   ({ games, corners_won: won, corners_conceded: conceded, shots, shots_on_target: sot,
      covered: { shots: covered.shots ?? games, shots_on_target: covered.sot ?? games } });
@@ -93,7 +98,7 @@ describe("ranking", () => {
 
 describe("reading one cell", () => {
   it("gives the figure and what it was built on", () => {
-    const c = cellFor(LOPSIDED.splits.home, COLS[0]);
+    const c = cellFor(LOPSIDED.splits.home.all, COLS[0]);
     expect(c).toMatchObject({ value: 8, covered: 2, missing: false });
   });
 
@@ -102,13 +107,13 @@ describe("reading one cell", () => {
     // and the only thing that can tell a four-game average from a twelve-game one is
     // the denominator.
     const shots = COLS.find((c) => c.v === "shots");
-    expect(cellFor(THIN_SHOTS.splits.overall, shots).covered).toBe(1);
-    expect(cellFor(THIN_SHOTS.splits.overall, COLS[0]).covered).toBe(4);
+    expect(cellFor(THIN_SHOTS.splits.overall.all, shots).covered).toBe(1);
+    expect(cellFor(THIN_SHOTS.splits.overall.all, COLS[0]).covered).toBe(4);
   });
 
   it("marks a thin figure and leaves a well-covered one alone", () => {
     const shots = COLS.find((c) => c.v === "shots");
-    expect(cellFor(THIN_SHOTS.splits.overall, shots).thin).toBe(true);
+    expect(cellFor(THIN_SHOTS.splits.overall.all, shots).thin).toBe(true);
     expect(cellFor({ shots: 11, covered: { shots: THIN } }, shots).thin).toBe(false);
     expect(cellFor({ shots: 11, covered: { shots: THIN - 1 } }, shots).thin).toBe(true);
   });
@@ -117,7 +122,7 @@ describe("reading one cell", () => {
     // "Not recorded" and "none taken" look the same once a gap is filled with 0, and
     // only one of them is true.
     const shots = COLS.find((c) => c.v === "shots");
-    const c = cellFor(DARK.splits.overall, shots);
+    const c = cellFor(DARK.splits.overall.all, shots);
     expect(c.missing).toBe(true);
     expect(c.value).toBeNull();
   });
@@ -165,9 +170,9 @@ describe("the bar behind the team name", () => {
     // longest bar on the table, because clamped means full.
     const shots = COLS.find((c) => c.v === "shots");
     const max = maxOf(TEAMS, "overall", "shots");
-    expect(barFor(THIN_SHOTS.splits.overall, shots, max)).toBe(0);
-    expect(barFor(DARK.splits.overall, shots, max)).toBe(0);
-    expect(barFor(LOPSIDED.splits.overall, shots, max)).toBe(1);
+    expect(barFor(THIN_SHOTS.splits.overall.all, shots, max)).toBe(0);
+    expect(barFor(DARK.splits.overall.all, shots, max)).toBe(0);
+    expect(barFor(LOPSIDED.splits.overall.all, shots, max)).toBe(1);
   });
 
   it("draws nothing for a figure that is not there", () => {
@@ -188,11 +193,12 @@ describe("the controls agree with the payload", () => {
     // not, the toggle renders a tab that selects an empty object.
     expect(SPLITS.map((x) => x.v)).toEqual(["overall", "home", "away"]);
     expect(Object.keys(LOPSIDED.splits).sort()).toEqual(["away", "home", "overall"]);
+    expect(Object.keys(LOPSIDED.splits.overall).sort()).toEqual(["10", "5", "all"]);
   });
 
   it("every column the UI offers exists on a split row", () => {
     COLS.forEach((c) => {
-      expect(Object.keys(LOPSIDED.splits.overall)).toContain(c.v);
+      expect(Object.keys(LOPSIDED.splits.overall.all)).toContain(c.v);
     });
   });
 
@@ -201,10 +207,58 @@ describe("the controls agree with the payload", () => {
     expect(isSplit("neutral")).toBe(false);
     expect(isCol("shots_on_target")).toBe(true);
     expect(isCol("vibes")).toBe(false);
+    expect(isWindow("5")).toBe(true);
+    expect(isWindow("3")).toBe(false);
   });
 
   it("splitOf never throws on a half-built team", () => {
     expect(splitOf(undefined, "home")).toEqual({});
     expect(splitOf({ name: "x" }, "home")).toEqual({});
+    expect(splitOf(LOPSIDED, "home", "nonsense")).toEqual({});
+  });
+});
+
+describe("the recent windows", () => {
+  // A side that used to win two corners a game and now wins nine. The season average is
+  // 4.8 and describes a team that no longer exists.
+  const TURNED = team("Turned", { overall: s(10, 4.8, 6.0, 11.6, 5.0) },
+    { overall: { 5: s(5, 7.6, 4.0, 17.2, 7.6) } });
+  const STEADY = team("Steady", { overall: s(10, 6.0, 5.0, 14.0, 6.0) });
+  const PAIR = [TURNED, STEADY];
+
+  it("reads the window it was asked for", () => {
+    expect(splitOf(TURNED, "overall", "all").corners_won).toBe(4.8);
+    expect(splitOf(TURNED, "overall", "5").corners_won).toBe(7.6);
+  });
+
+  it("defaults to the season when no window is named", () => {
+    expect(splitOf(TURNED, "overall").corners_won).toBe(4.8);
+  });
+
+  it("changes the ranking, which is the entire point of having it", () => {
+    // Steady leads on the season and Turned leads on the last five. A table that only
+    // knew the season could not tell you a side had turned.
+    expect(rankTeams(PAIR, "overall", "corners_won", "all")[0].name).toBe("Steady");
+    expect(rankTeams(PAIR, "overall", "corners_won", "5")[0].name).toBe("Turned");
+  });
+
+  it("scales the bar on the window too", () => {
+    expect(maxOf(PAIR, "overall", "corners_won", "all")).toBe(6);
+    expect(maxOf(PAIR, "overall", "corners_won", "5")).toBe(7.6);
+  });
+
+  it("still judges coverage per window", () => {
+    // A window can be entirely uncovered even where the season is well covered, which
+    // is exactly when it would mislead.
+    const patchy = team("Patchy", { overall: s(12, 5, 5, 10, 4) },
+      { overall: { 5: s(5, 5, 5, 30, 14, { shots: 1, sot: 1 }) } });
+    const shots = COLS.find((c) => c.v === "shots");
+    expect(cellFor(splitOf(patchy, "overall", "all"), shots).thin).toBe(false);
+    expect(cellFor(splitOf(patchy, "overall", "5"), shots).thin).toBe(true);
+  });
+
+  it("offers exactly the windows the backend sends", () => {
+    // The backend's CORNER_TABLE_WINDOWS. A tab with no matching key selects an empty row.
+    expect(WINDOWS.map((w) => w.v)).toEqual(["all", "10", "5"]);
   });
 });

@@ -448,3 +448,139 @@ def test_a_game_carries_both_team_ids(monkeypatch):
             for g in l["games"]:
                 assert g["home_team_id"] and g["away_team_id"]
                 assert g["home_team_id"] != g["away_team_id"]
+
+
+class TestTheMinimumRunIsAskable:
+    """Five is a run; nine is a story. On a busy weekend the difference between them is
+    the difference between a list to read and a list to scan."""
+
+    # ITS OWN DATASET, because the shared one is deliberately rich — Derby is on an
+    # eight-game UNDER run, so "raise the bar and only the long one survives" cannot be
+    # stated against it without first saying which of four runs is meant. Here a league
+    # holds exactly one long run and one short one.
+    LONG = team("x-a", "Marathon", "x", [9, 9, 9, 9, 9, 9, 9, 9])
+    SHORT = team("x-b", "Sprinter", "x", [2, 2, 2, 3, 9, 9, 9, 9, 9])
+    # THE OPPONENTS HAVE TO BE GENUINELY UNREMARKABLE, and "5 every week" is not: in a
+    # division averaging 6.7 that is a side held a rung below par every game, which is a
+    # qualifying UNDER run eight long — so the first attempt at this dataset had the
+    # opponent, not the team, keeping the fixture on the list. Alternating either side of
+    # the average leaves no run in either direction.
+    PLAIN = team("x-c", "Plain", "x", [4, 8, 4, 8, 4, 8, 4, 8])
+    PLAIN2 = team("x-d", "Plainer", "x", [4, 8, 4, 8, 4, 8, 4, 8])
+    OWN_LEAGUES = [{"league_id": "x", "name": "Test League", "country": "Testland"}]
+
+    def own(self, monkeypatch, **kw):
+        fixtures = [fixture("f-long", "x", "x-a", "x-c"),
+                    fixture("f-short", "x", "x-b", "x-d")]
+        monkeypatch.setattr(server, "db", FakeDB(
+            [self.LONG, self.SHORT, self.PLAIN, self.PLAIN2], fixtures, self.OWN_LEAGUES))
+        d = run(server.browse(show="streaks", **kw))
+        return {g["fixture_id"] for c in d["countries"] for l in c["leagues"]
+                for g in l["games"]}
+
+    def streak_ids(self, monkeypatch, **kw):
+        d = browse(monkeypatch, show="streaks", **kw)
+        return {g["fixture_id"] for c in d["countries"] for l in c["leagues"]
+                for g in l["games"]}
+
+    def test_raising_it_removes_the_shorter_runs(self, monkeypatch):
+        # Marathon are eight in a row at a high line; Sprinter's run is five. At five both
+        # games are on the list, at eight only the long one can be.
+        assert self.own(monkeypatch, min_run=5) == {"f-long", "f-short"}
+        assert self.own(monkeypatch, min_run=8) == {"f-long"}
+
+    def test_and_the_list_only_ever_shrinks_as_the_bar_rises(self, monkeypatch):
+        sizes = [len(self.own(monkeypatch, min_run=n)) for n in (5, 6, 7, 8, 9, 10)]
+        assert sizes == sorted(sizes, reverse=True), sizes
+
+    def test_asking_for_more_than_anybody_has_empties_it_honestly(self, monkeypatch):
+        d = browse(monkeypatch, show="streaks", min_run=10)
+        assert d["total"] == 0 and d["countries"] == []
+
+    def test_it_never_goes_below_the_panels_bar(self, monkeypatch):
+        # Below five a "run" is three games, which is what a side does by accident. The
+        # whole reason this board is stricter than the fixture panel is that the panel
+        # describes a game you chose and this one chooses the game for you.
+        assert (self.streak_ids(monkeypatch, min_run=1)
+                == self.streak_ids(monkeypatch, min_run=server.PANEL_MIN_RUN))
+
+    def test_nor_above_the_ceiling(self, monkeypatch):
+        # Past the ceiling an empty page looks exactly like a broken one.
+        assert (self.streak_ids(monkeypatch, min_run=99)
+                == self.streak_ids(monkeypatch, min_run=server.BROWSE_MAX_MIN_RUN))
+
+    def test_the_run_it_reports_clears_the_bar_it_was_asked_for(self, monkeypatch):
+        d = browse(monkeypatch, show="streaks", min_run=7)
+        for c in d["countries"]:
+            for l in c["leagues"]:
+                for g in l["games"]:
+                    assert g["streak"]["run"] >= 7
+
+    def test_counts_still_match_what_opening_it_shows(self, monkeypatch):
+        d = browse(monkeypatch, show="streaks", min_run=8)
+        for c in d["countries"]:
+            assert c["count"] == sum(l["count"] for l in c["leagues"])
+            for l in c["leagues"]:
+                assert l["count"] == len(l["games"])
+        assert d["total"] == sum(c["count"] for c in d["countries"])
+
+    def test_it_does_nothing_to_the_unfiltered_list(self, monkeypatch):
+        # `all` is not about runs, so raising the bar must not remove games from it.
+        assert browse(monkeypatch, show="all", min_run=10)["total"] == 3
+
+
+class TestTheFilterLooksAtEveryLineNotJustTheHeadlineOne:
+    """THE FOURTH THING WRONG WITH THIS FILTER, and the one that cost it most rows.
+
+    live_streak ranks candidates by run LENGTH first, which is right for a panel
+    describing a game you have already chosen — the longest story is the headline. Here
+    it was fatal: the long story is usually at a trivial line, _browse_margin correctly
+    rejects a trivial line, and the short run at the big line was never looked at.
+    """
+
+    # Last nine: a lean spell, then five straight at nine corners.
+    TURNED = team("tn-a", "Turned", "tn", [2, 2, 2, 3, 9, 9, 9, 9, 9])
+    OTHERS = [team(f"tn-{c}", f"Mid{c}", "tn", [4, 8, 4, 8, 4, 8, 4, 8])
+              for c in "bcd"]
+    LEAGUES = [{"league_id": "tn", "name": "Turn League", "country": "Turnland"}]
+
+    def par(self):
+        pool = {s: [] for s in server.BROWSE_SUBJECTS}
+        for t in [self.TURNED] + self.OTHERS:
+            for m in server._src(t):
+                for s in pool:
+                    pool[s].append(server.streak_value(m, s))
+        return {k: sum(v) / len(v) for k, v in pool.items()}
+
+    def test_the_headline_run_is_the_long_trivial_one(self):
+        # What live_streak hands back, and why it is useless to this filter: 3+ in a
+        # division that averages nearly seven is a description of the sport.
+        head = server.live_streak(self.TURNED, "overall", "team", "over", min_len=5)
+        assert head["line"] == 3 and head["run"] == 6
+        assert server._browse_margin(head, self.par()) is None
+
+    def test_but_the_short_remarkable_one_is_in_the_candidates(self):
+        cands = server.live_streak_candidates(self.TURNED, "overall", "team", "over",
+                                              min_len=5)
+        nine = next(c for c in cands if c["line"] == 9)
+        assert nine["run"] == 5
+        assert server._browse_margin(nine, self.par()) > 0
+
+    def test_and_the_filter_finds_it(self):
+        r = server._browse_streak(self.TURNED, self.par(), "overall")
+        assert r and r["line"] == 9 and r["run"] == 5, \
+            "the side's only interesting run must not be hidden by its dullest one"
+
+    def test_live_streak_still_returns_the_headline_for_everybody_else(self):
+        # The panel's behaviour is unchanged; only this filter reads the candidates.
+        head = server.live_streak(self.TURNED, "overall", "team", "over", min_len=5)
+        assert head == max(
+            server.live_streak_candidates(self.TURNED, "overall", "team", "over",
+                                          min_len=5),
+            key=server.streak_rank)
+
+    def test_candidates_are_empty_rather_than_None_when_there_is_no_history(self):
+        # It is iterated directly by _browse_streak, so None here is a TypeError in
+        # production for every team with fewer games than the bar — which it was.
+        assert server.live_streak_candidates(
+            team("e", "Empty", "l", [5]), "overall", "team", "over", min_len=5) == []

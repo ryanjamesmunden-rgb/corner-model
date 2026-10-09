@@ -3113,9 +3113,20 @@ async def get_teams(league_id: str, split: str = "overall", window: int = 5, use
 
 CORNER_TABLE_SPLITS = ("overall", "home", "away")
 
+# How many recent games each window keeps. "all" is the season; the other two answer the
+# question a season average cannot — what a side is doing NOW. A table that only knows
+# the season cannot tell a side that has started winning eight a game from one that has
+# been winning eight all year and has just stopped.
+#
+# THE WINDOW IS APPLIED INSIDE THE VENUE, not before it. The last five HOME games are the
+# five most recent games played at home, not whichever of the last five overall happened
+# to be at home — the second would give a side that has just played four away games a
+# one-game "last five at home", which is a different and much worse number.
+CORNER_TABLE_WINDOWS = {"all": 0, "10": 10, "5": 5}
 
-def _corner_table_split(matches: List[dict], split: str) -> dict:
-    """One venue's row for a team: corners both ways, and the shot columns behind them.
+
+def _corner_table_split(matches: List[dict], split: str, window: int = 0) -> dict:
+    """One venue's row for a team over one window: corners both ways, and the shots.
 
     `covered` RIDES ON EVERY SHOT FIGURE, because the provider's coverage of shots is not
     the coverage of corners — a side can have twelve games of corner data and four of
@@ -3126,6 +3137,7 @@ def _corner_table_split(matches: List[dict], split: str) -> dict:
     """
     pool = (matches if split == "overall"
             else [m for m in matches if bool(m.get("home")) == (split == "home")])
+    pool = pool[-window:] if window else pool
     n = len(pool)
     feats = team_features(pool)
     return {
@@ -3145,26 +3157,28 @@ def _corner_table_split(matches: List[dict], split: str) -> dict:
 async def corner_table(league_id: str, user: dict = Depends(get_current_user)):
     """Corner-league standings: teams with corners won and conceded, and the shot columns.
 
-    ALL THREE VENUES IN ONE PAYLOAD. A league has twenty-odd teams and three splits of a
-    handful of numbers each, which is smaller than the page already carries — and sending
-    them together means switching to "away" is instant and cannot show a split that
-    disagrees with the one beside it. A per-venue request would also have to decide what
-    to show while it was in flight, which is a problem this does not have.
+    EVERY VENUE AND EVERY WINDOW IN ONE PAYLOAD. A league has twenty-odd teams and nine
+    small blocks each, which is smaller than the page already carries — and sending them
+    together means switching to "away, last five" is instant and cannot show a split that
+    disagrees with the one beside it. A per-view request would also have to decide what to
+    show while it was in flight, which is a problem this does not have.
 
     AND THE SORT IS THE CALLER'S. Everything needed to rank by any column is here, so the
     table reorders in the browser. A server-side sort would be a round trip to reorder
     twenty rows that are already on screen.
 
-    The top-level corners/shots fields are the OVERALL split, kept flat because that is
-    the shape this endpoint has always had.
+    The top-level corners/shots fields are the OVERALL season split, kept flat because
+    that is the shape this endpoint has always had.
     """
     teams = await db.teams.find({"league_id": league_id}, {"_id": 0}).to_list(200)
     league = await db.leagues.find_one({"league_id": league_id}, {"_id": 0}) or {}
     out = []
     for t in teams:
         real = t.get("real_matches") or []
-        splits = {s: _corner_table_split(real, s) for s in CORNER_TABLE_SPLITS}
-        o = splits["overall"]
+        splits = {s: {w: _corner_table_split(real, s, n)
+                      for w, n in CORNER_TABLE_WINDOWS.items()}
+                  for s in CORNER_TABLE_SPLITS}
+        o = splits["overall"]["all"]
         feats = team_features(real)
         out.append({"team_id": t["team_id"], "name": t["name"], "games": o["games"],
                     # Flat and zero-filled, as this endpoint has always returned them.
@@ -4475,9 +4489,9 @@ def streak_line_label(line: int, direction: str) -> str:
     return f"under {line}" if direction == "under" else f"{line}+"
 
 
-def live_streak(team: dict, venue: str, subject: str, direction: str,
-                min_len: int = MIN_STREAK_LEN) -> Optional[dict]:
-    """The best run this team carries INTO its next game, on the venue it is playing.
+def live_streak_candidates(team: dict, venue: str, subject: str, direction: str,
+                           min_len: int = MIN_STREAK_LEN) -> List[dict]:
+    """EVERY laddered line this team carries a live run of, into its next game.
 
     Reuses streak_legs/streak_runs rather than counting here — the streak board, the
     snapshot grading and this all have to agree about what a run is, and they only can if
@@ -4487,16 +4501,18 @@ def live_streak(team: dict, venue: str, subject: str, direction: str,
     home games is a claim about its home games, and mixing the aways in would quietly
     describe a different streak from the one the board shows.
 
-    Walks the whole ladder and keeps the BEST story: longest run first, and where two
-    lines run equally long, the more demanding one — the higher line on an over, the
-    tighter on an under. A 5-game run at 6+ is worth more than a 5-game run at 3+.
+    THE WHOLE LADDER, UNRANKED, because the one worth showing depends on who is asking.
+    A side whose last nine read 2, 2, 2, 3, 9, 9, 9, 9, 9 is on a six-game run at 3+ AND
+    a five-game run at 9+. The first is the longer story and the second is the only one
+    that means anything, and a caller that can only see live_streak's pick gets the
+    first and throws it away. live_streak ranks them for callers that want a headline.
     """
     history = _src(team)
     if venue in ("home", "away"):
         want = venue == "home"
         history = [m for m in history if bool(m.get("home")) is want]
     if len(history) < min_len:
-        return None
+        return []
     # Only lines that are worth suggesting: high enough to mean something on an over,
     # tight enough on an under.
     floor = OVER_LINE_FLOOR.get(subject, 3)
@@ -4530,7 +4546,7 @@ def live_streak(team: dict, venue: str, subject: str, direction: str,
     # marginally harder line, which is not the trade a reader wants made for them.
     vals = [streak_value(m, subject) for m in history]
     par = (sum(vals) / len(vals)) if vals else 0.0
-    best = None
+    out = []
     for line in STREAK_LADDERS.get(subject, STREAK_LADDERS["team"]):
         if direction == "over" and line < floor:
             continue
@@ -4541,15 +4557,43 @@ def live_streak(team: dict, venue: str, subject: str, direction: str,
         cur = streak_runs(streak_legs(history, line, direction, subject))["current"]
         if cur["status"] != "active" or cur["length"] < min_len:
             continue
-        rank = (cur["length"], line if direction == "over" else -line)
-        if best is None or rank > best[0]:
-            best = (rank, {
-                "subject": subject, "direction": direction, "line": line,
-                "line_label": streak_line_label(line, direction),
-                "run": cur["length"], "since": cur["start_date"],
-                "venue": venue, "games": len(history),
-            })
-    return best[1] if best else None
+        out.append({
+            "subject": subject, "direction": direction, "line": line,
+            "line_label": streak_line_label(line, direction),
+            "run": cur["length"], "since": cur["start_date"],
+            "venue": venue, "games": len(history),
+        })
+    return out
+
+
+def streak_rank(r: dict) -> tuple:
+    """Longest first; where two lines run equally long, the more demanding one."""
+    return (r["run"], r["line"] if r["direction"] == "over" else -r["line"])
+
+
+def live_streak(team: dict, venue: str, subject: str, direction: str,
+                min_len: int = MIN_STREAK_LEN) -> Optional[dict]:
+    """The best run this team carries INTO its next game, on the venue it is playing.
+
+    Reuses streak_legs/streak_runs rather than counting here — the streak board, the
+    snapshot grading and this all have to agree about what a run is, and they only can if
+    there is one implementation of it.
+
+    VENUE-FILTERED, because that is what the run actually is: "9 in a row" over a team's
+    home games is a claim about its home games, and mixing the aways in would quietly
+    describe a different streak from the one the board shows.
+
+    Keeps the BEST story: longest run first, and where two lines run equally long, the
+    more demanding one. A 5-game run at 6+ is worth more than a 5-game run at 3+.
+
+    A CALLER THAT HAS ITS OWN TEST OF WHAT IS WORTH SHOWING WANTS THE CANDIDATES, not
+    this. Length dominating the rank is right for a panel describing a game you have
+    already chosen — the longest story is the headline — but it hides a shorter run at a
+    much bigger line, and a filter that then rejects the long trivial one never sees the
+    short remarkable one. See _browse_streak, where that cost most of a board.
+    """
+    cands = live_streak_candidates(team, venue, subject, direction, min_len)
+    return max(cands, key=streak_rank) if cands else None
 
 
 FORM_WINDOW = 5
@@ -6126,6 +6170,19 @@ BROWSE_TREND_SUBJECTS = (("team", "corners"), ("conceded", "corners conceded"))
 # as good a reason to open one as anything a team's own attack has done.
 BROWSE_SUBJECTS = ("team", "match", "conceded")
 
+# The longest run the Streaks filter will let a reader ask for.
+#
+# WHY A CEILING AT ALL. Above about ten the filter stops being a filter and becomes a
+# search for nothing: a run needs the games to exist, so asking for twelve in a row in
+# September returns an empty page that looks exactly like a broken one. Ten is already
+# most of a season's venue split.
+#
+# AND THE FLOOR IS PANEL_MIN_RUN, not 1. Below five a "run" is three games, which is
+# what a side does by accident — the whole reason this board has a higher bar than the
+# fixture panel is that the panel describes a game you have chosen and this one chooses
+# the game for you.
+BROWSE_MAX_MIN_RUN = 10
+
 
 def _browse_margin(run: dict, par: Dict[str, float]) -> Optional[float]:
     """How far this run's line sits past what the division does, in corners — or None.
@@ -6154,7 +6211,8 @@ def _browse_margin(run: dict, par: Dict[str, float]) -> Optional[float]:
     return margin if margin > 0 else None
 
 
-def _browse_streak(team: dict, par: Dict[str, float], venue: str) -> Optional[dict]:
+def _browse_streak(team: dict, par: Dict[str, float], venue: str,
+                   min_run: int = PANEL_MIN_RUN) -> Optional[dict]:
     """The best run this side brings to a game at `venue`, if any is worth opening it for.
 
     EVERY SUBJECT AND BOTH DIRECTIONS, which is the fix for a filter that came back nearly
@@ -6167,21 +6225,28 @@ def _browse_streak(team: dict, par: Dict[str, float], venue: str) -> Optional[di
     STILL STRICTER THAN THE PANEL, via _browse_margin. The panel says what is running into
     a game you have already chosen; this decides whether to put the game in front of you.
 
+    EVERY CANDIDATE LINE, NOT live_streak's PICK, and this was the third thing wrong with
+    this filter. live_streak ranks by run length first, which is right for a headline and
+    wrong here: a side whose last nine read 2, 2, 2, 3, 9, 9, 9, 9, 9 is handed over as
+    "3+ in six", the margin test correctly rejects 3+ in a division averaging seven, and
+    the five-game run at 9+ — the only thing about that side worth a reader's time — is
+    never looked at. The filter was discarding its best rows on behalf of a ranking rule
+    written for a different screen.
+
     Best means longest, then furthest past the division's average — so of two six-game
     runs the reader is offered the more unusual one.
     """
     best, best_key = None, None
     for subject in BROWSE_SUBJECTS:
         for direction in ("over", "under"):
-            run = live_streak(team, venue, subject, direction, min_len=PANEL_MIN_RUN)
-            if not run:
-                continue
-            margin = _browse_margin(run, par)
-            if margin is None:
-                continue
-            key = (run["run"], margin)
-            if best_key is None or key > best_key:
-                best, best_key = {**run, "margin": round(margin, 2)}, key
+            for run in live_streak_candidates(team, venue, subject, direction,
+                                              min_len=min_run):
+                margin = _browse_margin(run, par)
+                if margin is None:
+                    continue
+                key = (run["run"], margin)
+                if best_key is None or key > best_key:
+                    best, best_key = {**run, "margin": round(margin, 2)}, key
     return best
 
 
@@ -6208,15 +6273,22 @@ BROWSE_SHOWS = ("all", "streaks", "trends")
 
 @api_router.get("/browse")
 async def browse(days: int = 7, show: str = "all", day: Optional[str] = None,
+                 min_run: int = PANEL_MIN_RUN,
                  user: dict = Depends(get_current_user)):
     """Countries, their competitions, and the games coming up in each.
 
     `show` FILTERS THE GAMES THEMSELVES, not just how they are drawn:
 
       all      every upcoming fixture
-      streaks  only games with a live run of PANEL_MIN_RUN+ going into them, at a line
-               the division itself does not reach
+      streaks  only games with a live run of `min_run`+ going into them, at a line the
+               division itself does not reach
       trends   only games where a side's corners won or conceded have moved from its norm
+
+    `min_run` RAISES THE STREAK BAR without touching anything else. Five is a run; nine
+    is a story, and on a busy weekend the difference between them is the difference
+    between a list to read and a list to scan. It is clamped between PANEL_MIN_RUN and
+    BROWSE_MAX_MIN_RUN — see the note there for why it has a ceiling as well as a floor.
+    It does nothing on `all` or `trends`, which are not about runs.
 
     THE COUNTS FOLLOW THE FILTER. A league that reads "12 games" and opens to show two is
     worse than one that reads two — the number is what a reader decides to open on, so it
@@ -6249,6 +6321,7 @@ async def browse(days: int = 7, show: str = "all", day: Optional[str] = None,
     days = max(1, min(int(days), BOARD_MAX_DAYS))
     show = show if show in BROWSE_SHOWS else "all"
     day = (day or "").strip() or None
+    min_run = max(PANEL_MIN_RUN, min(int(min_run), BROWSE_MAX_MIN_RUN))
 
     teams = await db.teams.find({}, {"_id": 0}).to_list(5000)
     by_id = {t["team_id"]: t for t in teams}
@@ -6298,7 +6371,8 @@ async def browse(days: int = 7, show: str = "all", day: Optional[str] = None,
                 continue
             par = league_par.get(t["league_id"], {})
             flags[t["team_id"]] = {
-                **{v: _browse_streak(t, par, v) for v in ("overall", "home", "away")},
+                **{v: _browse_streak(t, par, v, min_run)
+                   for v in ("overall", "home", "away")},
                 "trends": _trends_of(t),
             }
 

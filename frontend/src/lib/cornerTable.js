@@ -30,6 +30,26 @@ export const SPLITS = [
   { v: "away", label: "Away" },
 ];
 
+/**
+ * How much recent history each view uses.
+ *
+ * A SEASON AVERAGE CANNOT TELL A SIDE THAT HAS STARTED winning eight a game from one
+ * that has been winning eight all year and has just stopped. Both read the same, and
+ * only one of them is a reason to back anything.
+ *
+ * The window is applied INSIDE the venue on the server, so "last 5, home" is the five
+ * most recent games played at home — not whichever of the last five overall happened
+ * to be at home, which would hand a side returning from a long away trip a one-game
+ * "last five".
+ */
+export const WINDOWS = [
+  { v: "all", label: "Season" },
+  { v: "10", label: "Last 10" },
+  { v: "5", label: "Last 5" },
+];
+
+export const isWindow = (v) => WINDOWS.some((w) => w.v === v);
+
 /** `shot` marks the columns whose denominator is coverage rather than games played. */
 export const COLS = [
   { v: "corners_won", short: "CW", title: "Corners won per game" },
@@ -43,8 +63,9 @@ export const isCol = (v) => COLS.some((c) => c.v === v);
 
 const num = (v) => (typeof v === "number" && Number.isFinite(v) ? v : null);
 
-/** One team's numbers for one venue, or an empty row rather than a throw. */
-export const splitOf = (team, split) => (team && team.splits && team.splits[split]) || {};
+/** One team's numbers for one venue and window, or an empty row rather than a throw. */
+export const splitOf = (team, split, window = "all") =>
+  (team && team.splits && team.splits[split] && team.splits[split][window]) || {};
 
 /**
  * Highest first — in three tiers: well evidenced, thin, then absent.
@@ -67,10 +88,11 @@ export const splitOf = (team, split) => (team && team.splits && team.splits[spli
  * letting a sample size masquerade as a finding. Within a tier it is still just the
  * number, descending.
  */
-export function rankTeams(teams = [], split = "overall", col = "corners_won") {
+export function rankTeams(teams = [], split = "overall", col = "corners_won",
+                          window = "all") {
   const spec = COLS.find((c) => c.v === col) || { v: col };
   const tier = (t) => {
-    const cell = cellFor(splitOf(t, split), spec);
+    const cell = cellFor(splitOf(t, split, window), spec);
     if (cell.missing) return 2;
     return cell.thin ? 1 : 0;
   };
@@ -78,7 +100,8 @@ export function rankTeams(teams = [], split = "overall", col = "corners_won") {
     const ta = tier(a);
     const tb = tier(b);
     if (ta !== tb) return ta - tb;
-    return (num(splitOf(b, split)[col]) || 0) - (num(splitOf(a, split)[col]) || 0);
+    return (num(splitOf(b, split, window)[col]) || 0)
+         - (num(splitOf(a, split, window)[col]) || 0);
   });
 }
 
@@ -115,9 +138,10 @@ export function cellFor(row = {}, col = { v: "corners_won" }) {
  * Falls back to every value when nothing in the column is well covered, so an all-thin
  * column still draws bars instead of flat-lining; at least 1, so nothing divides by zero.
  */
-export function maxOf(teams = [], split = "overall", col = "corners_won") {
+export function maxOf(teams = [], split = "overall", col = "corners_won",
+                      window = "all") {
   const spec = COLS.find((c) => c.v === col) || { v: col };
-  const cells = (teams || []).map((t) => cellFor(splitOf(t, split), spec));
+  const cells = (teams || []).map((t) => cellFor(splitOf(t, split, window), spec));
   const solid = cells.filter((c) => !c.missing && !c.thin).map((c) => c.value);
   const any = cells.filter((c) => !c.missing).map((c) => c.value);
   return Math.max(1, ...(solid.length ? solid : any));

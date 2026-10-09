@@ -1,7 +1,7 @@
 import { useState, useEffect } from "react";
 import { CornerDownRight, ArrowDown } from "lucide-react";
 import { api } from "@/lib/api";
-import { SPLITS, COLS, THIN, rankTeams, cellFor, maxOf, barFor, splitOf }
+import { SPLITS, WINDOWS, COLS, THIN, rankTeams, cellFor, maxOf, barFor, splitOf }
   from "@/lib/cornerTable";
 
 /**
@@ -52,6 +52,9 @@ export default function CornerLeagueTable({ leagueId }) {
   const [data, setData] = useState({ teams: [], league_name: "" });
   const [loading, setLoading] = useState(true);
   const [split, setSplit] = useState("overall");
+  // NOT named `window`: that shadows the global inside this whole component, and the
+  // next person to reach for window.matchMedia in here would get a string.
+  const [win, setWin] = useState("all");
   const [sort, setSort] = useState("corners_won");
 
   useEffect(() => {
@@ -62,9 +65,10 @@ export default function CornerLeagueTable({ leagueId }) {
       .finally(() => setLoading(false));
   }, [leagueId]);
 
-  const rows = rankTeams(data.teams || [], split, sort);
-  const max = maxOf(rows, split, sort);
+  const rows = rankTeams(data.teams || [], split, sort, win);
+  const max = maxOf(rows, split, sort, win);
   const label = SPLITS.find((s) => s.v === split)?.label;
+  const wLabel = WINDOWS.find((w) => w.v === win)?.label;
 
   return (
     <aside className="bg-card border border-border rounded-lg overflow-hidden lg:sticky lg:top-20"
@@ -75,11 +79,15 @@ export default function CornerLeagueTable({ leagueId }) {
           <h2 className="font-head font-semibold text-sm leading-tight truncate">Corner Table</h2>
           <p className="text-[10px] text-muted-foreground uppercase tracking-wider truncate">
             {data.league_name} · {label === "All" ? "all games" : `${label} only`}
+            {win !== "all" && ` · ${wLabel}`}
           </p>
         </div>
       </div>
 
-      <div className="flex gap-1 px-2 py-2 sm:px-3 border-b border-border">
+      {/* VENUE AND WINDOW ARE SEPARATE CONTROLS, not one list of six. "Away, last five"
+          is a question people actually have, and folding the two into a single row of
+          buttons would make it unaskable. */}
+      <div className="flex gap-1 flex-wrap px-2 py-2 sm:px-3 border-b border-border">
         <div className="flex rounded-md bg-secondary p-0.5" data-testid="corner-table-splits">
           {SPLITS.map((s) => (
             <button key={s.v} onClick={() => setSplit(s.v)}
@@ -89,6 +97,18 @@ export default function CornerLeagueTable({ leagueId }) {
                 split === s.v ? "bg-primary text-primary-foreground font-medium"
                               : "text-muted-foreground"}`}>
               {s.label}
+            </button>
+          ))}
+        </div>
+        <div className="flex rounded-md bg-secondary p-0.5" data-testid="corner-table-windows">
+          {WINDOWS.map((w) => (
+            <button key={w.v} onClick={() => setWin(w.v)}
+              data-testid={`corner-table-window-${w.v}`}
+              aria-pressed={win === w.v}
+              className={`text-[11px] px-2 py-1 rounded transition-colors ${
+                win === w.v ? "bg-primary text-primary-foreground font-medium"
+                            : "text-muted-foreground"}`}>
+              {w.label}
             </button>
           ))}
         </div>
@@ -133,7 +153,7 @@ export default function CornerLeagueTable({ leagueId }) {
                   No corner data for this league yet.
                 </td></tr>
               ) : rows.map((t, i) => {
-                const row = splitOf(t, split);
+                const row = splitOf(t, split, win);
                 const bar = barFor(row, COLS.find((c) => c.v === sort), max);
                 return (
                   <tr key={t.team_id} data-testid="corner-table-row"
@@ -164,13 +184,22 @@ export default function CornerLeagueTable({ leagueId }) {
         </div>
       </div>
 
-      {/* SAID ONCE UNDER THE TABLE rather than as a caveat per row. A split being half a
-          season is the thing that makes an away table readable, and a bracketed number
-          is meaningless until somebody says what it counts. */}
+      {/* SAID ONCE UNDER THE TABLE rather than as a caveat per row. How small the sample
+          is, is the thing that makes a split table readable, and a bracketed number is
+          meaningless until somebody says what it counts.
+          BUILT FROM BOTH CONTROLS: "roughly half a season" was written for the venue
+          toggle and became false the moment a five-game window could be picked beside
+          it, which is the sort of caption that quietly outlives the thing it described. */}
       {!loading && rows.length > 0 && (
         <div className="px-3 py-2 text-[10px] text-muted-foreground border-t border-border
                         space-y-0.5" data-testid="corner-table-note">
-          {split !== "overall" && (
+          {win !== "all" ? (
+            <p>
+              The last {win} {split === "overall" ? "games" : `${label.toLowerCase()} games`}
+              {" "}only — a small sample by design, so read a big number as a direction
+              rather than a rate.
+            </p>
+          ) : split !== "overall" && (
             <p>{label} games only — roughly half a season each, so these move more than
               the combined table does.</p>
           )}

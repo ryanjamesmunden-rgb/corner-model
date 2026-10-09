@@ -96,33 +96,46 @@ def row(data, name):
     return next(t for t in data["teams"] if t["name"] == name)
 
 
+def sp(data, name, venue="overall", window="all"):
+    """One team's block for a venue and a window."""
+    return row(data, name)["splits"][venue][window]
+
+
 class TestTheSplitIsARealSplit:
     def test_all_three_venues_come_back(self, monkeypatch):
         s = row(table(monkeypatch), "Lopsided")["splits"]
         assert set(s) == {"overall", "home", "away"}
 
-    def test_the_home_row_is_the_home_games_and_nothing_else(self, monkeypatch):
+    def test_and_every_window_inside_each(self, monkeypatch):
         s = row(table(monkeypatch), "Lopsided")["splits"]
-        assert s["home"]["games"] == 2 and s["home"]["corners_won"] == 8
-        assert s["away"]["games"] == 2 and s["away"]["corners_won"] == 2
+        for venue in ("overall", "home", "away"):
+            assert set(s[venue]) == {"all", "10", "5"}
+
+    def test_the_home_row_is_the_home_games_and_nothing_else(self, monkeypatch):
+        d = table(monkeypatch)
+        assert sp(d, "Lopsided", "home")["games"] == 2
+        assert sp(d, "Lopsided", "home")["corners_won"] == 8
+        assert sp(d, "Lopsided", "away")["games"] == 2
+        assert sp(d, "Lopsided", "away")["corners_won"] == 2
 
     def test_and_the_overall_row_describes_neither_half(self, monkeypatch):
         # The whole reason the split exists: 5 is not what this side does anywhere.
-        s = row(table(monkeypatch), "Lopsided")["splits"]
-        assert s["overall"]["corners_won"] == 5
-        assert s["overall"]["games"] == 4
+        o = sp(table(monkeypatch), "Lopsided")
+        assert o["corners_won"] == 5 and o["games"] == 4
 
     def test_corners_conceded_splits_too(self, monkeypatch):
-        s = row(table(monkeypatch), "Lopsided")["splits"]
-        assert s["home"]["corners_conceded"] == 3 and s["away"]["corners_conceded"] == 9
+        d = table(monkeypatch)
+        assert sp(d, "Lopsided", "home")["corners_conceded"] == 3
+        assert sp(d, "Lopsided", "away")["corners_conceded"] == 9
 
     def test_a_venue_with_no_games_is_empty_rather_than_zero(self, monkeypatch):
         only_home = {"team_id": "d", "name": "Homers", "league_id": "l",
                      "real_matches": [match(True, 7, 4)]}
         monkeypatch.setattr(server, "db", FakeDB([only_home], LEAGUES))
         s = run(server.corner_table("l"))["teams"][0]["splits"]
-        assert s["away"]["games"] == 0
-        assert s["away"]["corners_won"] is None, "zero corners away is a claim, not a gap"
+        assert s["away"]["all"]["games"] == 0
+        assert s["away"]["all"]["corners_won"] is None, \
+            "zero corners away is a claim, not a gap"
 
 
 class TestTheShotColumnsCarryTheirCoverage:
@@ -131,30 +144,30 @@ class TestTheShotColumnsCarryTheirCoverage:
     like one over twelve, so the denominator has to travel with the number."""
 
     def test_coverage_is_counted_separately_from_games(self, monkeypatch):
-        t = row(table(monkeypatch), "Thin")["splits"]["overall"]
+        t = sp(table(monkeypatch), "Thin")
         assert t["games"] == 4
         assert t["covered"]["shots"] == 1, "one of four games carried shots"
 
     def test_and_the_average_is_over_the_covered_games_not_all_of_them(self, monkeypatch):
         # 30 shots in the one covered game. Dividing by four would read 7.5 and be a
         # coverage gap dressed up as a quiet side.
-        t = row(table(monkeypatch), "Thin")["splits"]["overall"]
-        assert t["shots"] == 30
+        assert sp(table(monkeypatch), "Thin")["shots"] == 30
 
     def test_nothing_recorded_reads_as_nothing_recorded(self, monkeypatch):
-        t = row(table(monkeypatch), "Dark")["splits"]["overall"]
+        t = sp(table(monkeypatch), "Dark")
         assert t["shots"] is None and t["shots_on_target"] is None
         assert t["covered"]["shots"] == 0
         # And the corners are still there — a shot gap is not a data gap.
         assert t["corners_won"] == 6
 
     def test_shots_on_target_is_there_to_rank_on(self, monkeypatch):
-        t = row(table(monkeypatch), "Lopsided")["splits"]
-        assert t["home"]["shots_on_target"] == 7 and t["away"]["shots_on_target"] == 1
+        d = table(monkeypatch)
+        assert sp(d, "Lopsided", "home")["shots_on_target"] == 7
+        assert sp(d, "Lopsided", "away")["shots_on_target"] == 1
 
     def test_both_ends_of_the_shot_columns_are_carried(self, monkeypatch):
         # Against as well as for, so the table can show a match-up rather than one side.
-        t = row(table(monkeypatch), "Lopsided")["splits"]["home"]
+        t = sp(table(monkeypatch), "Lopsided", "home")
         assert t["shots_against"] == 10 and t["shots_on_target_against"] == 4
 
 
@@ -164,9 +177,10 @@ class TestTheOldShapeStillWorks:
 
     def test_the_flat_fields_are_the_overall_split(self, monkeypatch):
         t = row(table(monkeypatch), "Lopsided")
-        assert t["corners_won"] == t["splits"]["overall"]["corners_won"]
-        assert t["corners_conceded"] == t["splits"]["overall"]["corners_conceded"]
-        assert t["games"] == t["splits"]["overall"]["games"]
+        o = t["splits"]["overall"]["all"]
+        assert t["corners_won"] == o["corners_won"]
+        assert t["corners_conceded"] == o["corners_conceded"]
+        assert t["games"] == o["games"]
 
     def test_the_default_order_is_still_corners_won(self, monkeypatch):
         names = [t["name"] for t in table(monkeypatch)["teams"]]
@@ -179,3 +193,68 @@ class TestTheOldShapeStillWorks:
     def test_the_league_name_rides_along(self, monkeypatch):
         d = table(monkeypatch)
         assert d["league_name"] == "Test League" and d["country"] == "Nowhere"
+
+
+# A side that used to win two corners a game and now wins nine. The season average is
+# five and a half and describes a team that no longer exists.
+TURNED = {
+    "team_id": "t", "name": "Turned", "league_id": "l",
+    "real_matches": (
+        [match(True, 2, 8, 6, 2), match(False, 2, 8, 6, 2)] * 3
+        + [match(True, 9, 3, 20, 9), match(False, 9, 3, 20, 9)] * 2
+    ),
+}
+
+
+class TestTheRecentWindows:
+    """A season average cannot tell a side that has STARTED winning eight a game from one
+    that has been winning eight all year and has just stopped. Both read the same."""
+
+    def win(self, monkeypatch, venue, window):
+        monkeypatch.setattr(server, "db", FakeDB([TURNED], LEAGUES))
+        d = run(server.corner_table("l"))
+        return d["teams"][0]["splits"][venue][window]
+
+    def test_the_season_average_hides_the_turn(self, monkeypatch):
+        # Six games at 2 and four at 9: (12 + 36) / 10 = 4.8, which is neither.
+        assert self.win(monkeypatch, "overall", "all") == \
+            self.win(monkeypatch, "overall", "all")
+        assert self.win(monkeypatch, "overall", "all")["corners_won"] == 4.8
+        assert self.win(monkeypatch, "overall", "all")["games"] == 10
+
+    def test_the_last_five_shows_it(self, monkeypatch):
+        # The last five are 2, 9, 9, 9, 9 — the four new games plus one old one.
+        w = self.win(monkeypatch, "overall", "5")
+        assert w["games"] == 5 and w["corners_won"] == 7.6
+
+    def test_the_last_ten_is_the_whole_season_here(self, monkeypatch):
+        w = self.win(monkeypatch, "overall", "10")
+        assert w["games"] == 10 and w["corners_won"] == 4.8
+
+    def test_a_window_is_applied_INSIDE_the_venue(self, monkeypatch):
+        # THE PART THAT IS EASY TO GET WRONG. The last five HOME games are the five most
+        # recent games played at home — not whichever of the last five OVERALL happened
+        # to be at home, which would hand a side that has just played four away games a
+        # one-game "last five at home".
+        w = self.win(monkeypatch, "home", "5")
+        assert w["games"] == 5, "five home games exist; the window must find all five"
+        # Three at 2 and two at 9: (6 + 18) / 5 = 4.8.
+        assert w["corners_won"] == 4.8
+
+    def test_a_window_bigger_than_the_pool_is_the_pool(self, monkeypatch):
+        w = self.win(monkeypatch, "home", "10")
+        assert w["games"] == 5, "only five home games were played"
+
+    def test_both_ends_move_with_the_window(self, monkeypatch):
+        assert self.win(monkeypatch, "overall", "all")["corners_conceded"] == 6
+        assert self.win(monkeypatch, "overall", "5")["corners_conceded"] == 4
+
+    def test_the_shot_columns_move_too(self, monkeypatch):
+        assert self.win(monkeypatch, "overall", "all")["shots"] == 11.6
+        assert self.win(monkeypatch, "overall", "5")["shots"] == 17.2
+
+    def test_and_coverage_is_recounted_for_the_window(self, monkeypatch):
+        # Not carried over from the season: a window can be entirely uncovered even when
+        # the season is well covered, and that is exactly when it would mislead.
+        assert self.win(monkeypatch, "overall", "5")["covered"]["shots"] == 5
+        assert self.win(monkeypatch, "overall", "all")["covered"]["shots"] == 10

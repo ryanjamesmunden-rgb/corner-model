@@ -52,6 +52,16 @@ const ORDERS = [
   { v: "time", label: "By time" },
 ];
 
+// How long a run has to be to keep a game on the Streaks list. Five is a run; nine is a
+// story, and on a busy weekend the difference between them is the difference between a
+// list to read and a list to scan.
+//
+// THE FLOOR IS FIVE AND THE CEILING IS TEN, matching the server, which clamps anyway.
+// Below five a "run" is three games, which is what a side does by accident; above ten
+// the filter stops being a filter and becomes a search for nothing, and an empty page
+// looks exactly like a broken one.
+const RUNS = [5, 6, 7, 8, 9, 10];
+
 /**
  * The flag for a country row.
  *
@@ -81,8 +91,9 @@ const SHOWS = [
   { v: "all", label: "All games",
     blurb: "Every fixture in the window." },
   { v: "streaks", label: "Streaks",
-    blurb: "Games with a run of five or more going in — corners won, conceded or the match "
-         + "total, over or under — at a line the division itself does not reach." },
+    blurb: "Games with a run going in — corners won, conceded or the match total, over "
+         + "or under — at a line the division itself does not reach. Raise the run to "
+         + "shorten the list." },
   { v: "trends", label: "Trends",
     blurb: "Games where a side's corners won or conceded have moved a corner a game or "
          + "more from their own season rate." },
@@ -311,6 +322,7 @@ function BrowseBoard() {
   // next visit, and the thing you would send somebody.
   const order = ORDERS.some((o) => o.v === params.get("order")) ? params.get("order")
                                                                 : "country";
+  const minRun = RUNS.includes(Number(params.get("run"))) ? Number(params.get("run")) : 5;
   // Open rows live in component state rather than the URL: which countries you have
   // expanded is a reading position, not a thing to share or to restore a week later.
   const [openCountries, setOpenCountries] = useState({});
@@ -328,8 +340,9 @@ function BrowseBoard() {
   const set = (k, v) => setBoth({ [k]: v });
 
   const { data, isLoading, error } = useQuery({
-    queryKey: ["browse", days, show, day],
-    queryFn: () => api.browse({ days, show, ...(day ? { day } : {}) }),
+    queryKey: ["browse", days, show, day, minRun],
+    queryFn: () => api.browse({ days, show, min_run: minRun,
+                                ...(day ? { day } : {}) }),
     keepPreviousData: true,
   });
 
@@ -389,6 +402,25 @@ function BrowseBoard() {
             </button>
           ))}
         </div>
+        {/* ONLY ON STREAKS. It does nothing to "All games" or "Trends", and a control
+            that is present but inert is a control people conclude is broken. */}
+        {show === "streaks" && (
+          <div className="flex items-center gap-1.5">
+            <span className="text-[11px] text-muted-foreground">run of</span>
+            <div className="flex rounded-md bg-secondary p-0.5">
+              {RUNS.map((n) => (
+                <button key={n} onClick={() => set("run", n === 5 ? "" : n)}
+                  data-testid={`browse-run-${n}`}
+                  aria-pressed={minRun === n}
+                  className={`text-xs px-2 py-1.5 rounded transition-colors ${
+                    minRun === n ? "bg-primary text-primary-foreground font-medium"
+                                 : "text-muted-foreground"}`}>
+                  {n}+
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
         {data && (
           <span className="text-[11px] text-muted-foreground ml-auto font-mono-data">
             {data.total} game{data.total === 1 ? "" : "s"}

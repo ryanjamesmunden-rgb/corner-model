@@ -44,6 +44,7 @@ on:
           - h2h_coverage      # is there history for the Previous meetings panel to show
           - watchlist         # which games to watch when football returns after a break
           - press_board       # an attack in form vs a defence that concedes nothing away
+          - browse_audit      # how much the front door's Streaks/Trends filters keep
           - sweep           # model weight sweep
           - country_leagues # SPENDS CREDITS (1 call) — what competitions exist for a country
           - league_probe    # SPENDS CREDITS (~6/league) — does a league carry corner data
@@ -158,6 +159,7 @@ jobs:
               h2h_coverage)     SCRIPT="measure_h2h" ;;
               watchlist)        SCRIPT="watchlist" ;;
               press_board)      SCRIPT="press_board" ;;
+              browse_audit)     SCRIPT="browse_audit" ;;
               # The fallback is measure_features because `sweep` is a mode OF it. A new
               # harness with its own script that is not added above polls this script,
               # finds someone else's last run, and reports THAT output as its result.

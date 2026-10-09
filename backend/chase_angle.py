@@ -55,6 +55,13 @@ THE THRESHOLDS, and where each number comes from rather than being invented:
   MIN_WIN_RATE is 0.45. A mid-table side wins about a third of its games; 45% at one
   venue is a side that genuinely tends to lead.
 
+  MIN_CLEAN_SHEETS is 0.35, and it is a SEPARATE leg from the goals-conceded average
+  rather than a restatement of it. A side conceding exactly one most weeks and a side
+  alternating shutouts with a 2-0 both average one a game, and only the second is a
+  defence you expect to keep your side off the scoreboard for ninety minutes. The
+  mechanism here is our team staying behind or level and chasing, so how often they
+  actually shut a team out is the question the average was standing in for.
+
   sample floors reuse press_board's MIN_GAMES and THIN_GAMES unchanged, for the reason
   watchlist.py gives: "a five-game average is EXTREME by construction, so thin rows do
   not merely appear in the ranking, they lead it." Thin rows print in their own section.
@@ -71,6 +78,8 @@ from collections import defaultdict
 from pathlib import Path
 
 from dotenv import load_dotenv
+
+from typing import Optional
 
 from server import _fixture_projections, _match_result, _src, db, nb_ge
 
@@ -91,6 +100,12 @@ DEFAULT_MIN_LEAKING = 1.5
 DEFAULT_MIN_WIN_RATE = 0.45
 # Opponent: goals conceded per game at their venue. press_board's own constant.
 DEFAULT_MAX_CONCEDED = 1.0
+# Opponent: share of games shut out at their venue. A DISTINCT LEG from the average
+# above and not a restatement of it — see clean_sheet_rate for why the two come apart.
+# A third of games is "lots of clean sheets" without being so rare that the screen only
+# returns the one side in Europe doing it; a side conceding a goal a game typically
+# shuts out somewhere between a third and a half.
+DEFAULT_MIN_CLEAN_SHEETS = 0.35
 # Opponent: corners conceded per game, against the division. Zero means "at or above
 # average" — this one is a floor rather than an edge, because a solid side that is also
 # merely average at giving corners up is still the shape; it is the goals that matter.
@@ -113,6 +128,25 @@ def venue_games(team: dict, home: bool) -> list:
 
 def per_game(rows: list, field: str):
     return (sum(r.get(field, 0) for r in rows) / len(rows)) if rows else None
+
+
+def clean_sheet_rate(rows: list):
+    """Share of games shut out, over the games whose score was actually synced.
+
+    NOT THE SAME CLAIM AS GOALS CONCEDED PER GAME, and the difference is the mechanism.
+    A side conceding exactly one most weeks and a side alternating shutouts with a 2-0
+    both average one a game, and only the second is a defence you expect to keep YOUR
+    side off the scoreboard for ninety minutes. This angle rests on our team staying
+    behind or level and chasing, so "how often do they keep a clean sheet" is the
+    question, and the average was standing in for it.
+
+    Counted over synced scores only, for win_rate's reason: an unsynced fixture is not
+    a game they failed to shut out.
+    """
+    scored = [m for m in rows if m.get("goals_against") is not None]
+    if not scored:
+        return None, 0
+    return sum(1 for m in scored if m["goals_against"] == 0) / len(scored), len(scored)
 
 
 def win_rate(rows: list):
@@ -141,7 +175,8 @@ def league_pars(teams: list) -> dict:
 
 def scan(fixtures: dict, teams_by_id: dict, pars: dict, corner_edge: float,
          min_leaking: float, min_win_rate: float, max_conceded: float,
-         opp_corner_edge: float):
+         opp_corner_edge: float, min_clean_sheets: float = DEFAULT_MIN_CLEAN_SHEETS,
+         vetoes: Optional[dict] = None):
     """Every (our side, opponent) pair in the window that fits the shape.
 
     BOTH SIDES ARE TESTED, not just the home team, for press_board's reason: the
@@ -172,23 +207,30 @@ def scan(fixtures: dict, teams_by_id: dict, pars: dict, corner_edge: float,
             their_corners_against = per_game(theirs, "corners_against")
             their_goals_against = per_game(theirs, "goals_against")
             their_wins, scored_games = win_rate(theirs)
+            their_sheets, sheet_games = clean_sheet_rate(theirs)
             if None in (my_corners, my_leak, their_corners_against,
-                        their_goals_against, their_wins):
+                        their_goals_against, their_wins, their_sheets):
                 continue
 
             my_edge = my_corners - par_mine["for"]
             their_edge = their_corners_against - par_theirs["against"]
 
-            # All five legs, and every one of them is the angle as stated.
-            if my_edge < corner_edge:                 # strong corner team
-                continue
-            if my_leak < min_leaking:                 # ...that ships goals
-                continue
-            if their_wins < min_win_rate:             # opponent wins games
-                continue
-            if their_goals_against > max_conceded:    # ...and keeps them out
-                continue
-            if their_edge < opp_corner_edge:          # ...but gives corners up
+            # SIX LEGS, every one of them the angle as stated, and each veto COUNTED.
+            # An empty board otherwise says nothing about which bar emptied it, and the
+            # reader's only move is to loosen all six at once — which is how a screen
+            # ends up with thresholds nobody can defend. browse_audit paid for this.
+            legs = (("our corner edge", my_edge < corner_edge),
+                    ("our goals conceded", my_leak < min_leaking),
+                    ("their win rate", their_wins < min_win_rate),
+                    ("their goals conceded", their_goals_against > max_conceded),
+                    ("their clean sheets", their_sheets < min_clean_sheets),
+                    ("their corners conceded", their_edge < opp_corner_edge))
+            failed = [name for name, bad in legs if bad]
+            if failed:
+                if vetoes is not None:
+                    # The FIRST failing leg, so the tally sums to the number of pairs
+                    # rejected rather than double-counting a side that misses on four.
+                    vetoes[failed[0]] = vetoes.get(failed[0], 0) + 1
                 continue
 
             lam = row["lambda_home"] if at_home else row["lambda_away"]
@@ -200,6 +242,7 @@ def scan(fixtures: dict, teams_by_id: dict, pars: dict, corner_edge: float,
                 "my_games": len(mine),
                 "their_corners_against": their_corners_against, "their_edge": their_edge,
                 "their_goals_against": their_goals_against, "their_wins": their_wins,
+                "their_sheets": their_sheets, "their_sheet_games": sheet_games,
                 "their_games": len(theirs), "their_scored": scored_games,
                 # THE ORDERING, AND IT IS NOT A CONFIDENCE. See the note at the top. It
                 # is the corner half of the angle restated as one number: how far our
@@ -233,7 +276,9 @@ def show(rows: list, top: int, title: str):
               f"({r['my_edge']:+.2f} v division)  ·  concedes {r['my_leak']:.2f} "
               f"goals/game   over {r['my_games']}")
         print(f"     {r['opp']} ({other}): wins {r['their_wins'] * 100:.0f}% "
-              f"of {r['their_scored']}  ·  concedes {r['their_goals_against']:.2f} "
+              f"of {r['their_scored']}  ·  clean sheets in "
+              f"{r['their_sheets'] * 100:.0f}% of {r['their_sheet_games']}")
+        print(f"     {' ' * len(r['opp'])}  concedes {r['their_goals_against']:.2f} "
               f"goals/game  ·  gives up {r['their_corners_against']:.2f} corners/game "
               f"({r['their_edge']:+.2f})")
         model = f"     model: {r['lam']:.2f} corners for {r['team']}"
@@ -248,7 +293,8 @@ def show(rows: list, top: int, title: str):
 async def run(days=DEFAULT_DAYS, top=DEFAULT_TOP, league_id=None,
               corner_edge=DEFAULT_CORNER_EDGE, min_leaking=DEFAULT_MIN_LEAKING,
               min_win_rate=DEFAULT_MIN_WIN_RATE, max_conceded=DEFAULT_MAX_CONCEDED,
-              opp_corner_edge=DEFAULT_OPP_CORNER_EDGE):
+              opp_corner_edge=DEFAULT_OPP_CORNER_EDGE,
+              min_clean_sheets=DEFAULT_MIN_CLEAN_SHEETS):
     print("CHASE ANGLE — a corner side that leaks goals, against a solid winner that")
     print("gives corners up. The inverse premise to press_board: our defence is the")
     print("one that fails, so our side spends the game chasing.")
@@ -256,8 +302,10 @@ async def run(days=DEFAULT_DAYS, top=DEFAULT_TOP, league_id=None,
     print(f"screen: our side  >= {corner_edge:+.2f} corners/game v its division "
           f"AND concedes >= {min_leaking:.2f} goals/game")
     print(f"        opponent  wins >= {min_win_rate * 100:.0f}% "
-          f"AND concedes <= {max_conceded:.2f} goals/game "
-          f"AND >= {opp_corner_edge:+.2f} corners/game v its division")
+          f"AND clean sheets in >= {min_clean_sheets * 100:.0f}% "
+          f"AND concedes <= {max_conceded:.2f} goals/game")
+    print(f"                  AND gives up >= {opp_corner_edge:+.2f} corners/game "
+          f"v its division")
     print(f"        both over {MIN_GAMES}+ games at the venue they are playing")
     print(f"window: next {days} days   league={league_id or 'all'}\n")
 
@@ -275,13 +323,22 @@ async def run(days=DEFAULT_DAYS, top=DEFAULT_TOP, league_id=None,
     teams = await db.teams.find({}, {"_id": 0}).to_list(5000)
     teams_by_id = {t["team_id"]: t for t in teams}
 
+    vetoes = {}
     rows = scan(fixtures, teams_by_id, league_pars(teams), corner_edge, min_leaking,
-                min_win_rate, max_conceded, opp_corner_edge)
+                min_win_rate, max_conceded, opp_corner_edge, min_clean_sheets, vetoes)
     solid = [r for r in rows if not r["thin"]]
     thin = [r for r in rows if r["thin"]]
 
     print(f"{len(fixtures)} fixtures in the window, {len(rows)} fit the shape "
-          f"({len(solid)} well-sampled, {len(thin)} thin)\n")
+          f"({len(solid)} well-sampled, {len(thin)} thin)")
+    # WHICH BAR DID THE REJECTING. Without it an empty board leaves one move — loosen
+    # all six at once — and that is how a screen ends up with thresholds nobody can
+    # defend. Counted on the FIRST failing leg, so these sum to the pairs rejected.
+    if vetoes:
+        print("rejected on (first failing leg): "
+              + ", ".join(f"{k} {v}" for k, v in
+                          sorted(vetoes.items(), key=lambda kv: -kv[1])))
+    print()
     show(solid, top, "=" * 78 + f"\nWELL SAMPLED — both sides have {THIN_GAMES}+ games "
          "at the venue\n" + "=" * 78)
     show(thin, top, "-" * 78 + f"\nTHIN — fewer than {THIN_GAMES} games behind one side. "
@@ -310,9 +367,11 @@ def main():
     ap.add_argument("--min-win-rate", type=float, default=DEFAULT_MIN_WIN_RATE)
     ap.add_argument("--max-conceded", type=float, default=DEFAULT_MAX_CONCEDED)
     ap.add_argument("--opp-corner-edge", type=float, default=DEFAULT_OPP_CORNER_EDGE)
+    ap.add_argument("--min-clean-sheets", type=float, default=DEFAULT_MIN_CLEAN_SHEETS)
     a = ap.parse_args()
     asyncio.run(run(a.days, a.top, a.league, a.corner_edge, a.min_leaking,
-                    a.min_win_rate, a.max_conceded, a.opp_corner_edge))
+                    a.min_win_rate, a.max_conceded, a.opp_corner_edge,
+                    a.min_clean_sheets))
 
 
 if __name__ == "__main__":

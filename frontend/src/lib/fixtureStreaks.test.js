@@ -15,7 +15,7 @@
 import {
   FIRE_RUN, MIN_RUN, SHARE_MIN_RUN, fixtureStreaks, markFor, streakDetail, streakHeadline,
   streakRow,
-  subjectLabel, streakSummary } from "./fixtureStreaks.js";
+  subjectLabel, streakSummary, streakClaim } from "./fixtureStreaks.js";
 
 /** A row exactly as backend fixture_streaks emits it — flat, from live_streak. */
 const row = (team, { line = 5, run = 6, subject = "team", direction = "over",
@@ -317,5 +317,51 @@ describe("the summary of what is running in", () => {
     const unsorted = [row("A", { run: 3 }), row("B", { run: 11 }), row("C", { run: 5 })]
       .map((r) => streakRow(r));
     expect(streakSummary(unsorted).longest.run).toBe(11);
+  });
+});
+
+describe("streakClaim — a run that stands on its own line", () => {
+  const c = (subject, label, team = "Arsenal") =>
+    streakClaim({ team, subject, label });
+
+  test("a conceded run says so, which is the bug this exists for", () => {
+    // Reported from the home page: "Arsenal under 4 · 6 in a row" reads as Arsenal
+    // WINNING under four corners. It means Arsenal shipping under four — the opposite
+    // side of the same game.
+    expect(c("conceded", "under 4")).toBe("Arsenal concede under 4");
+    expect(c("conceded", "6+")).toBe("Arsenal concede 6+");
+  });
+
+  test("and a team run says the opposite verb", () => {
+    expect(c("team", "8+")).toBe("Arsenal win 8+");
+    expect(c("team", "under 4")).toBe("Arsenal win under 4");
+  });
+
+  test("a match total belongs to neither side, so it gets no verb", () => {
+    expect(c("match", "under 19")).toBe("Arsenal match total under 19");
+    expect(c("match", "11+")).toBe("Arsenal match total 11+");
+  });
+
+  test("the three subjects are never worded the same way", () => {
+    const said = ["team", "conceded", "match"].map((s) => c(s, "6+"));
+    expect(new Set(said).size).toBe(3);
+  });
+
+  test("it shares its verb with the fixture panel's claim", () => {
+    // Two screens wording one claim differently is how the venue bug happened. If one
+    // of these moves, this fails rather than the two quietly diverging.
+    const panel = streakRow(row("Brighton", { subject: "conceded", line: 5 })).claim;
+    expect(panel).toBe("Brighton concede 5+");
+    expect(c("conceded", "5+", "Brighton")).toBe(panel);
+  });
+
+  test("an unknown subject still names the team and the line", () => {
+    // Never silently drop either: a row with a word missing is worse than a clumsy one.
+    expect(c("nonsense", "7+")).toBe("Arsenal 7+");
+  });
+
+  test("it survives being handed nothing", () => {
+    expect(streakClaim()).toBe("");
+    expect(streakClaim({ team: "Arsenal" })).toBe("Arsenal");
   });
 });

@@ -10,6 +10,7 @@ import ErrorBoundary from "@/components/ErrorBoundary";
 import StarButton from "@/components/StarButton";
 import TeamStar from "@/components/TeamStar";
 import { flattenGames, byDay, dayIsOpen } from "@/lib/browseOrder";
+import { streakClaim } from "@/lib/fixtureStreaks";
 
 /**
  * The front door: what is on, and where.
@@ -102,6 +103,20 @@ const SHOWS = [
 /** Home / Away / Overall, so "5 in a row" says which five. */
 const VENUE_TAG = { home: "Home", away: "Away", overall: "Overall" };
 
+/**
+ * A run as a phrase, from fixtureStreaks so the two screens cannot word it differently.
+ *
+ * "6+" ALONE IS AMBIGUOUS across three subjects — six of their own corners, six in the
+ * match, or six conceded are different claims and the row was printing them
+ * identically. Worse than ambiguous on a conceded run: "Arsenal under 4" reads as
+ * Arsenal winning under four, when it means Arsenal SHIPPING under four, which is the
+ * opposite side of the same game. fixtureStreaks had already fixed exactly this for the
+ * fixture panel and said so in a comment; the browse row reproduced it anyway, and I
+ * wrote in the commit that the team name "carries enough context to guess". It does not.
+ */
+const claimOf = (r) => streakClaim({ team: r.team, subject: r.subject,
+                                     label: r.line_label });
+
 const TrendMark = ({ direction }) =>
   direction === "up"
     ? <TrendingUp className="h-3.5 w-3.5 text-tone-strong-fg" />
@@ -110,23 +125,45 @@ const TrendMark = ({ direction }) =>
 /**
  * One fixture.
  *
- * A DIV WITH role="button", NOT A BUTTON, because it contains three of its own — the
- * fixture star and a bell per side. A button inside a button is invalid markup that the
- * HTML parser silently unnests, which is a strange way to find out. Same shape as
- * FixtureBoard's row, keyboard included.
+ * TAPPING IT OPENS A PREVIEW, NOT THE FIXTURE PAGE. The row is a summary of a summary —
+ * one run out of maybe five, and a "+3 more" that names things it will not show you.
+ * Acting on that meant loading a whole fixture page per game, and most of those loads
+ * ended in going back. The third drawer answers "is this worth opening" out of the
+ * payload already in the browser, and the fixture page is one deliberate click further.
+ *
+ * SO THE ROW NO LONGER NAVIGATES. That is a change to behaviour people have learned, and
+ * it is the point rather than a side effect: a row that both expands and navigates would
+ * have to pick one for the tap, and the whole complaint was that the tap was too costly.
+ *
+ * A DIV WITH role="button", NOT A BUTTON, because it contains several of its own — the
+ * fixture star, a bell per side, and the open link. A button inside a button is invalid
+ * markup that the HTML parser silently unnests, which is a strange way to find out.
  */
 function Game({ game, onOpen, showWhere = false }) {
+  // STATE LIVES HERE, not in the board. Nothing above a row needs to know which rows
+  // are open, there is no rule that only one may be, and threading it through Country
+  // and League and Day would be three components carrying a value none of them reads.
+  // Keyed on fixture_id by the caller, so React keeps it across re-renders and drops
+  // it when the filter changes the list — which is the behaviour wanted either way.
+  const [open, setOpen] = useState(false);
+  const onToggle = () => setOpen((o) => !o);
+  const runs = game.streaks || [];
+  const trends = game.trends || [];
   return (
     <div
       role="button"
+      aria-expanded={open}
       tabIndex={0}
-      onClick={onOpen}
+      onClick={onToggle}
       onKeyDown={(e) => {
-        if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onOpen(); }
+        if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onToggle(); }
       }}
       data-testid={`browse-game-${game.fixture_id}`}
-      className="w-full text-left px-3 py-2.5 rounded-md hover:bg-secondary/60 cursor-pointer
-                 transition-colors border border-transparent hover:border-border"
+      data-open={open ? "1" : "0"}
+      className={`w-full text-left px-3 py-2.5 rounded-md cursor-pointer
+                  transition-colors border ${
+        open ? "bg-secondary/70 border-border"
+             : "border-transparent hover:bg-secondary/60 hover:border-border"}`}
     >
       {/* items-center, not items-baseline: the star and the bells are buttons, and a
           button has no text baseline to align to, so they floated a few pixels high. */}
@@ -153,6 +190,9 @@ function Game({ game, onOpen, showWhere = false }) {
         <span className="ml-auto text-[11px] text-muted-foreground font-mono-data">
           {kickoffLabel(game.date)}
         </span>
+        <ChevronRight className={`h-3.5 w-3.5 shrink-0 transition-transform ${
+                                  open ? "rotate-90 text-primary"
+                                       : "text-muted-foreground/50"}`} />
       </div>
       {showWhere && (
         <div className="text-[10px] text-muted-foreground uppercase tracking-wider mt-0.5 pl-7">
@@ -160,14 +200,15 @@ function Game({ game, onOpen, showWhere = false }) {
           {game.is_cup && <span className="ml-1 normal-case tracking-normal">(cup)</span>}
         </div>
       )}
-      {/* WHY THIS ROW IS ON A FILTERED LIST. Surviving a filter is not a reason; the run
-          or the direction of travel is, and it is the thing worth opening the game for. */}
-      {(game.streak || (game.trends || []).length > 0) && (
+      {/* WHY THIS ROW IS ON A FILTERED LIST, in one line. Surviving a filter is not a
+          reason; the run or the direction of travel is. COLLAPSED ONLY — once the panel
+          is open it would be the first row of it, said twice. */}
+      {!open && (game.streak || trends.length > 0) && (
         <div className="flex items-center gap-3 flex-wrap mt-1">
           {game.streak && (
             <span className="flex items-center gap-1 text-[11px] text-tone-streak-fg">
               <Flame className="h-3 w-3" />
-              {game.streak.team} {game.streak.line_label} · {game.streak.run} in a row
+              {claimOf(game.streak)} · {game.streak.run} in a row
               {/* WHICH FIVE. A run reported without its venue reads as home form when it
                   is overall form, which is a claim the page would be making up — and it
                   was made up, in published posts, before the panel started labelling. */}
@@ -179,7 +220,7 @@ function Game({ game, onOpen, showWhere = false }) {
               )}
             </span>
           )}
-          {(game.trends || []).map((t) => (
+          {trends.map((t) => (
             <span key={`${t.team}-${t.subject}`}
                   className="flex items-center gap-1 text-[11px] text-muted-foreground">
               <TrendMark direction={t.direction} />
@@ -191,6 +232,84 @@ function Game({ game, onOpen, showWhere = false }) {
               </span>
             </span>
           ))}
+        </div>
+      )}
+
+      {/* THE PREVIEW. Everything the browse payload already knows about this game, which
+          is every run rather than the best one, and every trend with its two numbers. No
+          request is made to open it — that is the entire point. */}
+      {open && (
+        <div className="mt-2 pt-2 border-t border-border/60 space-y-2"
+             data-testid={`browse-preview-${game.fixture_id}`}>
+          {runs.length > 0 ? (
+            <div className="space-y-1">
+              {runs.map((r) => (
+                /* EVERY PIECE whitespace-nowrap, so a narrow screen breaks BETWEEN the
+                   parts of the claim and never inside one. Without it a phone rendered
+                   "corners 8+" and "8 in a row" split across lines, which is four
+                   fragments where there were two facts. */
+                <div key={`${r.team}-${r.subject}-${r.direction}-${r.line}-${r.venue}`}
+                     className="flex items-baseline gap-x-2 gap-y-0.5 flex-wrap text-[11px]">
+                  <Flame className="h-3 w-3 shrink-0 text-tone-streak-fg translate-y-0.5" />
+                  <span className="text-tone-streak-fg font-medium whitespace-nowrap">
+                    {claimOf(r)}
+                  </span>
+                  <span className="font-mono-data whitespace-nowrap">{r.run} in a row</span>
+                  <span className="text-muted-foreground whitespace-nowrap">
+                    ({(VENUE_TAG[r.venue] || "Overall").toLowerCase()})
+                  </span>
+                  {/* HOW UNUSUAL, not just how long. A run says nothing without the
+                      division it happened in — that is the whole bar it had to clear. */}
+                  {typeof r.margin === "number" && (
+                    <span className="ml-auto text-muted-foreground font-mono-data
+                                     whitespace-nowrap">
+                      {r.margin > 0 ? `+${r.margin.toFixed(1)}` : r.margin.toFixed(1)} v division
+                    </span>
+                  )}
+                </div>
+              ))}
+              {game.streak_count > runs.length && (
+                <p className="text-[10px] text-muted-foreground pl-5">
+                  and {game.streak_count - runs.length} more on the fixture page
+                </p>
+              )}
+            </div>
+          ) : (
+            <p className="text-[11px] text-muted-foreground">No live run into this one.</p>
+          )}
+
+          {trends.length > 0 && (
+            <div className="space-y-1">
+              {trends.map((t) => (
+                <div key={`${t.team}-${t.subject}`}
+                     className="flex items-baseline gap-x-2 gap-y-0.5 flex-wrap text-[11px]
+                                text-muted-foreground">
+                  <span className="shrink-0 translate-y-0.5">
+                    <TrendMark direction={t.direction} />
+                  </span>
+                  <span className="text-foreground whitespace-nowrap">{t.team}</span>
+                  <span className="whitespace-nowrap">{t.label || "corners"} {t.direction}</span>
+                  <span className="ml-auto font-mono-data whitespace-nowrap">
+                    {t.recent?.toFixed ? t.recent.toFixed(1) : t.recent} recent
+                    {" v "}
+                    {t.season?.toFixed ? t.season.toFixed(1) : t.season} season
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* THE DELIBERATE CLICK. stopPropagation because the row itself now toggles,
+              and a link that collapsed the panel under you on the way out would be a
+              strange way to leave. */}
+          <button
+            onClick={(e) => { e.stopPropagation(); onOpen(); }}
+            data-testid={`browse-open-${game.fixture_id}`}
+            className="inline-flex items-center gap-1 text-[11px] text-primary
+                       hover:underline font-medium">
+            Open full fixture
+            <ChevronRight className="h-3 w-3" />
+          </button>
         </div>
       )}
     </div>

@@ -604,3 +604,51 @@ class TestTheFilterLooksAtEveryLineNotJustTheHeadlineOne:
         # production for every team with fewer games than the bar — which it was.
         assert server.live_streak_candidates(
             team("e", "Empty", "l", [5]), "overall", "team", "over", min_len=5) == []
+
+
+class TestAGameCarriesItsOwnEvidence:
+    """A row that says "+3 more" has told the reader something exists and given them no
+    way to look at it short of loading the whole fixture page — which is the trip the
+    preview is meant to save. The runs were already computed and thrown away."""
+
+    def rows(self, monkeypatch, **kw):
+        d = browse(monkeypatch, **kw)
+        return [g for c in d["countries"] for l in c["leagues"] for g in l["games"]]
+
+    def test_every_game_carries_a_streak_list(self, monkeypatch):
+        for g in self.rows(monkeypatch):
+            assert isinstance(g["streaks"], list)
+
+    def test_the_list_holds_the_runs_the_count_promised(self, monkeypatch):
+        # "+2 more" with one run behind it is worse than no number at all.
+        for g in self.rows(monkeypatch):
+            assert len(g["streaks"]) == min(g["streak_count"], server.BROWSE_PREVIEW_RUNS)
+
+    def test_the_headline_run_is_the_first_of_them(self, monkeypatch):
+        # The panel must not open to find a different best row than the one on the row.
+        for g in self.rows(monkeypatch, show="streaks"):
+            assert g["streaks"][0]["run"] == g["streak"]["run"]
+            assert g["streaks"][0]["team"] == g["streak"]["team"]
+            assert g["streaks"][0]["line"] == g["streak"]["line"]
+
+    def test_they_are_ordered_best_first(self, monkeypatch):
+        for g in self.rows(monkeypatch, show="streaks"):
+            keys = [(r["run"], r.get("margin") or 0) for r in g["streaks"]]
+            assert keys == sorted(keys, reverse=True)
+
+    def test_each_one_says_whose_it_is_and_which_games(self, monkeypatch):
+        # A run with no venue reads as home form when it is overall form — the mistake
+        # that reached published posts before the panel started labelling.
+        for g in self.rows(monkeypatch, show="streaks"):
+            for r in g["streaks"]:
+                assert r["team"] in (g["home"], g["away"])
+                assert r["venue"] in ("home", "away", "overall")
+                assert r["line_label"] and r["subject"] and r["direction"]
+
+    def test_a_game_with_no_run_carries_an_empty_list_not_a_missing_key(self, monkeypatch):
+        g = next(x for x in self.rows(monkeypatch) if x["fixture_id"] == "f-no")
+        assert g["streaks"] == [] and g["streak"] is None
+
+    def test_the_list_is_capped(self, monkeypatch):
+        for g in self.rows(monkeypatch):
+            assert len(g["streaks"]) <= server.BROWSE_PREVIEW_RUNS

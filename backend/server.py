@@ -2474,6 +2474,7 @@ TOOL_SCRIPTS = {"backfill_shots": "backfill_shots.py", "measure_features": "meas
                 "browse_audit": "browse_audit.py",
                 "chase_angle": "chase_angle.py",
                 "history_export": "history_export.py",
+                "ticker_feed": "ticker_feed.py",
                 "backfill_fh": "backfill_fh.py",
                 "backfill_goal_events": "backfill_goal_events.py",
                 "probe_corner_halves": "probe_corner_halves.py",
@@ -2498,6 +2499,7 @@ TOOL_COOLDOWN = {"backfill_shots": 600, "measure_features": 120,
                  "browse_audit": 120,
                  "chase_angle": 120,
                  "history_export": 300,
+                 "ticker_feed": 120,
                  "backfill_fh": 120,
                  "backfill_goal_events": 600,
                  "probe_corner_halves": 600,
@@ -2602,6 +2604,15 @@ MEASURE_MODES = {
     # /tools/history.csv — the harness output cap truncates, and "every game" does
     # not fit. Reads db.projection_snapshots, db.streak_snapshots and db.teams.
     "history_export": ("history_export", [], True),
+    # THE CORNER TICKER'S TWO LISTS, as JSON ready to paste. The ticker that runs
+    # along the bottom of a recording carries its teams as literals, because it is a
+    # standalone page with no connection to this database — which makes its numbers a
+    # snapshot taken by hand, and one that goes stale quietly: the figures stay
+    # plausible and simply stop being true. Prints the season list and the last-five
+    # form list in the page's own shape. A form list requires a full window rather
+    # than ranking short ones low, since there the window IS the claim.
+    # Reads db.teams and db.leagues. Descriptions, not picks.
+    "ticker_feed": ("ticker_feed", [], True),
     # IS THERE ANYTHING FOR THE PREVIOUS MEETINGS PANEL TO SHOW. The panel renders nothing
     # when a pairing has no stored meeting — correctly, since an empty one would have to
     # choose between "no history on file" and "they have never met" — and that makes a
@@ -6246,6 +6257,11 @@ BROWSE_SUBJECTS = ("team", "match", "conceded")
 # the game for you.
 BROWSE_MAX_MIN_RUN = 10
 
+# How many runs a game carries for its preview panel. Six covers a fixture where both
+# sides are running on several subjects at once; past that the panel is a page, and a
+# reader who wants everything wants the fixture itself.
+BROWSE_PREVIEW_RUNS = 6
+
 # How far past its division's average a run's line has to sit to be worth a reader's
 # time, in corners per game. MEASURED, not guessed — browse_audit sweeps it:
 #
@@ -6496,6 +6512,17 @@ async def browse(days: int = 7, show: str = "all", day: Optional[str] = None,
             # up, and the row has no space to print all four.
             "streak": max(runs, key=lambda r: (r["run"], r.get("margin") or 0)) if runs else None,
             "streak_count": len(runs),
+            # AND THE REST OF THEM, so the row can be opened instead of navigated to.
+            #
+            # These were computed and thrown away. A reader who sees "+3 more" has been
+            # told something exists and given no way to look at it short of loading the
+            # whole fixture page — which is the trip this is meant to save. They are a
+            # few hundred bytes a game and the alternative is a round trip per game.
+            #
+            # CAPPED, because a side can carry a dozen qualifying lines across three
+            # subjects and two venues, and a preview that scrolls is a page.
+            "streaks": sorted(runs, key=lambda r: (r["run"], r.get("margin") or 0),
+                              reverse=True)[:BROWSE_PREVIEW_RUNS],
             "trends": trends,
         })
 

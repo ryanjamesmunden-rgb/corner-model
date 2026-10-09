@@ -46,6 +46,7 @@ on:
           - press_board       # an attack in form vs a defence that concedes nothing away
           - browse_audit      # how much the front door's Streaks/Trends filters keep
           - chase_angle       # a corner side that leaks goals vs a solid winner
+          - history_export    # everything the site has published, graded, by week
           - sweep           # model weight sweep
           - country_leagues # SPENDS CREDITS (1 call) — what competitions exist for a country
           - league_probe    # SPENDS CREDITS (~6/league) — does a league carry corner data
@@ -162,6 +163,7 @@ jobs:
               press_board)      SCRIPT="press_board" ;;
               browse_audit)     SCRIPT="browse_audit" ;;
               chase_angle)      SCRIPT="chase_angle" ;;
+              history_export)   SCRIPT="history_export" ;;
               # The fallback is measure_features because `sweep` is a mode OF it. A new
               # harness with its own script that is not added above polls this script,
               # finds someone else's last run, and reports THAT output as its result.

@@ -2473,6 +2473,7 @@ TOOL_SCRIPTS = {"backfill_shots": "backfill_shots.py", "measure_features": "meas
                 "press_board": "press_board.py",
                 "browse_audit": "browse_audit.py",
                 "chase_angle": "chase_angle.py",
+                "history_export": "history_export.py",
                 "backfill_fh": "backfill_fh.py",
                 "backfill_goal_events": "backfill_goal_events.py",
                 "probe_corner_halves": "probe_corner_halves.py",
@@ -2496,6 +2497,7 @@ TOOL_COOLDOWN = {"backfill_shots": 600, "measure_features": 120,
                  "press_board": 120,
                  "browse_audit": 120,
                  "chase_angle": 120,
+                 "history_export": 300,
                  "backfill_fh": 120,
                  "backfill_goal_events": 600,
                  "probe_corner_halves": 600,
@@ -2590,6 +2592,16 @@ MEASURE_MODES = {
     # tested five times and came out flat, and the season-shape form has not been
     # tested at all. A list of fixtures to look at, never a card.
     "chase_angle": ("chase_angle", [], True),
+    # EVERYTHING THE SITE HAS PUBLISHED, GRADED, WEEK BY WEEK. Two sections are the
+    # real record — the frozen projections board and the frozen streak board, the
+    # second carrying the mismatch evidence each row rested on. One is a walk-forward
+    # REPLAY of the 20-of-20 board, which was never snapshotted and so has no record
+    # to read; it is labelled as a replay everywhere it appears. Prints a weekly
+    # summary and a coverage table, because a week with no snapshot and a week with
+    # nothing on look identical in a table that counts rows. The row level comes from
+    # /tools/history.csv — the harness output cap truncates, and "every game" does
+    # not fit. Reads db.projection_snapshots, db.streak_snapshots and db.teams.
+    "history_export": ("history_export", [], True),
     # IS THERE ANYTHING FOR THE PREVIOUS MEETINGS PANEL TO SHOW. The panel renders nothing
     # when a pairing has no stored meeting — correctly, since an empty one would have to
     # choose between "no history on file" and "they have never met" — and that makes a
@@ -2933,6 +2945,40 @@ async def tool_runs(token: Optional[str] = None, script: Optional[str] = None, l
     runs = await db.script_runs.find(q, {"_id": 0, "argv": 0}).sort("started_at", -1) \
         .limit(max(1, min(limit, 20))).to_list(20)
     return {"enabled": True, "runs": runs}
+
+
+@api_router.get("/tools/history.csv")
+async def tools_history_csv(token: Optional[str] = None, kind: str = "projections",
+                            weeks: int = 26, window: int = 20,
+                            user: dict = Depends(get_current_user)):
+    """Everything the site has published, graded, one row per claim, as a CSV.
+
+    A DOWNLOAD RATHER THAN A HARNESS RUN, because the harness stores at most
+    TOOL_OUTPUT_CAP characters and truncates from the front — which is fine for a
+    summary and silently useless for "every game". The summary lives in
+    history_export's printed output; this is the thing you open in a spreadsheet.
+
+    `kind` is one of projections, streaks, consistency. The first two are the RECORDED
+    snapshots and are the real published record; the third is a walk-forward REPLAY of a
+    board that was never frozen, and history_export's module docstring sets out the
+    three ways a replay differs from a record. Do not quote one as the other.
+
+    Token-gated like the rest of /tools: it is the whole publishing history in one file,
+    including rows that never reached a card.
+    """
+    from fastapi.responses import PlainTextResponse
+    import history_export                                  # local: it imports server
+
+    _check_tools_token(token)
+    if kind not in history_export.KINDS:
+        raise HTTPException(400, f"kind must be one of {', '.join(history_export.KINDS)}")
+    data = await history_export.gather(max(1, min(weeks, 260)),
+                                       max(2, min(window, 40)))
+    body = history_export.to_csv(data.get(kind) or [])
+    return PlainTextResponse(
+        body or "no rows\n", media_type="text/csv",
+        headers={"Content-Disposition":
+                 f'attachment; filename="corner-model-{kind}.csv"'})
 
 
 @api_router.get("/backtest")

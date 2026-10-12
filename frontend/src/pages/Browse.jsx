@@ -2,7 +2,8 @@ import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { useSearchParams } from "react-router-dom";
-import { Loader2, ChevronRight, Flame, TrendingUp, TrendingDown, Globe } from "lucide-react";
+import { Loader2, ChevronRight, Flame, TrendingUp, TrendingDown, Globe, Search, X }
+  from "lucide-react";
 import { api } from "@/lib/api";
 import { kickoffLabel } from "@/lib/kickoff";
 import { flagFor } from "@/lib/countryFlag";
@@ -11,6 +12,8 @@ import StarButton from "@/components/StarButton";
 import TeamStar from "@/components/TeamStar";
 import { flattenGames, byDay, dayIsOpen } from "@/lib/browseOrder";
 import { streakClaim } from "@/lib/fixtureStreaks";
+import { filterTree, totalOf, leagueChips, emptyReason, dayChips }
+  from "@/lib/browseFilter";
 
 /**
  * The front door: what is on, and where.
@@ -38,6 +41,12 @@ import { streakClaim } from "@/lib/fixtureStreaks";
  * intentions — one is spent when the game kicks off and the other is not — so the row
  * offers the star once and the bell once per side. Different icons on purpose; see
  * TeamStar's note.
+ *
+ * SEARCH AND THE BADGE ROW NARROW THE SAME TREE, in the browser, before either order
+ * renders. The country tree is the right shape for browsing and the wrong one for
+ * arriving with something in mind: finding Cottbus meant knowing Germany, opening it,
+ * knowing it is 2. Bundesliga, then opening that. browseFilter.js has the argument, and
+ * the rule it is most at risk of breaking — every count is rebuilt from what survived.
  *
  * TWO ORDERS, ONE PAYLOAD. Country order answers "what is on in England"; time order
  * answers "what is on today, and what is next", and neither is a worse version of the
@@ -360,7 +369,8 @@ function League({ league, open, onToggle }) {
   );
 }
 
-function Country({ country, open, onToggle, openLeagues, toggleLeague }) {
+function Country({ country, open, onToggle, openLeagues, toggleLeague,
+                   forceOpen = false }) {
   return (
     <section className={`bg-card border rounded-lg overflow-hidden transition-colors ${
                          open ? "border-primary/30" : "border-border"}`}
@@ -386,7 +396,7 @@ function Country({ country, open, onToggle, openLeagues, toggleLeague }) {
       </button>
       {open && country.leagues.map((l) => (
         <League key={l.league_id} league={l}
-                open={!!openLeagues[l.league_id]}
+                open={forceOpen || !!openLeagues[l.league_id]}
                 onToggle={() => toggleLeague(l.league_id)} />
       ))}
     </section>
@@ -442,6 +452,11 @@ function BrowseBoard() {
   const order = ORDERS.some((o) => o.v === params.get("order")) ? params.get("order")
                                                                 : "country";
   const minRun = RUNS.includes(Number(params.get("run"))) ? Number(params.get("run")) : 5;
+  // SEARCH AND THE PICKED LEAGUE LIVE IN THE URL, like the other ways of reading the
+  // page. "the Championship this week" is the single most shareable thing here, and a
+  // reload that threw it away would be the one state nobody could send anybody.
+  const q = params.get("q") || "";
+  const league = params.get("league") || "";
   // Open rows live in component state rather than the URL: which countries you have
   // expanded is a reading position, not a thing to share or to restore a week later.
   const [openCountries, setOpenCountries] = useState({});
@@ -466,9 +481,23 @@ function BrowseBoard() {
   });
 
   const blurb = SHOWS.find((s) => s.v === show)?.blurb;
+  // NARROWED BEFORE EITHER ORDER IS BUILT, so search and the badges behave identically
+  // by country and by time, and the counts both orders print come from one place.
+  const countries = filterTree(data?.countries, { q, league });
+  const filtering = Boolean(q.trim() || league);
+  const total = filtering ? totalOf(countries) : (data?.total ?? 0);
+  // THE CHIPS COME FROM THE UNFILTERED TREE. Built from the narrowed one they would
+  // vanish as you typed, leaving no way back to the league you had picked — the control
+  // would delete itself the moment it was used.
+  const chips = leagueChips(data?.countries);
+  const pickedName = chips.find((x) => x.league_id === league)?.name || "";
   // Regrouped from the payload already in hand, so the toggle is instant and the two
   // orders cannot disagree about which games are on. See browseOrder.js.
-  const timeline = order === "time" ? byDay(flattenGames(data?.countries)) : [];
+  const timeline = order === "time" ? byDay(flattenGames(countries)) : [];
+  // Counted against what is actually showing — see dayChips. The server builds its
+  // calendar before the day filter, which is right, and before the search, which was
+  // offering "Wed 5" beside a list of one.
+  const calendar = dayChips(countries, data?.calendar, { filtering, day });
 
   return (
     <div className="space-y-4" data-testid="browse-page">
@@ -542,14 +571,79 @@ function BrowseBoard() {
         )}
         {data && (
           <span className="text-[11px] text-muted-foreground ml-auto font-mono-data">
-            {data.total} game{data.total === 1 ? "" : "s"}
+            {total} game{total === 1 ? "" : "s"}
+            {filtering && data.total !== total && (
+              <span className="opacity-60"> of {data.total}</span>
+            )}
           </span>
         )}
       </div>
+
+      {/* SEARCH. Answers "where is this team", which the tree cannot: finding Cottbus
+          meant knowing Germany, opening it, knowing it is 2. Bundesliga, then opening
+          that. Filters the payload already in the browser, so it is instant. */}
+      <div className="relative">
+        <Search className="h-4 w-4 text-muted-foreground absolute left-3 top-1/2
+                           -translate-y-1/2 pointer-events-none" />
+        {/* type="text", NOT "search": the search type draws the browser's own clear
+            button, which sat beside ours as a second × doing the same job. */}
+        <input
+          type="text"
+          inputMode="search"
+          value={q}
+          onChange={(e) => set("q", e.target.value)}
+          data-testid="browse-search"
+          placeholder="Search a team, league or country"
+          aria-label="Search fixtures"
+          className="w-full bg-card border border-border rounded-md pl-9 pr-9 py-2
+                     text-sm placeholder:text-muted-foreground
+                     focus:outline-none focus:border-primary/50"
+        />
+        {q && (
+          <button onClick={() => set("q", "")} data-testid="browse-search-clear"
+            aria-label="Clear search"
+            className="absolute right-2.5 top-1/2 -translate-y-1/2 p-1 rounded
+                       text-muted-foreground hover:text-foreground">
+            <X className="h-3.5 w-3.5" />
+          </button>
+        )}
+      </div>
+
+      {/* THE BADGE ROW. A dropdown of thirty-one competitions is a list you have to
+          already know the answer in; these are one tap, and the flag does the work the
+          name would need a sentence for. Busiest first — the row scrolls sideways and
+          most of it is off screen, so the first few chips are the whole design. */}
+      {chips.length > 1 && (
+        <div className="flex gap-1.5 overflow-x-auto pb-1 -mx-1 px-1"
+             data-testid="browse-leagues">
+          <button onClick={() => set("league", "")} data-testid="browse-league-all"
+            className={`shrink-0 text-xs px-3 py-1.5 rounded-md transition-colors ${
+              !league ? "bg-primary text-primary-foreground font-medium"
+                      : "bg-secondary text-muted-foreground"}`}>
+            All leagues
+          </button>
+          {chips.map((c) => (
+            <button key={c.league_id}
+              onClick={() => set("league", c.league_id === league ? "" : c.league_id)}
+              data-testid={`browse-league-chip-${c.league_id}`}
+              aria-pressed={league === c.league_id}
+              title={`${c.country} · ${c.name}`}
+              className={`shrink-0 text-xs px-3 py-1.5 rounded-md transition-colors
+                          flex items-center gap-1.5 whitespace-nowrap ${
+                league === c.league_id ? "bg-primary text-primary-foreground font-medium"
+                                       : "bg-secondary text-muted-foreground"}`}>
+              <span aria-hidden="true">{flagFor(c.league_id)}</span>
+              {c.name}
+              {c.is_cup && <span className="opacity-60">cup</span>}
+              <span className="font-mono-data opacity-70">{c.count}</span>
+            </button>
+          ))}
+        </div>
+      )}
       {/* ONE DAY, OR THE WHOLE WINDOW. The chips are built from the window BEFORE the day
           filter is applied, so picking Saturday still shows that Sunday has eleven on —
           a filter that hides what else exists makes you clear it to find out. */}
-      {(data?.calendar || []).length > 1 && (
+      {calendar.length > 1 && (
         <div className="flex gap-1.5 overflow-x-auto pb-1 -mx-1 px-1">
           <button onClick={() => set("day", "")} data-testid="browse-day-all"
             className={`shrink-0 text-xs px-3 py-1.5 rounded-md transition-colors ${
@@ -557,7 +651,7 @@ function BrowseBoard() {
                    : "bg-secondary text-muted-foreground"}`}>
             All {days}d
           </button>
-          {data.calendar.map((c) => (
+          {calendar.map((c) => (
             <button key={c.day} onClick={() => set("day", c.day)}
               data-testid={`browse-day-${c.day}`}
               className={`shrink-0 text-xs px-3 py-1.5 rounded-md transition-colors
@@ -565,7 +659,9 @@ function BrowseBoard() {
                 day === c.day ? "bg-primary text-primary-foreground font-medium"
                               : "bg-secondary text-muted-foreground"}`}>
               {dayChipLabel(c.day)}
-              <span className="font-mono-data opacity-70">{c.count}</span>
+              {c.count !== null && c.count !== undefined && (
+                <span className="font-mono-data opacity-70">{c.count}</span>
+              )}
             </button>
           ))}
         </div>
@@ -580,26 +676,46 @@ function BrowseBoard() {
         <p className="text-sm text-muted-foreground py-8">
           Could not load the fixture list. Try again in a moment.
         </p>
-      ) : !data?.countries?.length ? (
-        <p className="text-sm text-muted-foreground py-8" data-testid="browse-empty">
-          Nothing {day ? `on ${dayChipLabel(day)}` : `in the next ${days} days`} matches this filter.
-        </p>
+      ) : !countries.length ? (
+        /* AN EMPTY PAGE IS AMBIGUOUS between "no such team", "nothing on in that
+           league" and "the site is broken", and with two filters on at once a reader
+           cannot tell which one emptied it. So it names what was typed, and offers the
+           way out rather than leaving them to find it. */
+        <div className="py-8 space-y-3" data-testid="browse-empty">
+          <p className="text-sm text-muted-foreground">
+            {filtering
+              ? emptyReason({ q, league, leagueName: pickedName })
+              : `Nothing ${day ? `on ${dayChipLabel(day)}` : `in the next ${days} days`} `
+                + "matches this filter."}
+          </p>
+          {filtering && (
+            <button onClick={() => setBoth({ q: "", league: "" })}
+              data-testid="browse-clear-filters"
+              className="text-xs text-primary hover:underline font-medium">
+              Clear search and league
+            </button>
+          )}
+        </div>
       ) : order === "time" ? (
         <div className="space-y-2" data-testid="browse-timeline">
           {timeline.map((d, i) => (
             <Day key={d.day} day={d.day} games={d.games}
-              open={dayIsOpen(openDays, d.day, i)}
+              open={filtering || dayIsOpen(openDays, d.day, i)}
               onToggle={() => setOpenDays(
                 (o) => ({ ...o, [d.day]: !dayIsOpen(o, d.day, i) }))} />
           ))}
         </div>
       ) : (
         <div className="space-y-2">
-          {data.countries.map((c) => (
+          {/* A FILTERED TREE OPENS ITSELF. Search that returns a collapsed "England ▸"
+              has not answered anything — it has moved the work one tap further away and
+              hidden the result behind the shape the search existed to bypass. */}
+          {countries.map((c) => (
             <Country key={c.country} country={c}
-              open={!!openCountries[c.country]}
+              open={filtering || !!openCountries[c.country]}
               onToggle={() => setOpenCountries((o) => ({ ...o, [c.country]: !o[c.country] }))}
               openLeagues={openLeagues}
+              forceOpen={filtering}
               toggleLeague={(id) => setOpenLeagues((o) => ({ ...o, [id]: !o[id] }))} />
           ))}
         </div>

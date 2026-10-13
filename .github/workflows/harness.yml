@@ -16,10 +16,10 @@
 # that lives only in a workflow log is one nobody reads twice.
 #
 # COST. Everything on /tools/measure touches the database only and costs nothing — that is
-# that endpoint's whole promise. Two options here are not measurements and DO spend API
+# that endpoint's whole promise. Three options here are not measurements and DO spend API
 # credits, so they have their own endpoints and are named as such in the list below:
 # `goal_scores` (~3 calls per managed league, and state_bias cannot bucket anything
-# without it) and `country_leagues` (1 call).
+# without it), `country_leagues` (1 call) and `corner_halves` (4 calls on one fixture).
 name: Run a harness
 
 on:
@@ -51,6 +51,7 @@ on:
           - sweep           # model weight sweep
           - country_leagues # SPENDS CREDITS (1 call) — what competitions exist for a country
           - league_probe    # SPENDS CREDITS (~6/league) — does a league carry corner data
+          - corner_halves   # SPENDS CREDITS (4 calls) — are corners obtainable split by half
       country:
         description: "Country for `country_leagues` only, e.g. World, Norway. Ignored otherwise"
         required: false
@@ -107,6 +108,22 @@ jobs:
           goal_scores)
             URL="$BACKEND/api/tools/backfill-goal-scores?token=$TOOLS_TOKEN"
             SCRIPT="backfill_goals" ;;
+          corner_halves)
+            # CAN THE PROVIDER GIVE US CORNERS SPLIT BY HALF. Everything the site says
+            # about halves is currently a full-match number wearing a half's label — see
+            # the note at server.py:352 — so every half-based market is unpriceable, and
+            # the sheet's best-performing column ("most corners in each half", 4 from 4)
+            # is one the model cannot have an opinion about.
+            #
+            # IT HAD AN ENDPOINT AND NO WAY TO REACH IT. /api/tools/probe-halves has
+            # existed since the probe was written; it was never added to this list, which
+            # is the same failure the header of this file describes — "two harnesses sat
+            # written and never once run" — repeated on a third.
+            #
+            # FOUR CALLS ON ONE FINISHED FIXTURE, which is why it is here rather than on
+            # /tools/measure: that endpoint promises no API calls.
+            URL="$BACKEND/api/tools/probe-halves?token=$TOOLS_TOKEN"
+            SCRIPT="probe_corner_halves" ;;
           country_leagues)
             # One call. Lists every competition the provider files under a country, with
             # ids — how you find the right id after a MISMATCH, and how you establish a

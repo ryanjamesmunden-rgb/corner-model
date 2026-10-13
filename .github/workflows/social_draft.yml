@@ -20,19 +20,31 @@
 #   Sat  game      what is on today
 #   Sun  game      what is on today
 #
-# THAT TABLE IS WHAT GOES OUT TO AN AUDIENCE. Two further messages go to YOU, every day
-# including Thursday, and neither is a publication:
+# THAT TABLE IS WHAT GOES OUT TO AN AUDIENCE. One further message goes to YOU, every day
+# including Thursday, and it is not a publication:
 #
-#   the angle menu      every angle the site has, numbered, to pick from
 #   the day's best game the single strongest pick, with the animation, its own Post button
 #
-# The best-game message is SKIPPED on Tue/Fri/Sat/Sun, because on those days the public
-# draft above already is that same pick rendered from the same call — and a daily poster
-# that sends you the same thing twice is one you learn to ignore.
+# It is SKIPPED on Tue/Fri/Sat/Sun, because on those days the public draft above already is
+# that same pick rendered from the same call — and a daily poster that sends you the same
+# thing twice is one you learn to ignore.
+#
+# THE ANGLE MENU USED TO BE THE SECOND ONE and is now digest.yml's job. See the note where
+# its step was, around "THE ANGLE MENU IS GONE FROM THE SCHEDULE": it offered five boards
+# to choose from, in the streak board's own order, which is line descending — so it led
+# every day with the band of lines that has never paid. `--board menu` still builds it on a
+# manual dispatch.
+#
+# AND THE MESSAGES FOR YOU NOW HAVE THEIR OWN CHAT. Every send in this file read
+# TELEGRAM_CHAT_ID, including the ones whose own comments said "this goes to you, not to a
+# channel" — so there was no owner chat, and four messages written for one reader were
+# published to the channel next to the cards. The owner-facing sends now read
+# TELEGRAM_OWNER_CHAT_ID and fall back to the shared chat, so nothing breaks before the
+# secret exists.
 #
 # THURSDAY IS SILENT ON PURPOSE, and that means silent towards an AUDIENCE. Every
 # scheduling instinct says fill the public slot, and filling it is how an account starts
-# posting things nobody needed to read. The two messages above have no audience but you,
+# posting things nobody needed to read. The messages above have no audience but you,
 # and the week's own description of Thursday is "scan the weekend" — which needs something
 # to scan. So Thursday drafts nothing and still tells you what is coming.
 #
@@ -404,7 +416,14 @@ jobs:
           fi
         env:
           TG_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TG_CHAT: ${{ secrets.TELEGRAM_CHAT_ID }}
+          # THE OWNER'S CHAT, NOT THE CHANNEL. This message is for the person running the
+          # account — see the note where the angle menu used to be. Every send in this file
+          # shared TELEGRAM_CHAT_ID, so four messages written for one reader were being
+          # published to the channel beside the cards, which is most of why a careful design
+          # arrived as noise. Falls back to the shared chat, so nothing breaks before the
+          # secret exists; set TELEGRAM_OWNER_CHAT_ID to your own user id (message
+          # @userinfobot) and the channel goes quiet.
+          TG_CHAT: ${{ secrets.TELEGRAM_OWNER_CHAT_ID || secrets.TELEGRAM_CHAT_ID }}
           PRETTY: ${{ steps.when.outputs.pretty }}
 
       - name: Make sure the label exists
@@ -454,60 +473,30 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Send you the menu of angles
-        # NOT A POST. This goes to you, not to a channel, and its job is to be chosen from.
-        #
-        # The draft above picks ONE angle and offers it. On most days that is a streak, and
-        # a streak alone is the weakest thing this site finds: it says what a team keeps
-        # doing and nothing about who they play, what the game will look like, or what the
-        # price is. Five clears can be five coin flips. So the menu follows the draft with
-        # every kind of angle the site has — streaks, mismatches, chase spots, and any real
-        # price the model beats — numbered, so a better one can go out instead.
-        #
-        # AFTER the draft is delivered, and never fatal. The post is the thing that has to
-        # happen; the menu is a second opinion, and a second opinion that fails should not
-        # take the day's post down with it.
-        #
-        # Skipped on a quiet day — Thursday is silent, and a menu is still a notification.
-        # RUNS ON THURSDAY TOO, and that is not a contradiction of the quiet day. Thursday
-        # is silent towards an AUDIENCE — no X draft, no channel card. The menu has no
-        # audience but you, and the week's own description of Thursday is "scan the
-        # weekend", which needs something to scan.
-        if: inputs.board == '' && env.TG_TOKEN != ''
-        run: |
-          node tools/social_draft.mjs --board menu --days 3 --out menu.md --json-out menu.json || {
-            echo "::warning::could not build the angle menu — the post above is unaffected"; exit 0; }
-          if [ ! -s menu.md ]; then
-            echo "::notice::no angles on any of the four boards — no menu to send"
-            exit 0
-          fi
-          python3 - <<'PY' > menu_payload.json
-          import json, os
-          d = json.load(open("menu.json"))
-          print(json.dumps({"chat_id": os.environ["TG_CHAT"],
-                            "text": d["post"], "disable_web_page_preview": True}))
-          PY
-          # Plain text, no parse_mode, for the same reason every other send here is: the
-          # body carries team names with slashes and accents in them, and a message that
-          # fails to parse is a message that never arrives.
-          code=$(curl -s -o tgm.json -w '%{http_code}' --max-time 30 \
-            -X POST "https://api.telegram.org/bot$TG_TOKEN/sendMessage" \
-            -H 'content-type: application/json' --data-binary @menu_payload.json || true)
-          if [ "$code" = "200" ]; then
-            echo "::notice::angle menu sent — $(python3 -c "import json;print(json.load(open('menu.json'))['note'])")"
-          else
-            # angleMenu rebuilds itself smaller until it is under Telegram's 4096, so a 400
-            # here is something else — worth seeing in the log, not worth failing the run.
-            echo "::warning::angle menu send failed (HTTP $code)"
-            head -c 400 tgm.json || true
-          fi
-        env:
-          BACKEND_URL: ${{ vars.BACKEND_URL || 'https://corner-model.onrender.com' }}
-          SITE_URL: ${{ vars.SITE_URL || 'https://thecornermodel.com' }}
-          TOOLS_TOKEN: ${{ secrets.TOOLS_TOKEN }}
-          TG_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TG_CHAT: ${{ secrets.TELEGRAM_CHAT_ID }}
-
+      # THE ANGLE MENU IS GONE FROM THE SCHEDULE, replaced by digest.yml.
+      #
+      # It sent five boards' worth of angles, numbered, every day. The reasoning was sound
+      # — a streak alone is the weakest thing this site finds, so offer every kind of
+      # angle and let a person choose — and it was the single message that produced "the
+      # bot sends me so many messages that are not value, just a streak or fair price with
+      # no context". Three faults, and the first is the one that mattered:
+      #
+      #   IT WENT TO THE CHANNEL. Every send in this file uses TELEGRAM_CHAT_ID, including
+      #   the ones whose comments say "this goes to you, not to a channel". There was no
+      #   owner chat, so a menu written for one reader was published next to the cards.
+      #
+      #   A MENU IS NOT AN ANSWER. Numbered options with a line each is a list to pick
+      #   from, which is work handed over rather than done — and five boards is five
+      #   different kinds of claim with no way to tell which has ever paid.
+      #
+      #   NO RECORD BESIDE THE ROWS. The P&L says the line HEIGHT is most of the story:
+      #   5+ and 6+ are +48.47u on 90 bets, 4+ and below -12.90u on 29. The menu ranked by
+      #   the board's own order, which is line descending — so it led with the band that
+      #   has never paid.
+      #
+      # digest.yml sends one message, from one board, in that record's order, to an owner
+      # chat of its own. `--board menu` still works on a manual dispatch here, so nothing
+      # is lost — it just stops arriving unasked.
       - name: Send you the day's best game, with the animation
         # THE PICK, EVERY DAY, AS ITS OWN MESSAGE.
         #
@@ -609,7 +598,14 @@ jobs:
           SITE_URL: ${{ vars.SITE_URL || 'https://thecornermodel.com' }}
           TOOLS_TOKEN: ${{ secrets.TOOLS_TOKEN }}
           TG_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TG_CHAT: ${{ secrets.TELEGRAM_CHAT_ID }}
+          # THE OWNER'S CHAT, NOT THE CHANNEL. This message is for the person running the
+          # account — see the note where the angle menu used to be. Every send in this file
+          # shared TELEGRAM_CHAT_ID, so four messages written for one reader were being
+          # published to the channel beside the cards, which is most of why a careful design
+          # arrived as noise. Falls back to the shared chat, so nothing breaks before the
+          # secret exists; set TELEGRAM_OWNER_CHAT_ID to your own user id (message
+          # @userinfobot) and the channel goes quiet.
+          TG_CHAT: ${{ secrets.TELEGRAM_OWNER_CHAT_ID || secrets.TELEGRAM_CHAT_ID }}
           PRETTY: ${{ steps.when.outputs.pretty }}
 
       - name: Send the card to the channel
@@ -870,7 +866,14 @@ jobs:
           SITE_URL: ${{ vars.SITE_URL || 'https://thecornermodel.com' }}
           TOOLS_TOKEN: ${{ secrets.TOOLS_TOKEN }}
           TG_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TG_CHAT: ${{ secrets.TELEGRAM_CHAT_ID }}
+          # THE OWNER'S CHAT, NOT THE CHANNEL. This message is for the person running the
+          # account — see the note where the angle menu used to be. Every send in this file
+          # shared TELEGRAM_CHAT_ID, so four messages written for one reader were being
+          # published to the channel beside the cards, which is most of why a careful design
+          # arrived as noise. Falls back to the shared chat, so nothing breaks before the
+          # secret exists; set TELEGRAM_OWNER_CHAT_ID to your own user id (message
+          # @userinfobot) and the channel goes quiet.
+          TG_CHAT: ${{ secrets.TELEGRAM_OWNER_CHAT_ID || secrets.TELEGRAM_CHAT_ID }}
 
       - name: Freeze the card
         # TWO DROPS A WEEK, ON THE DAYS THE CARDS GO OUT.

@@ -14,6 +14,9 @@ import { flattenGames, byDay, dayIsOpen } from "@/lib/browseOrder";
 import { streakClaim } from "@/lib/fixtureStreaks";
 import { filterTree, totalOf, leagueChips, emptyReason, dayChips }
   from "@/lib/browseFilter";
+import ShareButtons from "@/components/ShareButtons";
+import { roundsOf, roundPost, roundWindow, roundName, roundRow,
+         ROUND_MAX_ROWS, ROUND_MIN_GAMES, ROUND_SPAN_DAYS } from "@/lib/leagueRound";
 
 /**
  * The front door: what is on, and where.
@@ -60,6 +63,11 @@ const DAYS = [3, 7, 14, 28];
 const ORDERS = [
   { v: "country", label: "By country" },
   { v: "time", label: "By time" },
+  // A THIRD READING OF THE SAME PAYLOAD. Country answers "what is on in England", time
+  // answers "what is on today", and this one answers "a whole division is on inside four
+  // days — what is the post". See leagueRound.js for why it clusters by date rather than
+  // by the provider's round label.
+  { v: "round", label: "By round" },
 ];
 
 // How long a run has to be to keep a game on the Streaks list. Five is a run; nine is a
@@ -440,6 +448,127 @@ function Day({ day, games, open, onToggle }) {
   );
 }
 
+/**
+ * One league round: a division's games inside three or four days, and the post about it.
+ *
+ * THE SHARE BUTTONS ARE OUTSIDE THE TOGGLE, not inside the header button. A button
+ * containing buttons is invalid markup the parser silently unnests — Game's own note says
+ * so — and here it would also mean tapping Share collapsed the card underneath the
+ * composer that just opened.
+ *
+ * AND THEY ARE REACHABLE WITHOUT EXPANDING, which is why the header carries the counts.
+ * The whole point of this view is to post before kick-off; making that two taps behind a
+ * drawer would be the browse row's old problem again.
+ *
+ * THE ROWS CARRY KICK-OFF TIMES HERE AND NOT IN THE POST. On screen there is room and the
+ * time is what decides whether a game is still live to bet; in a post each one costs about
+ * ten characters, which is a whole row of the four that fit — and the header's window plus
+ * the link cover it. roundRow takes the formatter as an argument for exactly that reason
+ * rather than deciding for both.
+ */
+function Round({ round, open, onToggle, shareUrl }) {
+  const navigate = useNavigate();
+  const rows = round.rows || [];
+  const window_ = roundWindow(round);
+  const games = round.games.length;
+  return (
+    <section className={`bg-card border rounded-lg overflow-hidden transition-colors ${
+                         open ? "border-primary/30" : "border-border"}`}
+             data-testid={`browse-round-${round.key}`}
+             data-open={open ? "1" : "0"}>
+      <div className={`flex items-center gap-2.5 px-4 py-3 transition-colors ${
+                        open ? "bg-secondary" : ""}`}>
+        <button onClick={onToggle} aria-expanded={open}
+          data-testid={`browse-round-toggle-${round.key}`}
+          className="flex items-center gap-2.5 text-left min-w-0 flex-1">
+          <ChevronRight className={`h-4 w-4 shrink-0 transition-transform ${
+                                    open ? "rotate-90 text-primary"
+                                         : "text-muted-foreground"}`} />
+          <span className="text-sm leading-none shrink-0" aria-hidden="true">
+            {flagFor(round.league_id)}
+          </span>
+          <span className="min-w-0">
+            {/* WRAPS, NOT TRUNCATES. At 390px "Championship, Round 12" clipped to
+                "Championship, Roun…" — losing the round NUMBER, which is the half a
+                reader is checking. There is room below; there is none to the right. */}
+            <span className="font-head font-semibold text-sm block">
+              {roundName(round)}
+            </span>
+            <span className="text-[11px] text-muted-foreground font-mono-data">
+              {games} {games === 1 ? "game" : "games"}
+              {window_ && ` · ${window_}`}
+              {/* RUNS, NOT GAMES, and said separately. Nine games with four runs worth
+                  naming is two numbers, and collapsing them would either undersell the
+                  card or overstate the angles. */}
+              {` · ${rows.length} with a run`}
+            </span>
+          </span>
+        </button>
+        <ShareButtons
+          className="shrink-0"
+          text={roundPost({ round })(ROUND_MAX_ROWS)}
+          buildX={roundPost({ round })}
+          xRows={ROUND_MAX_ROWS}
+          url={shareUrl}
+        />
+      </div>
+      {open && (
+        <div className="px-2 pb-2 pt-1 space-y-0.5 bg-secondary/40">
+          {/* THE RUNS FIRST, because they are what the post is made of and what decides
+              whether this round is worth posting at all. */}
+          {rows.length > 0 && (
+            <ul className="px-2 py-1 space-y-1" data-testid="browse-round-rows">
+              {rows.map((r) => (
+                <li key={`${r.fixture_id}-${r.subject}-${r.line}-${r.venue}`}>
+                  <button onClick={() => navigate(`/fixture/${r.fixture_id}`)}
+                    className="text-left text-[11px] text-tone-streak-fg hover:underline
+                               flex items-center gap-1 flex-wrap">
+                    <Flame className="h-3 w-3 shrink-0" />
+                    <span className="whitespace-nowrap">{claimOf(r)}</span>
+                    <span className="whitespace-nowrap">· {r.run} in a row</span>
+                    <span className="text-muted-foreground whitespace-nowrap">
+                      ({(VENUE_TAG[r.venue] || "Overall").toLowerCase()})
+                    </span>
+                    <span className="text-muted-foreground whitespace-nowrap">
+                      v {r.opponent}
+                    </span>
+                    <span className="text-muted-foreground font-mono-data whitespace-nowrap">
+                      {kickoffLabel(r.date)}
+                    </span>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+          {!rows.length && (
+            /* A FULL CARD AND NOTHING RUNNING INTO IT IS A REAL ANSWER, and the honest
+               one. Rendered blank it would look like a load that failed. */
+            <p className="px-2 py-2 text-[11px] text-muted-foreground">
+              A full card, and no run of five or more going into any of it. Lower the run
+              filter, or post the fixtures rather than an angle.
+            </p>
+          )}
+          {/* NO FIXTURE LIST HERE, AND THAT IS THE SECOND DRAFT. The card first repeated
+              every game underneath the runs — so each run was printed twice on one
+              screen, once in the list the post is made of and again on its own row. The
+              rest of this page is two orders that already list fixtures properly, and a
+              round card's job is the post and the button; one tap reaches the games in
+              the shape built for reading them. Only visible by rendering it. */}
+          <a href={`/?order=country&league=${encodeURIComponent(round.league_id)}`}
+             onClick={(e) => {
+               e.preventDefault();
+               navigate(`/?order=country&league=${encodeURIComponent(round.league_id)}`);
+             }}
+             data-testid={`browse-round-all-${round.key}`}
+             className="block px-2 py-2 text-[11px] text-primary hover:underline">
+            See all {games} {games === 1 ? "game" : "games"} →
+          </a>
+        </div>
+      )}
+    </section>
+  );
+}
+
 function BrowseBoard() {
   const [params, setParams] = useSearchParams();
   const show = SHOWS.some((s) => s.v === params.get("show")) ? params.get("show") : "all";
@@ -462,6 +591,13 @@ function BrowseBoard() {
   const [openCountries, setOpenCountries] = useState({});
   const [openLeagues, setOpenLeagues] = useState({});
   const [openDays, setOpenDays] = useState({});
+  const [openRounds, setOpenRounds] = useState({});
+  // ROUND ORDER ALWAYS ASKS FOR THE WHOLE CARD. `show=streaks` drops the games with no
+  // run, and a round card's headline number is how much of the division is ON — so under
+  // that filter it would read "6 games" of a nine-game round, and the post built from it
+  // would say so in public. The runs are attached to every game regardless of `show`, so
+  // asking for all of them costs nothing and is the only count that is true.
+  const roundMode = order === "round";
 
   const setBoth = (patch) => {
     const next = new URLSearchParams(params);
@@ -473,9 +609,10 @@ function BrowseBoard() {
   };
   const set = (k, v) => setBoth({ [k]: v });
 
+  const asked = roundMode ? "all" : show;
   const { data, isLoading, error } = useQuery({
-    queryKey: ["browse", days, show, day, minRun],
-    queryFn: () => api.browse({ days, show, min_run: minRun,
+    queryKey: ["browse", days, asked, day, minRun],
+    queryFn: () => api.browse({ days, show: asked, min_run: minRun,
                                 ...(day ? { day } : {}) }),
     keepPreviousData: true,
   });
@@ -494,6 +631,30 @@ function BrowseBoard() {
   // Regrouped from the payload already in hand, so the toggle is instant and the two
   // orders cannot disagree about which games are on. See browseOrder.js.
   const timeline = order === "time" ? byDay(flattenGames(countries)) : [];
+  // Built from the NARROWED tree, so the search box and the badge row work here too —
+  // "the Championship round" is one tap and one of the most shareable states on the page.
+  const rounds = roundMode ? roundsOf(countries, { minRun }) : [];
+  /**
+   * Where a shared round card points.
+   *
+   * BUILT ON "/", BECAUSE THAT IS WHERE THIS PAGE LIVES. The first version linked to
+   * "/browse?order=round&league=…", which does not exist: App.js routes Browse at the
+   * root and sends everything unmatched to "/" with a `replace`, so the query died with
+   * the redirect. A reader would have landed on the unfiltered home page — the worst kind
+   * of broken link, because it looks like it worked. Caught by driving the page, not by
+   * reading it, and the same redirect is why the harness has to open "/?order=round".
+   *
+   * IT NAMES THE LEAGUE rather than reusing the current address. The card is about one
+   * competition's round; the address bar may hold a search, a day and a run filter that
+   * are nobody else's business and would narrow what the reader sees for reasons the post
+   * never mentions.
+   */
+  const roundShareUrl = (round) => {
+    const origin = typeof window !== "undefined" ? window.location.origin : "";
+    const qs = new URLSearchParams({ order: "round", league: round.league_id,
+                                     days: String(days) });
+    return `${origin}/?${qs}`;
+  };
   // Counted against what is actually showing — see dayChips. The server builds its
   // calendar before the day filter, which is right, and before the search, which was
   // offering "Wed 5" beside a list of one.
@@ -511,6 +672,9 @@ function BrowseBoard() {
           {order === "time"
             ? "Everything the model carries, in kick-off order. Today and tomorrow open; "
               + "the rest are a tap away."
+            : roundMode
+            ? "Whole divisions playing inside a few days, with the runs going into them "
+              + "— ready to post before anything kicks off."
             : "Every competition the model carries, by country. Open one to see what is "
               + "coming up."}
         </p>
@@ -528,7 +692,11 @@ function BrowseBoard() {
             </button>
           ))}
         </div>
-        <div className="flex rounded-md bg-secondary p-0.5">
+        {/* HIDDEN IN ROUND ORDER rather than left on and ignored. The query asks for the
+            whole card there (see roundMode), so a Streaks button that visibly did nothing
+            would be worse than no button — a control that lies about having an effect is
+            how somebody concludes the page is broken. */}
+        <div className={`flex rounded-md bg-secondary p-0.5 ${roundMode ? "hidden" : ""}`}>
           {SHOWS.map((s) => (
             <button key={s.v} onClick={() => set("show", s.v)}
               data-testid={`browse-show-${s.v}`}
@@ -666,7 +834,17 @@ function BrowseBoard() {
           ))}
         </div>
       )}
-      {blurb && <p className="text-[11px] text-muted-foreground">{blurb}</p>}
+      {roundMode ? (
+        <p className="text-[11px] text-muted-foreground">
+          Competitions with {ROUND_MIN_GAMES}+ games inside {ROUND_SPAN_DAYS} days —
+          a whole division playing at once. Soonest first, because the one worth posting
+          is the one kicking off next. Each card shares as one post: the games ordered by
+          the longest run going into them, which makes the same list the best games and
+          the highest streaks. Nothing is posted for you.
+        </p>
+      ) : blurb ? (
+        <p className="text-[11px] text-muted-foreground">{blurb}</p>
+      ) : null}
 
       {isLoading && !data ? (
         <div className="flex items-center gap-2 text-muted-foreground text-sm py-8">
@@ -696,6 +874,41 @@ function BrowseBoard() {
             </button>
           )}
         </div>
+      ) : roundMode ? (
+        !rounds.length ? (
+          /* NOT AN EMPTY PAGE WITH NO EXPLANATION. "No rounds" is ambiguous between a
+             quiet calendar, a window too short to contain one, and a search that
+             narrowed to a single league playing twice — and the way out differs for
+             each, so it says which filter to move. */
+          <div className="py-8 space-y-3" data-testid="browse-rounds-empty">
+            <p className="text-sm text-muted-foreground">
+              No competition has {ROUND_MIN_GAMES} or more games inside{" "}
+              {ROUND_SPAN_DAYS} days
+              {day ? ` on ${dayChipLabel(day)}` : ` in the next ${days} days`}
+              {filtering ? ", with this filter on" : ""}.
+            </p>
+            <p className="text-[11px] text-muted-foreground">
+              A round is a whole division playing at once. Widen the window, or clear the
+              day if one is picked — a single day can never hold a weekend.
+            </p>
+            {(filtering || day) && (
+              <button onClick={() => setBoth({ q: "", league: "", day: "" })}
+                data-testid="browse-rounds-clear"
+                className="text-xs text-primary hover:underline font-medium">
+                Clear the filters
+              </button>
+            )}
+          </div>
+        ) : (
+          <div className="space-y-2" data-testid="browse-rounds">
+            {rounds.map((r, i) => (
+              <Round key={r.key} round={r} shareUrl={roundShareUrl(r)}
+                open={openRounds[r.key] ?? i === 0}
+                onToggle={() => setOpenRounds(
+                  (o) => ({ ...o, [r.key]: !(o[r.key] ?? i === 0) }))} />
+            ))}
+          </div>
+        )
       ) : order === "time" ? (
         <div className="space-y-2" data-testid="browse-timeline">
           {timeline.map((d, i) => (

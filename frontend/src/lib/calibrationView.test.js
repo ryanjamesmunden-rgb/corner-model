@@ -27,9 +27,10 @@ describe("how confident the page may sound", () => {
     expect(verdictTone(summary())).toBe("holding");
   });
 
-  it("one band outside its interval is OFF", () => {
+  it("one band outside its interval is not HOLDING", () => {
+    // Which way it is off is a separate question — see the direction tests below.
     expect(verdictTone(summary({ bands: [band(), band({ calibrated: false })] })))
-      .toBe("off");
+      .not.toBe("holding");
   });
 
   it("a thin band cannot make it OFF on its own", () => {
@@ -159,5 +160,35 @@ describe("the caveats read as English", () => {
         expect(n).not.toMatch(/probabilities one is/);
       }
     }
+  });
+});
+
+describe("the tone names the DIRECTION of the miss", () => {
+  // The first version returned one tone for every kind of miss and the page labelled it
+  // "Running high". On the first real run that headline sat in amber above a model whose
+  // misses were mostly the other way round.
+  const off = (residual) => band({ calibrated: false, residual });
+
+  it("overstating is running high", () => {
+    expect(verdictTone(summary({ bands: [band(), off(-6)] }))).toBe("high");
+  });
+
+  it("understating is running LOW, not high", () => {
+    expect(verdictTone(summary({ bands: [band(), off(+6)] }))).toBe("low");
+  });
+
+  it("both directions at once is mixed", () => {
+    expect(verdictTone(summary({ bands: [band(), off(+6), off(-6)] }))).toBe("mixed");
+  });
+
+  it("the real shape of the first live run is not called running high", () => {
+    // under 25% +5.5, 25-35% +2.9, 80%+ -2.1, everything between inside its interval.
+    const live = summary({ bands: [
+      off(+5.5), off(+2.9), band({ residual: 1.4 }), band({ residual: 1.1 }),
+      band({ residual: 0.4 }), band({ residual: -1.2 }), band({ residual: 0.2 }),
+      band({ residual: -1.6 }), band({ residual: -1.5 }), off(-2.1),
+    ] });
+    expect(verdictTone(live)).toBe("mixed");
+    expect(verdictTone(live)).not.toBe("high");
   });
 });

@@ -26,7 +26,16 @@ export const verdictTone = (summary) => {
   if (!bands.length) return "unknown";
   const off = bands.filter((b) => !b.calibrated);
   if (!off.length) return "holding";
-  return "off";
+  // THE DIRECTION IS THE WHOLE POINT, and the first version did not look at it — every
+  // band outside its interval returned one tone labelled "Running high". On the first
+  // real run that headline sat in amber above a model whose misses were mostly the other
+  // way: it understated the long shots and was honest to within two points everywhere a
+  // reader actually bets. Overstating a fault is still misreporting it, and a page whose
+  // whole argument is its own honesty is the last place to do it.
+  const over = off.filter((b) => (b.residual ?? 0) < 0).length;   // promised > delivered
+  const under = off.length - over;
+  if (over && under) return "mixed";
+  return over ? "high" : "low";
 };
 
 /** Is there enough here to put a headline on at all? */

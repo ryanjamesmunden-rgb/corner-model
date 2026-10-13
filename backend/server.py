@@ -2488,6 +2488,7 @@ TOOLS_TOKEN = os.environ.get("TOOLS_TOKEN")
 TOOL_SCRIPTS = {"backfill_shots": "backfill_shots.py", "measure_features": "measure_features.py",
                 "measure_chase_board": "measure_chase_board.py",
                 "measure_calibration": "measure_calibration.py",
+                "calibration_report": "calibration_report.py",
                 "audit_settlement": "audit_settlement.py",
                 "audit_pick_lines": "audit_pick_lines.py",
                 "audit_bets": "audit_bets.py",
@@ -2515,6 +2516,7 @@ TOOL_COOLDOWN = {"backfill_shots": 600, "measure_features": 120,
                  # Roughly doubled since the null run was added — it replays every cached
                  # fixture twice, once real and once synthetic.
                  "measure_chase_board": 300, "measure_calibration": 120,
+                 "calibration_report": 120,
                  "audit_settlement": 120, "audit_pick_lines": 120,
                  "audit_bets": 120, "audit_signups": 120,
                  "watchlist": 120,
@@ -2561,6 +2563,14 @@ MEASURE_MODES = {
     # selection — so an overconfident model and an unlucky 44 games can be told apart,
     # which the ledger alone cannot do.
     "calibration": ("measure_calibration", [], True),
+    # DOES A STATED PERCENTAGE COME TRUE THAT OFTEN. Distinct from `calibration` above,
+    # which scores the Daily 2 LEDGER — a selection of the model's most confident opinions,
+    # and therefore a measurement of the winner's curse as much as of the model. This reads
+    # the nightly projection snapshots instead: every upcoming fixture, no quality bar,
+    # both ends of the board, so there is no selection to explain away. It is also what
+    # /evidence publishes, so running it is how you find out what the public page is about
+    # to say before anybody else reads it.
+    "calibration_table": ("calibration_report", [], True),
     # WAS EACH SETTLED PICK GRADED AGAINST THE RIGHT TEAM. Re-derives every pick's side
     # from TEAM IDS, which is an independent path from settlement._pick_side's name
     # matching — so it can catch a pick recorded with the opponent's corner count, which

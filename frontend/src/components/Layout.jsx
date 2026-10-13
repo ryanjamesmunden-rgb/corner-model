@@ -2,7 +2,7 @@ import { useState, useEffect } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import MobileNav from "@/components/MobileNav";
 import { CornerDownRight, LayoutDashboard, Radar, Flame, Zap, Star, Sparkles, Receipt, Trophy,
-         TrendingUp, Globe } from "lucide-react";
+         TrendingUp, Globe, ShieldCheck } from "lucide-react";
 import { LeagueContext } from "@/context/LeagueContext";
 import ExportMenu from "@/components/ExportMenu";
 import { api } from "@/lib/api";
@@ -67,6 +67,12 @@ export default function Layout({ children }) {
     // the trade was made anyway, because the record is a list of the picks this site made
     // and the picks are the product. Signing in is free, so the ask is small.
     ...(user ? [{ to: "/results", label: "Results", icon: Trophy }] : []),
+    // SHOWN TO EVERYONE, and it is the only board here that is. The Results page is the
+    // list of picks and sits behind a free account for that reason; this one lists no
+    // pick and names no team — it is how often the model's own stated percentages come
+    // true. That is the answer to "why should I believe any of this", and it is useless
+    // behind a login because the person asking has not signed up yet.
+    { to: "/evidence", label: "Evidence", icon: ShieldCheck },
     // NO PRICES ENTRY HERE ANY MORE. The bulk paste screen was removed as unused — see
     // the note on this list's length below. Prices still go in on the fixture page, one
     // game at a time, which is where a price is read anyway.

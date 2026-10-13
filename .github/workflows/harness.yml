@@ -37,6 +37,7 @@ on:
           - goal_scores     # SPENDS CREDITS — fill half-time scores, needed by state_bias
           - chase_board     # does the chase board's ranking find underrated spots
           - calibration     # is the printed probability honest — ledger, then replay
+          - calibration_table # does a stated % come true that often — every frozen fixture
           - settlement_audit  # was each settled pick graded against the right team
           - pick_line_audit   # was lambda right for the picks actually published
           - bet_audit         # why is each pending slip on the Bets page still pending
@@ -172,6 +173,7 @@ jobs:
               state_bias)  SCRIPT="measure_game_state" ;;
               chase_board) SCRIPT="measure_chase_board" ;;
               calibration) SCRIPT="measure_calibration" ;;
+              calibration_table) SCRIPT="calibration_report" ;;
               settlement_audit) SCRIPT="audit_settlement" ;;
               pick_line_audit)  SCRIPT="audit_pick_lines" ;;
               bet_audit)        SCRIPT="audit_bets" ;;

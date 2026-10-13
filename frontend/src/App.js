@@ -10,6 +10,7 @@ import { Analytics } from "@vercel/analytics/react";
 // Each route is its own chunk: landing on the Scanner shouldn't download and parse
 // Streaks and the fixture detail page before it can paint.
 const Browse = lazy(() => import("@/pages/Browse"));
+const Evidence = lazy(() => import("@/pages/Evidence"));
 const Dashboard = lazy(() => import("@/pages/Dashboard"));
 const Scanner = lazy(() => import("@/pages/Scanner"));
 const Streaks = lazy(() => import("@/pages/Streaks"));
@@ -57,6 +58,10 @@ function AppRouter() {
       <Route path="/saved" element={page(Saved)} />
       <Route path="/bets" element={page(Bets)} />
       <Route path="/results" element={page(Results)} />
+      {/* PUBLIC. It lists no pick and names no team — it is the model's own
+          percentages checked against what happened, which is the one thing worth
+          showing somebody who has not signed up for anything yet. */}
+      <Route path="/evidence" element={page(Evidence)} />
       <Route path="/fixture/:id" element={page(FixtureDetail)} />
       <Route path="/projections" element={page(Projections)} />
       <Route path="/account" element={page(Account)} />

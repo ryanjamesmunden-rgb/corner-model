@@ -30,6 +30,7 @@ import cups
 import h2h
 import log_redact
 import record_view
+import calibration
 import projection_record
 from settlement import settle_pending
 
@@ -6675,6 +6676,30 @@ class ProjectionSnapshotBody(BaseModel):
 
 
 @api_router.post("/projections/snapshot")
+def _threshold_probs(lam_home, lam_away, lam_total) -> Dict[str, float]:
+    """P(side wins N+ corners) and P(match total N+), as percentages, for the snapshot.
+
+    TEAM LINES THROUGH nb_ge AND TOTALS THROUGH poisson_ge, which is the same split the
+    live screens use — the negative binomial is there because a single side's corner count
+    has a fatter tail than Poisson allows, and the match total is the sum of two of them.
+    Using one distribution for both would make half the table measure a model this site
+    does not run.
+
+    Percentages, not fractions, because that is how they are printed and compared, and a
+    record stored in one unit and read in another is a bug that looks like overconfidence.
+    """
+    out: Dict[str, float] = {}
+    for side, lam in (("home", lam_home), ("away", lam_away)):
+        if lam is None:
+            continue
+        for line in calibration.TEAM_LINES:
+            out[f"{side}_{line}"] = round(nb_ge(line, float(lam)) * 100.0, 2)
+    if lam_total is not None:
+        for line in calibration.MATCH_LINES:
+            out[f"total_{line}"] = round(poisson_ge(line, float(lam_total)) * 100.0, 2)
+    return out
+
+
 async def snapshot_projections(body: ProjectionSnapshotBody, token: Optional[str] = None,
                                user: dict = Depends(get_current_user)):
     """Freeze today's projections before the games are played.
@@ -6740,6 +6765,22 @@ async def snapshot_projections(body: ProjectionSnapshotBody, token: Optional[str
             "league_avg_total": r["league_avg_total"], "corner_edge": r["corner_edge"],
             "home_games": r["home_games"], "away_games": r["away_games"],
             "rank": i + 1,
+            # THE THRESHOLD PROBABILITIES, FROZEN WITH THE LAMBDA THEY CAME FROM.
+            #
+            # The lambda alone was enough to grade a projection and is NOT enough to
+            # grade a PROBABILITY. A probability derived later is today's distribution
+            # applied to a frozen mean: still free of look-ahead bias, because the lambda
+            # knew nothing about the result, but it is the model as it is now rather than
+            # as it was. Retune NB_R and every such number silently changes, and a
+            # calibration table would then be grading the current model against a record
+            # it never made.
+            #
+            # `nb_r` RIDES ALONG so a reader can tell whether a stored probability and a
+            # re-derivation would agree. Without it the two are indistinguishable and the
+            # drift is invisible.
+            "probs": _threshold_probs(r["lambda_home"], r["lambda_away"],
+                                      r["lambda_total"]),
+            "nb_r": NB_R,
         })
     doc = {"tag": tag, "created_at": now_.isoformat(), "days": body.days,
            "data_age_hours": age_h, "entries": entries}
@@ -6816,6 +6857,106 @@ async def projections_record(days: int = 30, token: Optional[str] = None,
             "error": r.get("error"), "band": r.get("band"),
             "league_avg_total": r.get("league_avg_total"),
         } for r in settled[:200]],
+    }
+
+
+async def _calibration_actuals(entries: List[dict]) -> Dict[str, dict]:
+    """What each snapshotted fixture actually produced, per side and in total.
+
+    THE SAME MATCH LOOKUP _grade_projections USES, kept identical on purpose: the played
+    game is found in the HOME side's own record, matched on opponent and on being at or
+    after the kick-off that was frozen, so a repeat fixture earlier in the season cannot be
+    graded in its place. Two different ways of deciding which match settles a snapshot is
+    how two records on one site end up disagreeing about the same night.
+
+    IT KEEPS BOTH SIDES, which is the only difference. The projection grader takes the
+    total and discards `corners_for` and `corners_against` — but the record being built
+    here is mostly about TEAM lines, and a team line cannot be settled against a match
+    total. Because the entry's `team_id` is the home side, `corners_for` on that record is
+    the home count and `corners_against` the away one; reading them the other way round
+    would grade every claim against the opposition and still produce a full, plausible,
+    completely wrong table.
+    """
+    teams = await _teams_for(entries)
+    out: Dict[str, dict] = {}
+    for e in entries:
+        team = teams.get(e["team_id"]) or {}
+        for m in (team.get("real_matches") or []):
+            if m.get("opponent") != e.get("opponent"):
+                continue
+            if e.get("kickoff") and (m.get("date") or "") < e["kickoff"][:10]:
+                continue
+            home_c, away_c = m.get("corners_for"), m.get("corners_against")
+            if home_c is None or away_c is None:
+                break           # played, but the corner columns never arrived
+            out[e["fixture_id"]] = {
+                "home_corners": home_c, "away_corners": away_c,
+                "total_corners": home_c + away_c,
+            }
+            break
+    return out
+
+
+@api_router.get("/calibration")
+async def calibration_record(days: int = 90, user: dict = Depends(get_current_user)):
+    """When the model says 65%, does it happen 65% of the time?
+
+    PUBLIC, AND DELIBERATELY SO WHERE THE REST OF THE RECORD IS NOT. /results sits behind
+    a free account because it lists the picks, and the picks are the product. This lists
+    no picks: it is a table of how often the model's own stated percentages come true,
+    which is evidence about the MODEL rather than a selection anybody could act on. A
+    first-time visitor asking "why should I believe any of these numbers" is exactly who
+    it is for, and evidence behind a login persuades nobody.
+
+    IT CANNOT FLATTER ITSELF. Every probability is read from a snapshot frozen before
+    kick-off by snapshot_projections, which takes every fixture in the window with no
+    quality bar and both ends of the board — so there is no selection here to explain
+    away, and no probability recomputed with the benefit of the result.
+
+    THE CAVEATS ARE PART OF THE ANSWER, not a footnote, and the endpoint returns them so
+    the page cannot quietly drop them: how many claims were DERIVED from a frozen lambda
+    rather than stored at freeze time, how many fixtures could not be graded, and the
+    fixture count beside the claim count — because the six team lines on one side all land
+    together when a game goes to twelve corners, and a table reporting only claims
+    overstates its own sample by about an order of magnitude.
+    """
+    days = max(1, min(int(days), 365))
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).date().isoformat()
+    snaps = await db.projection_snapshots.find(
+        {"tag": {"$gte": cutoff}}, {"_id": 0}).sort("tag", -1).to_list(400)
+    # ONE ROW PER FIXTURE, newest freeze wins — the same rule projections_record keeps, so
+    # the two records cannot disagree about which night's number counts. A fixture three
+    # days out is frozen again each morning, and counting it three times would weight
+    # whichever games sat longest in the window.
+    seen, entries = set(), []
+    for s in snaps:
+        for e in (s.get("entries") or []):
+            if e["fixture_id"] in seen:
+                continue
+            seen.add(e["fixture_id"])
+            entries.append(e)
+
+    actuals = await _calibration_actuals(entries)
+    rows, ungraded = [], 0
+    for e in entries:
+        actual = actuals.get(e["fixture_id"])
+        if not actual:
+            ungraded += 1
+            continue
+        for c in calibration.claims_for(e, nb_ge, poisson_ge):
+            hit = calibration.grade_claim(c, actual)
+            if hit is None:
+                continue
+            rows.append({**c, "hit": hit})
+
+    out = calibration.summarise(rows, ungraded=ungraded)
+    return {
+        "days": days,
+        "snapshots": len(snaps),
+        "fixtures_frozen": len(entries),
+        "fixtures_graded": len(actuals),
+        "nb_r": NB_R,
+        **out,
     }
 
 

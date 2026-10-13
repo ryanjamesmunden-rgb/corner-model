@@ -50,9 +50,23 @@ Which is why there are two views, and why the second one is the one that decides
      That last case is the one nobody looks for, and it is the most likely of the three.
 
 ALSO SPLIT BY LINE (3+, 4+, 5+, 6+). If the gap is uniform across lines it is a level
-error and has a shape a single parameter can fix. If it widens with the line, it is the
+error and has a shape a single parameter can fix.
+
+CORRECTION, 13 Oct 2026. This paragraph used to end "if it widens with the line, it is the
 tail of the distribution that is wrong, which is a dispersion problem and r=11 is the
-suspect.
+suspect." That is BACKWARDS, and calibration.py's simulation is the evidence — see
+test_calibration_record.TestAgainstASimulatedSeason. Overdispersion inflates variance in
+both directions, piling mass near zero as well as out in the tail, so pricing with r=11
+against reality at r=1.5 (lambda 5.5) gives:
+
+    3+  model 86.1%  true 66.9%  -19.2        7+  model 32.6%  true 32.2%   -0.4
+    5+  model 59.6%  true 47.1%  -12.5        8+  model 22.3%  true 26.4%   +4.1
+
+The gap SHRINKS as the line rises and then changes sign. Too little assumed spread makes
+the model overstate the likely claims and understate the unlikely ones, so by line the
+signature is a narrowing, and by PROBABILITY BAND it is a tilt — negative at the top,
+positive at the bottom, crossing over near a third. Anyone reading the old rule would have
+looked for a widening gap, not found one, and concluded the dispersion was fine.
 
 WHAT THIS IS NOT: it is not a search for an edge. Nothing here ranks anything or claims
 to beat a price. It asks one question — is the printed number honest — and the only

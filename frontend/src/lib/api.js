@@ -98,6 +98,11 @@ export const api = {
   // How the board above has actually done. Same gate as the board itself — the record is
   // the board's claim to be worth reading, and the board is not public.
   projectionRecord: (params) => axios.get(`${API}/projections/record`, { params }).then((r) => r.data),
+  // PUBLIC, unlike the record above, and the difference is what each one contains. The
+  // record lists the picks and the picks are the product; this lists no pick and names no
+  // team — it is how often the model's own stated percentages come true. That is the one
+  // piece of evidence worth showing someone who has given nothing yet.
+  calibration: (params) => axios.get(`${API}/calibration`, { params }).then((r) => r.data),
   topCornerTeams: (params) => axios.get(`${API}/top-corner-teams`, { params }).then((r) => r.data),
   perfectGames: (params) => axios.get(`${API}/perfect-games`, { params }).then(withPreview),
   topMismatches: (params) => axios.get(`${API}/top-mismatches`, { params }).then(withPreview),

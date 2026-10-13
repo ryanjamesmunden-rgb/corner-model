@@ -1,0 +1,175 @@
+# One message a day: the teams on a corner run, banded by what that line has paid.
+#
+# WHAT THIS REPLACES. On a Monday the bot sent eight messages — a morning slate, a bets
+# card, an X draft, a numbered menu of five boards, the day's best game, a statistic to
+# post, a locked-in list and a picture of it — and then another bets card at 22:30. Several
+# of those were written for an audience of one, and all of them went to the same chat, so
+# the useful ones arrived inside a stream of things nobody needed to read.
+#
+# THE DIAGNOSIS THAT MATTERS MORE THAN THE COUNT: every send in social_draft.yml used
+# TELEGRAM_CHAT_ID, including the four whose own comments say "this goes to you, not to a
+# channel". There was no owner chat. That is why a careful design — a menu to choose an
+# angle from, a best game to look at, a statistic to post — arrived as noise: it was being
+# published to the channel next to the cards.
+#
+# SO THIS JOB HAS ITS OWN DESTINATION. TELEGRAM_OWNER_CHAT_ID if it is set, otherwise
+# TELEGRAM_CHAT_ID, which is the seam daily_slip.yml already invented for the slate. Until
+# that secret exists the digest lands where everything else does and nothing is broken; the
+# moment it is set, this message and the channel part company. Set it to your own user id
+# (message @userinfobot) and the channel goes quiet.
+#
+# ONE BOARD, AND THE ORDER IS THE BETTING RECORD. Streaks only — the chase board, the
+# mismatches and the value list are still on the site and still one dispatch away from
+# social_draft.yml, they just stop arriving unasked. Inside the message the rows are
+# grouped by line height and each group carries what that line has actually returned, from
+# frontend/src/lib/lineBands.js: 5+ and 6+ first (+48.47u on 90 bets), then 4+ and below
+# (-12.90u on 29), then 7+ (12 bets, which is too few to judge). The streak endpoint's own
+# order is by line descending, so left alone it leads with the band that has no record.
+#
+# LOW LINES ARE SHOWN, NOT HIDDEN, under a heading that says what the band has cost.
+# Hiding them would turn the digest into a recommendation engine, and being handed
+# conclusions with no context is the thing being fixed.
+#
+# NO CARD, NO IMAGE. A graphic is a claim a reader takes on trust and there is no audience
+# here to stop with one — this message goes to the person who can open the fixture page
+# behind every row, and the links are what the message is for.
+#
+# COST: one call to a cached backend endpoint. No API-Football credits.
+name: Daily digest
+
+on:
+  schedule:
+    # 08:00 UTC — after the backend's own 07:00 refresh, so the runs in it are today's.
+    # ONE cron and no gate on the hour it lands: daily_slip.yml's header is a post-mortem
+    # of gating on the clock, where an hour check ate three of this repo's first five
+    # scheduled runs and the workflow went green having done nothing.
+    - cron: "0 8 * * *"
+  workflow_dispatch:
+    inputs:
+      days:
+        description: "How far ahead (1 = today, 2 = today and tomorrow)"
+        required: false
+        default: "2"
+        type: string
+      min_run:
+        description: "Shortest run that qualifies (blank = 5)"
+        required: false
+        default: ""
+        type: string
+      send:
+        # A PREVIEW IS NOT A DELIVERY. A scheduled run sends, as it should. A run somebody
+        # started by hand builds the message and writes it into the run summary, where it
+        # can be read before it is sent anywhere — which is also how the message is edited
+        # without posting four drafts of it.
+        description: "Also send it to Telegram (manual runs only)"
+        required: false
+        default: false
+        type: boolean
+
+concurrency:
+  group: corner-digest
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  digest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      # The lib modules are plain ES modules, but they are still ES modules — relying on
+      # whatever node the runner image ships is the kind of thing that works until the
+      # image changes.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Wake the backend
+        # Render sleeps the free instance, and the first request after a quiet night is
+        # the one that times out. Same reason sync.yml and social_draft.yml do this.
+        run: |
+          for i in 1 2 3 4 5 6; do
+            code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 60 "$BACKEND/api/" || true)
+            echo "attempt $i: HTTP $code"
+            [ "$code" = "200" ] && break
+            sleep 15
+          done
+        env:
+          BACKEND: ${{ vars.BACKEND_URL || 'https://corner-model.onrender.com' }}
+
+      - name: Build it
+        run: |
+          set -- --days "${{ inputs.days || '2' }}" --out digest.md --json-out digest.json
+          if [ -n "${{ inputs.min_run }}" ]; then
+            set -- "$@" --min-run "${{ inputs.min_run }}"
+          fi
+          node tools/digest.mjs "$@"
+        env:
+          BACKEND_URL: ${{ vars.BACKEND_URL || 'https://corner-model.onrender.com' }}
+          SITE_URL: ${{ vars.SITE_URL || 'https://thecornermodel.com' }}
+          TOOLS_TOKEN: ${{ secrets.TOOLS_TOKEN }}
+
+      - name: Show it in the run summary
+        # ALWAYS, INCLUDING WHEN IT SENDS. The summary is the only record of what went out
+        # on a given day that does not involve scrolling a chat, and it costs nothing.
+        run: |
+          {
+            echo '## Daily digest'
+            echo
+            echo '```'
+            cat digest.md
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Send it
+        # A SCHEDULED RUN SENDS; A MANUAL ONE ASKS. See the `send` input.
+        if: >-
+          env.TG_TOKEN != '' && env.TG_CHAT != ''
+          && (github.event_name == 'schedule' || inputs.send)
+        run: |
+          python3 - <<'PY' > payload.json
+          import json, os
+          print(json.dumps({"chat_id": os.environ["TG_CHAT"],
+                            "text": open("digest.md").read(),
+                            "disable_web_page_preview": True}))
+          PY
+          # Plain text, no parse_mode, for the same reason every other send in this repo
+          # is: the body carries team names with slashes and accents in them, and a
+          # message that fails to parse is a message that never arrives.
+          code=$(curl -s -o tg.json -w '%{http_code}' --max-time 30 \
+            -X POST "https://api.telegram.org/bot$TG_TOKEN/sendMessage" \
+            -H 'content-type: application/json' --data-binary @payload.json || true)
+          if [ "$code" = "200" ]; then
+            echo "::notice::digest sent"
+          else
+            # FAILS THE RUN, unlike the menu send it replaces. That one was a second
+            # opinion next to a post that mattered more, so it warned and carried on.
+            # This is the only message of the day: if it did not arrive, the job did
+            # nothing, and a green tick on a job that did nothing is how a daily poster
+            # silently stops.
+            echo "::error::digest send failed (HTTP $code)"
+            head -c 400 tg.json || true
+            exit 1
+          fi
+        env:
+          # SEE THE HEADER. Owner chat if it is set, otherwise the one chat everything
+          # currently shares — so nothing breaks before the secret exists, and setting it
+          # is all it takes to get this message out of the channel.
+          TG_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TG_CHAT: ${{ secrets.TELEGRAM_OWNER_CHAT_ID || secrets.TELEGRAM_CHAT_ID }}
+
+      - name: Keep it as an artifact
+        # So a preview run has something to read other than the summary, and so a day's
+        # message can be looked at after the chat has moved on.
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: digest-${{ github.run_id }}
+          path: |
+            digest.md
+            digest.json
+          if-no-files-found: ignore
+          retention-days: 14

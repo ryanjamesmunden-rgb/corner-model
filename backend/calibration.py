@@ -413,5 +413,18 @@ def _verdict(readable: List[dict], worst: Optional[dict]) -> str:
         return ("The stated percentages are running HIGH: "
                 + ", ".join(f"{b['band']} came in at {b['actual']}%" for b in low[:3])
                 + ". Treat any EV figure computed from them as optimistic" + tail)
-    return ("Mixed: at least one band sits outside its interval in each direction, which "
-            "is a shape error rather than a level one. See the per-line grid.")
+    # NAMES THE BANDS, like the branch above. On the first real run this said only
+    # "mixed ... see the grid", above a table where the middle was honest to within two
+    # points and both ends were out by a few — which is a far better result than the
+    # sentence implied, and a reader had to work that out for themselves.
+    high = [b for b in off if (b["residual"] or 0) < 0]
+    inside = len(readable) - len(off)
+    where = []
+    if low:
+        where.append("understated at " + ", ".join(b["band"] for b in low[:2]))
+    if high:
+        where.append("overstated at " + ", ".join(b["band"] for b in high[:2]))
+    return (f"{inside} of {len(readable)} bands land inside their interval. The rest are "
+            + " and ".join(where)
+            + " — misses in both directions, which is the shape of the distribution "
+              "rather than the level of it. See the per-line grid.")

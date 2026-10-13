@@ -33,9 +33,15 @@ import { verdictTone, hasEnough, bandRows, caveats, headline }
  * the page's own address carries the whole of it.
  */
 
+// THE AMBER IS RESERVED FOR THE ONE THAT COSTS MONEY. A model running HIGH inflates every
+// EV figure built on it, so that is the warning. Running LOW means the stated percentages
+// are pessimistic — the opposite of a problem for anyone betting off them — and colouring
+// it as a fault would be the page crying wolf about its own model.
 const TONE = {
   holding: { icon: ShieldCheck, cls: "text-tone-strong-fg", label: "Holding up" },
-  off: { icon: AlertTriangle, cls: "text-amber-400", label: "Running high" },
+  high: { icon: AlertTriangle, cls: "text-amber-400", label: "Running high" },
+  low: { icon: ShieldCheck, cls: "text-primary", label: "Running low" },
+  mixed: { icon: AlertTriangle, cls: "text-muted-foreground", label: "Off at the edges" },
   unknown: { icon: HelpCircle, cls: "text-muted-foreground", label: "Not enough yet" },
 };
 

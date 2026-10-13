@@ -353,7 +353,29 @@ def team_features(matches: List[dict], split: str = "overall", window: int = 0) 
 # timings and no half split — so these are the team's FULL-MATCH corners in games
 # where it was, say, behind at half-time. That is not the same as "corners won while
 # behind", and a chase effect concentrated in the second half will read diluted here.
-# probe_corner_halves.py checks whether a real half split is obtainable.
+#
+# ASKED AND ANSWERED — probe_corner_halves.py, run 13 Oct 2026, issue #260. The answer is
+# NO on every route, so this limitation is permanent for history rather than pending:
+#
+#   /fixtures/statistics          17 stat types, exactly ONE corner type ("Corner Kicks").
+#                                 A single full-match number.
+#   /fixtures/statistics?half=1   THE TRAP. The parameter is ACCEPTED — no error, HTTP 200
+#                                 — and the payload comes back byte-identical to the call
+#                                 without it. Anything written against this would look
+#                                 like it worked and would be storing full-match corners
+#                                 under a half's name, which is the same false number this
+#                                 very comment exists to warn about.
+#   /fixtures/events              8 event kinds: cards, goals, substitutions. NO corner
+#                                 events, so timings cannot be reconstructed afterwards.
+#   /fixtures?id=                 halftime/fulltime splits exist — for GOALS. Corners are
+#                                 not in the score object.
+#
+# So no half-level corner figure can be recovered for any match already played. The only
+# route is snapshotting /fixtures/statistics AT half-time on a live fixture, which
+# accumulates going forward only and needs a poller on a schedule tight enough to catch a
+# ~15-minute window — which GitHub cron is not (see daily_slip.yml on its delays). Until
+# that exists, every half-based market is unpriceable here, and the site should not imply
+# otherwise.
 
 HT_LABELS = {-1: "trailing", 0: "level", 1: "leading"}
 FT_LABELS = {-1: "lost", 0: "drew", 1: "won"}

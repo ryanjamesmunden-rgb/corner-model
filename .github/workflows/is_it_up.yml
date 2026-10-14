@@ -139,6 +139,13 @@ jobs:
           probe_json "/api/config"          "/api/config"      15
           probe_json "/api/leagues (db)"    "/api/leagues"     15
 
+          # THE HOME PAGE'S OWN REQUEST, spelled exactly as the browser sends it —
+          # days=7, show=all, min_run=5. That is the cache key, and a probe that asks for
+          # anything else tests a path no visitor takes: ?days=1 misses the guard by
+          # design and recomputes the lot, which is a fine control and a terrible way to
+          # find out whether the front page works.
+          probe_json "HOME PAGE (cached)" "/api/browse?days=7&show=all&min_run=5" 30
+
           echo "--- /api/ WHILE a heavy request is in flight ---"
           curl -sS -o /dev/null --max-time 40 "$BACKEND/api/browse?days=1" &
           heavy=$!

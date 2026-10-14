@@ -6371,6 +6371,80 @@ def _browse_margin(run: dict, par: Dict[str, float]) -> Optional[float]:
     return margin if margin >= BROWSE_MIN_MARGIN else None
 
 
+# Everything the front door needs that does NOT depend on what was asked for, held
+# between requests and thrown away when the data moves.
+#
+# WHY THIS EXISTS. Caching the landing request fixed the landing request and nothing else:
+# the key is days=7 + show=all + no day + min_run=5, and every control on that page changes
+# one of those. So the page loaded in two seconds and then died the moment anybody pressed
+# Streaks, or 3 days, or a date — straight back to a sixty-second scan of every team.
+#
+# Caching each combination is not the answer: four windows times three filters times six
+# run floors times a date chip per day is hundreds of payloads, most never asked for, all
+# rebuilt on every sync. The answer is that the expensive half DOES NOT VARY. League par is
+# a property of the stored seasons. A team's runs and trends depend on the team and on
+# min_run, never on the window or the filter. Only the last step — which fixtures fall
+# inside the window, and which survive `show` — depends on the request at all.
+#
+# So the invariant half is computed once per sync and every filter reuses it, and what a
+# click costs is a filter over a few hundred fixtures rather than a full rebuild.
+#
+# KEYED ON data_version, which is the newest league sync timestamp — the same key the
+# screen cache uses. A memo with no invalidation would serve yesterday's football forever,
+# which is a worse failure than being slow because nothing about it looks wrong.
+#
+# A LOCK, because without one the first few visitors after a sync all miss together and
+# each start the same full scan — the exact pile-up _screen's own lock exists to prevent.
+_browse_memo: Dict[str, dict] = {}
+_browse_lock = asyncio.Lock()
+
+
+async def _browse_base() -> dict:
+    version = await _data_version() or "none"
+    memo = _browse_memo.get("current")
+    if memo is not None and memo["version"] == version:
+        return memo
+    async with _browse_lock:
+        memo = _browse_memo.get("current")
+        if memo is not None and memo["version"] == version:
+            return memo                      # built while this request waited
+        teams = await db.teams.find({}, {"_id": 0}).to_list(5000)
+        leagues = {l["league_id"]: l
+                   for l in await db.leagues.find({}, {"_id": 0}).to_list(200)}
+        fixtures = await db.fixtures.find({}, {"_id": 0}).to_list(5000)
+
+        # What each division does per game, per streak subject — the yardstick a run's line
+        # has to beat to be worth putting a game in front of somebody. Corners won is the
+        # same yardstick mismatch_angle measures a side against, so "unusual" means one
+        # thing across the site; conceded and match totals are computed rather than
+        # inferred from it because a league with partial data does not balance.
+        by_league: Dict[str, Dict[str, list]] = defaultdict(lambda: defaultdict(list))
+        for t in teams:
+            for m in _src(t):
+                for subject in BROWSE_SUBJECTS:
+                    by_league[t["league_id"]][subject].append(streak_value(m, subject))
+        league_par = {lid: {s: (sum(v) / len(v) if v else None) for s, v in subs.items()}
+                      for lid, subs in by_league.items()}
+
+        memo = {
+            "version": version,
+            "by_id": {t["team_id"]: t for t in teams},
+            "leagues": leagues,
+            "fixtures": fixtures,
+            "league_par": league_par,
+            # Filled in lazily by browse(), per min_run, for the sides actually playing.
+            # Eagerly walking every team the model carries would pay for hundreds that are
+            # not on this week — which is the cost this whole file is trying to avoid.
+            "flags": {},
+        }
+        # ONE KEY, REPLACED WHOLE. Keying the dict by version would grow a new entry every
+        # sync and keep every old one alive, and the things being held are the entire team
+        # collection — a slow leak on a 512MB instance, which is the sort of thing that
+        # looks like "it got slow again" a fortnight later.
+        _browse_memo["current"] = memo
+        return memo
+
+
 def _browse_streak(team: dict, par: Dict[str, float], venue: str,
                    min_run: int = PANEL_MIN_RUN) -> Optional[dict]:
     """The best run this side brings to a game at `venue`, if any is worth opening it for.
@@ -6504,22 +6578,8 @@ async def browse(days: int = 7, show: str = "all", day: Optional[str] = None,
             and min_run == PANEL_MIN_RUN):
         return await _screen("browse")
 
-    teams = await db.teams.find({}, {"_id": 0}).to_list(5000)
-    by_id = {t["team_id"]: t for t in teams}
-    leagues = {l["league_id"]: l for l in await db.leagues.find({}, {"_id": 0}).to_list(200)}
-
-    # What each division does per game, per streak subject — the yardstick a run's line has
-    # to beat to be worth putting a game in front of somebody. Corners won is the same
-    # yardstick mismatch_angle measures a side against, so "unusual" means one thing
-    # across the site; conceded and match totals are computed rather than inferred from it
-    # because a league with partial data does not balance.
-    by_league: Dict[str, Dict[str, list]] = defaultdict(lambda: defaultdict(list))
-    for t in teams:
-        for m in _src(t):
-            for subject in BROWSE_SUBJECTS:
-                by_league[t["league_id"]][subject].append(streak_value(m, subject))
-    league_par = {lid: {s: (sum(v) / len(v) if v else None) for s, v in subs.items()}
-                  for lid, subs in by_league.items()}
+    base = await _browse_base()
+    by_id, leagues, league_par = base["by_id"], base["leagues"], base["league_par"]
 
     now = datetime.now(timezone.utc)
     horizon = now + timedelta(days=days)
@@ -6527,7 +6587,7 @@ async def browse(days: int = 7, show: str = "all", day: Optional[str] = None,
     # the window rather than every team the model carries. It is 18 runs per team now, and
     # on a three-day window most of the database is not playing.
     upcoming = []
-    for fx in await db.fixtures.find({}, {"_id": 0}).to_list(5000):
+    for fx in base["fixtures"]:
         try:
             dt = datetime.fromisoformat((fx.get("date") or "").replace("Z", "+00:00"))
         except Exception:                                        # noqa: BLE001
@@ -6545,7 +6605,11 @@ async def browse(days: int = 7, show: str = "all", day: Optional[str] = None,
     # games in the window and the ladder walk is the expensive half. Both venues as well as
     # overall, because for most of a season only one of them is long enough to mean anything
     # and which one changes — fixture_streaks' note has the argument in full.
-    flags: Dict[str, dict] = {}
+    # KEPT ACROSS REQUESTS, KEYED ON min_run — see _browse_base. A team's runs and trends
+    # do not depend on the window or on which filter is showing, so the ladder walk that
+    # used to be repeated on every click is now done once per side per min_run and reused
+    # by every later request until the next sync.
+    flags = base["flags"].setdefault(min_run, {})
     for _fx, _dt, *sides in upcoming:
         for t in sides:
             if t["team_id"] in flags:

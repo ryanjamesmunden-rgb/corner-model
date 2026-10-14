@@ -2937,6 +2937,80 @@ async def tool_measure(token: Optional[str] = None, mode: str = "features",
 
 
 @api_router.post("/tools/probe-halves")
+@api_router.get("/tools/browse-profile")
+async def tool_browse_profile(token: Optional[str] = None,
+                              user: dict = Depends(get_current_user)):
+    """Where the front door's time actually goes, stage by stage.
+
+    WRITTEN AFTER THREE WRONG GUESSES, which is the point of it. The home page died and
+    the cause was narrowed by elimination — not the signal, not Vercel, not a sleeping
+    instance, not the database, not CPU starvation — and then I guessed at WHICH part of
+    the remaining work was expensive and shipped two caches on that guess. The first fixed
+    only the landing request. The second deferred the cost instead of removing it, because
+    something still has to build the memo once and a browser cancels the request long
+    before it finishes.
+
+    Each stage is timed separately and the counts come back with them, so "the teams fetch
+    is slow" and "the ladder walk is slow" stop being the same answer. The row counts
+    matter as much as the milliseconds: 4.2s for sixty teams and 4.2s for six hundred are
+    different problems.
+
+    IT TIMES ONE TEAM'S LADDER WALK, not all of them. If that single walk is slow then the
+    per-team work is the problem and no amount of fetching faster will help; if it is
+    instant then the cost is the collection scan and the walk is a red herring.
+
+    Tools-token gated: it is a diagnostic, it reads the same collections the board does,
+    and it is nobody's business but the owner's.
+    """
+    _check_tools_token(token)
+    out: Dict[str, object] = {}
+
+    t0 = time.perf_counter()
+    teams = await db.teams.find({}, {"_id": 0}).to_list(5000)
+    out["teams_fetch_ms"] = round((time.perf_counter() - t0) * 1000)
+    out["teams"] = len(teams)
+    # A rough sense of how much came over the wire, which is what distinguishes "many
+    # documents" from "enormous documents" — and only the second is fixed by a projection.
+    out["matches_total"] = sum(len(t.get("real_matches") or []) for t in teams)
+
+    t0 = time.perf_counter()
+    leagues = await db.leagues.find({}, {"_id": 0}).to_list(200)
+    out["leagues_fetch_ms"] = round((time.perf_counter() - t0) * 1000)
+    out["leagues"] = len(leagues)
+
+    t0 = time.perf_counter()
+    fixtures = await db.fixtures.find({}, {"_id": 0}).to_list(5000)
+    out["fixtures_fetch_ms"] = round((time.perf_counter() - t0) * 1000)
+    out["fixtures"] = len(fixtures)
+
+    t0 = time.perf_counter()
+    by_league: Dict[str, Dict[str, list]] = defaultdict(lambda: defaultdict(list))
+    for t in teams:
+        for m in _src(t):
+            for subject in BROWSE_SUBJECTS:
+                by_league[t["league_id"]][subject].append(streak_value(m, subject))
+    league_par = {lid: {s: (sum(v) / len(v) if v else None) for s, v in subs.items()}
+                  for lid, subs in by_league.items()}
+    out["league_par_ms"] = round((time.perf_counter() - t0) * 1000)
+
+    # ONE TEAM, all three venues plus trends — exactly what browse() does per side.
+    if teams:
+        t = teams[0]
+        par = league_par.get(t["league_id"], {})
+        t0 = time.perf_counter()
+        for v in ("overall", "home", "away"):
+            _browse_streak(t, par, v, PANEL_MIN_RUN)
+        _trends_of(t)
+        one = (time.perf_counter() - t0) * 1000
+        out["one_team_flags_ms"] = round(one, 1)
+        # What the whole walk would cost if every side in a week's fixtures paid that.
+        out["flags_for_400_sides_ms"] = round(one * 400)
+
+    out["total_ms"] = (out["teams_fetch_ms"] + out["leagues_fetch_ms"]
+                       + out["fixtures_fetch_ms"] + out["league_par_ms"])
+    return out
+
+
 async def tool_probe_halves(token: Optional[str] = None,
                             user: dict = Depends(get_current_user)):
     """Probe whether API-Football can give corners split by half.

@@ -1,0 +1,103 @@
+# Is the site actually up, and is the backend awake? One dispatch, one answer.
+#
+# WHY THIS EXISTS. "The site is not loading" has at least five causes and they need
+# different reactions: the phone's signal, the apex domain not resolving, Vercel down, the
+# Render instance asleep, or the backend genuinely broken. From a phone with one bar you
+# cannot tell any of them apart, and neither can a dev container behind a proxy that
+# refuses outbound hosts — which is where this question usually gets asked from.
+#
+# A GitHub runner has open internet and no DNS games, so it can answer all five.
+#
+# IT REPORTS, IT NEVER GATES. Same rule as check_setup.yml: a sleeping free instance is
+# the normal overnight state, not a failure, and a red X on the expected case trains
+# people to ignore red. Every line prints its own verdict and the job ends green.
+#
+# THE TIMING IS THE POINT, not just the status code. Render's free tier sleeps after
+# inactivity and the FIRST request pays the cold start — thirty seconds or more — while
+# every one after it is fast. A 200 alone cannot tell "awake" from "asleep, and I just
+# woke it"; two requests back to back can, so that is what this does.
+#
+# BOTH SPELLINGS OF THE DOMAIN, because they are different DNS records and only one of
+# them is in SITE_URL. An apex that does not resolve while www does is invisible to
+# anybody who always types the www, and every share link this repo builds defaults to the
+# APEX — so that gap would send every posted link to a dead address.
+name: Is it up
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: corner-is-it-up
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Probe
+        env:
+          BACKEND: ${{ vars.BACKEND_URL || 'https://corner-model.onrender.com' }}
+        run: |
+          # -L follows the redirect an apex-to-www setup uses, and %{url_effective}
+          # reports where it landed — which is the difference between "broken" and
+          # "configured to redirect", and they look identical in a bare status code.
+          probe () {
+            local label="$1" url="$2"
+            local out
+            out=$(curl -sS -L -o /dev/null --max-time 45 \
+              -w '%{http_code} %{time_total} %{url_effective}' "$url" 2>&1) || {
+                echo "| ❌ | $label | did not respond — \`${out//|/ }\` |" >> "$GITHUB_STEP_SUMMARY"
+                echo "FAIL $label: $out"
+                return 0
+              }
+            local code=${out%% *} rest=${out#* }
+            local secs=${rest%% *} landed=${rest#* }
+            local mark="✅"
+            [ "$code" = "200" ] || mark="⚠️"
+            echo "| $mark | $label | HTTP $code in ${secs}s → $landed |" >> "$GITHUB_STEP_SUMMARY"
+            echo "$label: HTTP $code in ${secs}s -> $landed"
+          }
+
+          {
+            echo "## Is it up — $(date -u '+%Y-%m-%d %H:%M UTC')"
+            echo
+            echo "| | What | Result |"
+            echo "|---|---|---|"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          probe "Site (apex)" "https://thecornermodel.com"
+          probe "Site (www)"  "https://www.thecornermodel.com"
+          probe "Evidence page" "https://thecornermodel.com/evidence"
+
+          # TWO BACKEND HITS, AND THE GAP BETWEEN THEM IS THE ANSWER. A cold start is the
+          # first one paying thirty seconds and the second returning instantly; a backend
+          # that was already awake answers both fast. One request cannot separate those.
+          first=$(curl -sS -o /dev/null --max-time 90 -w '%{http_code} %{time_total}' \
+                  "$BACKEND/api/" 2>&1 || echo "000 0")
+          second=$(curl -sS -o /dev/null --max-time 45 -w '%{http_code} %{time_total}' \
+                   "$BACKEND/api/" 2>&1 || echo "000 0")
+          f_code=${first%% *}; f_time=${first#* }
+          s_code=${second%% *}; s_time=${second#* }
+          echo "backend: first=$first second=$second"
+
+          verdict="awake — both requests fast"
+          mark="✅"
+          # 5s is well past a warm free-tier response and well short of a cold start, so
+          # it separates the two without being sensitive to ordinary jitter.
+          if [ "$f_code" != "200" ]; then
+            verdict="NOT RESPONDING"; mark="❌"
+          elif awk "BEGIN{exit !($f_time > 5)}"; then
+            verdict="was ASLEEP — first request took ${f_time}s, it is awake now"
+            mark="⚠️"
+          fi
+          {
+            echo "| $mark | Backend | HTTP $f_code, ${f_time}s then ${s_time}s — $verdict |"
+            echo
+            echo "A sleeping backend is normal overnight on the free tier: the site still"
+            echo "loads, the boards are empty until the first request wakes it, and this"
+            echo "run has just done that."
+          } >> "$GITHUB_STEP_SUMMARY"

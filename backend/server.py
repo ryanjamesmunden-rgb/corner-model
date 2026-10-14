@@ -2236,6 +2236,13 @@ async def _screen_angle_board():
     return await _angle_rows(within_days=6)
 
 
+async def _screen_trends():
+    # The Streaks page's opening tab, as the frontend asks for it on first paint — see
+    # WINDOWS/METRICS/SIDES defaults in frontend/src/components/TrendFinder.jsx. Any other
+    # combination of those knobs still computes live, off the warmed memo.
+    return await trends(league_id="all", window=5, metric="total", side="overall", user={})
+
+
 async def _screen_top_teams():
     return await top_corner_teams(side="overall", window=0, limit=TOP_TEAMS_LIMIT,
                                   league_id="all", user={})
@@ -2261,6 +2268,8 @@ SCREENS = {
     "browse": _screen_browse,
     "angle_board": _screen_angle_board,
     "top_teams": _screen_top_teams,
+    # The Streaks page's opening tab, which until now computed live on every visit.
+    "trends": _screen_trends,
 }
 
 
@@ -5343,10 +5352,29 @@ async def matchups(league_id: str, side: str = "overall", user: dict = Depends(g
 async def trends(league_id: Optional[str] = None, window: int = 5, metric: str = "total",
                  side: str = "overall", response: Response = None,
                  user: dict = Depends(get_current_user)):
-    """Teams currently averaging MORE corners than their season baseline (hot form), by venue."""
+    """Teams currently averaging MORE corners than their season baseline (hot form), by venue.
+
+    THE SLOWEST PAGE ON THE SITE UNTIL NOW, and for the reason #277 measured rather than
+    anything this function computes: its own `db.teams.find({}, {"_id": 0})` pulled the
+    whole 10.7MB team collection down a 120 KB/s link on EVERY request — 98 seconds, all
+    leagues, every visit. The Streaks page opens on this board, so that was the first
+    thing a visitor met.
+
+    Two changes, both already proven elsewhere in this file:
+      * the warmed, version-keyed memo instead of its own query (see _browse_base). Teams
+        it holds are PROJECTED, so a side with no real games brings nothing here any more
+        — the same trade #277 took on the browse filters, for the same reason: a trend
+        drawn from synthetic games is not a trend.
+      * a cached screen for the tab's own defaults, below, so first paint is a read.
+    """
+    if (_cache_ok() and (league_id in (None, "all")) and window == 5
+            and metric == "total" and side == "overall"):
+        return _preview(await _screen("trends"), user, response)
     q = {} if not league_id or league_id == "all" else {"league_id": league_id}
-    teams = await db.teams.find(q, {"_id": 0}).to_list(1000)
-    leagues = {l["league_id"]: l["name"] for l in await db.leagues.find({}, {"_id": 0}).to_list(100)}
+    base = await _browse_base()
+    teams = [t for t in base["by_id"].values()
+             if not q or t.get("league_id") == q["league_id"]]
+    leagues = {lid: l.get("name", "") for lid, l in base["leagues"].items()}
     next_fx = await _next_fixtures(q)
     out = []
     for t in teams:
@@ -6516,8 +6544,11 @@ async def _browse_base() -> dict:
         # synthetic fallback and so bring no runs or trends to a fixture. That is a change
         # in behaviour and, on balance, the right one — a streak drawn from invented games
         # is not a streak, and the board was quietly publishing them.
+        #
+        # `real_samples` joins the four because the hot-form board publishes it per row and
+        # a scalar costs nothing next to the array beside it.
         teams = await db.teams.find({}, {"_id": 0, "team_id": 1, "name": 1,
-                                         "league_id": 1,
+                                         "league_id": 1, "real_samples": 1,
                                          "real_matches": 1}).to_list(5000)
         leagues = {l["league_id"]: l
                    for l in await db.leagues.find({}, {"_id": 0}).to_list(200)}

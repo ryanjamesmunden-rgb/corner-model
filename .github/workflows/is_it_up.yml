@@ -41,6 +41,7 @@ jobs:
       - name: Probe
         env:
           BACKEND: ${{ vars.BACKEND_URL || 'https://corner-model.onrender.com' }}
+          TOOLS_TOKEN: ${{ secrets.TOOLS_TOKEN }}
         run: |
           # -L follows the redirect an apex-to-www setup uses, and %{url_effective}
           # reports where it landed — which is the difference between "broken" and
@@ -151,6 +152,19 @@ jobs:
           # those, so if the guard is the only thing standing between a visitor and the
           # full scan, the page loads and then dies the moment anybody uses it. Worth
           # knowing before anyone concludes the box is too small.
+          # WHERE THE TIME GOES, stage by stage. Three rounds of narrowing by elimination
+          # got as far as "it is the browse work" and then I guessed at which part and
+          # shipped two caches on the guess. This asks instead. 150s because the thing
+          # being measured is the thing that does not finish in 60.
+          echo "--- profile ---"
+          curl -sS --max-time 150 \
+            "$BACKEND/api/tools/browse-profile?token=$TOOLS_TOKEN" -o prof.json \
+            -w 'profile HTTP %{http_code} in %{time_total}s\n' || echo "profile TIMED OUT"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          head -c 900 prof.json >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || true
+          echo >> "$GITHUB_STEP_SUMMARY"; echo '```' >> "$GITHUB_STEP_SUMMARY"
+          cat prof.json 2>/dev/null || true; echo
+
           probe_json "filter: show=streaks" "/api/browse?days=7&show=streaks&min_run=5" 25
           probe_json "filter: days=3"       "/api/browse?days=3&show=all&min_run=5"     25
           probe_json "filter: run=6"        "/api/browse?days=7&show=all&min_run=6"     25

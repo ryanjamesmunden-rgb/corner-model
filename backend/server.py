@@ -2139,6 +2139,34 @@ async def _screen_streaks():
                          min_line=3, direction="over", subject="team", user={})
 
 
+async def _screen_browse():
+    """The front door's own payload, exactly as the home page asks for it on first paint.
+
+    THE ONE HEAVY BOARD THAT WAS NEVER CACHED, and it is the page everybody lands on.
+    Every other screen here has been served from a prebuilt payload for months; browse
+    rebuilt itself from scratch on every single request, and on 14 Oct that stopped
+    fitting inside a minute — the home page showed no fixtures at all and /api/browse
+    answered nothing, while /api/leagues read the same database in 0.3s and /api/health
+    reported db:true, scheduler running and every other screen fresh.
+
+    WHY IT IS CONSTANT COST, which is what made it look like a hang rather than a cost
+    problem: the expensive half runs BEFORE the window filter. Every team is fetched and
+    every team's every match is walked to build league_par, whatever `days` was asked for
+    — so days=1 and days=7 timed out identically, and a cost curve that should have risen
+    with the window came back flat. A flat curve is normally the signature of something
+    stuck, and reading it that way is what cost two probes.
+
+    The arguments MUST match the guard in browse() exactly, or the page asks for one
+    payload and the cache holds another — a miss on every request, which is precisely the
+    bug sitting in _screen_streaks beside this: it builds side="home" while the endpoint
+    defaults to side="overall", so a bare /api/streaks has been missing a fresh cache and
+    recomputing the lot. That one is not fixed here because the Streaks screen passes its
+    side explicitly and is not what is broken today; it is noted so the next person does
+    not have to find it twice.
+    """
+    return await browse(days=7, show="all", day=None, min_run=PANEL_MIN_RUN, user={})
+
+
 async def _angle_rows(within_days: int = 2):
     """The streak board, with each row's FIXTURE evidence attached.
 
@@ -2229,6 +2257,8 @@ SCREENS = {
     "chase": _screen_chase,
     "mismatches": _screen_mismatches,
     "streaks": _screen_streaks,
+    # THE HOME PAGE. Last to be added and the one that mattered most — see _screen_browse.
+    "browse": _screen_browse,
     "angle_board": _screen_angle_board,
     "top_teams": _screen_top_teams,
 }
@@ -6452,6 +6482,27 @@ async def browse(days: int = 7, show: str = "all", day: Optional[str] = None,
     show = show if show in BROWSE_SHOWS else "all"
     day = (day or "").strip() or None
     min_run = max(PANEL_MIN_RUN, min(int(min_run), BROWSE_MAX_MIN_RUN))
+
+    # THE CACHE, AND IT IS THE WHOLE FIX FOR A DEAD HOME PAGE. Everything below this line
+    # fetches every team and walks every one of their matches before it looks at the date
+    # window at all, so the cost does not depend on `days` and is paid again by every
+    # visitor. On 14 Oct it stopped fitting inside sixty seconds and the front page simply
+    # showed nothing, while /api/health answered db:true with every other screen fresh —
+    # because every other heavy board has been served from a prebuilt payload for months
+    # and this one never was.
+    #
+    # AFTER THE CLAMPING, DELIBERATELY. Compared against the raw arguments, `days=99` and
+    # `days=28` are different cache keys for one payload, and `show="nonsense"` would miss
+    # a cache it is going to be served from anyway once the line above rewrites it to
+    # "all". Normalise first, then decide — otherwise the guard disagrees with the
+    # function it guards.
+    #
+    # _cache_ok() IS WHAT STOPS THIS EATING ITSELF: _screen_browse calls this function to
+    # build the payload, and without that flag the build would find the guard, ask for the
+    # screen, and recurse until the stack gives out.
+    if (_cache_ok() and days == 7 and show == "all" and day is None
+            and min_run == PANEL_MIN_RUN):
+        return await _screen("browse")
 
     teams = await db.teams.find({}, {"_id": 0}).to_list(5000)
     by_id = {t["team_id"]: t for t in teams}

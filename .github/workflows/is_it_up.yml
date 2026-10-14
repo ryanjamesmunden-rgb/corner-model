@@ -126,6 +126,16 @@ jobs:
 
           echo "--- light endpoints, nothing else running ---"
           probe_json "/api/ (no db)"        "/api/"            10
+          # THE ONE THAT NAMES THE CAUSE. /api/health pings Mongo and reports db true or
+          # false, plus the scheduler and which screens are fresh — so it distinguishes
+          # "the database refused us" (answers fast with db:false) from "the driver is
+          # stuck" (hangs like everything else). It already existed; nothing was asking it.
+          curl -sS --max-time 20 "$BACKEND/api/health" -o health.json \
+            -w 'health HTTP %{http_code} in %{time_total}s\n' || echo "health TIMED OUT"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          head -c 1200 health.json >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || true
+          echo >> "$GITHUB_STEP_SUMMARY"; echo '```' >> "$GITHUB_STEP_SUMMARY"
+          cat health.json 2>/dev/null || true; echo
           probe_json "/api/config"          "/api/config"      15
           probe_json "/api/leagues (db)"    "/api/leagues"     15
 

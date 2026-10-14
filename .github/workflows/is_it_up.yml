@@ -103,8 +103,25 @@ jobs:
           # return a perfectly healthy empty tree during an international break, after a
           # failed sync, or if the window is wrong — and all three look like a broken page
           # to whoever is holding the phone. So the counts are read, not just the status.
-          curl -sS -o browse.json --max-time 60 \
-            "$BACKEND/api/browse?days=7&show=all" || echo '{}' > browse.json
+          #
+          # THREE WINDOWS, AND A CACHED BOARD AS A CONTROL. /api/browse timed out at 60s on
+          # the default window, and a timeout alone cannot say whether the endpoint is
+          # expensive or stuck — those need opposite fixes. A cost curve across 1, 3 and 7
+          # days separates them: rising with the window is cost, flat-and-dead is a hang.
+          # /api/streaks is the control, because it does the same kind of ladder walk and
+          # IS cached, so a fast streaks beside a dead browse points at the cache rather
+          # than at the walk.
+          for d in 1 3 7; do
+            t=$(curl -sS -o "b$d.json" --max-time 60 -w '%{time_total} %{http_code}' \
+                "$BACKEND/api/browse?days=$d&show=all" 2>&1 || echo "timeout")
+            echo "browse days=$d: $t"
+            echo "| | /api/browse days=$d | $t |" >> "$GITHUB_STEP_SUMMARY"
+          done
+          sc=$(curl -sS -o /dev/null --max-time 60 -w '%{time_total} %{http_code}' \
+               "$BACKEND/api/streaks" 2>&1 || echo "timeout")
+          echo "streaks (cached control): $sc"
+          echo "| | /api/streaks (cached control) | $sc |" >> "$GITHUB_STEP_SUMMARY"
+          cp b7.json browse.json 2>/dev/null || echo '{}' > browse.json
           python3 - <<'PY' >> "$GITHUB_STEP_SUMMARY"
           import json
           try:

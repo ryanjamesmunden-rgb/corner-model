@@ -146,6 +146,15 @@ jobs:
           # find out whether the front page works.
           probe_json "HOME PAGE (cached)" "/api/browse?days=7&show=all&min_run=5" 30
 
+          # THE FILTERS. The cache key is days=7 + show=all + no day + min_run=5, which is
+          # the landing request and nothing else. Every control on that page changes one of
+          # those, so if the guard is the only thing standing between a visitor and the
+          # full scan, the page loads and then dies the moment anybody uses it. Worth
+          # knowing before anyone concludes the box is too small.
+          probe_json "filter: show=streaks" "/api/browse?days=7&show=streaks&min_run=5" 25
+          probe_json "filter: days=3"       "/api/browse?days=3&show=all&min_run=5"     25
+          probe_json "filter: run=6"        "/api/browse?days=7&show=all&min_run=6"     25
+
           echo "--- /api/ WHILE a heavy request is in flight ---"
           curl -sS -o /dev/null --max-time 40 "$BACKEND/api/browse?days=1" &
           heavy=$!

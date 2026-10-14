@@ -96,6 +96,40 @@ jobs:
           fi
           {
             echo "| $mark | Backend | HTTP $f_code, ${f_time}s then ${s_time}s — $verdict |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          # DOES THE HOME PAGE HAVE ANYTHING TO SHOW? "Up" and "has fixtures on it" are
+          # different questions and the first one answers 200 either way: /api/browse can
+          # return a perfectly healthy empty tree during an international break, after a
+          # failed sync, or if the window is wrong — and all three look like a broken page
+          # to whoever is holding the phone. So the counts are read, not just the status.
+          curl -sS -o browse.json --max-time 60 \
+            "$BACKEND/api/browse?days=7&show=all" || echo '{}' > browse.json
+          python3 - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import json
+          try:
+              d = json.load(open("browse.json"))
+          except Exception as e:
+              print(f"| ❌ | Home page data | /api/browse did not return JSON: {e} |")
+              raise SystemExit(0)
+          total = d.get("total")
+          countries = d.get("countries") or []
+          cal = d.get("calendar") or []
+          if total:
+              soonest = min((g["date"] for c in countries for l in c.get("leagues", [])
+                             for g in l.get("games", [])), default="?")
+              print(f"| ✅ | Home page data | {total} fixtures across "
+                    f"{len(countries)} countries, {len(cal)} days — next {soonest[:16]} |")
+          else:
+              # THE INTERESTING FAILURE, and the one worth spelling out: a 200 with an
+              # empty tree. The page renders its "nothing matches" state and reads as
+              # broken, so the summary has to say which kind of empty this is.
+              print(f"| ⚠️ | Home page data | /api/browse returned 200 with **0 fixtures** "
+                    f"in the next 7 days ({len(countries)} countries, {len(cal)} days). "
+                    "The page is working; it has nothing to draw. Check the sync.|")
+          PY
+
+          {
             echo
             echo "A sleeping backend is normal overnight on the free tier: the site still"
             echo "loads, the boards are empty until the first request wakes it, and this"

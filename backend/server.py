@@ -2973,6 +2973,30 @@ async def tool_browse_profile(token: Optional[str] = None,
     # documents" from "enormous documents" — and only the second is fixed by a projection.
     out["matches_total"] = sum(len(t.get("real_matches") or []) for t in teams)
 
+    # HOW BIG ARE THEY, and how much of that is the duplicate. sync_real stores the match
+    # history TWICE on every team — `real_matches`, and `matches` which is a copy of it
+    # padded with synthetic games for sparse sides — and browse reads only the first. If
+    # the documents are large then the fetch is paying for bytes and a projection fixes
+    # it; if they are small then 173ms per document is something else entirely and a
+    # projection would change nothing. Those need different work, so they get measured.
+    import json as _json
+    sizes = [len(_json.dumps(t, default=str)) for t in teams]
+    out["bytes_total"] = sum(sizes)
+    out["bytes_per_team_avg"] = round(sum(sizes) / len(sizes)) if sizes else 0
+    out["bytes_per_team_max"] = max(sizes) if sizes else 0
+    out["bytes_in_matches_copy"] = sum(
+        len(_json.dumps(t.get("matches") or [], default=str)) for t in teams)
+    out["teams_with_no_real_matches"] = sum(1 for t in teams if not t.get("real_matches"))
+
+    # WHAT THE PROJECTION WOULD COST INSTEAD — the same query asking only for the fields
+    # browse actually reads. Measured rather than assumed, because the last three fixes
+    # were assumptions.
+    t0 = time.perf_counter()
+    lean = await db.teams.find({}, {"_id": 0, "team_id": 1, "name": 1, "league_id": 1,
+                                    "real_matches": 1}).to_list(5000)
+    out["teams_fetch_projected_ms"] = round((time.perf_counter() - t0) * 1000)
+    out["bytes_projected"] = sum(len(_json.dumps(t, default=str)) for t in lean)
+
     t0 = time.perf_counter()
     leagues = await db.leagues.find({}, {"_id": 0}).to_list(200)
     out["leagues_fetch_ms"] = round((time.perf_counter() - t0) * 1000)

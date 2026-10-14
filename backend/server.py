@@ -6506,7 +6506,19 @@ async def _browse_base() -> dict:
         memo = _browse_memo.get("current")
         if memo is not None and memo["version"] == version:
             return memo                      # built while this request waited
-        teams = await db.teams.find({}, {"_id": 0}).to_list(5000)
+        # ONLY THE FOUR FIELDS THIS BOARD READS, and it halves the bill. Measured on the
+        # live database: the team collection is 10.70MB and takes 90.9s to pull, of which
+        # 5.31MB is `matches` — a second copy of the history that sync_real pads with
+        # synthetic games for sparse sides and that _src never reaches while real_matches
+        # has anything in it. Projected, the same query is 5.35MB and 45.6s.
+        #
+        # WHAT IT COSTS: the 16 teams (of 526) with no real matches at all lose their
+        # synthetic fallback and so bring no runs or trends to a fixture. That is a change
+        # in behaviour and, on balance, the right one — a streak drawn from invented games
+        # is not a streak, and the board was quietly publishing them.
+        teams = await db.teams.find({}, {"_id": 0, "team_id": 1, "name": 1,
+                                         "league_id": 1,
+                                         "real_matches": 1}).to_list(5000)
         leagues = {l["league_id"]: l
                    for l in await db.leagues.find({}, {"_id": 0}).to_list(200)}
         fixtures = await db.fixtures.find({}, {"_id": 0}).to_list(5000)
@@ -9451,6 +9463,35 @@ async def _maybe_sync_on_boot():
     await _sync_if_stale("boot")
 
 
+async def _warm_browse():
+    """Build the front door's invariant half in the background, at boot.
+
+    THE PIECE THAT WAS MISSING, and without it the cache was theatre. _browse_base takes
+    about ninety seconds against the live database, and nothing that can wait that long
+    was ever asking for it: a browser gives up in thirty, so a visitor could never warm
+    it, and every one of them paid the full cost and got nothing. The home page only
+    worked at all because the nightly screens job happened to build that one payload.
+
+    So something that is not in a hurry has to do it, and a boot task is that: no client,
+    no timeout, and it runs exactly when the memo is guaranteed empty — a fresh process.
+
+    DELIBERATELY NOT AWAITED BY STARTUP. Render's health check would see a port that has
+    not opened for ninety seconds, call the deploy failed and restart it, forever. It is
+    fired and forgotten; the site serves cached screens while it runs and starts serving
+    live filters the moment it lands.
+    """
+    try:
+        t0 = time.perf_counter()
+        base = await _browse_base()
+        logger.info("browse base warmed in %.1fs (%d teams, %d fixtures)",
+                    time.perf_counter() - t0, len(base["by_id"]), len(base["fixtures"]))
+    except Exception:                                         # noqa: BLE001
+        # Loud, but never fatal: a cold memo is a slow board, not a broken process, and
+        # the next request or the nightly screens job will try again.
+        logger.exception("browse base warm failed — the filters will be slow until the "
+                         "next rebuild")
+
+
 @app.on_event("startup")
 async def on_startup():
     # AGAIN, AND FIRST. Uvicorn configures its own loggers before it imports this module,
@@ -9544,6 +9585,9 @@ async def on_startup():
     scheduler.start()
     app.state.scheduler = scheduler
     logger.info("Auto-refresh scheduler started (07:00 & 19:00 UTC daily; Daily 2 lock-in 07:30 UTC)")
+    # FIRE AND FORGET — see _warm_browse. Awaiting it here would hold the port shut for a
+    # minute and a half and the platform would call the deploy dead.
+    asyncio.create_task(_warm_browse())
 
 
 @app.on_event("shutdown")

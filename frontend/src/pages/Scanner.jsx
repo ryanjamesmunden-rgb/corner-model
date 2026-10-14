@@ -14,6 +14,9 @@ import ValueBoard from "@/components/ValueBoard";
 import MembersOnly from "@/components/MembersOnly";
 import ErrorBoundary from "@/components/ErrorBoundary";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+// The padlock's only source of truth, in a tested module because the copy that
+// lived here went four entries out of date for a week. See paidBoards.js.
+import { showsLock } from "@/lib/paidBoards";
 
 // `short` is what a phone gets. Six full labels wrap to three rows on a 390px screen,
 // which is most of the viewport spent on navigation before any football appears — and
@@ -30,40 +33,6 @@ const TABS = [
   { v: "chase", l: "Chase Board", short: "Chase", icon: Target },
   { v: "value", l: "Your Value Board", short: "Value", icon: BadgePercent },
 ];
-
-// WHICH TABS ARE THE PAID PRODUCT — used for the padlock, and nothing else now. /streaks the page knew that and
-// these tabs reached them ungated, so a signed-out visitor got the component, the
-// component got a 402, and the 402 was caught and rendered as an empty table reading
-// "No teams match this streak" — the site telling people its product was empty.
-//
-// They are PREVIEWS now rather than walls: the API returns the first few rows to anyone
-// and the whole board to members, and each screen says what it is holding back. Best
-// Teams is open in full — it is the tab the page opens on, so a visitor lands on real
-// football rather than a sales prompt.
-//
-// This map is only the padlock's list of which tabs are the paid ones.
-const GATED = {
-  form: {
-    title: "Hot form",
-    blurb: "Teams whose corner numbers have jumped above their own season average — who is heating up, by how much, and over which window.",
-  },
-  streaks: {
-    title: "Corner streaks",
-    blurb: "Every team on a live run — overs and unders, team corners and match totals — with the hit rate, how long the run is, how much room it had, and the model's price on the next game.",
-  },
-  perfect: {
-    title: "Perfect games",
-    blurb: "Fixtures where a corner streak and a favourable matchup land on the same team: the run, the opponent's concession rate, and the projection in one row.",
-  },
-  chase: {
-    title: "The chase board",
-    blurb: "The week's best team-corner chase spots, ranked on projection, opponent leakage and how often the line has actually landed.",
-  },
-  value: {
-    title: "Your value board",
-    blurb: "Enter the prices you can get on any fixture and this collects the best positive-EV line on every game you have priced, ranked, with how old each price is.",
-  },
-};
 
 export default function Scanner() {
   const { leagueId } = useLeague();
@@ -110,7 +79,7 @@ export default function Scanner() {
               <span className="hidden sm:inline">{t.l}</span>
               {/* Shown BEFORE the click rather than after. A tab that looks free and
                   then refuses you reads as a bait; a padlock reads as a price list. */}
-              {!member && GATED[t.v] && (
+              {showsLock(t.v, member) && (
                 <Lock className="h-3 w-3 shrink-0 opacity-50" aria-label="Members only" />
               )}
             </TabsTrigger>

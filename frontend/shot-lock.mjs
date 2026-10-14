@@ -1,0 +1,11 @@
+import { chromium } from "playwright";
+const b = await chromium.launch({ executablePath: "/opt/pw-browsers/chromium" });
+const p = await b.newPage({ viewport: { width: 390, height: 900 } });
+await p.goto("http://127.0.0.1:8099/scanner", { waitUntil: "networkidle" });
+await p.waitForTimeout(1200);
+const locks = await p.locator('[aria-label="Members only"]').count();
+const tabs = await p.locator('[role="tab"]').allInnerTexts();
+console.log("tabs:", JSON.stringify(tabs));
+console.log("padlocks visible to a signed-out visitor:", locks);
+await p.screenshot({ path: "scanner-nolocks.png", fullPage: false });
+await b.close();

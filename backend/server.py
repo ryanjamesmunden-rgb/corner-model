@@ -242,7 +242,17 @@ def _league_blocked_map(teams: list) -> dict:
 
 
 TOTAL_LINES = [6.5, 7.5, 8.5, 9.5, 10.5, 11.5, 12.5, 13.5]
-TEAM_LINES = [2.5, 3.5, 4.5, 5.5, 6.5]
+# UP TO 10+ FOR ONE TEAM, which is three rungs higher than this used to stop. The ladder
+# ended at Over 6.5 — 7+ corners — and a side the board itself rates at 8 or 9 a game had
+# no row to type a price into, so the one market worth pricing on those games was the one
+# the page could not price. The rungs are the same shape as the rest: Over 7.5 is "8+".
+#
+# The model already answers these: nb_ge reads the negative binomial's tail, which is why
+# team corners use it rather than a Poisson — a long rung is exactly where the two
+# disagree. What a reader should know is that the tail is thinner evidence than the middle
+# of the ladder, so the "Landed" column beside it (hit rate on this venue) is the honest
+# check on any green EV up there.
+TEAM_LINES = [2.5, 3.5, 4.5, 5.5, 6.5, 7.5, 8.5, 9.5]
 
 # ----------------------------- Mock Data Seed -----------------------------
 

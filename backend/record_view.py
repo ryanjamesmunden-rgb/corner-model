@@ -117,4 +117,8 @@ def label(week: Optional[str], today: Optional[date] = None) -> str:
         return "This week"
     if gap == 1:
         return "Last week"
-    return f"Week of {start.strftime('%-d %B %Y')}"
+    # `%-d` (unpadded day) is a glibc extension: it works on the Linux box CI runs on and
+    # raises ValueError on Windows, so this one line failed for anyone running the suite on
+    # their own machine while CI stayed green. Assembled from the parts instead — no
+    # platform in it, and it renders identically: "Week of 31 August 2026".
+    return f"Week of {start.day} {start.strftime('%B %Y')}"

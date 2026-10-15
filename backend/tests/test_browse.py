@@ -11,6 +11,8 @@ import os
 import sys
 from datetime import datetime, timedelta, timezone
 
+import pytest
+
 os.environ.setdefault("MONGO_URL", "mongodb://localhost:27017")
 os.environ.setdefault("DB_NAME", "test_corner_model")
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -29,15 +31,48 @@ class FakeCollection:
     def find(self, *a, **k):
         return self
 
+    # A CURSOR, NOT A LIST, because that is what the real driver returns and what the code
+    # under test chains onto: _data_version does
+    # `.find(...).sort("synced_at", -1).limit(1)`.
+    def sort(self, *a, **k):
+        return self
+
+    def limit(self, *a, **k):
+        return self
+
     async def to_list(self, _n):
         return list(self.rows)
 
 
+class FakeScreens:
+    """The screens collection: a cache that starts empty and remembers what gets built.
+
+    EMPTY IS THE STATE THESE TESTS WANT, because a miss sends the endpoint down the live
+    path — the code they then make assertions about. It records the upsert anyway, so a
+    test can assert the cache was written and a second call behaves like production.
+    """
+
+    def __init__(self, docs=()):
+        self.docs = {d["_id"]: dict(d) for d in docs}
+
+    async def find_one(self, q, *a, **k):
+        return self.docs.get(q.get("_id"))
+
+    async def update_one(self, q, update, upsert=False):
+        self.docs.setdefault(q["_id"], {"_id": q["_id"]}).update(update.get("$set") or {})
+
+
 class FakeDB:
-    def __init__(self, teams, fixtures, leagues):
+    def __init__(self, teams, fixtures, leagues, screens=()):
         self.teams = FakeCollection(teams)
         self.fixtures = FakeCollection(fixtures)
         self.leagues = FakeCollection(leagues)
+        # THE COLLECTION THIS SUITE WAS MISSING. /browse is served from a prebuilt payload
+        # now (see _screen_browse), so an endpoint that used to touch three collections
+        # touches four, and forty tests failed on `'FakeDB' object has no attribute
+        # 'screens'` — every one of them for that reason rather than for anything they
+        # were written to catch.
+        self.screens = FakeScreens(screens)
 
 
 def run(coro):
@@ -102,6 +137,24 @@ FIXTURES = [
     fixture("f-ch", "eng-ch", "eng-ch-c", "eng-ch-d"),
     fixture("f-no", "nor-d1", "nor-d1-e", "nor-d1-f"),
 ]
+
+
+@pytest.fixture(autouse=True)
+def _fresh_memo():
+    """THE MEMO OUTLIVES A TEST and the fake database does not.
+
+    _browse_base keeps the team collection and the fixture list in a module-level dict
+    keyed by data version, and these fakes carry no `synced_at` — so every test here looks
+    like the same version to it, and the first one to run would decide what the rest of
+    them saw. Two tests that add a fixture of their own were failing on exactly that: the
+    game was in their database and not in the memo the previous test left behind.
+
+    Autouse rather than a line in the helper below, because the tests that build their own
+    FakeDB are the ones that need it most and do not go through the helper.
+    """
+    server._browse_memo.clear()
+    yield
+    server._browse_memo.clear()
 
 
 def browse(monkeypatch, **kw):
@@ -652,3 +705,44 @@ class TestAGameCarriesItsOwnEvidence:
     def test_the_list_is_capped(self, monkeypatch):
         for g in self.rows(monkeypatch):
             assert len(g["streaks"]) <= server.BROWSE_PREVIEW_RUNS
+
+
+class TestItIsServedFromTheCache:
+    """The prebuilt payload, which nothing here used to touch.
+
+    /browse is served from a screen now (see _screen_browse), and the whole of this file
+    went through that path without a single assertion about it — which is how a fake
+    database missing the `screens` collection took forty tests down at once and said
+    nothing about what they were written to check. These two pin the path itself.
+    """
+
+    FRESH = {"_id": "browse", "schema": None, "payload": {"countries": [], "total": 99},
+             "built_at": None}
+
+    def doc(self):
+        # Fresh by the two things _screen_is_stale measures: the schema it was built under
+        # and when. The fakes carry no `synced_at`, so data_version never forces a rebuild.
+        return {**self.FRESH, "schema": server.SCREEN_SCHEMA,
+                "built_at": datetime.now(timezone.utc).isoformat()}
+
+    def test_the_default_request_reads_the_cache_rather_than_rebuilding(self, monkeypatch):
+        monkeypatch.setattr(server, "db",
+                            FakeDB(TEAMS, FIXTURES, LEAGUES, screens=[self.doc()]))
+        # 99 is not a number this data can produce — it can only have come from the cache.
+        assert run(server.browse())["total"] == 99
+
+    def test_a_miss_builds_the_payload_and_keeps_it(self, monkeypatch):
+        db = FakeDB(TEAMS, FIXTURES, LEAGUES)
+        monkeypatch.setattr(server, "db", db)
+        live = run(server.browse())
+        assert live["total"] == 3                      # built from the rows above
+        kept = db.screens.docs["browse"]["payload"]
+        assert kept["total"] == 3, "the rebuild was not written back to the cache"
+        assert db.screens.docs["browse"]["schema"] == server.SCREEN_SCHEMA
+
+    def test_a_filtered_request_never_touches_it(self, monkeypatch):
+        # The cache holds one payload — the default one — so anything with a filter on it
+        # has to compute, or every filter would answer with the unfiltered page.
+        monkeypatch.setattr(server, "db",
+                            FakeDB(TEAMS, FIXTURES, LEAGUES, screens=[self.doc()]))
+        assert run(server.browse(show="streaks"))["total"] != 99

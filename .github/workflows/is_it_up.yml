@@ -156,6 +156,19 @@ jobs:
           # got as far as "it is the browse work" and then I guessed at which part and
           # shipped two caches on the guess. This asks instead. 150s because the thing
           # being measured is the thing that does not finish in 60.
+          # WHERE THE DATABASE IS, and whether distance is even the problem. 90.9s for
+          # 10.7MB is 120 KB/s, which a far-away cluster and a throttled one both produce
+          # — and they need opposite fixes, one free and one paid. Round-trip time tells
+          # them apart; a dashboard's region labels do not.
+          echo "--- where is the db ---"
+          curl -sS --max-time 60 \
+            "$BACKEND/api/tools/where-is-the-db?token=$TOOLS_TOKEN" -o db.json \
+            -w 'db-location HTTP %{http_code} in %{time_total}s\n' || echo "db-location TIMED OUT"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          head -c 1200 db.json >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || true
+          echo >> "$GITHUB_STEP_SUMMARY"; echo '```' >> "$GITHUB_STEP_SUMMARY"
+          cat db.json 2>/dev/null || true; echo
+
           echo "--- profile ---"
           curl -sS --max-time 150 \
             "$BACKEND/api/tools/browse-profile?token=$TOOLS_TOKEN" -o prof.json \

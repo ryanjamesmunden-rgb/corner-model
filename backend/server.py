@@ -2937,6 +2937,105 @@ async def tool_measure(token: Optional[str] = None, mode: str = "features",
 
 
 @api_router.post("/tools/probe-halves")
+@api_router.get("/tools/where-is-the-db")
+async def tool_where_is_the_db(token: Optional[str] = None,
+                               user: dict = Depends(get_current_user)):
+    """How far away the database is, and whether distance is even the problem.
+
+    THE QUESTION THIS SETTLES, and it decides whether the fix is free or costs money.
+    Pulling 10.70MB of teams takes 90.9s, which is about 120 KB/s. Two very different
+    things produce that number:
+
+      DISTANCE — the app and the cluster are in different regions, so every round trip
+        crosses an ocean. Round-trip time is then 80-150ms and throughput is throttled by
+        latency rather than by any limit. The fix is to move one of them, and it is free.
+
+      THROTTLING — a shared free-tier cluster rate-limits reads. Round-trip time is then
+        LOW, single-digit milliseconds, and the bytes still crawl. No amount of moving
+        helps; the fix is a paid tier.
+
+    A dashboard tells you the region labels. It does not tell you which of these is
+    happening, and the labels can match while the throughput is still awful. So this
+    measures: ping round trips, and then a real read of known size to get bytes per
+    second against the same link.
+
+    NO CONNECTION STRING, NO CREDENTIALS, AND NOT EVEN THE FULL HOSTNAME. The URL holds a
+    password, and the cluster address is the thing that password protects — neither
+    belongs in a workflow summary or a GitHub issue. The first label is masked and only
+    the shape that identifies a provider and region is kept.
+    """
+    _check_tools_token(token)
+    out: Dict[str, object] = {}
+
+    # ROUND TRIPS FIRST, several of them, because one sample on a shared instance is
+    # noise. The MINIMUM is the honest measure of distance: scheduling delays and
+    # contention can only ever add to it, never subtract.
+    pings = []
+    for _ in range(7):
+        t0 = time.perf_counter()
+        try:
+            await db.command("ping")
+        except Exception as exc:                              # noqa: BLE001
+            out["ping_error"] = str(exc)[:200]
+            break
+        pings.append((time.perf_counter() - t0) * 1000)
+    if pings:
+        out["ping_ms_min"] = round(min(pings), 1)
+        out["ping_ms_median"] = round(sorted(pings)[len(pings) // 2], 1)
+        out["ping_ms_max"] = round(max(pings), 1)
+
+    # THROUGHPUT ON THE SAME LINK, from a read whose size is measured rather than assumed.
+    import json as _json
+    t0 = time.perf_counter()
+    sample = await db.teams.find({}, {"_id": 0, "real_matches": 1}).to_list(100)
+    secs = time.perf_counter() - t0
+    nbytes = sum(len(_json.dumps(d, default=str)) for d in sample)
+    out["sample_docs"] = len(sample)
+    out["sample_bytes"] = nbytes
+    out["sample_ms"] = round(secs * 1000)
+    out["kb_per_sec"] = round((nbytes / 1024) / secs) if secs > 0 else None
+
+    # WHERE IT IS, as much as can be said without handing over the address. An Atlas host
+    # looks like ac-xxxx-shard-00-00.<cluster>.mongodb.net; the leading label is masked.
+    try:
+        addr = db.client.address
+        host = addr[0] if addr else ""
+        parts = host.split(".")
+        out["db_host_masked"] = ".".join(["***"] + parts[1:]) if len(parts) > 1 else "***"
+        hello = await db.command("hello")
+        out["db_nodes"] = len(hello.get("hosts") or [])
+        out["db_set"] = bool(hello.get("setName"))
+    except Exception as exc:                                  # noqa: BLE001
+        out["db_topology_error"] = str(exc)[:200]
+
+    # WHAT THE PLATFORM SAYS ABOUT ITSELF. Render does not reliably export a region
+    # variable, so the NAMES of what it does export are listed — if a region is in there
+    # under a name I did not expect, it shows up here rather than being missed. Values are
+    # given only for keys that cannot carry a secret.
+    safe = ("RENDER_SERVICE_NAME", "RENDER_SERVICE_TYPE", "RENDER_GIT_BRANCH",
+            "RENDER_REGION", "RENDER_INSTANCE_ID", "FLY_REGION", "RAILWAY_REGION")
+    out["platform_env_keys"] = sorted(
+        k for k in os.environ
+        if k.startswith(("RENDER_", "FLY_", "RAILWAY_")))
+    out["platform"] = {k: os.environ[k] for k in safe if k in os.environ}
+
+    # THE VERDICT, stated rather than left to be inferred from two numbers. 40ms is well
+    # past same-region (which is single digits) and well short of nothing, so it is the
+    # line between "they are far apart" and "the link is being limited".
+    p = out.get("ping_ms_min")
+    if p is None:
+        out["verdict"] = "could not reach the database to time it."
+    elif p > 40:
+        out["verdict"] = (f"{p}ms round trip — the app and the database are FAR APART. "
+                          "Moving one to the other's region is the fix, and it is free.")
+    else:
+        out["verdict"] = (f"{p}ms round trip is same-region, so distance is NOT the "
+                          f"problem. At {out.get('kb_per_sec')} KB/s the link is being "
+                          "limited — a shared free-tier cluster throttling reads. Moving "
+                          "regions would change nothing; a paid tier would.")
+    return out
+
+
 @api_router.get("/tools/browse-profile")
 async def tool_browse_profile(token: Optional[str] = None,
                               user: dict = Depends(get_current_user)):

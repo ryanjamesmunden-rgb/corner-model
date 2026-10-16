@@ -3041,17 +3041,33 @@ async def tool_where_is_the_db(token: Optional[str] = None,
     # THE VERDICT, stated rather than left to be inferred from two numbers. 40ms is well
     # past same-region (which is single digits) and well short of nothing, so it is the
     # line between "they are far apart" and "the link is being limited".
+    # THREE OUTCOMES, NOT TWO, and the third is the one the first version could not say.
+    #
+    # It branched on ping alone: slow ping meant distance, anything else meant throttling.
+    # That assumes the link IS slow, which was true when it was written and false the
+    # first time it ran — 9,309 KB/s, and it still reported "the link is being limited"
+    # and pointed at a paid tier. A diagnosis that cannot return "nothing is wrong" will
+    # eventually sell somebody an upgrade they do not need.
+    #
+    # 1,000 KB/s is the line. A healthy link to a nearby cluster does several thousand;
+    # the incident on 14 Oct measured 120.
     p = out.get("ping_ms_min")
+    kb = out.get("kb_per_sec") or 0
     if p is None:
         out["verdict"] = "could not reach the database to time it."
+    elif kb >= 1000:
+        out["verdict"] = (f"Healthy: {p}ms round trip and {kb} KB/s. Neither distance nor "
+                          "throttling is a problem right now, and nothing here needs "
+                          "paying for.")
     elif p > 40:
-        out["verdict"] = (f"{p}ms round trip — the app and the database are FAR APART. "
-                          "Moving one to the other's region is the fix, and it is free.")
+        out["verdict"] = (f"{p}ms round trip and only {kb} KB/s — the app and the database "
+                          "are FAR APART. Moving one to the other's region is the fix, "
+                          "and it is free.")
     else:
-        out["verdict"] = (f"{p}ms round trip is same-region, so distance is NOT the "
-                          f"problem. At {out.get('kb_per_sec')} KB/s the link is being "
-                          "limited — a shared free-tier cluster throttling reads. Moving "
-                          "regions would change nothing; a paid tier would.")
+        out["verdict"] = (f"{p}ms round trip is same-region, so distance is not the "
+                          f"problem — but {kb} KB/s is being limited somewhere. A shared "
+                          "free tier throttling reads fits. Moving regions would change "
+                          "nothing; a paid tier might.")
     return out
 
 

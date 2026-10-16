@@ -71,6 +71,13 @@ MIN_VENUE_GAMES = 5
 # A league needs this many team-games before its average is worth comparing to another's.
 MIN_LEAGUE_GAMES = 60
 
+# THE STIFFEST BAR HERE, AND ONLY FOR THE STRONGEST CLAIM. `punching_up` says a
+# lower-division side out-corners an entire top flight, which is the biggest assertion in
+# this file and the one most worth getting wrong. The first real run made it on a team
+# with exactly ten games — a month of football — and went on to say they would top 19 of
+# the 20 top flights on the site. That may well be true and ten games cannot show it.
+PUNCH_MIN_GAMES = 15
+
 
 def games_of(team):
     """The real match record, and only that. See rule 2 — `matches` may be synthetic."""
@@ -162,11 +169,24 @@ def _team_rows(teams, leagues, meta, min_games=MIN_GAMES):
         home = [m for m in gs if m.get("home")]
         away = [m for m in gs if not m.get("home")]
         goals = [m["goals_for"] for m in gs if m.get("goals_for") is not None]
+        # THE FLOOR AND THE CEILING ARE MEASURED OVER A FIXED WINDOW, and every other
+        # number here is not. The reason is that a minimum and a maximum are EXTREME
+        # ORDER STATISTICS: the more games you add, the likelier one of them is low, so a
+        # team with ten games on record will out-floor a team with twenty for no reason
+        # except having played half as much. The first real run of this printed exactly
+        # that — a side with ten games held the highest floor on the site, and the
+        # comparison it won was not a fair one.
+        #
+        # An average does not have that problem, which is why only these two are
+        # windowed. Everybody is judged on their most recent `min_games`, so the
+        # denominator in the post is the same for every team it could have named.
+        window = gs[-min_games:]
+        wcf = [m["corners_for"] for m in window]
         rows.append({
             **_label(t, leagues, meta),
             "games": len(gs),
             "for_avg": _avg(cf), "against_avg": _avg(ca),
-            "floor": min(cf), "ceiling": max(cf),
+            "floor": min(wcf), "ceiling": max(wcf), "window": len(window),
             "home_avg": _avg([m["corners_for"] for m in home]) if len(home) >= MIN_VENUE_GAMES else None,
             "away_avg": _avg([m["corners_for"] for m in away]) if len(away) >= MIN_VENUE_GAMES else None,
             "home_games": len(home), "away_games": len(away),
@@ -190,18 +210,23 @@ def highest_floor(rows):
     """The team whose WORST game is the best worst game on the site.
 
     A DIFFERENT CLAIM FROM "HIGHEST AVERAGE", and a more interesting one. An average of 8
-    can be four quiet nights and four storms; a floor of 5 over 18 games means they have
-    not had a quiet night at all. It is also the only statistic here that gets harder to
-    hold as the sample grows, which is why `games` belongs in the sentence.
+    can be four quiet nights and four storms; a floor of 5 across ten games means they
+    have not had a quiet night at all.
+
+    Measured over the fixed window — see `_team_rows`. Ties break towards the team with
+    the longer record, because two sides with the same floor over the same ten games are
+    not equally impressive if one of them has twenty on the books.
     """
-    return _best(rows, "floor", max)
+    usable = [r for r in rows if r.get("floor") is not None]
+    return max(usable, key=lambda r: (r["floor"], r["games"])) if usable else None
 
 
 def lowest_ceiling(rows):
-    """The opposite, and the one nobody expects to exist: a team whose BEST game all
-    season is still a low count. "Have not won more than 4 corners in a game in 16" is a
+    """The opposite, and the one nobody expects to exist: a team whose BEST game in the
+    window is still a low count. "Have not won more than 4 corners in a game in ten" is a
     fact of the same kind as a streak and points the other way, which is the variance."""
-    return _best(rows, "ceiling", min)
+    usable = [r for r in rows if r.get("ceiling") is not None]
+    return min(usable, key=lambda r: (r["ceiling"], -r["games"])) if usable else None
 
 
 def widest_venue_gap(rows):
@@ -309,7 +334,7 @@ def league_extremes(table):
             "leagues": len(table)}
 
 
-def punching_up(rows, table):
+def punching_up(rows, table, min_games=PUNCH_MIN_GAMES):
     """A lower-division side that wins more corners than anyone in a top-flight league.
 
     THE BEST HOOK IN THE FILE, and the one the site is uniquely able to make: nowhere else
@@ -324,12 +349,16 @@ def punching_up(rows, table):
     strongest name available and the margin stays real.
     """
     tier1_ids = {r["league_id"] for r in table if r.get("tier") == 1}
-    lower = [r for r in rows if (r.get("tier") or 0) >= 2 and r.get("for_avg") is not None]
+    # BOTH SIDES OF THE COMPARISON CLEAR THE STIFFER BAR, not just the challenger. A
+    # top-flight "leader" with twelve games on record is as thin a number as the one
+    # beating it, and the claim is about which is genuinely higher.
+    deep = [r for r in rows if (r.get("games") or 0) >= min_games]
+    lower = [r for r in deep if (r.get("tier") or 0) >= 2 and r.get("for_avg") is not None]
     if not lower or not tier1_ids:
         return None
     # The leader of each top flight, by corners won per game.
     leaders = {}
-    for r in rows:
+    for r in deep:
         if r["league_id"] not in tier1_ids or r.get("for_avg") is None:
             continue
         cur = leaders.get(r["league_id"])

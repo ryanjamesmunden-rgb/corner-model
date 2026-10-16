@@ -89,6 +89,20 @@ export const who = (f) => {
   return where ? `${name} (${where})` : name;
 };
 
+/**
+ * "a" or "an", for a league name dropped into a sentence.
+ *
+ * The first real run printed "A Eerste Divisie side", which is the kind of thing a reader
+ * notices before they notice the statistic. A vowel-letter test is not a vowel-SOUND test
+ * and never will be — it would say "an Union" and "a hour" given the chance — but every
+ * competition in this database is a name, not a word, and across the 28 of them the
+ * letter and the sound agree: Eerste, Eredivisie, A-League and Eliteserien all take "an",
+ * Championship and Serie A take "a". Revisit it if a league called Uefa-something ever
+ * lands here.
+ */
+export const article = (word) =>
+  (/^[aeiou]/i.test(String(word || "").trim()) ? "An" : "A");
+
 /** "14 September" — a date a reader can picture, with no year on a current season. */
 export const when = (iso) => {
   if (!iso) return "";
@@ -305,7 +319,7 @@ export const punchingPost = ({ findings = {}, site = "" } = {}) => {
   const t = f.team;
   const b = f.beats;
   if (num(t.for_avg) === null || num(b.for_avg) === null) return null;
-  const tier = t.league ? `A ${t.league} side` : "A lower-division side";
+  const tier = t.league ? `${article(t.league)} ${t.league} side` : "A lower-division side";
   const games = num(t.games);
   return candidate("punching", build([
     `${tier} wins more corners than anyone in ${b.league}.`,
@@ -368,6 +382,39 @@ export const rotate = (list, index = 0) => {
   return [...list.slice(n), ...list.slice(0, n)];
 };
 
+/** The club a candidate is about, for the one-club-a-day rule below. */
+const subjectOf = (c) => {
+  const f = c?.facts || {};
+  const name = f.team?.team ?? f.team;      // punching nests its club one level down
+  return typeof name === "string" ? name.trim().toLowerCase() : "";
+};
+
+/**
+ * One club, one post a day.
+ *
+ * THE FIRST REAL RUN NAMED HERACLES TWICE in six candidates — once for the highest floor
+ * and once for out-cornering a top flight. Both were true and both were interesting, and
+ * together they read as the set padding itself out, which is the exact failure this
+ * module exists to end. A good club tends to hold several records at once, so this is the
+ * common case rather than a freak one.
+ *
+ * APPLIED AFTER THE ROTATION, so which of the two survives changes with the day. Over a
+ * week both get posted; on any one morning only one does.
+ *
+ * League-level and match-level findings carry no single club subject and are never
+ * dropped by this.
+ */
+export const oneClubEach = (cands) => {
+  const seen = new Set();
+  return cands.filter((c) => {
+    const club = subjectOf(c);
+    if (!club) return true;
+    if (seen.has(club)) return false;
+    seen.add(club);
+    return true;
+  });
+};
+
 /**
  * Every oddity worth posting today, rotated so the lead moves.
  *
@@ -381,5 +428,5 @@ export const oddityPosts = ({ survey = {}, site = "", now = new Date(),
   const built = BUILDERS
     .map(([, fn]) => fn({ findings, pool, site }))
     .filter(Boolean);
-  return rotate(built, dayIndex(now)).slice(0, Math.max(1, limit));
+  return oneClubEach(rotate(built, dayIndex(now))).slice(0, Math.max(1, limit));
 };

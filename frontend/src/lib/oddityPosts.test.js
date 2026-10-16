@@ -15,7 +15,8 @@
 //   - OVER 280 by X's weighted count, with the link counted at its flat t.co cost.
 //   - A LEAD THAT NEVER MOVES, which is the same complaint arriving a month later.
 import {
-  BUILDERS, FORWARD_WORDS, ceilingPost, dayIndex, floorPost, futilityPost, haulPost,
+  BUILDERS, FORWARD_WORDS, article, ceilingPost, dayIndex, floorPost, futilityPost,
+  haulPost,
   leaguesPost, leakyPost, oddityPosts, perfectPost, punchingPost, rotate, routPost,
   venuePost, who, when, wildestPost,
 } from "./oddityPosts.js";
@@ -314,6 +315,80 @@ describe("the lead moves", () => {
 
   test("an unreadable date does not throw the rotation off a cliff", () => {
     expect(dayIndex(new Date("nonsense"))).toBe(0);
+  });
+});
+
+
+describe("what the first run on real data got wrong", () => {
+  // Every one of these is a defect the fixture above could not produce and the live
+  // database did on its first attempt.
+
+  test("a league starting with a vowel takes 'An'", () => {
+    // Shipped as "A Eerste Divisie side wins more corners than anyone in Eliteserien",
+    // which a reader notices before they notice the statistic.
+    const s = survey({ findings: { punching_up: {
+      team: { team: "Heracles", country: "Netherlands", league: "Eerste Divisie",
+              games: 18, for_avg: 8.2 },
+      beats: { team: "Bodo/Glimt", league: "Eliteserien", for_avg: 7.7 },
+      beaten_leagues: 3, of_top_flights: 20 } } });
+    const text = punchingPost({ findings: s.findings, pool: POOL, site: SITE }).text;
+    expect(text.startsWith("An Eerste Divisie side")).toBe(true);
+  });
+
+  test("a league starting with a consonant still takes 'A'", () => {
+    const text = punchingPost({ findings: survey().findings, pool: POOL, site: SITE }).text;
+    expect(text.startsWith("A League Two side")).toBe(true);
+  });
+
+  test("article handles the leagues in this database", () => {
+    expect(article("Eerste Divisie")).toBe("An");
+    expect(article("Eredivisie")).toBe("An");
+    expect(article("A-League")).toBe("An");
+    expect(article("Eliteserien")).toBe("An");
+    expect(article("Championship")).toBe("A");
+    expect(article("Serie A")).toBe("A");
+    expect(article("")).toBe("A");
+  });
+
+  test("one club is never the subject of two posts in a day", () => {
+    // Heracles held both the highest floor and the punching-up record on the live data,
+    // and both went out in the same set of six.
+    const hera = { team: "Heracles", country: "Netherlands", league: "Eerste Divisie",
+                   games: 18, floor: 5, ceiling: 13, for_avg: 8.2, against_avg: 3.1 };
+    const s = survey({ findings: {
+      highest_floor: hera,
+      punching_up: { team: hera, beats: { team: "Bodo/Glimt", league: "Eliteserien",
+                                          for_avg: 7.7 },
+                     beaten_leagues: 3, of_top_flights: 20 } } });
+    const out = oddityPosts({ survey: s, site: SITE, now: NOW, limit: 99 });
+    const named = out.filter((c) => c.text.includes("Heracles"));
+    expect(named).toHaveLength(1);
+  });
+
+  test("over a week both of that club's records get a turn", () => {
+    // Dropped for the day, not suppressed forever — the rotation decides which survives.
+    const hera = { team: "Heracles", country: "Netherlands", league: "Eerste Divisie",
+                   games: 18, floor: 5, ceiling: 13, for_avg: 8.2, against_avg: 3.1 };
+    const s = survey({ findings: {
+      highest_floor: hera,
+      punching_up: { team: hera, beats: { team: "Bodo/Glimt", league: "Eliteserien",
+                                          for_avg: 7.7 },
+                     beaten_leagues: 3, of_top_flights: 20 } } });
+    const keys = new Set();
+    for (let i = 0; i < BUILDERS.length; i += 1) {
+      const day = new Date(Date.UTC(2026, 9, 16 + i, 9));
+      for (const c of oddityPosts({ survey: s, site: SITE, now: day, limit: 99 })) {
+        if (c.text.includes("Heracles")) keys.add(c.key);
+      }
+    }
+    expect(keys).toEqual(new Set(["floor", "punching"]));
+  });
+
+  test("a finding with no single club subject is never dropped as a duplicate", () => {
+    // The league table and the one-match records name two clubs or none, and a rule
+    // written for team records must not quietly eat them.
+    const out = oddityPosts({ survey: survey(), site: SITE, now: NOW, limit: 99 });
+    expect(out.map((c) => c.key)).toEqual(expect.arrayContaining(["leagues", "wildest"]));
   });
 });
 

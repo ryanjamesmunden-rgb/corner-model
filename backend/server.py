@@ -31,6 +31,7 @@ import h2h
 import log_redact
 import record_view
 import calibration
+import oddities
 import projection_record
 from settlement import settle_pending
 
@@ -2176,6 +2177,12 @@ def _screen_streaks_for(side: str):
     return build
 
 
+async def _screen_oddities():
+    # Takes no parameters at all, so there is exactly one shape of it and the guard in
+    # oddities_survey needs no conditions beyond _cache_ok().
+    return await oddities_survey(user={})
+
+
 async def _screen_browse():
     """The front door's own payload, exactly as the home page asks for it on first paint.
 
@@ -2306,6 +2313,8 @@ SCREENS = {
     "top_teams": _screen_top_teams,
     # The Streaks page's opening tab, which until now computed live on every visit.
     "trends": _screen_trends,
+    # The whole-database superlatives behind the daily post. One shape, no parameters.
+    "oddities": _screen_oddities,
 }
 
 
@@ -7411,6 +7420,41 @@ async def top_corner_teams(side: str = "overall", window: int = 0, limit: int = 
                     "next_fixture": next_fx.get(t["team_id"])})
     out.sort(key=lambda x: x["won_avg"], reverse=True)
     return out[:limit]
+
+
+@api_router.get("/oddities")
+async def oddities_survey(user: dict = Depends(get_current_user), response: Response = None):
+    """The strange things in the data — superlatives and freaks, with clubs named.
+
+    WHAT IT IS FOR. The daily X post had five candidates and four were one sentence with
+    the threshold moved, which is how an account teaches people to scroll past it. These
+    are claims of different SHAPES — a single match, a season-long floor, a venue split,
+    one league against another — so two of them cannot read as each other. The arithmetic
+    and the reasoning are in oddities.py; this is the database half.
+
+    PUBLIC, FOR THE SAME REASON /calibration IS. It lists no selections. Every record here
+    is about matches already played, so there is nothing in it anybody could act on and
+    nothing that gives away who is on Saturday's board — which is the thing people pay
+    for. Naming clubs is safe precisely because none of these is a tip.
+
+    SERVED FROM A SCREEN, ALWAYS. It walks every team's whole match record, which is the
+    single most expensive shape of query on this site and the one that cost the home page
+    a week of 90-second loads (#277). It is rebuilt twice a day with the other screens and
+    read from cache the rest of the time; the records it reports change when the data does
+    and not otherwise, so a cached answer is also the correct answer.
+
+    THE TEAM MEMO IS PROJECTED AND THAT IS FINE HERE. _browse_base holds team_id, name,
+    league_id and real_matches, which is exactly what every finding reads. A side with no
+    real games brings nothing, which is the intended outcome — see rule 2 in oddities.py.
+    """
+    if _cache_ok():
+        return await _screen("oddities")
+    base = await _browse_base()
+    leagues = {lid: l.get("name", "") for lid, l in base["leagues"].items()}
+    meta = {lid: {"country": m.get("country", ""), "tier": m.get("tier"),
+                  "name": m.get("name", "")}
+            for lid, m in COMPETITION_META.items()}
+    return oddities.survey(list(base["by_id"].values()), leagues, meta)
 
 
 @api_router.get("/best-bets")

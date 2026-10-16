@@ -767,21 +767,32 @@ jobs:
         # weekday and deliberately says nothing on Thursday, because it posts ROWS — angles,
         # games, results — and there is not a fresh set of those every single day.
         #
-        # This posts ONE NUMBER ABOUT THE WHOLE BOARD ("23 teams playing in the next 3 days
-        # have won 4+ corners in each of their last 5 or more"), which is true on a Thursday
-        # exactly as it is on a Saturday. A daily account needs something daily, and this is
-        # the only thing here that qualifies. So `steps.when.outputs.quiet` is absent from
+        # This posts FACTS ABOUT MATCHES ALREADY PLAYED, which are true on a Thursday
+        # exactly as they are on a Saturday. A daily account needs something daily, and this
+        # is the only thing here that qualifies. So `steps.when.outputs.quiet` is absent from
         # this condition on purpose — the same deliberate omission as the finder's, and for
         # the same reason: quiet means nothing to SAY to an audience about the week's games.
+        #
+        # IT USED TO BE ONE SENTENCE AT FOUR SETTINGS, and that was the problem. "N teams
+        # playing in the next 3 days have won 4+ corners in each of their last 5" went out
+        # with the threshold moved four ways and read as one post padded out. The set now
+        # comes from two places: the two board statistics that genuinely differ, and
+        # oddityPosts.js, which asks eleven unrelated questions of /api/oddities — one
+        # match, a season-long floor, a home/away split, one league against another. The
+        # lead rotates daily so a fixed order cannot harden back into the same post.
+        #
+        # THESE NAME CLUBS. The old rule here was that nobody is named, because the names
+        # are the paid product. That still holds for the BOARD; it does not hold for a
+        # record of what Vejle did in August, which is not a selection and sells nothing.
         #
         # IT IS A DRAFT, NOT A POST. X ended its free tier and every post through the API is
         # billed, so this goes to your phone with the text and a one-tap Post button, the
         # same route the rotation uses. Nothing here publishes by itself.
         #
-        # A QUIET BOARD SENDS NOTHING AT ALL. tweetStat returns an empty string below
-        # STAT_MIN_TEAMS rather than a loosened bar, because a daily statistic that drops
-        # its threshold to keep the number up stops being a statistic. A day with no post is
-        # the honest output and it is logged as one.
+        # A QUIET BOARD SENDS NOTHING AT ALL. Each candidate is dropped below its own bar
+        # rather than widened, because a daily statistic that drops its threshold to keep
+        # the number up stops being a statistic. A day with no post is the honest output
+        # and it is logged as one.
         if: env.TG_TOKEN != '' && (inputs.board == '' || inputs.board == 'stat')
         run: |
           node tools/social_draft.mjs --board stat --out stat.md --json-out stat.json
@@ -818,7 +829,8 @@ jobs:
           # THE TOOL'S OWN INTENT LINKS, not ones rebuilt here. social_draft.mjs already
           # encodes them and their form is covered by tests; a second encoder in this file
           # would be a second definition of the same URL, free to drift from the first.
-          lines = [f"Daily statistics — {len(cands)} to choose from", ""]
+          lines = [f"Daily statistics — {len(cands)} to choose from",
+                   "Facts about games already played. Pick one, or none.", ""]
           for i, c in enumerate(cands, 1):
               w = f"  ({c['weight']}/280)" if c.get("weight") else ""
               lines.append(f"{i}.{w}")

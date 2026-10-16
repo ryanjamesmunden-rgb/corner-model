@@ -335,8 +335,35 @@ export const mismatchStat = ({ mismatches = [], days = STAT_DAYS, site = "",
 // The set
 // --------------------------------------------------------------------------
 
-/** In the order they are offered. Lead with the widest claim; the rest narrow it. */
+/**
+ * In the order they are offered. Lead with the widest claim; the rest narrow it.
+ *
+ * THREE OF THESE ARE NO LONGER OFFERED BY DEFAULT, and the reason is the complaint this
+ * file's header already half-admits. `breadth`, `today`, `deep` and `high` are this
+ * sentence four times:
+ *
+ *   N teams playing <window> have won <line>+ corners in each of their last <run> or more.
+ *
+ * They differ by a threshold, not by a claim. `dedupe` below only catches them when the
+ * COUNT collides, so on most days all four went out and the day's offering was one angle
+ * at four settings — which reads exactly as generic as it is.
+ *
+ * WHAT STAYS. `breadth` is the board-wide hook and the one that sends people to /streaks;
+ * `mismatch` is the only candidate here that is not another cut of the streak rows. The
+ * variety now comes from oddityPosts.js, which asks eleven different questions instead of
+ * one question at eleven settings.
+ *
+ * THE OTHER THREE ARE KEPT, EXPORTED AND TESTED, not deleted. They are correct, they are
+ * occasionally the better post on a freak day, and `--all` still asks for them. What
+ * changed is that they are no longer the daily default.
+ */
 export const BUILDERS = [
+  ["breadth", breadthStat],
+  ["mismatch", mismatchStat],
+];
+
+/** Every builder, including the three re-cuts. Behind `--all`; see BUILDERS. */
+export const ALL_BUILDERS = [
   ["breadth", breadthStat],
   ["today", todayStat],
   ["deep", deepRunStat],
@@ -368,8 +395,8 @@ export const dedupe = (cands) => {
  * which is a true thing to say and costs nothing.
  */
 export const tweetStats = ({ rows = [], mismatches = [], days = STAT_DAYS, site = "",
-                             now = new Date(), limit = 5, ...opts } = {}) => {
-  const built = BUILDERS
+                             now = new Date(), limit = 5, all = false, ...opts } = {}) => {
+  const built = (all ? ALL_BUILDERS : BUILDERS)
     .map(([, fn]) => fn({ rows, mismatches, days, site, now, ...opts }))
     .filter(Boolean);
   return dedupe(built).slice(0, Math.max(1, limit));

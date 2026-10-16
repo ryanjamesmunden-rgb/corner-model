@@ -2144,9 +2144,36 @@ async def _screen_mismatches():
     return await top_mismatches(within_days=7, limit=30, user={})
 
 
-async def _screen_streaks():
-    return await streaks(league_id="all", side="home", window=5, min_hits=5,
-                         min_line=3, direction="over", subject="team", user={})
+# The streak board's three venue tabs, each prebuilt.
+#
+# ONE SIDE WAS CACHED AND THE OTHER TWO WERE NOT, which is a worse arrangement than
+# caching none of them because nothing said which was which. The screen was built with
+# side="home" and the guard below demanded side="home", so the Streaks page's first paint
+# was instant — it opens on Home — and tapping Away or Overall silently fell through to a
+# full walk of every team. During the slow spell on 14 Oct that was the difference between
+# a page and a timeout, and nothing in the response distinguished them.
+#
+# WORSE, THE ENDPOINT'S OWN DEFAULT WAS THE UNCACHED ONE. `streaks(side="overall")` is the
+# signature, so the plainest possible call — /api/streaks with no arguments — took the
+# slowest possible path. That is the most surprising arrangement available, and it is how
+# the probe that found this spent sixty seconds getting nothing while a fresh cache of
+# the same board sat unused.
+#
+# All three now, because all three are one tap on the page, and the bare call lands on
+# `overall` and is therefore fast as well. The name "streaks" stays on the home board so
+# /api/health's screens_fresh keys do not shift under anything reading them.
+STREAK_SCREENS = {"home": "streaks", "away": "streaks_away",
+                  "overall": "streaks_overall"}
+
+
+def _screen_streaks_for(side: str):
+    """A builder for one venue. Closed over `side` rather than registered three times by
+    hand, so the arguments cannot drift apart between the three — which is the exact
+    class of bug this whole block exists to fix."""
+    async def build():
+        return await streaks(league_id="all", side=side, window=5, min_hits=5,
+                             min_line=3, direction="over", subject="team", user={})
+    return build
 
 
 async def _screen_browse():
@@ -2167,12 +2194,9 @@ async def _screen_browse():
     stuck, and reading it that way is what cost two probes.
 
     The arguments MUST match the guard in browse() exactly, or the page asks for one
-    payload and the cache holds another — a miss on every request, which is precisely the
-    bug sitting in _screen_streaks beside this: it builds side="home" while the endpoint
-    defaults to side="overall", so a bare /api/streaks has been missing a fresh cache and
-    recomputing the lot. That one is not fixed here because the Streaks screen passes its
-    side explicitly and is not what is broken today; it is noted so the next person does
-    not have to find it twice.
+    payload and the cache holds another — a miss on every request. The streak board had
+    exactly that bug beside this one: it cached side="home" while the endpoint defaulted
+    to side="overall". It is fixed now; see STREAK_SCREENS.
     """
     return await browse(days=7, show="all", day=None, min_run=PANEL_MIN_RUN, user={})
 
@@ -2273,7 +2297,9 @@ SCREENS = {
     "fixture_board": _screen_fixture_board,
     "chase": _screen_chase,
     "mismatches": _screen_mismatches,
-    "streaks": _screen_streaks,
+    # All three venue tabs — see STREAK_SCREENS for why one was not enough.
+    **{name: _screen_streaks_for(side)
+       for side, name in STREAK_SCREENS.items()},
     # THE HOME PAGE. Last to be added and the one that mattered most — see _screen_browse.
     "browse": _screen_browse,
     "angle_board": _screen_angle_board,
@@ -5250,11 +5276,15 @@ async def streaks(league_id: Optional[str] = None, side: str = "overall", window
     direction:  over (line+) | under (below the line, exact line voids)
     subject:    team (team corners) | match (match total corners)
     min_streak: shortest run that counts as a streak (default 2 — one game is not one)"""
-    if (_cache_ok() and league_id in (None, "all") and side == "home" and window == 5
+    # ANY OF THE THREE VENUES, not just home. See STREAK_SCREENS: caching one tab and not
+    # the other two meant Away and Overall quietly took the slow path, and so did the
+    # endpoint's own default, which is `overall`.
+    if (_cache_ok() and league_id in (None, "all") and side in STREAK_SCREENS
+            and window == 5
             and min_hits == 5 and threshold is None and min_line == 3
             and within_days is None and direction == "over" and subject == "team"
             and max_line is None and min_streak == MIN_STREAK_LEN):
-        return _preview(await _screen("streaks"), user, response)
+        return _preview(await _screen(STREAK_SCREENS[side]), user, response)
     q = {} if not league_id or league_id == "all" else {"league_id": league_id}
     teams = await db.teams.find(q, {"_id": 0}).to_list(5000)
     teams_by_id = {t["team_id"]: t for t in teams}

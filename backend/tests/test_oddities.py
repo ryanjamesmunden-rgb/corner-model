@@ -18,7 +18,8 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import oddities  # noqa: E402
-from oddities import (MIN_GAMES, all_corners_no_goals, games_of, highest_floor,  # noqa: E402
+from oddities import (MIN_GAMES, PUNCH_MIN_GAMES, all_corners_no_goals, games_of,  # noqa: E402
+                      highest_floor,
                       league_extremes, league_table, leakiest, lowest_ceiling,
                       never_outcornered, punching_up, survey, widest_venue_gap,
                       _team_rows)
@@ -142,6 +143,67 @@ class TestTheMatchRecords:
         assert out["findings"]["wildest_game"]["total"] == 25
 
 
+class TestWhatTheFirstRunOnRealDataGotWrong:
+    """Defects the hand-built fixtures could not produce and the live database did."""
+
+    def test_a_short_record_cannot_out_floor_a_long_one_by_being_short(self):
+        """THE BUG. A minimum is an extreme order statistic: the more games you play, the
+        likelier one of them is quiet. So a ten-game side out-floored every twenty-game
+        side on the first live run, and the comparison it won was not a fair one.
+
+        Both are measured over their last MIN_GAMES here, so the denominators match.
+        """
+        # Twenty games, every one of them 7 corners. Floor over any window: 7.
+        steady = flat("Steady", 7, 3, n=20)
+        # Ten games at 6. Under the old rule its floor of 6 competed against a floor
+        # drawn from twice as many chances to be low.
+        short = flat("Short", 6, 3, n=10)
+        rows = _team_rows([steady, short], LEAGUES, META)
+        assert highest_floor(rows)["team"] == "Steady"
+
+    def test_the_window_is_the_recent_games_not_the_whole_record(self):
+        early_slump = team("Slump", [game(1, 9)] * 10 + [game(8, 3)] * 10)
+        rows = _team_rows([early_slump], LEAGUES, META)
+        # The old games are still counted in `games` and the average; the floor is not
+        # drawn from them.
+        assert rows[0]["games"] == 20
+        assert rows[0]["floor"] == 8
+        assert rows[0]["window"] == MIN_GAMES
+
+    def test_a_tie_on_floor_goes_to_the_longer_record(self):
+        short = flat("Short", 7, 3, n=10)
+        long_ = flat("Long", 7, 3, n=20)
+        rows = _team_rows([short, long_], LEAGUES, META)
+        assert highest_floor(rows)["team"] == "Long"
+
+    def test_the_punching_claim_needs_more_than_a_month_of_football(self):
+        """It said a side would top 19 of 20 top flights, on ten games. That may well be
+        true and ten games cannot show it."""
+        thin = flat("Thin", 9, 4, n=10, league_id="eng-l2")
+        top = [flat(f"I{i}", 5, 5, n=20, league_id="ita-sa") for i in range(6)]
+        rows = _team_rows([thin] + top, LEAGUES, META)
+        assert punching_up(rows, league_table([thin] + top, LEAGUES, META)) is None
+
+    def test_the_same_claim_stands_once_the_record_is_long_enough(self):
+        deep = flat("Deep", 9, 4, n=PUNCH_MIN_GAMES, league_id="eng-l2")
+        top = [flat(f"I{i}", 5, 5, n=20, league_id="ita-sa") for i in range(6)]
+        rows = _team_rows([deep] + top, LEAGUES, META)
+        found = punching_up(rows, league_table([deep] + top, LEAGUES, META))
+        assert found["team"]["team"] == "Deep"
+
+    def test_a_thin_top_flight_leader_cannot_be_the_one_beaten(self):
+        """Both sides of the comparison clear the bar. A 'league leader' with twelve games
+        is as thin a number as the challenger, and the claim is about which is higher."""
+        challenger = flat("Challenger", 8, 4, n=20, league_id="eng-l2")
+        thin_leader = flat("Thin Leader", 7, 4, n=10, league_id="ita-sa")
+        others = [flat(f"I{i}", 9, 5, n=20, league_id="ita-sa") for i in range(5)]
+        teams = [challenger, thin_leader] + others
+        rows = _team_rows(teams, LEAGUES, META)
+        # Serie A's real leader among qualifying teams averages 9.0, above the
+        # challenger's 8.0, so there is nothing to claim.
+        assert punching_up(rows, league_table(teams, LEAGUES, META)) is None
+
+
 class TestFloorAndCeiling:
     def test_the_floor_is_the_worst_game_not_the_average(self):
         """A 9-corner average with a 2-corner night loses to a 7-corner average that has
@@ -261,11 +323,13 @@ class TestLeagueTable:
 
 class TestPunchingUp:
     def _world(self):
-        # A League Two side winning 9 a game, a Serie A whose best wins 7.
-        lower = [flat(f"L{i}", 4, 5, n=12, league_id="eng-l2") for i in range(5)]
-        lower.append(flat("Hammers", 9, 4, n=12, league_id="eng-l2"))
-        top = [flat(f"I{i}", 5, 5, n=12, league_id="ita-sa") for i in range(5)]
-        top.append(flat("Best Italians", 7, 4, n=12, league_id="ita-sa"))
+        # A League Two side winning 9 a game, a Serie A whose best wins 7. Every record
+        # is 20 games long: PUNCH_MIN_GAMES applies to BOTH sides of the comparison, so a
+        # 12-game fixture here would be testing the bar rather than the finding.
+        lower = [flat(f"L{i}", 4, 5, n=20, league_id="eng-l2") for i in range(5)]
+        lower.append(flat("Hammers", 9, 4, n=20, league_id="eng-l2"))
+        top = [flat(f"I{i}", 5, 5, n=20, league_id="ita-sa") for i in range(5)]
+        top.append(flat("Best Italians", 7, 4, n=20, league_id="ita-sa"))
         return lower + top
 
     def test_it_names_the_lower_tier_side_and_the_league_it_tops(self):
@@ -280,14 +344,14 @@ class TestPunchingUp:
         """NOT ANY LEAGUE IT BEATS. Choosing the weakest top flight would land the joke on
         a league nobody has heard of and waste the comparison."""
         teams = self._world()
-        weak = [flat(f"W{i}", 3, 3, n=12, league_id="eng-pl") for i in range(6)]
+        weak = [flat(f"W{i}", 3, 3, n=20, league_id="eng-pl") for i in range(6)]
         rows = _team_rows(teams + weak, LEAGUES, META)
         found = punching_up(rows, league_table(teams + weak, LEAGUES, META))
         assert found["beats"]["league"] == "Serie A"
 
     def test_nothing_when_no_lower_tier_side_beats_a_top_flight(self):
-        lower = [flat(f"L{i}", 4, 5, n=12, league_id="eng-l2") for i in range(6)]
-        top = [flat(f"I{i}", 8, 5, n=12, league_id="ita-sa") for i in range(6)]
+        lower = [flat(f"L{i}", 4, 5, n=20, league_id="eng-l2") for i in range(6)]
+        top = [flat(f"I{i}", 8, 5, n=20, league_id="ita-sa") for i in range(6)]
         rows = _team_rows(lower + top, LEAGUES, META)
         assert punching_up(rows, league_table(lower + top, LEAGUES, META)) is None
 

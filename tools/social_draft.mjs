@@ -40,6 +40,7 @@ const { slateFrom, slatePost } = await import(resolve(LIB, "chaseSlate.js"));
 const { streakFinder, liveDrop, finderWindow } = await import(resolve(LIB, "streakFinder.js"));
 const { tweetStat } = await import(resolve(LIB, "tweetStat.js"));
 const { tweetStats } = await import(resolve(LIB, "tweetStats.js"));
+const { oddityPosts } = await import(resolve(LIB, "oddityPosts.js"));
 const { lockedSlate } = await import(resolve(LIB, "lockedSlate.js"));
 
 const arg = (name, fallback = null) => {
@@ -534,19 +535,44 @@ ${slate.priced} of ${slate.n} rows carry a real price; the rest show the model's
 // heard of the site, in one screen, without giving away what people pay for. So these lead
 // on numbers about the boards as a whole and send the reader to the page for the names.
 //
-// SEVERAL A DAY, NOT ONE. One post a day off one board is the same sentence with a
-// different number in it, which is what people learn to scroll past. tweetStats builds a
-// candidate per angle — the board's breadth, today's slice of it, the deep runs, the
-// higher line, and the mismatch board — and every one of them is dropped rather than
-// loosened when it cannot clear its own bar. So a quiet day costs candidates, not honesty.
+// SEVERAL A DAY, NOT ONE — AND THEY HAVE TO BE DIFFERENT FROM EACH OTHER, which is the
+// part this got wrong for months. tweetStats offered five candidates and four of them were
+// one sentence with the threshold moved: breadth, today, deep and high all read "N teams
+// playing <window> have won <line>+ corners in each of their last <run>". That is one
+// angle at four settings, and a timeline cannot tell it apart from padding.
+//
+// SO THE DAY NOW HAS TWO SOURCES. tweetStats keeps the two claims that genuinely differ —
+// the board-wide hook, which is what sends people to /streaks, and the mismatch board.
+// oddityPosts adds eleven claims of entirely different shapes, drawn from /api/oddities:
+// one match, a season-long floor, a ceiling nobody has cleared, a home/away split, one
+// league against another, a side that wins corners and scores nothing.
+//
+// THE ODDITIES NAME CLUBS, AND THAT IS A DELIBERATE REVERSAL OF A RULE HELD HERE FOR A
+// YEAR. The old rule — nobody is named, the names are the paid half — still governs the
+// BOARD: who to back on Saturday is the product. It does not govern a record of what Vejle
+// did in August, because that is not a selection and sells nothing. Every oddity is
+// backward-looking by construction and the wording module's tests assert it.
+//
+// THE LEAD ROTATES DAILY. A fixed order is how "several candidates" becomes "the same post
+// every morning" a month later; oddityPosts cycles so every claim leads before any repeats.
 //
 // THE CHOICE STAYS WITH A PERSON. They all go out together with a Post button each; none
 // of them posts by itself. Posting through X's API needs a paid tier, and the composer link
 // is free, is one tap, and puts a human between a generated sentence and the timeline.
-// See tweetStats.js for what the wording is and is not allowed to claim.
+// See tweetStats.js and oddityPosts.js for what the wording is and is not allowed to claim.
 if (BOARD === "stat") {
-  const built = tweetStats({ rows: data.streaks || [], mismatches: data.mismatches || [],
-                             days: DAYS, site: SITE });
+  // SOFT, AND THE DAY SURVIVES WITHOUT IT. The oddities come from a cached screen that is
+  // rebuilt twice daily, so a 500 or a cold cache here must not cost the board statistics
+  // that were already fetched and are already correct.
+  const survey = await getSoft("/api/oddities");
+  const odd = oddityPosts({ survey, site: SITE });
+  const built = [...odd,
+                 ...tweetStats({ rows: data.streaks || [], mismatches: data.mismatches || [],
+                                 days: DAYS, site: SITE })];
+  if (!survey) {
+    console.error("social_draft: /api/oddities gave nothing — "
+                  + "board statistics only, which is the thin version of this post");
+  }
   // Not a failure. A board too quiet to be worth a statistic is a real answer, and the
   // alternative — loosening the bar until the number looks good — is how a daily post
   // stops meaning anything. See STAT_MIN_TEAMS.
@@ -570,9 +596,14 @@ ${md}`, { empty: false, board: "stat",
      // silently start sending nothing when the shape changes underneath them.
      post: withIntent[0].text, intent: withIntent[0].intent,
      weight: withIntent[0].weight, full: withIntent[0].text,
-     stats: withIntent.map(({ key, text, weight, intent, stats }) =>
-       ({ key, text, weight, intent, stats })),
+     // `facts` is what an oddity carries and `stats` what a board statistic carries \u2014
+     // the same slot under two names because they hold different things. Flattened to
+     // one key here so anything downstream reading this payload does not have to know
+     // which of the two sources a candidate came from.
+     stats: withIntent.map(({ key, text, weight, intent, stats, facts }) =>
+       ({ key, text, weight, intent, stats: stats ?? facts ?? null })),
      note: `${withIntent.length} statistics over ${DAYS}d`
+       + ` \u00b7 ${odd.length} oddities, ${withIntent.length - odd.length} board`
        + (data.data_age_hours != null ? ` \u00b7 data ${data.data_age_hours}h old` : "") });
   process.exit(0);
 }

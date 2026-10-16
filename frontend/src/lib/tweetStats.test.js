@@ -350,12 +350,29 @@ describe("how many are offered", () => {
     expect(out).toHaveLength(2);
   });
 
-  test("a full board offers several distinct angles", () => {
-    const rows = [...board(14, "eng-l2", 4, 6),
-                  ...board(6, "bra-sb", 5, 12, TODAY),
-                  ...board(5, "ned-ed", 4, DEEP_RUN + 1)];
-    const out = tweetStats({ rows, mismatches: mmBoard(8), days: 3, site: SITE, now: NOW });
+  // THIS USED TO DEMAND THREE OR MORE, and demanding it was the mistake. breadth, today,
+  // deep and high are one sentence with the threshold moved, so a board that produced all
+  // four looked varied by this test's count and read as four copies of itself to anybody
+  // holding a phone. The default set is now the two claims that differ — the board-wide
+  // hook and the mismatch — and the day's variety comes from oddityPosts.js, which asks
+  // eleven different questions rather than one question at eleven settings.
+  const FULL = () => [...board(14, "eng-l2", 4, 6),
+                      ...board(6, "bra-sb", 5, 12, TODAY),
+                      ...board(5, "ned-ed", 4, DEEP_RUN + 1)];
+
+  test("the default set is the two that are not re-cuts of each other", () => {
+    const out = tweetStats({ rows: FULL(), mismatches: mmBoard(8), days: 3, site: SITE, now: NOW });
+    expect(out.map((c) => c.key)).toEqual(["breadth", "mismatch"]);
+    expect(new Set(out.map((c) => c.text)).size).toBe(out.length);
+  });
+
+  test("all: true still offers the three re-cuts for a freak day", () => {
+    const out = tweetStats({ rows: FULL(), mismatches: mmBoard(8), days: 3, site: SITE,
+                             now: NOW, all: true, limit: 9 });
     expect(out.length).toBeGreaterThanOrEqual(3);
+    // "deep" and not "high": dedupe drops whichever re-cut happens to land on a count
+    // another one already used, which on this fixture is the high-line board.
+    expect(out.map((c) => c.key)).toEqual(expect.arrayContaining(["deep"]));
     expect(new Set(out.map((c) => c.text)).size).toBe(out.length);
   });
 });

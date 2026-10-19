@@ -36,8 +36,14 @@ def fixture_row(**kw):
 
 PAYLOAD = {
     "within_days": 3, "data_age_hours": 4,
+    # A PROJECTION ON THE STREAK ROW, because the board has always carried one and the
+    # sheet used to ignore it. hit_rate stays 100.0 on purpose: it is the number EV used
+    # to be computed from, and the tests below assert it no longer is.
     "streaks": [fixture_row(hits=5, settled=5, window=5, voids=0, hit_rate=100.0,
-                            avg=7.4, streak={"length": 5})],
+                            avg=7.4, streak={"length": 5},
+                            line=5, line_label="5+", direction="over", subject="team",
+                            projection={"lambda": 6.4, "prob": 71.9, "void_prob": 0.0,
+                                        "fair_odds": 1.39})],
     "mismatches": [fixture_row(team_for=6.8, opp_conceded=7.1, prob=61.2, fair_odds=1.63)],
     "chase": [fixture_row(**{"lambda": 5.9, "consistency": 4, "consistency_of": 5,
                              "opp_fh_rate": 62.0, "prob": 70.1, "fair_odds": 1.43,
@@ -58,10 +64,14 @@ def columns(ws):
             for c in range(1, ws.max_column + 1)}
 
 
-# The probability each sheet's EV is computed against, named by its header. Streaks has no
-# model probability at all — its "Hit %" is a strike rate over five games — and that
-# difference is the single most dangerous thing in this workbook, so it is stated here.
-PROB_HEADER = {"Streaks": "Hit %", "Mismatches": "Prob", "Chase": "Prob"}
+# The probability each sheet's EV is computed against, named by its header.
+#
+# STREAKS USED TO SAY "Hit %" HERE, and that was the defect rather than a quirk worth
+# documenting. EV was computed from the last-five strike rate, so a 5-from-5 run read
+# 100% and `Book * 1.0 - 1` made any price above evens look like a huge edge — the
+# Verdict column said BET on nearly every row. The model's own probability for that exact
+# line on that exact fixture was on the row the whole time, in `projection`.
+PROB_HEADER = {"Streaks": "Prob", "Mismatches": "Prob", "Chase": "Prob"}
 
 
 class TestTheEvFormulaMultipliesTheRightTwoCells:
@@ -76,8 +86,19 @@ class TestTheEvFormulaMultipliesTheRightTwoCells:
         assert f"{prob}2" in formula, \
             f"{sheet}: EV multiplies the wrong column; " \
             f"{PROB_HEADER[sheet]} is in {prob} — {formula}"
-        assert f"{book}2*{prob}2-1" in formula.replace(" ", ""), \
-            f"{sheet}: EV is not odds*prob-1 — {formula}"
+        # A SHEET WITH A VOID COLUMN CREDITS THE PUSH BACK, and must. An under on a whole
+        # line pushes when the count lands exactly on it and the stake is returned, so its
+        # EV is `book*p + p_void - 1`. The Streaks sheet carries all three kinds of streak
+        # — team over, team under, match under — so it needs the term; an over simply has
+        # a void probability of zero and is unaffected.
+        flat = formula.replace(" ", "")
+        void = columns(ws).get("Void")
+        if void and sheet == "Streaks":
+            assert f"{book}2*{prob}2+{void}2-1" in flat, \
+                f"{sheet}: EV must credit the void back — {formula}"
+        else:
+            assert f"{book}2*{prob}2-1" in flat, \
+                f"{sheet}: EV is not odds*prob-1 — {formula}"
 
     @pytest.mark.parametrize("sheet", ["Streaks", "Mismatches", "Chase"])
     def test_a_blank_price_leaves_ev_blank(self, wb, sheet):
@@ -241,26 +262,60 @@ class TestTheArithmeticIsRight:
     def test_the_other_sheets_do_the_same_arithmetic(self, wb, sheet):
         ws = wb[sheet]
         prob = ws[f"{columns(ws)[PROB_HEADER[sheet]]}2"].value
+        col = columns(ws)
+        push = ws[f"{col['Void']}2"].value or 0.0 if col.get("Void") else 0.0
         ev, verdict = self.ev_and_verdict(wb, sheet, 2.0)
-        assert round(ev, 6) == round(2.0 * prob - 1, 6)
+        assert round(ev, 6) == round(2.0 * prob + push - 1, 6)
         assert verdict == ("BET" if ev >= board_xlsx.BET_AT else
                            "thin" if ev >= 0 else "no bet")
 
 
 class TestTheColumnsSayWhatTheyHold:
-    def test_streaks_carries_no_fair_price(self, wb):
-        # A run of five clears is not a probability the model priced. Turning "5 of 5" into
-        # a fair price would invent a number the board never produced, and it would be the
-        # most confident number on the sheet.
-        ws = wb["Streaks"]
-        assert ws[f"{columns(ws)['Fair']}2"].value == "n/a"
+    def test_streaks_carries_the_models_fair_price(self, wb):
+        """THIS TEST USED TO ASSERT THE OPPOSITE, and the reasoning behind it was wrong.
 
-    def test_streaks_warns_that_its_ev_is_indicative(self, wb):
+        It said a fair price here "would invent a number the board never produced". The
+        board does produce it: _streak_projection returns prob, void_prob and fair_odds
+        for that exact line on that exact fixture, and the readable export has always
+        printed it as "model 1.39 (71.9%)". Writing "n/a" in the Fair column left the
+        sheet with no probability to price against except the strike rate, which is how
+        the strike rate ended up feeding the EV formula.
+        """
+        ws = wb["Streaks"]
+        assert ws[f"{columns(ws)['Fair']}2"].value == 1.39
+
+    def test_streaks_ev_is_not_computed_from_the_strike_rate(self, wb):
+        """THE DEFECT, PINNED. Hit % is a count over five games. A 5/5 run reads 100%, and
+        an EV of `Book * 1.0 - 1` calls any price above evens a large edge."""
+        ws = wb["Streaks"]
+        col = columns(ws)
+        formula = ws[f"{col['EV']}2"].value
+        assert f"{col['Hit %']}2" not in formula, \
+            f"EV still references Hit %, the five-game strike rate — {formula}"
+        assert f"{col['Prob']}2" in formula
+
+    def test_the_strike_rate_is_still_shown_but_marked_as_context(self, wb):
+        # Worth seeing — how often this exact claim landed recently — just not worth
+        # computing an edge from. Grey is this workbook's "information, not an input".
+        ws = wb["Streaks"]
+        cell = ws[f"{columns(ws)['Hit %']}2"]
+        assert cell.value == 1.0
+        assert cell.font.color is not None and cell.font.color.rgb.endswith("808080")
+
+    def test_streaks_says_which_number_the_ev_uses(self, wb):
         ws = wb["Streaks"]
         text = " ".join(str(ws.cell(row=r, column=1).value or "")
-                        for r in range(2, ws.max_row + 1))
-        assert "not a model probability" in text.lower() or "indicative" in text.lower(), \
-            "the Streaks sheet computes EV off a five-game strike rate and must say so"
+                        for r in range(2, ws.max_row + 1)).lower()
+        assert "not from the last-five strike rate" in text
+
+    def test_each_streak_row_names_its_kind(self, wb):
+        """Three kinds share this sheet. "under 9 match corners" and "9+ team corners" are
+        opposite bets on different quantities; without the column they look like one kind
+        of row with a different number in it."""
+        ws = wb["Streaks"]
+        col = columns(ws)
+        assert ws[f"{col['Type']}2"].value == "Team over"
+        assert ws[f"{col['Bet']}2"].value == "5+ team corners"
 
     @pytest.mark.parametrize("sheet", ["Streaks", "Mismatches", "Chase"])
     def test_the_book_column_is_the_one_marked_for_typing(self, wb, sheet):

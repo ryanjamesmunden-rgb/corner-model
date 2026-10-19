@@ -2595,7 +2595,9 @@ TOOL_SCRIPTS = {"backfill_shots": "backfill_shots.py", "measure_features": "meas
                 "backfill_goals": "backfill_goals.py",
                 "tune_model": "tune_model.py",
                 "tune_totals": "tune_totals.py",
-                "measure_game_state": "measure_game_state.py"}
+                "measure_game_state": "measure_game_state.py",
+                # HOW MANY LANDED, AND HOW MANY WOULD HAVE ONE LINE LOWER.
+                "line_ladder": "line_ladder.py"}
 TOOL_COOLDOWN = {"backfill_shots": 600, "measure_features": 120,
                  # Roughly doubled since the null run was added — it replays every cached
                  # fixture twice, once real and once synthetic.
@@ -2609,6 +2611,9 @@ TOOL_COOLDOWN = {"backfill_shots": 600, "measure_features": 120,
                  "chase_angle": 120,
                  "history_export": 300,
                  "ticker_feed": 120,
+                 # Reads both ledgers and grades them. Cheap, but the answer only
+                 # moves when a game finishes and the sync catches up.
+                 "line_ladder": 120,
                  "backfill_fh": 120,
                  "backfill_goal_events": 600,
                  "probe_corner_halves": 600,
@@ -2672,6 +2677,14 @@ MEASURE_MODES = {
     # site is working. Names a reason for every one, and separates a bug in our own join
     # (a string fixture id against an int-keyed cache) from corner data we simply do not
     # have. Reads db.bets and db.fixture_stats; runs across all users.
+    # HOW MANY CORNER LINES LANDED, AND HOW MANY WOULD HAVE ONE LINE LOWER. The
+    # counterfactual is free information — a lower line cannot win less often — so the
+    # number that carries the finding is the MARGIN underneath it: winners clearing by 5
+    # and 6 mean the lines were set too low, which calls for HIGHER ones. Also counts
+    # what a match-total line would have done on the fixtures the board was already on,
+    # which is the Barnsley v Cambridge 11-11 question asked with a denominator. Reads
+    # db.streak_snapshots and db.posted_angles; writes nothing.
+    "line_ladder": ("line_ladder", [], True),
     "bet_audit": ("audit_bets", [], False),
     # DID ANYBODY TRY TO SUBSCRIBE AND NOT GET THROUGH. Prints the weekly signup window
     # first, in words, because SIGNUP_DAY defaults to Monday and a new visitor is always

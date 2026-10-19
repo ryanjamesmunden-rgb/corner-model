@@ -102,6 +102,67 @@ def test_england_stops_at_league_two():
     assert max(m["tier"] for m in eng.values()) == 4
 
 
+def test_iceland_is_out_although_its_ids_are_correct():
+    """THE eng-nl FINDING, IN THE COUNTRY THAT LOOKED LIKE THE OBVIOUS NEXT ADDITION.
+
+    probe_leagues.py, 2026-10-19: 164 IS Iceland / Úrvalsdeild and 165 IS Iceland /
+    1. Deild — the provider confirms both — with FT=155 (~25.8 a team) and FT=136
+    (~22.7 a team), records deeper than most leagues on the site. Both returned
+    corners=0/4 shots=0/4 blocked=0/4: the provider files no match statistics for
+    Icelandic football at either tier.
+
+    The depth is exactly what makes this tempting to re-add from a league table, which is
+    why the ids are named here rather than merely absent."""
+    assert not [k for k, v in LEAGUE_META.items() if v["country"] == "Iceland"]
+    assert not ({164, 165, 166} & {m["api"] for m in LEAGUE_META.values()})
+
+
+def test_denmark_carries_the_top_flight_only():
+    """COVERAGE IS PER COMPETITION, NOT PER COUNTRY, and that is the whole lesson.
+
+    The Superliga (119) files corners; 1. Division (120) does not. probe_leagues.py,
+    2026-10-19: id 120 confirmed as Denmark / 1. Division, FT=66, ~11.0 games a team —
+    past the probe's depth bar — and corners=0/4 shots=0/4 blocked=0/4.
+
+    So "Denmark already works" is not an argument for the tier below it."""
+    den = {k: v for k, v in LEAGUE_META.items() if v["country"] == "Denmark"}
+    assert set(den) == {"den-sl"}
+    assert 120 not in {m["api"] for m in LEAGUE_META.values()}
+
+
+def test_the_second_tiers_added_on_a_thin_sample_all_carried_corners():
+    """esp-s2's override, applied three more times — and the condition it depends on.
+
+    Serie B, Ligue 2 and Segunda Liga were each SKIPped by probe_leagues on 2026-10-19
+    for "~7 games a team, too thin to price" and added anyway, because sync_real tops up
+    from `season - 1` below STATS_CAP so no team arrives with seven games. That override
+    is only ever valid when the corner data is THERE — all three read corners=4/4.
+
+    This pins the leagues it was applied to, so a future addition cannot borrow the
+    reasoning without the evidence: the one thing that must never be overridden is
+    corners=0/4, which is what keeps Iceland and Denmark's second tier out above."""
+    overridden = {"ita-sb": 136, "fra-l2": 62, "por-l2": 95, "esp-s2": 141}
+    for lid, api in overridden.items():
+        assert lid in LEAGUE_META, f"{lid} was added on a documented override"
+        assert LEAGUE_META[lid]["api"] == api, lid
+        assert LEAGUE_META[lid]["tier"] == 2, lid
+
+
+def test_sweden_carries_both_probed_tiers():
+    """The cleanest probe of the six run on 2026-10-19 — no override argued.
+
+    113 Allsvenskan: FT=191, ~23.9 a team, 49 upcoming, corners 4/4 => QUALIFY
+    114 Superettan:  FT=214, ~26.8 a team, 26 upcoming, corners 4/4 => QUALIFY
+
+    `swe-al` intentionally reuses the id the mock seed in server.py uses for Allsvenskan;
+    seed_data() only fires on an empty database, so the two cannot collide, and a
+    different key would leave two Swedish ids meaning one competition."""
+    swe = {k: v for k, v in LEAGUE_META.items() if v["country"] == "Sweden"}
+    assert set(swe) == {"swe-al", "swe-su"}
+    assert [swe[k]["api"] for k in ("swe-al", "swe-su")] == [113, 114]
+    assert [swe[k]["tier"] for k in ("swe-al", "swe-su")] == [1, 2]
+
+
 def test_norway_carries_only_the_confirmed_tiers():
     """103 and 104 are confirmed by probe_leagues.py against live data.
 

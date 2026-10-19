@@ -284,3 +284,76 @@ jobs:
                 "/prices, so most rows carry none — those are leads to price up, not "
                 "bets. Lines are the model's, not a bookmaker's._")
           PY
+
+      # THE WHOLE BOARD AS TSV, to the log only.
+      #
+      # WHY THIS EXISTS AND WHY IT IS NOT IN THE SUMMARY. The markdown tables above are a
+      # READING of the board — they drop columns to stay legible on a phone, and the two
+      # they drop from the Streaks table are the two that decide whether a row is worth
+      # anything: `subject` (is this the team's corners or the whole match?) and the
+      # model's own price. "under 11 team corners" and "under 11 match corners" are
+      # opposite bets on different quantities and render identically without `subject`,
+      # and `Avg` does not separate them — a 9+ row's average spans 9.8 to 14.6.
+      #
+      # So anything rebuilt from the summary is lossy in exactly the places that matter.
+      # This prints every field the spreadsheet itself is built from, tab-separated, so a
+      # faithful copy of the board can be reconstructed from a run without the .xlsx.
+      #
+      # LOG ONLY, deliberately: it is machine output and would bury the tables a person
+      # actually reads. Nothing here is a second source of truth — it is the same rows.json
+      # the workbook is built from, printed.
+      - name: The board as TSV
+        run: |
+          python3 - <<'PY'
+          import json
+          COLS = ["board", "kickoff", "league_name", "name", "is_home", "opponent",
+                  "subject", "direction", "line", "line_label", "hits", "settled",
+                  "voids", "hit_rate", "avg", "streak_len", "lambda", "prob",
+                  "void_prob", "fair_odds", "book_odds", "ev", "team_for",
+                  "opp_conceded", "fixture_id"]
+          try:
+              d = json.load(open("rows.json"))
+          except Exception as e:
+              print(f"TSV_ERROR {e}")
+              raise SystemExit(0)
+
+          def flat(board, r):
+              nf = r.get("next_fixture") or {}
+              p = r.get("projection") or {}
+              return {
+                  "board": board,
+                  "kickoff": nf.get("date") or "",
+                  "league_name": r.get("league_name") or "",
+                  "name": r.get("name") or r.get("team") or "",
+                  "is_home": nf.get("is_home"),
+                  "opponent": nf.get("opponent") or "",
+                  "subject": r.get("subject") or p.get("subject") or "",
+                  "direction": r.get("direction") or p.get("direction") or "over",
+                  "line": r.get("line"),
+                  "line_label": r.get("line_label") or "",
+                  "hits": r.get("hits"), "settled": r.get("settled"),
+                  "voids": r.get("voids"), "hit_rate": r.get("hit_rate"),
+                  "avg": r.get("avg"),
+                  "streak_len": (r.get("streak") or {}).get("length"),
+                  "lambda": p.get("lambda", r.get("lambda")),
+                  "prob": p.get("prob", r.get("prob")),
+                  "void_prob": p.get("void_prob"),
+                  "fair_odds": p.get("fair_odds", r.get("fair_odds")),
+                  "book_odds": p.get("book_odds", r.get("book_odds")),
+                  "ev": p.get("ev", r.get("ev")),
+                  "team_for": r.get("team_for"), "opp_conceded": r.get("opp_conceded"),
+                  "fixture_id": nf.get("fixture_id") or "",
+              }
+
+          print("BOARD_TSV_BEGIN")
+          print("\t".join(COLS))
+          n = 0
+          for board in ("streaks", "mismatches", "chase"):
+              for r in (d.get(board) or []):
+                  row = flat(board, r)
+                  print("\t".join("" if row.get(c) is None else str(row.get(c))
+                                  for c in COLS))
+                  n += 1
+          print("BOARD_TSV_END")
+          print(f"BOARD_TSV_ROWS {n}")
+          PY

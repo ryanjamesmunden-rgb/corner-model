@@ -4606,9 +4606,26 @@ def _real_avg(team, side, field):
     return d["avg"] if d else None
 
 
+#: The ceiling on one fixture sweep. DERIVED FROM WHAT IS ACTUALLY STORED, not picked:
+#: sync_real keeps UPCOMING_FIXTURES (80) per competition, and there are 36 of them, so
+#: the worst case is 2880 documents. The old value was a flat 2000, which silently sat
+#: BELOW that from the moment the Swedish and second-tier leagues went in.
+NEXT_FIXTURE_SCAN = 6000
+
+
 async def _next_fixtures(q):
-    fixtures = await db.fixtures.find(q, {"_id": 0}).to_list(2000)
-    fixtures.sort(key=lambda f: f["date"])
+    # SORTED IN THE QUERY, AND THAT IS THE FIX RATHER THAN THE BIGGER NUMBER. This fetched
+    # with no sort and capped at 2000 against up to 2880 stored documents, so Mongo
+    # returned the first 2000 in NATURAL order and the ~880 it dropped were arbitrary —
+    # not the far-future ones. Every caller then read a map that was missing some teams'
+    # next games for no stateable reason, and nothing could tell which.
+    #
+    # Sorting by date server-side means a truncation can only ever lose the games furthest
+    # away, which is the one thing this map does not care about: it wants each team's
+    # EARLIEST fixture. The raised cap makes truncation unreachable in practice; the sort
+    # makes it harmless if the data ever outgrows it again.
+    fixtures = await db.fixtures.find(q, {"_id": 0}) \
+        .sort("date", 1).to_list(NEXT_FIXTURE_SCAN)
     nf = {}
     for fx in fixtures:
         for tid, opp, opp_id, is_home in ((fx["home_team_id"], fx["away_name"], fx["away_team_id"], True),
@@ -5314,17 +5331,17 @@ async def streaks(league_id: Optional[str] = None, side: str = "overall", window
     bl_map = _league_blocked_map(teams)
     leagues = {l["league_id"]: l["name"] for l in await db.leagues.find({}, {"_id": 0}).to_list(100)}
 
-    # earliest upcoming fixture per team
-    fixtures = await db.fixtures.find(q, {"_id": 0}).to_list(5000)
-    fixtures.sort(key=lambda f: f["date"])
-    next_fx = {}
-    for fx in fixtures:
-        for tid, opp, opp_id, is_home in ((fx["home_team_id"], fx["away_name"], fx["away_team_id"], True),
-                                          (fx["away_team_id"], fx["home_name"], fx["home_team_id"], False)):
-            if tid not in next_fx:
-                next_fx[tid] = {"fixture_id": fx["fixture_id"], "date": fx["date"],
-                                "round": fx.get("round"),
-                                "opponent": opp, "opponent_team_id": opp_id, "is_home": is_home}
+    # EARLIEST UPCOMING FIXTURE PER TEAM — the shared helper, not a copy of it.
+    #
+    # This block WAS a copy, and it was the copy minus two fields: `league_id` and
+    # `cross_league`, which _next_fixtures carries specifically so that a cup tie can be
+    # identified as one. Losing them here is what made the readable export file an
+    # Arsenal v Bayern Champions League tie under "Premier League" — the team's league,
+    # because the fixture's own competition was not in the row to read — and then report
+    # the Champions League as having produced no qualifying streak at all.
+    #
+    # Nothing else used `fixtures`, so there is no second query and nothing to keep.
+    next_fx = await _next_fixtures(q)
     # odds entered for the relevant upcoming fixtures (for live edge %)
     fx_ids = list({v["fixture_id"] for v in next_fx.values()})
     odds_docs = await db.odds.find({"fixture_id": {"$in": fx_ids}}, {"_id": 0}).to_list(2000)
@@ -9034,6 +9051,12 @@ async def export_streaks(days: int = 7, window: int = 5, min_hits: int = 5,
             ("over", "match", 7), ("under", "match", 3)]
     by_fixture: Dict[str, dict] = {}
     counts = {f"{d}/{s}": 0 for d, s, _ in grid}
+    # THE COMPETITION EACH FIXTURE IS ACTUALLY IN, read up front because the label below
+    # needs it. A streak row carries the TEAM's league, which for a European tie is the
+    # wrong answer twice over: it files the game under a domestic division, and which
+    # division depends on whichever side's row reached the slot first.
+    comp_names = {l["league_id"]: l.get("name", l["league_id"])
+                  for l in await db.leagues.find({}, {"_id": 0}).to_list(500)}
 
     for direction, subject, min_line in grid:
         rows = await streaks(league_id=lid, side=side, window=window, min_hits=min_hits,
@@ -9044,8 +9067,17 @@ async def export_streaks(days: int = 7, window: int = 5, min_hits: int = 5,
             if not nf:
                 continue
             counts[f"{direction}/{subject}"] += 1
+            # The fixture's own competition, falling back to the team's league only
+            # when the row predates next_fixture carrying one.
+            comp_id = nf.get("league_id")
             slot = by_fixture.setdefault(nf["fixture_id"], {
-                "date": nf["date"], "league": r["league_name"],
+                "date": nf["date"],
+                "league": comp_names.get(comp_id) or r["league_name"],
+                "league_id": comp_id or r.get("league_id"),
+                # A cup tie is weaker evidence than a domestic one — a run earned in one
+                # league meeting a defence measured in another — so the export says so
+                # rather than leaving the reader to notice the competition name.
+                "cross_league": bool(nf.get("cross_league")),
                 "home": r["name"] if nf["is_home"] else nf["opponent"],
                 "away": nf["opponent"] if nf["is_home"] else r["name"],
                 "angles": [], "totals": []})
@@ -9090,10 +9122,9 @@ async def export_streaks(days: int = 7, window: int = 5, min_hits: int = 5,
     # A league can be absent for two very different reasons and they need telling
     # apart: no fixtures stored in the window, or fixtures but nothing qualified.
     # Only the first is a data problem.
-    all_leagues = {l["league_id"]: l["name"]
-                   for l in await db.leagues.find({}, {"_id": 0}).to_list(500)}
+    all_leagues = dict(comp_names)
     all_fx = await db.fixtures.find({} if lid == "all" else {"league_id": lid},
-                                    {"_id": 0}).to_list(5000)
+                                    {"_id": 0}).to_list(NEXT_FIXTURE_SCAN)
     horizon = now + timedelta(days=days)
     fx_by_league = defaultdict(int)
     for f in all_fx:
@@ -9105,9 +9136,12 @@ async def export_streaks(days: int = 7, window: int = 5, min_hits: int = 5,
             dt = dt.replace(tzinfo=timezone.utc)
         if now <= dt <= horizon:
             fx_by_league[f["league_id"]] += 1
-    with_angles = {f["league"] for f in fixtures}
-    quiet = sorted(all_leagues.get(k, k) for k in fx_by_league
-                   if all_leagues.get(k, k) not in with_angles)
+    # KEYED ON COMPETITION ID, NOT ON THE DISPLAY NAME. Comparing names was the second
+    # half of the Champions League false negative: the fixtures were counted under `ucl`
+    # and the angles were labelled "Premier League", so the two sets could never meet and
+    # every European competition was reported as having produced nothing.
+    with_angles = {f.get("league_id") for f in fixtures}
+    quiet = sorted(all_leagues.get(k, k) for k in fx_by_league if k not in with_angles)
     none_stored = sorted(n for k, n in all_leagues.items() if not fx_by_league.get(k))
     out += [f"Coverage: {sum(fx_by_league.values())} fixtures in this window across "
             f"{len(fx_by_league)} leagues; angles found in {len(with_angles)} of them.", ""]
@@ -9134,7 +9168,9 @@ async def export_streaks(days: int = 7, window: int = 5, min_hits: int = 5,
             except Exception:
                 pretty = d
             out.append(f"\n## {pretty}")
-        out.append(f"\n### {fx['date'][11:16]} · {fx['league']} · {fx['home']} v {fx['away']}")
+        tie = " · cup tie, form from two leagues" if fx.get("cross_league") else ""
+        out.append(f"\n### {fx['date'][11:16]} · {fx['league']} · "
+                   f"{fx['home']} v {fx['away']}{tie}")
         for a in fx["angles"]:
             proj = a.get("projection") or {}
             bits = [f"{a['direction']}/{a['subject']}", _streak_record(a),

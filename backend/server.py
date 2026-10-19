@@ -2586,6 +2586,8 @@ TOOL_SCRIPTS = {"backfill_shots": "backfill_shots.py", "measure_features": "meas
                 "backfill_fh": "backfill_fh.py",
                 "backfill_goal_events": "backfill_goal_events.py",
                 "probe_corner_halves": "probe_corner_halves.py",
+                # CAN CORNER PRICES BE FETCHED INSTEAD OF TYPED IN.
+                "probe_odds": "probe_odds.py",
                 "probe_stat_types": "probe_stat_types.py",
                 "probe_leagues": "probe_leagues.py",
                 "measure_h2h": "measure_h2h.py",
@@ -2617,6 +2619,9 @@ TOOL_COOLDOWN = {"backfill_shots": 600, "measure_features": 120,
                  "backfill_fh": 120,
                  "backfill_goal_events": 600,
                  "probe_corner_halves": 600,
+                 # Spends a call per sampled fixture, so it is paced like the
+                 # other provider probes rather than like a read.
+                 "probe_odds": 600,
                  "probe_stat_types": 600, "probe_leagues": 120,
                  # Reads the whole results cache. Cheap per row but the collection only
                  # grows, and the answer moves at the speed of the twice-daily sync.
@@ -3225,6 +3230,37 @@ async def tool_probe_halves(token: Optional[str] = None,
     `measure` mode, because that endpoint promises no API calls and this one breaks it."""
     _check_tools_token(token)
     return await _start_tool("probe_corner_halves", [], "1H/2H availability")
+
+
+@api_router.post("/tools/probe-odds")
+async def tool_probe_odds(token: Optional[str] = None, league_id: Optional[str] = None,
+                          fixtures: int = 8,
+                          user: dict = Depends(get_current_user)):
+    """Can corner PRICES be fetched automatically instead of typed in by hand?
+
+    WHY THIS IS A PROBE AND NOT A FEATURE YET. Every price on this site is hand-entered —
+    db.odds stamps `source: "manual"` and the value board trusts only that flag, because
+    the seeders derive prices from the model itself and an EV computed against one of
+    those is the model finding value in its own noise. Replacing that with a feed turns
+    on whether the provider quotes corner markets for the competitions here, which is a
+    fact about the provider and not a design choice.
+
+    SPENDS API CREDITS — one /odds/bets call plus one /odds call per sampled fixture.
+    Deliberately not a `measure` mode, for the same reason probe-halves is not: that
+    endpoint promises no API calls.
+
+    `fixtures` is clamped, because each one is a credit and the interesting number is the
+    per-competition split rather than the sample size."""
+    _check_tools_token(token)
+    n = max(1, min(int(fixtures), 20))
+    argv = ["--fixtures", str(n)]
+    label = f"corner odds on {n} fixtures"
+    if league_id and league_id != "all":
+        if league_id not in LEAGUE_META and league_id not in CUP_META:
+            raise HTTPException(status_code=400, detail=_not_a_league(league_id))
+        argv += ["--league", league_id]
+        label += f", {league_id}"
+    return await _start_tool("probe_odds", argv, label)
 
 
 @api_router.post("/tools/probe-stat-types")
@@ -9036,6 +9072,7 @@ async def share_bets(token: Optional[str] = None, day: Optional[str] = None,
 @api_router.get("/export/streaks")
 async def export_streaks(days: int = 7, window: int = 5, min_hits: int = 5,
                          side: str = "overall", league_id: Optional[str] = None,
+                         include_quiet: bool = False,
                          user: dict = Depends(require_member)):
     """Every streak angle — overs and unders, team corners and match totals — on the
     fixtures kicking off in the next `days`, grouped by fixture. Markdown, built to be
@@ -9101,11 +9138,41 @@ async def export_streaks(days: int = 7, window: int = 5, min_hits: int = 5,
         slot["angles"] += list(best.values())
         slot["angles"].sort(key=lambda a: (a["subject"] != "team", a["direction"]))
 
-    fixtures = sorted(by_fixture.values(), key=lambda f: f["date"])
+    # FIXTURES WITH NO QUALIFYING STREAK, when asked for.
+    #
+    # WHY THIS IS WORTH HAVING. A European tie routinely has no live streak on either
+    # side: the run has to be five from five at the floor, and a side that has played two
+    # cup games and a league cup round in the window simply has not strung one together.
+    # The game is still worth looking at — the model projects every fixture whether or not
+    # a streak survived — and leaving it out means the one competition somebody explicitly
+    # wants on the sheet is the one most likely to be absent from it.
+    #
+    # THEY ARE MARKED, NOT MIXED IN. A row with a streak behind it and a row with only a
+    # projection are different strengths of evidence, and a sheet that presented them
+    # identically would be the "confident number with nothing measured behind it" failure
+    # this file warns about elsewhere. Each quiet fixture says so on its heading and
+    # carries the projection rather than an angle list.
+    quiet_rows = []
+    if include_quiet:
+        projected = await _fixture_projections(days=days, league_id=lid)
+        for fid, pr in projected.items():
+            if fid in by_fixture:
+                continue
+            quiet_rows.append({
+                "date": pr["date"],
+                "league": pr.get("league_name") or pr["league_id"],
+                "league_id": pr["league_id"],
+                "cross_league": bool(pr.get("cross_league")),
+                "home": pr["home"], "away": pr["away"],
+                "angles": [], "totals": [], "projection_only": pr})
+
+    fixtures = sorted(list(by_fixture.values()) + quiet_rows, key=lambda f: f["date"])
     now = datetime.now(timezone.utc)
     out = [f"# Corner streaks — fixtures in the next {days} days",
            f"Generated {now.strftime('%Y-%m-%d %H:%M UTC')} · window {min_hits}/{window} · "
-           f"side {side} · league {lid}",
+           f"side {side} · league {lid}"
+           + (f" · including {len(quiet_rows)} fixtures with no live streak"
+              if include_quiet else ""),
            "",
            "Every team/match angle whose streak is live going into the fixture. Model prices are "
            "this app's own (v3); book odds and edge appear only where odds have been pasted in.",
@@ -9115,7 +9182,9 @@ async def export_streaks(days: int = 7, window: int = 5, min_hits: int = 5,
            "both an over and an under total — they describe the two sides' different histories, "
            "not a contradiction. The team is named on each.",
            "",
-           f"**{len(fixtures)} fixtures** · " + " · ".join(f"{k} {v}" for k, v in counts.items()),
+           f"**{len(by_fixture)} fixtures with a live streak** · "
+           + " · ".join(f"{k} {v}" for k, v in counts.items())
+           + (f" · plus {len(quiet_rows)} projection-only" if quiet_rows else ""),
            ""]
 
     # Coverage, so "where are my other leagues?" is answerable from the export itself.
@@ -9140,7 +9209,12 @@ async def export_streaks(days: int = 7, window: int = 5, min_hits: int = 5,
     # half of the Champions League false negative: the fixtures were counted under `ucl`
     # and the angles were labelled "Premier League", so the two sets could never meet and
     # every European competition was reported as having produced nothing.
-    with_angles = {f.get("league_id") for f in fixtures}
+    # ONLY FIXTURES THAT ACTUALLY CARRY AN ANGLE. With include_quiet on, `fixtures` also
+    # holds projection-only rows, and counting those here would have the coverage line
+    # report a competition as having produced a qualifying streak when what it produced
+    # was a projection — re-introducing the false positive this check exists to prevent,
+    # pointing the other way.
+    with_angles = {f.get("league_id") for f in fixtures if f.get("angles")}
     quiet = sorted(all_leagues.get(k, k) for k in fx_by_league if k not in with_angles)
     none_stored = sorted(n for k, n in all_leagues.items() if not fx_by_league.get(k))
     out += [f"Coverage: {sum(fx_by_league.values())} fixtures in this window across "
@@ -9169,8 +9243,24 @@ async def export_streaks(days: int = 7, window: int = 5, min_hits: int = 5,
                 pretty = d
             out.append(f"\n## {pretty}")
         tie = " · cup tie, form from two leagues" if fx.get("cross_league") else ""
+        quiet = " · NO LIVE STREAK — model projection only" if fx.get("projection_only") else ""
         out.append(f"\n### {fx['date'][11:16]} · {fx['league']} · "
-                   f"{fx['home']} v {fx['away']}{tie}")
+                   f"{fx['home']} v {fx['away']}{tie}{quiet}")
+        pr = fx.get("projection_only")
+        if pr:
+            # The projection, and the sample behind it, so a thin row reads as thin
+            # rather than as a quiet one.
+            out.append(f"- **projected corners** — {pr['home']} {pr['lambda_home']} · "
+                       f"{pr['away']} {pr['lambda_away']} · total {pr['lambda_total']}")
+            bits = [f"league par {pr['league_avg_total']}",
+                    f"edge x{pr['corner_edge']}",
+                    f"games {pr['home_games']}/{pr['away_games']}"]
+            if pr.get("transfer_note"):
+                bits.append(pr["transfer_note"])
+            out.append(f"  {' · '.join(bits)}")
+            for a in pr.get("angles") or []:
+                out.append(f"- {a.get('label') or a.get('headline') or 'mismatch'}")
+            continue
         for a in fx["angles"]:
             proj = a.get("projection") or {}
             bits = [f"{a['direction']}/{a['subject']}", _streak_record(a),

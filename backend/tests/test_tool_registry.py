@@ -129,11 +129,33 @@ class TestTheWorkflowDropdownAgreesToo:
         return [m.group(1) for m in re.finditer(r"^\s+- (\w+)", body, re.M)]
 
     def _dispatcher(self):
-        """The modes the `case` statement maps to a SCRIPT to poll for output."""
+        """The modes the `case` statement maps to a SCRIPT to poll for output.
+
+        PARSED PER ARM, NOT PER LINE. A one-line arm looks like
+        `totals)      SCRIPT="tune_totals" ;;` and a documented one puts the label, a
+        paragraph of comment, a URL and then the SCRIPT on four different lines. A regex
+        anchored to one line sees only the first kind — which is every MEASURE_MODE today
+        and therefore passed, right up until somebody documents one properly and the test
+        reports it as falling through to the fallback.
+        """
         import re
         src = self.WORKFLOW.read_text(encoding="utf-8")
-        return {m.group(1): m.group(2)
-                for m in re.finditer(r'^\s+(\w+)\)\s+SCRIPT="(\w+)"', src, re.M)}
+        out = {}
+        # Split on arm labels, then take the first SCRIPT= assignment inside each arm.
+        parts = re.split(r'^\s+(\w+)\)\s*$|^\s+(\w+)\)(?=\s)', src, flags=re.M)
+        label = None
+        for chunk in parts:
+            if chunk is None:
+                continue
+            if re.fullmatch(r"\w+", chunk.strip()) and "SCRIPT=" not in chunk:
+                label = chunk.strip()
+                continue
+            if label:
+                found = re.search(r'SCRIPT="(\w+)"', chunk)
+                if found:
+                    out.setdefault(label, found.group(1))
+                label = None
+        return out
 
     def test_the_dropdown_is_not_empty(self):
         # If the parse above ever stops finding anything, every assertion below passes
@@ -145,7 +167,8 @@ class TestTheWorkflowDropdownAgreesToo:
         `league_probe` go to /tools/probe-leagues, which is its own endpoint because
         `measure` promises no API calls. Those are named here rather than excluded by a
         pattern, so a third one cannot appear by accident."""
-        OWN_ENDPOINT = {"country_leagues", "league_probe", "corner_halves", "goal_scores"}
+        OWN_ENDPOINT = {"country_leagues", "league_probe", "corner_halves",
+                        "goal_scores", "corner_odds"}
         unknown = [o for o in self._dropdown()
                    if o not in server.MEASURE_MODES and o not in OWN_ENDPOINT]
         assert not unknown, (
@@ -202,6 +225,27 @@ class TestTheWorkflowDropdownAgreesToo:
             if expected and expected[0] != script:
                 wrong[mode] = (script, expected[0])
         assert not wrong, f"case arm names the wrong script (got, want): {wrong}"
+
+    def test_every_own_endpoint_mode_has_an_arm_too(self):
+        """The four-plus modes that post to their own endpoint still need a SCRIPT to
+        poll, and they are exactly the ones written as multi-line arms — so this is the
+        check that would have caught the single-line parser being too narrow."""
+        OWN_ENDPOINT = {"country_leagues", "league_probe", "corner_halves",
+                        "goal_scores", "corner_odds"}
+        cases = self._dispatcher()
+        missing = sorted(o for o in OWN_ENDPOINT if o not in cases)
+        assert not missing, (
+            f"no SCRIPT= found in the case arm for {missing} — the run starts and the "
+            f"workflow polls for output that never arrives")
+
+    def test_corner_odds_is_wired_end_to_end(self):
+        # The probe that answers "can we stop typing prices in".
+        assert "corner_odds" in self._dropdown()
+        assert self._dispatcher().get("corner_odds") == "probe_odds"
+        assert "probe_odds" in server.TOOL_SCRIPTS
+        assert "probe_odds" in server.TOOL_COOLDOWN
+        assert "corner_odds" not in server.MEASURE_MODES, \
+            "it spends API credits, so it must not be a measure mode"
 
     def test_line_ladder_is_wired_end_to_end(self):
         # Named because it is the registration that exposed the gap this class closes.

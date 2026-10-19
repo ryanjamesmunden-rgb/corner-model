@@ -119,9 +119,15 @@ class TestTheExportLabelsByCompetition:
 
     def test_coverage_compares_ids_not_display_names(self):
         """The second half of the false negative. Fixtures are counted under `ucl` and the
-        angles were labelled "Premier League", so a name comparison could never match."""
+        angles were labelled "Premier League", so a name comparison could never match.
+
+        Asserted as "keys on league_id, never on the display name" rather than as one
+        exact expression — the first draft of this test pinned the literal and then failed
+        the moment the comprehension was correctly tightened to exclude projection-only
+        rows. The invariant is what matters; the spelling is not.
+        """
         body = self._export()
-        assert 'with_angles = {f.get("league_id") for f in fixtures}' in body
+        assert 'with_angles = {f.get("league_id")' in body
         assert 'with_angles = {f["league"] for f in fixtures}' not in body
 
     def test_a_cup_tie_is_flagged_on_the_heading(self):
@@ -157,3 +163,56 @@ class TestTheCupsAreStillWhatTheyWere:
         a test so the next person meets it before spending an afternoon on it.
         """
         assert "ucl" in CUP_IDS
+
+
+class TestTheExportCanIncludeFixturesWithNoStreak:
+    """A European tie routinely has no live streak on either side, and was therefore
+    absent from the one sheet somebody explicitly wanted it on.
+
+    The run has to be five from five at the floor, and a side playing a cup game, a
+    league cup round and a league game inside the window frequently has not strung one
+    together. The model projects every fixture regardless, so the game is still worth
+    looking at — it just is not an ANGLE, and the export has to keep that distinction
+    visible rather than presenting two different strengths of evidence identically.
+    """
+
+    def _export(self):
+        start = SRC.index("# match-total overs need a higher floor")
+        return SRC[start:SRC.index("@api_router.get(\"/export\")")]
+
+    def test_the_option_exists_and_is_off_by_default(self):
+        sig = SRC[SRC.index("async def export_streaks("):]
+        sig = sig[:sig.index("):")]
+        assert "include_quiet: bool = False" in sig, \
+            "off by default — the sheet's normal shape must not change under anybody"
+
+    def test_quiet_rows_come_from_the_shared_projection_helper(self):
+        """_fixture_projections documents itself as the one for 'the games that did not
+        qualify, including the quiet ones'. A second implementation would be a second
+        expected_lambdas call site to keep in step."""
+        assert "_fixture_projections(days=days, league_id=lid)" in self._export()
+
+    def test_a_quiet_row_is_labelled_as_one(self):
+        body = self._export()
+        assert "NO LIVE STREAK — model projection only" in body
+        assert '"projection_only"' in body
+
+    def test_a_quiet_row_shows_the_sample_behind_its_projection(self):
+        """A thin row has to read as thin. Two sides with four games each projecting 11
+        corners is not the same claim as two sides with twenty."""
+        assert "games {pr['home_games']}/{pr['away_games']}" in self._export()
+
+    def test_a_projection_only_row_never_counts_as_coverage(self):
+        """THE FALSE POSITIVE THIS OPTION COULD HAVE CREATED, pointing the other way from
+        the original bug: with quiet rows in `fixtures`, an unfiltered set comprehension
+        would have the coverage line report a competition as having produced a qualifying
+        streak when what it produced was a projection."""
+        body = self._export()
+        assert 'with_angles = {f.get("league_id") for f in fixtures if f.get("angles")}' in body
+
+    def test_the_headline_count_separates_the_two(self):
+        # "265 fixtures" meaning something different depending on a flag is how a number
+        # stops being comparable week to week.
+        body = self._export()
+        assert "fixtures with a live streak" in body
+        assert "projection-only" in body

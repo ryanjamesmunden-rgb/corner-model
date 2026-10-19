@@ -54,6 +54,7 @@ on:
           - country_leagues # SPENDS CREDITS (1 call) — what competitions exist for a country
           - league_probe    # SPENDS CREDITS (~6/league) — does a league carry corner data
           - corner_halves   # SPENDS CREDITS (4 calls) — are corners obtainable split by half
+          - corner_odds     # SPENDS CREDITS (~1/fixture) — can corner PRICES be fetched
       country:
         description: "Country for `country_leagues` only, e.g. World, Norway. Ignored otherwise"
         required: false
@@ -126,6 +127,24 @@ jobs:
             # /tools/measure: that endpoint promises no API calls.
             URL="$BACKEND/api/tools/probe-halves?token=$TOOLS_TOKEN"
             SCRIPT="probe_corner_halves" ;;
+          corner_odds)
+            # CAN WE STOP TYPING PRICES IN. Every price on the site is hand-entered and
+            # the value board trusts only `source: manual`, because the seeders derive
+            # prices from the model and an EV against one of those is the model finding
+            # value in its own noise. So the pricing page is what every value feature
+            # waits on, and whether a feed can fill it is a fact about the provider.
+            #
+            # It prints the market catalogue, who actually quotes real fixtures on this
+            # board, and the coverage PER COMPETITION — which is the number that decides
+            # whether this replaces hand-entry or merely supplements it. Full Premier
+            # League coverage and nothing below it leaves every league that needs the
+            # help exactly where it is today.
+            #
+            # One call per sampled fixture, which is why it is here and not on
+            # /tools/measure: that endpoint promises no API calls. `leagues` narrows it.
+            URL="$BACKEND/api/tools/probe-odds?token=$TOOLS_TOKEN"
+            [ -n "$LEAGUES" ] && URL="$URL&league_id=$(python3 -c 'import sys,urllib.parse;print(urllib.parse.quote(sys.argv[1]))' "$LEAGUES")"
+            SCRIPT="probe_odds" ;;
           country_leagues)
             # One call. Lists every competition the provider files under a country, with
             # ids — how you find the right id after a MISMATCH, and how you establish a

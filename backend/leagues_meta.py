@@ -29,6 +29,19 @@ LEAGUE_META = {
     # team and fixture whose league_id is not in MANAGED_LEAGUE_IDS, and the orphan-odds
     # purge that runs straight after clears any price left pointing at them.
     "aus-al":  {"api": 188, "name": "A-League",         "country": "Australia", "tier": 1},
+    # NO ICELAND, AND THE IDS ARE RIGHT — this is the eng-nl finding again, in a country
+    # that looked like the most obvious addition on the list.
+    #
+    # probe_leagues.py, 2026-10-19: id 164 is confirmed as Iceland / Úrvalsdeild, season
+    # 2026, FT=155, ~25.8 games a team — a deeper record than most leagues here — and
+    # corners=0/4 shots=0/4 blocked=0/4. id 165 is confirmed as Iceland / 1. Deild,
+    # FT=136, ~22.7 a team, and the same three zeros.
+    #
+    # So the provider files NO match statistics at all for Icelandic football, at either
+    # tier. Not thin coverage: none. A corner model cannot price a competition whose
+    # corners are not recorded, however many games it has played, and the depth of the
+    # fixture list is exactly what makes this one tempting to re-add from the league
+    # table alone. The country listing (ids 164-166, plus six cups) is in that run.
     "nor-el":  {"api": 103, "name": "Eliteserien",      "country": "Norway", "tier": 1},
     # Norway's tiers are confusingly named: the SECOND level is called "1. divisjon"
     # (sponsored name OBOS-ligaen), and "2. divisjon" is the THIRD level.
@@ -44,7 +57,33 @@ LEAGUE_META = {
     "bra-sa":  {"api": 71,  "name": "Série A",          "country": "Brazil", "tier": 1},
     "bra-sb":  {"api": 72,  "name": "Série B",          "country": "Brazil", "tier": 2},
     "ita-sa":  {"api": 135, "name": "Serie A",          "country": "Italy", "tier": 1},
+    # THE THREE SECOND TIERS BELOW ARE THE esp-s2 DECISION AGAIN, taken for the same
+    # reason and recorded here so it does not have to be re-argued a fourth time.
+    #
+    # probe_leagues.py, 2026-10-19, all three ids confirmed by the provider's own name:
+    #
+    #   136  Italy / Serie B        FT= 70  ~7.0 a team  310 upcoming  corners 4/4
+    #   62   France / Ligue 2       FT= 80  ~8.9 a team  226 upcoming  corners 4/4
+    #   95   Portugal / Segunda Liga FT=63  ~7.0 a team  243 upcoming  corners 4/4
+    #
+    # Every one came back SKIP, and every one for the SAME single reason: "only ~7 games
+    # a team, too thin to price". Not one of them was short of corner data — shots and
+    # blocked shots were 4/4 as well, so v3 prices them properly rather than falling back
+    # to the v2 shots intent.
+    #
+    # THAT FLOOR MEASURES THE CURRENT SEASON ALONE, and it is not the pool these get
+    # priced from. sync_real tops up from `season - 1` whenever the current season has
+    # produced fewer than STATS_CAP finished games — 70, 80 and 63 are all far under 250
+    # — so every team arrives with last season behind it rather than with seven games.
+    # The probe cannot see that: it samples one season to answer "does this competition
+    # file corner data", and on that question all three answered yes four times from four.
+    #
+    # The numbers are almost identical to esp-s2's own qualifying run (FT=81, ~7.4 a
+    # team, 380 upcoming, 4/4), which is the precedent. What would keep one of these out
+    # is the Iceland and eng-nl finding — corners=0/4 — and this is its opposite.
+    "ita-sb":  {"api": 136, "name": "Serie B",          "country": "Italy", "tier": 2},
     "fra-l1":  {"api": 61,  "name": "Ligue 1",          "country": "France", "tier": 1},
+    "fra-l2":  {"api": 62,  "name": "Ligue 2",          "country": "France", "tier": 2},
     "esp-ll":  {"api": 140, "name": "La Liga",          "country": "Spain", "tier": 1},
     # ADDED ON A PROBE THAT SAID SKIP, and the reason is worth writing down because the
     # verdict and the decision disagree on purpose.
@@ -73,11 +112,46 @@ LEAGUE_META = {
     "ger-bl":  {"api": 78,  "name": "Bundesliga",       "country": "Germany", "tier": 1},
     "ger-bl2": {"api": 79,  "name": "2. Bundesliga",    "country": "Germany", "tier": 2},
     "por-pl":  {"api": 94,  "name": "Primeira Liga",    "country": "Portugal", "tier": 1},
+    "por-l2":  {"api": 95,  "name": "Segunda Liga",     "country": "Portugal", "tier": 2},
     "bel-pl":  {"api": 144, "name": "Jupiler Pro League","country": "Belgium", "tier": 1},
     "sco-pl":  {"api": 179, "name": "Premiership",      "country": "Scotland", "tier": 1},
     "tur-sl":  {"api": 203, "name": "Süper Lig",        "country": "Turkey", "tier": 1},
     "usa-ml":  {"api": 253, "name": "MLS",              "country": "USA", "tier": 1},
     "den-sl":  {"api": 119, "name": "Superliga",        "country": "Denmark", "tier": 1},
+    # NO den-d1, AND THE TOP FLIGHT ABOVE IS THE REASON IT LOOKED SAFE. Coverage is per
+    # COMPETITION, not per country: the Superliga files corners and the tier below it
+    # does not, so "Denmark works" is not an argument about Danish football generally.
+    #
+    # probe_leagues.py, 2026-10-19: id 120 confirmed as Denmark / 1. Division, season
+    # 2026, FT=66, ~11.0 games a team — past the probe's own depth bar — 66 upcoming, and
+    # corners=0/4 shots=0/4 blocked=0/4. It is the only one of the six probed that day to
+    # fail on data rather than on sample size.
+    # SWEDEN, BOTH TIERS, AND THE CLEANEST PROBE OF THE SIX. No override argued, no
+    # sample-size caveat: these qualified outright on the probe's own verdict.
+    #
+    # probe_leagues.py, 2026-10-19, both ids confirmed by the provider's own name:
+    #
+    #   113  Sweden / Allsvenskan  FT=191  ~23.9 a team  49 upcoming  corners 4/4  QUALIFY
+    #   114  Sweden / Superettan   FT=214  ~26.8 a team  26 upcoming  corners 4/4  QUALIFY
+    #
+    # Shots and blocked shots were 4/4 as well, so both price on v3 rather than falling
+    # back. The records are DEEPER than most of this list — 24 and 27 games a team against
+    # the ~7 the European second tiers are showing in October — because the Nordic calendar
+    # runs March to November, so these two are near the END of a season while everything
+    # else here is near the start of one.
+    #
+    # WHICH IS ALSO THE THING TO KNOW ABOUT THEM: from late November until March they will
+    # have history and no upcoming fixtures, so they contribute to the records and the
+    # oddities and nothing to the boards. That is a real gap and it is seasonal, not a
+    # fault — Norway, already here, does exactly the same thing. Iceland was rejected for
+    # a different reason entirely; see the note above aus-al.
+    #
+    # `swe-al` DELIBERATELY REUSES THE MOCK SEED'S ID. server.py's LEAGUES list carries a
+    # synthetic "swe-al" / Allsvenskan for anyone running without a provider key, and
+    # seed_data() only fires on an empty database — so there is no collision, and giving
+    # the real league a different key would leave two Swedish ids meaning one competition.
+    "swe-al":  {"api": 113, "name": "Allsvenskan",      "country": "Sweden", "tier": 1},
+    "swe-su":  {"api": 114, "name": "Superettan",       "country": "Sweden", "tier": 2},
     "sui-sl":  {"api": 207, "name": "Super League",     "country": "Switzerland", "tier": 1},
     "aut-bl":  {"api": 218, "name": "Bundesliga",       "country": "Austria", "tier": 1},
     "gre-sl":  {"api": 197, "name": "Super League",     "country": "Greece", "tier": 1},

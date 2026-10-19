@@ -8877,7 +8877,7 @@ async def telegram_status(token: Optional[str] = None):
 
 @api_router.get("/share/rows")
 async def share_rows(days: int = 3, limit: int = 12, token: Optional[str] = None,
-                     boards: str = SHARE_BOARDS_DEFAULT):
+                     boards: str = SHARE_BOARDS_DEFAULT, streak_grid: bool = False):
     """The raw rows behind the shared boards, for the scheduled draft job.
 
     Returns ROWS, not rendered text, on purpose. The share format lives in the frontend
@@ -8958,7 +8958,31 @@ async def share_rows(days: int = 3, limit: int = 12, token: Optional[str] = None
         finally:
             timings[name] = round((time.perf_counter() - t0) * 1000)
 
-    if "streaks" in want:
+    if "streaks" in want and streak_grid:
+        # ALL FOUR CUTS, the same grid /export/streaks builds.
+        #
+        # WHY THIS IS OPT-IN. The default below returns over/team only, and the daily X
+        # draft depends on that: tweetStat's `counted` filters on direction but NOT on
+        # subject, so a match-total row arriving in this list would be counted as a team
+        # streak and the post would claim "N teams have won 9+ corners". Widening the
+        # default would corrupt the one output nobody checks by hand.
+        #
+        # The spreadsheet wants all four, because the workbook this feeds was built by
+        # hand with exactly these — 39 team overs, 62 team unders, 36 match unders in the
+        # 2026-10-01 edition — and the generated one shipped with only the first kind.
+        #
+        # The match-over floor is 7, not 3: at 3 every fixture in the database qualifies.
+        grid = (("over", "team", 3), ("under", "team", 3),
+                ("over", "match", 7), ("under", "match", 3))
+        rows = []
+        for d, subj, floor in grid:
+            got = await timed(f"streaks:{d}/{subj}", streaks(
+                league_id="all", side="overall", window=5, min_hits=5,
+                threshold=None, min_line=floor, within_days=days,
+                direction=d, subject=subj, user={}))
+            rows.extend(got[:limit])
+        out["streaks"] = rows
+    elif "streaks" in want:
         # The same grid the Streak Finder opens on, so the draft matches the screen the
         # numbers would be checked against.
         streaks_rows = await timed("streaks", streaks(

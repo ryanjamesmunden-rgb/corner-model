@@ -95,7 +95,7 @@ jobs:
           # All three boards in ONE call. Each is a full pass over every team, so three
           # requests would be three of the same expensive scan on a free instance.
           code=$(curl -s -o rows.json -w '%{http_code}' --max-time 180 \
-            "$BACKEND/api/share/rows?token=$TOOLS_TOKEN&days=${DAYS:-3}&limit=${LIMIT:-15}&boards=streaks,mismatches,chase" \
+            "$BACKEND/api/share/rows?token=$TOOLS_TOKEN&days=${DAYS:-3}&limit=${LIMIT:-15}&boards=streaks,mismatches,chase&streak_grid=true" \
             || echo 000)
           echo "share/rows: HTTP $code"
           printf '%s' "$code" > code.txt

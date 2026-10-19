@@ -75,7 +75,25 @@ def widths(ws, spec):
         ws.column_dimensions[col].width = w
 
 
-def wire(ws, first, last, book, prob, ev, verdict):
+def type_label(row):
+    """"Team over", "Match under" — the column last week's hand-built workbook filtered on.
+
+    Without it the three kinds sit in one sheet looking like one kind. "under 9 match
+    corners" and "9+ team corners" are not variants of each other; they are opposite bets
+    on different quantities, and the same two characters mean different things in each.
+    """
+    subj = "Match" if row.get("subject") == "match" else "Team"
+    return f"{subj} {'under' if row.get('direction') == 'under' else 'over'}"
+
+
+def bet_label(row):
+    """"6+ team corners" / "under 9 match corners" — the claim, spelled out."""
+    what = "match" if row.get("subject") == "match" else "team"
+    lab = row.get("line_label") or (f"{row.get('line')}+")
+    return f"{lab} {what} corners"
+
+
+def wire(ws, first, last, book, prob, ev, verdict, void=None):
     """The fill-in half: a yellow price column, an EV formula, a verdict that follows it.
 
     IFERROR AND AN EMPTY-STRING GUARD, because a blank price would otherwise read as a
@@ -89,7 +107,11 @@ def wire(ws, first, last, book, prob, ev, verdict):
         b, p = f"{book}{r}", f"{prob}{r}"
         ws[b].fill, ws[b].font, ws[b].number_format = INPUT_FILL, BLUE, "0.00"
         ws[b].border = BORDER
-        ws[f"{ev}{r}"] = f'=IFERROR(IF({b}="","",{b}*{p}-1),"")'
+        # AN UNDER ON A WHOLE LINE PUSHES when the count lands exactly on it, and the
+        # stake comes back. Without that term every under reads a few points worse than
+        # it is — the same correction the backend's own `ev` makes.
+        push = f"+{void}{r}" if void else ""
+        ws[f"{ev}{r}"] = f'=IFERROR(IF({b}="","",{b}*{p}{push}-1),"")'
         ws[f"{ev}{r}"].number_format = "0.0%;[Red]-0.0%;-"
         ws[f"{ev}{r}"].font = BLACK
         ws[f"{verdict}{r}"] = (
@@ -152,38 +174,68 @@ def readme(wb, data, generated):
 
 
 def streaks_sheet(wb, rows):
+    """All three kinds of streak, priced off the model rather than off the strike rate.
+
+    THE BUG THIS REPLACES, and it was pointing the verdict column the wrong way on almost
+    every row. The EV formula was wired to the "Hit %" column — the last-five strike rate
+    — so a 5-from-5 run read 100% and EV came out as `Book - 1`. Any price above 1.00
+    therefore computed as a large edge and the Verdict said BET. The sheet carried a red
+    warning calling it "indicative only", which is not the same as not doing it.
+
+    The model's own probability for that exact line on that exact fixture was sitting in
+    the same row the whole time, on `projection` — the readable export has always printed
+    it as "model 1.23 (81.4%)". The earlier note here said a fair price would be inventing
+    a number the board never produced; that was wrong. `_streak_projection` produces it,
+    and EV now reads it.
+
+    Hit % stays as a column. It is a useful thing to see — how often this exact claim
+    landed in the last five — it just must not be the number an edge is computed from.
+    """
     ws = wb.create_sheet("Streaks")
-    header(ws, ["Kick-off", "League", "Team", "Venue", "Fixture", "Line", "Run (L5)",
-                "In a row", "Hit %", "Avg won", "Fair", "Book", "EV", "Verdict"])
+    header(ws, ["Kick-off", "League", "Team", "Venue", "Fixture", "Type", "Bet",
+                "Run (L5)", "In a row", "Hit %", "Avg", "Lambda", "Prob", "Void",
+                "Fair", "Book", "EV", "Verdict"])
     for r, row in enumerate(rows, start=2):
         fx, venue = fixture(row)
+        proj = row.get("projection") or {}
         run = f"{row.get('hits', 0)}/{row.get('settled', row.get('window', 0))}"
         if row.get("voids"):
             run += f"+{row['voids']}v"
         for c, v in enumerate([kickoff(row), row.get("league_name", ""), row.get("name"),
-                               venue, fx, row.get("line"), run,
+                               venue, fx, type_label(row), bet_label(row), run,
                                (row.get("streak") or {}).get("length")], start=1):
             cell = ws.cell(row=r, column=c, value=v)
             cell.font = BOLD if c == 3 else BLACK
             cell.border = BORDER
         hit = row.get("hit_rate")
-        ws.cell(row=r, column=9, value=None if hit is None else hit / 100).number_format = "0.0%"
-        ws.cell(row=r, column=9).font = BLACK
-        ws.cell(row=r, column=10, value=row.get("avg")).number_format = "0.00"
-        ws.cell(row=r, column=10).font = BLACK
-        # NO FAIR PRICE HERE, and that is honest rather than an omission. A streak is a run
-        # of outcomes, not a probability the model priced — turning "5 of 5" into a price
-        # would invent a number the board never produced.
-        ws.cell(row=r, column=11, value="n/a").font = GREY
-        ws.cell(row=r, column=11).alignment = Alignment(horizontal="center")
+        ws.cell(row=r, column=10, value=None if hit is None else hit / 100).number_format = "0.0%"
+        ws.cell(row=r, column=10).font = GREY       # grey: information, not an input to EV
+        ws.cell(row=r, column=11, value=row.get("avg")).number_format = "0.00"
+        ws.cell(row=r, column=11).font = BLACK
+        # The model's numbers, blue because they come from the export rather than a formula.
+        for c, v, fmt in ((12, proj.get("lambda"), "0.00"),
+                          (15, proj.get("fair_odds"), "0.00")):
+            ws.cell(row=r, column=c, value=v).number_format = fmt
+            ws.cell(row=r, column=c).font = BLUE
+        for c, v in ((13, proj.get("prob")), (14, proj.get("void_prob"))):
+            ws.cell(row=r, column=c,
+                    value=None if v is None else v / 100).number_format = "0.0%"
+            ws.cell(row=r, column=c).font = BLUE
+        # A price already entered on /prices arrives filled in, like the chase sheet.
+        if proj.get("book_odds") is not None:
+            ws.cell(row=r, column=16, value=proj["book_odds"])
     last = len(rows) + 1
-    wire(ws, 2, last, "L", "I", "M", "N")
+    # EV off column M (the model's Prob), crediting the push in N (Void) back.
+    wire(ws, 2, last, "P", "M", "Q", "R", void="N")
     ws.cell(row=last + 2, column=1,
-            value="Hit % is the last-5 strike rate, NOT a model probability — a 5/5 run "
-                  "reads 100% and is five games, so EV here is indicative only. Treat "
-                  "this sheet as a shortlist to price up, not as an edge.").font = WARN
-    widths(ws, {"A": 17, "B": 18, "C": 21, "D": 7, "E": 38, "F": 6, "G": 9, "H": 9,
-                "I": 8, "J": 9, "K": 7, "L": 8, "M": 9, "N": 13})
+            value="EV is computed from the model's own probability (Prob), not from the "
+                  "last-five strike rate (Hit %). A 5/5 run reads 100% in Hit % and that "
+                  "is five games, not a probability — it is shown for context only. "
+                  "Filter the Type column: a team over and a match under are opposite "
+                  "bets on different quantities.").font = WARN
+    widths(ws, {"A": 17, "B": 18, "C": 21, "D": 7, "E": 38, "F": 12, "G": 22, "H": 9,
+                "I": 9, "J": 8, "K": 8, "L": 8, "M": 8, "N": 7, "O": 7, "P": 8,
+                "Q": 9, "R": 13})
 
 
 def mismatches_sheet(wb, rows):

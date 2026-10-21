@@ -58,8 +58,14 @@ async def run(days=DAYS, league_id=None):
                if m.get("home_corners") is not None and m.get("away_corners") is not None]
     matches.sort(key=lambda m: (m.get("date") or "", m.get("league_id") or ""))
 
-    names = {t["team_id"]: t["name"] for t in
-             await db.teams.find({}, {"_id": 0, "team_id": 1, "name": 1}).to_list(4000)}
+    # KEYED ON api_team_id, NOT team_id. sync_real writes the provider's raw id into
+    # fixture_stats.home_id/away_id, while db.teams.team_id is "<league>-<provider id>"
+    # with the raw one kept alongside as api_team_id. Keying on team_id misses every
+    # row — and misses it silently, printing "#1370 v #1358" rather than failing, which
+    # is how it shipped.
+    names = {t.get("api_team_id"): t["name"] for t in
+             await db.teams.find({}, {"_id": 0, "api_team_id": 1, "name": 1}).to_list(4000)
+             if t.get("api_team_id") is not None}
     leagues = {l["league_id"]: l["name"] for l in
                await db.leagues.find({}, {"_id": 0}).to_list(200)}
 

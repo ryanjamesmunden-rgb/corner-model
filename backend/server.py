@@ -7810,6 +7810,123 @@ async def _teams_for(entries: List[dict]) -> Dict[str, dict]:
             await db.teams.find({"team_id": {"$in": ids}}, {"_id": 0}).to_list(2000)}
 
 
+class MismatchSnapshotBody(BaseModel):
+    """Which mismatches the board was showing, so they can be graded later."""
+    tag: Optional[str] = None       # defaults to today; the label results are read back by
+    days: int = 7                   # horizon the board covered
+    limit: int = 80
+
+
+@api_router.post("/mismatches/snapshot")
+async def snapshot_mismatches(body: MismatchSnapshotBody, token: Optional[str] = None,
+                              user: dict = Depends(get_current_user)):
+    """Freeze the mismatch board, which is the one board no record exists for.
+
+    THE GAP THIS CLOSES IS NAMED IN history_export.py: "the mismatch board as a board.
+    Its evidence survives per streak row; the board's own ranking does not." A board here
+    is computed from the CURRENT team records, so once a fixture is played its row is
+    gone and cannot be rebuilt — the averages behind it have moved, and the game being
+    graded is now inside them.
+
+    Until now the only thing that could be said about this board was a walk-forward
+    REPLAY: what the filter would have shown, settled afterwards. That is a different and
+    weaker claim than a record, for the reason measure_calibration.py already gives — a
+    replay is large and is not what anybody was shown, and quoting one as the other is the
+    mistake. From today there is a record instead.
+
+    SAMPLE QUALITY IS FROZEN WITH THE ROW, and it has to be. _all_mismatches applies NO
+    minimum game count, while BOARD_MIN_MISMATCH_GAMES gates the fixture-board angles at
+    six — so this board ships a side whose "8.0 corners a game" is one match alongside one
+    built on ten, and prints them identically. Which of those two kinds of row actually
+    wins is a question only the record can answer, and only if the sample was written down
+    while it was still true. Counting the games afterwards reads a pool that has since
+    grown.
+
+    THE LEAGUE AVERAGE TOO. Both sides of a mismatch must clear it by MISMATCH_EDGE, and
+    it moves every time the league plays — so the margin a row qualified by is knowable
+    now or never.
+
+    Idempotent per tag, and stale-data-refusing, for the reasons given on
+    snapshot_streaks: a snapshot that could be rewritten after kick-off would be no
+    snapshot at all, and a stale one does not go unused, it quietly becomes part of a
+    published record.
+
+    `direction` and `subject` are stored on every entry although a mismatch is always a
+    team over. That is what lets _grade_entries settle these with the SAME implementation
+    the streak record uses, rather than a second copy that would eventually disagree with
+    it about what a win is.
+    """
+    _check_tools_token(token)
+    tag = body.tag or datetime.now(timezone.utc).date().isoformat()
+    existing = await db.mismatch_snapshots.find_one({"_id": tag}, {"_id": 0})
+    if existing:
+        return {"status": "exists", "tag": tag, "entries": len(existing.get("entries") or [])}
+
+    now_ = datetime.now(timezone.utc)
+    newest = await db.leagues.find({"data_source": "real"}, {"_id": 0, "synced_at": 1}) \
+        .sort("synced_at", -1).limit(1).to_list(1)
+    age_h = None
+    if newest and newest[0].get("synced_at"):
+        try:
+            age_h = round((now_ - datetime.fromisoformat(newest[0]["synced_at"])).total_seconds() / 3600, 1)
+        except Exception:
+            age_h = None
+    if age_h is None or age_h > SNAPSHOT_MAX_AGE_HOURS:
+        return {"status": "stale", "tag": tag, "data_age_hours": age_h,
+                "max_age_hours": SNAPSHOT_MAX_AGE_HOURS, "entries": 0}
+
+    rows = await _all_mismatches(within_days=body.days, limit=max(1, min(body.limit, 200)))
+    entries = []
+    for r in rows:
+        nf = r.get("next_fixture") or {}
+        if not nf.get("fixture_id"):
+            continue        # nothing to grade it against later
+        ev = r.get("evidence") or {}
+        team_ev, opp_ev = ev.get("team") or {}, ev.get("opponent") or {}
+        entries.append({
+            "team_id": r["team_id"], "name": r["name"], "league_id": r["league_id"],
+            "league_name": r.get("league_name"),
+            # A mismatch is always a team over; stored so settlement is shared, not forked.
+            "line": r["line"], "direction": "over", "subject": "team",
+            "lambda": r["lambda"], "prob": r.get("prob"), "fair_odds": r.get("fair_odds"),
+            "team_for": r.get("team_for"), "opp_conceded": r.get("opp_conceded"),
+            # The sample each average rested on, and which venue pool it came from. A row
+            # whose venue_used fell back to pooled is a weaker claim than one measured at
+            # the venue it is about to be played at, and nothing could tell them apart.
+            "team_games": team_ev.get("games"), "team_venue_used": team_ev.get("venue_used"),
+            "team_recent": team_ev.get("recent") or [],
+            "opp_games": opp_ev.get("games"), "opp_venue_used": opp_ev.get("venue_used"),
+            "opp_recent": opp_ev.get("recent") or [],
+            "games": r.get("real_samples") or 0,
+            "fixture_id": nf["fixture_id"], "kickoff": nf.get("date"),
+            "opponent": nf.get("opponent"), "is_home": nf.get("is_home"),
+            "cross_league": bool(nf.get("cross_league")),
+        })
+    doc = {"tag": tag, "created_at": now_.isoformat(), "days": body.days,
+           "entries": entries}
+    await db.mismatch_snapshots.insert_one({"_id": tag, **doc})
+    return {"status": "created", "tag": tag, "entries": len(entries)}
+
+
+@api_router.get("/mismatches/snapshot/{tag}/results")
+async def mismatch_snapshot_results(tag: str, token: Optional[str] = None,
+                                    user: dict = Depends(get_current_user)):
+    """How the mismatches in a snapshot actually landed.
+
+    Same settlement as the streak record — _grade_entries against synced match data, not
+    a fresh scan of the board. An entry whose game has not been played, or not yet synced,
+    comes back `pending` rather than being dropped, so a partial week reads as partial
+    rather than as a shorter list of wins.
+    """
+    _check_tools_token(token)
+    snap = await db.mismatch_snapshots.find_one({"_id": tag}, {"_id": 0})
+    if not snap:
+        raise HTTPException(status_code=404, detail=f"no mismatch snapshot tagged {tag}")
+    out = _grade_entries(snap["entries"], await _teams_for(snap["entries"]))
+    return {"tag": tag, "created_at": snap.get("created_at"), "days": snap.get("days"),
+            "results": out, **_tally(out)}
+
+
 @api_router.get("/streaks/snapshot/{tag}/results")
 async def snapshot_results(tag: str, token: Optional[str] = None,
                            user: dict = Depends(get_current_user)):

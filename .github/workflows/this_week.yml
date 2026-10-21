@@ -357,3 +357,61 @@ jobs:
           print("BOARD_TSV_END")
           print(f"BOARD_TSV_ROWS {n}")
           PY
+
+      # THE MISMATCH BOARD WITH ITS EVIDENCE, which /api/share/rows does not carry.
+      # share/rows gives team_for and opp_conceded — two averages and nothing behind
+      # them, and an average cannot tell a steady seven from a three-and-an-eleven.
+      # /api/top-mismatches ships `evidence.recent`: the games each average is made of,
+      # with the sample and which venue pool it came from. That is what makes a row
+      # researchable rather than merely rankable.
+      - name: The mismatch board, with the games behind each average
+        env:
+          BACKEND: ${{ vars.BACKEND_URL || 'https://corner-model.onrender.com' }}
+          TOOLS_TOKEN: ${{ secrets.TOOLS_TOKEN }}
+          DAYS: ${{ github.event.inputs.days }}
+        run: |
+          code=$(curl -s -o mismatches.json -w '%{http_code}' --max-time 180 \
+            "$BACKEND/api/top-mismatches?within_days=${DAYS:-7}&limit=10000" || true)
+          echo "top-mismatches HTTP $code"
+          [ "$code" = "200" ] || { echo "::warning::mismatch export skipped"; exit 0; }
+          python3 - <<'PY'
+          import json
+
+          d = json.load(open("mismatches.json"))
+          rows = d if isinstance(d, list) else (d.get("rows") or d.get("items") or [])
+          COLS = ["kickoff", "fixture_id", "league_name", "name", "is_home", "opponent",
+                  "team_for", "team_games", "team_venue_used", "team_recent",
+                  "opp_conceded", "opp_games", "opp_venue_used", "opp_recent",
+                  "lambda", "line", "prob", "fair_odds", "real_samples"]
+          print("MISMATCH_TSV_BEGIN")
+          print("\t".join(COLS))
+          n = 0
+          for r in rows:
+              nf = r.get("next_fixture") or {}
+              ev = r.get("evidence") or {}
+              t = ev.get("team") or {}
+              o = ev.get("opponent") or {}
+              row = {
+                  "kickoff": nf.get("date") or "",
+                  "fixture_id": nf.get("fixture_id") or "",
+                  "league_name": r.get("league_name") or "",
+                  "name": r.get("name") or "",
+                  "is_home": nf.get("is_home"),
+                  "opponent": nf.get("opponent") or "",
+                  "team_for": r.get("team_for"),
+                  "team_games": t.get("games"),
+                  "team_venue_used": t.get("venue_used") or "",
+                  "team_recent": ",".join(str(x) for x in (t.get("recent") or [])),
+                  "opp_conceded": r.get("opp_conceded"),
+                  "opp_games": o.get("games"),
+                  "opp_venue_used": o.get("venue_used") or "",
+                  "opp_recent": ",".join(str(x) for x in (o.get("recent") or [])),
+                  "lambda": r.get("lambda"), "line": r.get("line"),
+                  "prob": r.get("prob"), "fair_odds": r.get("fair_odds"),
+                  "real_samples": r.get("real_samples"),
+              }
+              print("\t".join("" if row.get(c) is None else str(row.get(c)) for c in COLS))
+              n += 1
+          print("MISMATCH_TSV_END")
+          print(f"MISMATCH_TSV_ROWS {n}")
+          PY

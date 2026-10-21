@@ -2571,6 +2571,7 @@ def _backtest_summary(stats: dict, lines: List[int]) -> dict:
 TOOLS_TOKEN = os.environ.get("TOOLS_TOKEN")
 TOOL_SCRIPTS = {"backfill_shots": "backfill_shots.py", "measure_features": "measure_features.py",
                 "measure_chase_board": "measure_chase_board.py",
+                "measure_mismatch_board": "measure_mismatch_board.py",
                 "measure_calibration": "measure_calibration.py",
                 "calibration_report": "calibration_report.py",
                 "audit_settlement": "audit_settlement.py",
@@ -2603,7 +2604,10 @@ TOOL_SCRIPTS = {"backfill_shots": "backfill_shots.py", "measure_features": "meas
 TOOL_COOLDOWN = {"backfill_shots": 600, "measure_features": 120,
                  # Roughly doubled since the null run was added — it replays every cached
                  # fixture twice, once real and once synthetic.
-                 "measure_chase_board": 300, "measure_calibration": 120,
+                 "measure_chase_board": 300,
+                 # Same shape of replay as the chase board, single pass (no null).
+                 "measure_mismatch_board": 300,
+                 "measure_calibration": 120,
                  "calibration_report": 120,
                  "audit_settlement": 120, "audit_pick_lines": 120,
                  "audit_bets": 120, "audit_signups": 120,
@@ -2690,6 +2694,14 @@ MEASURE_MODES = {
     # which is the Barnsley v Cambridge 11-11 question asked with a denominator. Reads
     # db.streak_snapshots and db.posted_angles; writes nothing.
     "line_ladder": ("line_ladder", [], True),
+    # DID THE MISMATCH BOARD'S PICKS LAND, AND WAS ITS PROBABILITY HONEST. The one board
+    # with no run behind it — two averages above their league's, priced at the midpoint —
+    # so lambda is the entire claim and a bad lambda moves the LINE, not just the stated
+    # percentage. Replays the board walk-forward over every cached fixture, lists the
+    # current month's rows with their results, and splits the residual home against away,
+    # which is where the known home overstatement should show up if it is real. Reads
+    # db.fixture_stats; writes nothing.
+    "mismatch_board": ("measure_mismatch_board", [], True),
     "bet_audit": ("audit_bets", [], False),
     # DID ANYBODY TRY TO SUBSCRIBE AND NOT GET THROUGH. Prints the weekly signup window
     # first, in words, because SIGNUP_DAY defaults to Monday and a new visitor is always

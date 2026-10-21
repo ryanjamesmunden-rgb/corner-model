@@ -358,6 +358,57 @@ jobs:
           print(f"BOARD_TSV_ROWS {n}")
           PY
 
+      # JUST THE OVERS, ONE LINE EACH, because the full board TSV is 400 rows and a
+      # reader after over angles has to carry all of it to find the half that are overs.
+      # Same rows.json, same fields — a narrower cut of the same truth, not a second one.
+      #
+      # Every mismatch and chase row is an over by construction, so the filter only
+      # really bites on the streak grid, where it drops the two under cuts.
+      - name: The over angles only
+        run: |
+          python3 - <<'PY'
+          import json
+
+          d = json.load(open("rows.json"))
+          COLS = ["board", "kickoff", "league_name", "name", "is_home", "opponent",
+                  "subject", "line", "line_label", "hits", "settled", "avg",
+                  "streak_len", "lambda", "prob", "fair_odds", "book_odds",
+                  "team_for", "opp_conceded", "real_samples", "fixture_id"]
+          print("OVERS_TSV_BEGIN")
+          print("\t".join(COLS))
+          n = 0
+          for board in ("streaks", "mismatches", "chase"):
+              for r in (d.get(board) or []):
+                  p = r.get("projection") or {}
+                  nf = r.get("next_fixture") or {}
+                  if (r.get("direction") or p.get("direction") or "over") != "over":
+                      continue
+                  row = {
+                      "board": board[0], "kickoff": nf.get("date") or "",
+                      "league_name": r.get("league_name") or "",
+                      "name": r.get("name") or r.get("team") or "",
+                      "is_home": nf.get("is_home"),
+                      "opponent": nf.get("opponent") or "",
+                      "subject": r.get("subject") or p.get("subject") or "team",
+                      "line": r.get("line"), "line_label": r.get("line_label") or "",
+                      "hits": r.get("hits"), "settled": r.get("settled"),
+                      "avg": r.get("avg"),
+                      "streak_len": (r.get("streak") or {}).get("length"),
+                      "lambda": p.get("lambda", r.get("lambda")),
+                      "prob": p.get("prob", r.get("prob")),
+                      "fair_odds": p.get("fair_odds", r.get("fair_odds")),
+                      "book_odds": p.get("book_odds", r.get("book_odds")),
+                      "team_for": r.get("team_for"), "opp_conceded": r.get("opp_conceded"),
+                      "real_samples": r.get("real_samples"),
+                      "fixture_id": nf.get("fixture_id") or "",
+                  }
+                  print("\t".join("" if row.get(c) is None else str(row.get(c))
+                                  for c in COLS))
+                  n += 1
+          print("OVERS_TSV_END")
+          print(f"OVERS_TSV_ROWS {n}")
+          PY
+
       # THE MISMATCH BOARD WITH ITS EVIDENCE, which /api/share/rows does not carry.
       # share/rows gives team_for and opp_conceded — two averages and nothing behind
       # them, and an average cannot tell a steady seven from a three-and-an-eleven.

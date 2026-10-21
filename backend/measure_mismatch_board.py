@@ -74,7 +74,12 @@ def build_rows(matches):
     if not matches:
         return []
 
-    shots = [m.get(f"{s}_shots", 0) for m in matches for s in ("home", "away")]
+    # `.get(key, 0)` DOES NOT GUARD THIS. It falls back only when the key is ABSENT,
+    # and cached fixtures carry the key with an explicit null where the provider filed
+    # no shot count — so the default never fires and sum() meets a None. Same shape as
+    # the blocked-shots line below, which has always filtered rather than defaulted.
+    shots = [m[f"{s}_shots"] for m in matches for s in ("home", "away")
+             if m.get(f"{s}_shots") is not None]
     lg_shots = (sum(shots) / len(shots)) if shots else 0.0
     blocked = [m[f"{s}_blocked_shots"] for m in matches for s in ("home", "away")
                if m.get(f"{s}_blocked_shots") is not None]

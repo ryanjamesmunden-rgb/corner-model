@@ -3913,3 +3913,97 @@ export const renderFormStory = (canvas, {
 
   return canvas;
 };
+
+
+/**
+ * A daily fact as a 16:9 card for X.
+ *
+ * THE HERO IS SIZED TO FIT RATHER THAN SET, because these are not all the same shape.
+ * "21" is two glyphs, "6.8 : 1.1" is nine, and "15/15" is five — a fixed 220px that suits
+ * the first overruns the margin on the second, and the overrun is silent on a canvas: it
+ * simply draws past the edge and the PNG ships with half a number on it.
+ *
+ * NO TEASE AND NO BLUR, unlike every other card here. The angle cards hold back the line
+ * because the line is the product. A fact about last season is not the product — it is the
+ * advertisement for it, and blurring the number would leave nothing worth looking at.
+ */
+export const renderStatCard = (canvas, {
+  hero = "", unit = "", headline = "", detail = "", meta = [],
+  tone = "primary", cta = "thecornermodel.com", brand = "CORNER MODEL",
+} = {}) => {
+  canvas.width = WIDE_W;
+  canvas.height = WIDE_H;
+  const ctx = canvas.getContext("2d");
+  const M = 96;
+  const W = WIDE_W - M * 2;
+  const CX = WIDE_W / 2;
+  const accent = tone === "solid" ? C.solid : tone === "dim" ? C.muted : C.primary;
+
+  ctx.fillStyle = C.bg;
+  ctx.fillRect(0, 0, WIDE_W, WIDE_H);
+  const glow = ctx.createRadialGradient(CX, 500, 80, CX, 500, 1150);
+  glow.addColorStop(0, `${accent}2B`);
+  glow.addColorStop(1, `${accent}00`);
+  ctx.fillStyle = glow;
+  ctx.fillRect(0, 0, WIDE_W, WIDE_H);
+
+  ctx.textBaseline = "middle";
+  // CENTRED, which the first cut of this was not. Left-aligning a short hero on a 1920
+  // canvas leaves two thirds of the frame empty — fine on a story, where the crop is
+  // tall, and wrong on a timeline card, where the whole rectangle is on screen at once
+  // and the emptiness reads as a rendering fault rather than as space.
+  ctx.textAlign = "center";
+
+  ctx.fillStyle = accent;
+  ctx.font = `700 24px ${FONT_HEAD}`;
+  ctx.letterSpacing = "6px";
+  ctx.fillText(brand, CX, 96);
+  ctx.letterSpacing = "0px";
+
+  // The claim, above the number it rests on: a reader who stops for one line stops for
+  // this one, and the figure alone does not say what it is a record of.
+  ctx.fillStyle = C.text;
+  ctx.font = fitFont(ctx, headline, { size: 60, max: W, weight: 600, family: FONT_HEAD });
+  ctx.fillText(headline, CX, 232);
+
+  // THE HERO IS SIZED TO FIT RATHER THAN SET, because these are not all the same shape.
+  // "21" is two glyphs, "6.8 : 0.6" is nine and "15/15" is five — a fixed size that suits
+  // the first overruns the margin on the second, and an overrun is silent on a canvas:
+  // it draws past the edge and the PNG ships with half a number on it.
+  ctx.fillStyle = accent;
+  // 82% OF THE COLUMN, NOT ALL OF IT. fitFont shrinks only until the text clears `max`,
+  // so a nine-glyph hero like "6.8 : 0.6" stops the moment it touches the margins and
+  // renders wall to wall — legible, but it reads as a number that outgrew the card.
+  ctx.font = fitFont(ctx, hero, { size: 300, max: W * 0.82, weight: 600, family: FONT_DATA, min: 110 });
+  ctx.fillText(hero, CX, 474);
+
+  ctx.fillStyle = C.muted;
+  ctx.font = fitFont(ctx, unit, { size: 48, max: W, weight: 500, family: FONT_BODY, min: 28 });
+  ctx.fillText(unit, CX, 650);
+
+  // A short rule, then the supporting line. The rule is what stops the detail reading as
+  // a second unit.
+  ctx.fillStyle = C.border;
+  ctx.fillRect(CX - 180, 722, 360, 2);
+
+  ctx.fillStyle = C.text;
+  ctx.font = fitFont(ctx, detail, { size: 42, max: W, weight: 500, family: FONT_BODY, min: 26 });
+  ctx.fillText(detail, CX, 790);
+
+  // THE DENOMINATOR, LAST AND ALWAYS. "Nobody has a higher floor" is a claim about a
+  // population; a card that drops the population makes a bigger claim than the post it
+  // came from, which is the one way these could be worse than the text they replace.
+  const line = (meta || []).filter(Boolean).join("   ·   ");
+  if (line) {
+    ctx.fillStyle = C.muted;
+    ctx.font = `500 30px ${FONT_BODY}`;
+    ctx.fillText(line, CX, 866);
+  }
+
+  ctx.fillStyle = accent;
+  ctx.font = `600 30px ${FONT_HEAD}`;
+  ctx.fillText(cta, CX, WIDE_H - 78);
+  ctx.textAlign = "left";
+
+  return canvas;
+};

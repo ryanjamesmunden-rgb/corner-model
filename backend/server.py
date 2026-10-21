@@ -2572,6 +2572,7 @@ TOOLS_TOKEN = os.environ.get("TOOLS_TOKEN")
 TOOL_SCRIPTS = {"backfill_shots": "backfill_shots.py", "measure_features": "measure_features.py",
                 "measure_chase_board": "measure_chase_board.py",
                 "measure_mismatch_board": "measure_mismatch_board.py",
+                "night_results": "night_results.py",
                 "measure_calibration": "measure_calibration.py",
                 "calibration_report": "calibration_report.py",
                 "audit_settlement": "audit_settlement.py",
@@ -2607,6 +2608,9 @@ TOOL_COOLDOWN = {"backfill_shots": 600, "measure_features": 120,
                  "measure_chase_board": 300,
                  # Same shape of replay as the chase board, single pass (no null).
                  "measure_mismatch_board": 300,
+                 # One window query and two name lookups; the answer only moves
+                 # when a game finishes and the sync catches up.
+                 "night_results": 120,
                  "measure_calibration": 120,
                  "calibration_report": 120,
                  "audit_settlement": 120, "audit_pick_lines": 120,
@@ -2702,6 +2706,11 @@ MEASURE_MODES = {
     # which is where the known home overstatement should show up if it is real. Reads
     # db.fixture_stats; writes nothing.
     "mismatch_board": ("measure_mismatch_board", [], True),
+    # WHAT THE GAMES ACTUALLY PRODUCED, which nothing else here can answer. Every
+    # board looks forward and is rebuilt from current records, so a fixture vanishes
+    # the moment it kicks off and the corner counts it produced are unreachable from
+    # the site. Reads db.fixture_stats; grades nothing and claims nothing.
+    "night_results": ("night_results", [], True),
     "bet_audit": ("audit_bets", [], False),
     # DID ANYBODY TRY TO SUBSCRIBE AND NOT GET THROUGH. Prints the weekly signup window
     # first, in words, because SIGNUP_DAY defaults to Monday and a new visitor is always

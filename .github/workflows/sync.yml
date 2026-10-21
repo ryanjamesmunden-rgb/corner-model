@@ -206,6 +206,35 @@ jobs:
             *)       echo "::warning::projection snapshot did not run (HTTP $code)" ;;
           esac
 
+      # THE MISMATCH BOARD, FROZEN FOR THE SAME REASON AND ON THE SAME SCHEDULE.
+      #
+      # It was the one board with no record at all. history_export.py names the gap:
+      # "the mismatch board as a board. Its evidence survives per streak row; the board's
+      # own ranking does not." A board is computed from the current team records, so once
+      # a fixture is played its row cannot be rebuilt — the averages have moved and the
+      # game being graded is now inside them. Everything that could be said about this
+      # board was therefore a replay, which is not what anybody was shown.
+      #
+      # Same soft failure as the projections freeze above, and for the same reason: the
+      # sync is the important half and has already happened. A missed freeze is a gap in a
+      # record, which earns a warning and not a red run.
+      - name: Freeze today's mismatch board
+        env:
+          TOOLS_TOKEN: ${{ secrets.TOOLS_TOKEN }}
+        run: |
+          code=$(curl -s -o mmsnap.json -w '%{http_code}' --max-time 120 -X POST \
+            -H 'Content-Type: application/json' -d '{"days":7}' \
+            "$BACKEND/api/mismatches/snapshot?token=$TOOLS_TOKEN" || echo 000)
+          status=$(python3 -c "import json;print(json.load(open('mmsnap.json')).get('status',''))" 2>/dev/null || echo "")
+          count=$(python3 -c "import json;print(json.load(open('mmsnap.json')).get('entries',0))" 2>/dev/null || echo 0)
+          echo "mismatch snapshot: HTTP $code status=$status entries=$count"
+          case "$status" in
+            created) echo "::notice::froze $count mismatches — gradeable once played" ;;
+            exists)  echo "::notice::already snapshotted today — left untouched" ;;
+            stale)   echo "::warning::data too old to snapshot — today cannot be graded" ;;
+            *)       echo "::warning::mismatch snapshot did not run (HTTP $code)" ;;
+          esac
+
       - name: Report what happened
         # A boot sync is a detached subprocess, so this is a progress check, not a
         # completion check. It exists so a dead sync shows up in the log instead of

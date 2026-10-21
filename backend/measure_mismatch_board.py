@@ -208,8 +208,12 @@ async def run(since=None, until=None, league_id=None, show=200):
 
     leagues = {l["league_id"]: l["name"]
                for l in await db.leagues.find({}, {"_id": 0}).to_list(200)}
-    names = {t["team_id"]: t["name"]
-             for t in await db.teams.find({}, {"_id": 0, "team_id": 1, "name": 1}).to_list(4000)}
+    # api_team_id, for the reason given in night_results: fixture_stats carries the
+    # provider's raw team id and db.teams.team_id is league-prefixed. The replay reads
+    # fixture_stats, so its ids are raw ones.
+    names = {t.get("api_team_id"): t["name"]
+             for t in await db.teams.find({}, {"_id": 0, "api_team_id": 1, "name": 1}).to_list(4000)
+             if t.get("api_team_id") is not None}
 
     print(f"EVERY MISMATCH FIXTURE {since or 'start'} to {until or 'now'} "
           f"({len(window)} rows), oldest first\n")

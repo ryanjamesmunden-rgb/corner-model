@@ -134,6 +134,12 @@ def build_rows(matches):
                 "lambda": lam, "line": line, "prob": nb_ge(line, lam),
                 "actual": actual, "hit": actual >= line,
                 "margin": actual - line,
+                # The run-in: the games each average is actually made of, as they stood
+                # before kick-off. An average alone cannot tell a steady seven from a
+                # three-and-an-eleven, and that is the difference between a mismatch
+                # worth backing and two numbers that happen to average well.
+                "team_recent": list(tv)[-6:], "team_games": len(tv),
+                "opp_recent": list(ov)[-6:], "opp_games": len(ov),
             })
 
         # ...and only now does this fixture become history for the next one.
@@ -201,18 +207,27 @@ async def run(since=None, until=None, league_id=None, show=200):
              for t in await db.teams.find({}, {"_id": 0, "team_id": 1, "name": 1}).to_list(4000)}
 
     print(f"EVERY MISMATCH FIXTURE {since or 'start'} to {until or 'now'} "
-          f"({len(window)} rows)\n")
-    print(f"{'date':<11} {'league':<20} {'team':<22} {'v':<1} {'opponent':<22} "
-          f"{'at':<4} {'line':>4} {'lam':>5} {'said':>5} {'got':>4} {'by':>4}  result")
-    for r in sorted(window, key=lambda r: r["date"])[:show]:
-        print(f"{r['date'][:10]:<11} {leagues.get(r['league_id'], '?')[:20]:<20} "
-              f"{names.get(r['team_id'], '?')[:22]:<22} v "
-              f"{names.get(r['opp_id'], '?')[:22]:<22} "
-              f"{r['venue']:<4} {r['line']:>4} {r['lambda']:>5.2f} "
-              f"{r['prob']*100:>4.0f}% {r['actual']:>4} {r['margin']:>+4} "
-              f" {'WON' if r['hit'] else 'lost'}")
+          f"({len(window)} rows), oldest first\n")
+    for i, r in enumerate(sorted(window, key=lambda r: r["date"])[:show], start=1):
+        team = names.get(r["team_id"], f"#{r['team_id']}")
+        opp = names.get(r["opp_id"], f"#{r['opp_id']}")
+        lg = leagues.get(r["league_id"], "?")
+        at = "home" if r["venue"] == "home" else "away"
+        edge_t = r["team_for"] / r["lg_avg"] if r["lg_avg"] else 0
+        edge_o = r["opp_conceded"] / r["lg_avg"] if r["lg_avg"] else 0
+        print(f"{i:>3}. {r['date'][:10]}  {lg}  —  {team} ({at}) v {opp}")
+        print(f"     won      {', '.join(str(c) for c in r['team_recent'])}"
+              f"   avg {r['team_for']:.2f} over {r['team_games']} {at} games"
+              f"   ({edge_t:.2f}x league {r['lg_avg']:.2f})")
+        print(f"     conceded {', '.join(str(c) for c in r['opp_recent'])}"
+              f"   avg {r['opp_conceded']:.2f} over {r['opp_games']} games"
+              f"   ({edge_o:.2f}x league)")
+        print(f"     board    lambda {r['lambda']:.2f} -> {r['line']}+ corners, "
+              f"said {r['prob']*100:.0f}%")
+        print(f"     result   {r['actual']} corners  ->  "
+              f"{'WON' if r['hit'] else 'LOST'} by {abs(r['margin'])}\n")
     if len(window) > show:
-        print(f"... {len(window) - show} more")
+        print(f"... {len(window) - show} more (raise --show)\n")
 
     print(f"\nHOW THEY LANDED\n")
     summarise(window, "all")

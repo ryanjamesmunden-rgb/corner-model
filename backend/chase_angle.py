@@ -410,14 +410,43 @@ async def teams_report(league_id=None, corner_edge=DEFAULT_CORNER_EDGE,
             edge = cf - par
             if edge < corner_edge or ga < min_leaking:
                 continue
+
+            # CONCEDING IS NOT THE SAME AS CHASING, and this is where the screen was
+            # wrong. A side that ships 1.7 and scores 2.5 is usually AHEAD — it concedes
+            # because it attacks, and it spends the match defending a lead rather than
+            # hunting one. Goals-against alone cannot tell that side apart from one being
+            # beaten every week, and both were coming back in the same list.
+            #
+            # goal_events already stores the honest version per match: minutes_trailing,
+            # and whether the opponent scored first. Where the backfill has reached, those
+            # answer "is this side actually behind" directly instead of by proxy. Where it
+            # has not, the row still lists on the goals it does have and says so — a team
+            # whose league has no goal detail is a gap in our sync, not a side that never
+            # trails.
+            timed = [m for m in games if m.get("minutes_trailing") is not None]
+            trailing = per_game(timed, "minutes_trailing") if timed else None
+            conceded_first = None
+            marked = [m for m in games if m.get("scored_first") is not None]
+            if marked:
+                conceded_first = sum(1 for m in marked if m["scored_first"] is False) / len(marked)
             rows.append({
                 "name": t.get("name"), "league": leagues.get(t.get("league_id"), "?"),
                 "venue": "home" if home else "away", "games": len(games),
                 "cf": cf, "edge": edge, "ga": ga,
+                "gf": per_game(games, "goals_for"),
                 "ca": per_game(games, "corners_against"),
+                "trailing": trailing, "timed": len(timed),
+                "conceded_first": conceded_first,
                 "thin": len(games) < THIN_GAMES,
             })
-    rows.sort(key=lambda r: (r["thin"], -r["edge"]))
+
+    # RANKED ON MINUTES TRAILING WHERE WE KNOW IT. The corner edge is what gets bet, but
+    # it was never the thing in dispute — plenty of good sides win corners. What the
+    # screen is for is finding the ones that do it from BEHIND, so the measured version
+    # leads where it exists and the rest fall in under it on the corner edge, rather than
+    # being dropped for a gap in our own backfill.
+    rows.sort(key=lambda r: (r["thin"], r["trailing"] is None,
+                             -(r["trailing"] or 0), -r["edge"]))
 
     print(f"TEAMS THAT SHIP GOALS AND STILL WIN CORNERS\n")
     print(f"screen: >= {corner_edge:+.2f} corners/game above the division, "
@@ -428,19 +457,28 @@ async def teams_report(league_id=None, corner_edge=DEFAULT_CORNER_EDGE,
         return
     solid = [r for r in rows if not r["thin"]]
     print(f"{len(rows)} team-venues fit ({len(solid)} well sampled)\n")
-    print(f"{'team':<26} {'league':<20} {'at':<5} {'gms':>3} "
-          f"{'corners':>8} {'v div':>7} {'conceded':>9} {'they give up':>13}")
+    timedn = sum(1 for r in rows if r["trailing"] is not None)
+    print(f"{timedn} of them have goal timings; the rest list on goals alone\n")
+    print(f"{'team':<24} {'league':<18} {'at':<5} {'gms':>3} {'corners':>8} {'v div':>7} "
+          f"{'mins behind':>11} {'conc 1st':>9} {'for-against':>12}")
     for r in rows[:top]:
-        print(f"{r['name'][:26]:<26} {r['league'][:20]:<20} {r['venue']:<5} "
+        trail = f"{r['trailing']:.0f}" if r["trailing"] is not None else "—"
+        first = f"{r['conceded_first']*100:.0f}%" if r["conceded_first"] is not None else "—"
+        gf = r["gf"] if r["gf"] is not None else 0
+        print(f"{r['name'][:24]:<24} {r['league'][:18]:<18} {r['venue']:<5} "
               f"{r['games']:>3} {r['cf']:>8.2f} {r['edge']:>+7.2f} "
-              f"{r['ga']:>9.2f} {(r['ca'] or 0):>13.2f}"
-              f"{'   thin' if r['thin'] else ''}")
+              f"{trail:>11} {first:>9} {gf:>6.2f}-{r['ga']:<5.2f}"
+              f"{'  thin' if r['thin'] else ''}")
     if len(rows) > top:
         print(f"... {len(rows) - top} more")
-    print("\nRanked on the corner edge, not on the leaking — the corners are what gets")
-    print("bet and the goals are the mechanism. A side here matches the SHAPE; the chase")
-    print("premise behind it has never been confirmed, and in its per-game form it was")
-    print("falsified five times. See this file's header before betting any of it.")
+    print("\nRanked on MINUTES BEHIND where the goal timings exist, then on the corner")
+    print("edge. Conceding is not chasing: a side that ships 1.7 and scores 2.5 is")
+    print("usually ahead, and goals-against alone cannot tell it apart from one being")
+    print("beaten every week. Read 'for-against' and 'conc 1st' together — a side that")
+    print("concedes first in half its games and scores less than it ships is the shape.")
+    print("\nA side here matches that shape; the chase premise behind it has never been")
+    print("confirmed, and in its per-game form it was falsified five times. See this")
+    print("file's header before betting any of it.")
 
 
 def main():

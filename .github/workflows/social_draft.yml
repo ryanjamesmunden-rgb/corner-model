@@ -121,8 +121,10 @@ on:
         # unposted, so an off-schedule run builds it and writes it to this run's summary,
         # where it can be read before anyone decides to send it.
         #
-        # The SCHEDULED run is unaffected: on a card day it sends, as it always did. This
-        # only governs a run somebody started by hand.
+        # THIS NOW GOVERNS THE SCHEDULED RUN TOO for the locked card. It used to send
+        # itself twice a week, which put three picks nobody had selected in front of
+        # paying members. The freeze still happens on schedule — only the publishing
+        # waits. The repository variable AUTO_POST_LOCKED restores the old behaviour.
         description: "Also post it to the channel (manual card runs only)"
         required: false
         default: false
@@ -984,10 +986,52 @@ jobs:
           echo "----- locked -----"
           cat locked.md
           echo "----- end -----"
-          if [ -n "${{ inputs.board }}" ] && [ "${{ inputs.send }}" != "true" ]; then
-            echo "::notice::locked list built, NOT sent — re-run with send: true to post it"
+          # THE CARD IS BUILT ON SCHEDULE AND SENT BY A PERSON. It used to send itself on
+          # Monday and Wednesday, which meant the channel received three picks nobody had
+          # chosen — and a 40% shot could sit beside an 84% one under the same sentence
+          # ("the run alone") with no price on either. Freezing is what makes the record
+          # honest and that still happens automatically, every card day, untouched above.
+          # Publishing is a different act: it puts a claim in front of paying members.
+          #
+          # Set the repository variable AUTO_POST_LOCKED to "true" to have it send itself
+          # again. Anything else, including unset, holds.
+          if [ "${{ inputs.send }}" != "true" ] && [ "${{ vars.AUTO_POST_LOCKED }}" != "true" ]; then
+            {
+              echo "**Frozen and held.** The claim is recorded and gradeable; nothing has"
+              echo "been sent. To publish it: re-run this workflow with board \`locked\`"
+              echo "and send \`true\`."
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "::notice::locked list built and HELD — re-run with board: locked, send: true to post it"
             exit 0
           fi
+
+          # A HELD CARD CAN GO STALE, which an auto-sending one never could. The post says
+          # "before a ball was kicked" in its own second line, so sending it after one of
+          # its games has started makes the message untrue — and it is the one claim this
+          # whole freeze exists to be able to make. Refuse rather than publish it.
+          python3 - <<'PY' || exit 1
+          import json, sys
+          from datetime import datetime, timezone
+          snap = json.load(open("snap.json"))
+          now = datetime.now(timezone.utc)
+          late = []
+          for e in (snap.get("entries") or []):
+              if not e.get("qualified"):
+                  continue
+              try:
+                  ko = datetime.fromisoformat((e.get("kickoff") or "").replace("Z", "+00:00"))
+              except ValueError:
+                  continue
+              if ko.tzinfo is None:
+                  ko = ko.replace(tzinfo=timezone.utc)
+              if ko <= now:
+                  late.append(f"{e.get('name')} {e.get('line')}+ kicked off {ko:%a %d %b %H:%M} UTC")
+          if late:
+              print("::error::refusing to send — these are already under way:")
+              for line in late:
+                  print(f"::error::  {line}")
+              sys.exit(1)
+          PY
           python3 - <<'PY' > locked_payload.json
           import json, os
           d = json.load(open("locked.json"))

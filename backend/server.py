@@ -2750,6 +2750,11 @@ MEASURE_MODES = {
     # tested five times and came out flat, and the season-shape form has not been
     # tested at all. A list of fixtures to look at, never a card.
     "chase_angle": ("chase_angle", [], True),
+    # THE SAME SHAPE ASKED OF A TEAM. `chase_angle` needs both halves to line up, so a
+    # side that fits it perfectly returns nothing in a week when nobody suitable plays
+    # them — it answered 2 of 371 fixtures. This drops the opponent legs and lists who
+    # the shape describes. Still a screen, never confirmed; see the script header.
+    "chase_teams": ("chase_angle", ["--teams"], True),
     # EVERYTHING THE SITE HAS PUBLISHED, GRADED, WEEK BY WEEK. Two sections are the
     # real record — the frozen projections board and the frozen streak board, the
     # second carrying the mismatch evidence each row rested on. One is a walk-forward

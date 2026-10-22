@@ -51,6 +51,8 @@ const KINDS = {
   // back the way every other card in this repo is, rather than being shipped on the word
   // of a build that compiled.
   form_wide: "renderFormWide",
+  // The daily fact as a picture. No tease on this one — see renderStatCard.
+  stat: "renderStatCard",
 };
 // WHICH KINDS ANIMATE. The fixture story draws a curve that can grow; the results reel
 // steps through a week of picks one at a time, which is the one case where the SEQUENCE is

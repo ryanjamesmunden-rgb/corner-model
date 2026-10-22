@@ -124,7 +124,7 @@ on:
         # THIS NOW GOVERNS THE SCHEDULED RUN TOO for the locked card. It used to send
         # itself twice a week, which put three picks nobody had selected in front of
         # paying members. The freeze still happens on schedule — only the publishing
-        # waits. The repository variable AUTO_POST_LOCKED restores the old behaviour.
+        # waits. The repository variable AUTO_POST_PICKS restores the old behaviour.
         description: "Also post it to the channel (manual card runs only)"
         required: false
         default: false
@@ -665,8 +665,16 @@ jobs:
           echo "----- card -----"
           cat card.md
           echo "----- end -----"
-          if [ -n "${{ inputs.board }}" ] && [ "${{ inputs.send }}" != "true" ]; then
-            echo "::notice::card built, NOT sent — re-run with send: true to post it"
+          # SELECTING PICKS AND PUBLISHING THEM ARE DIFFERENT ACTS. This used to send on
+          # every scheduled card day, so the channel received games nobody had chosen.
+          # The repository variable AUTO_POST_PICKS restores that in one place; anything
+          # else, including unset, builds the card and holds it for a person.
+          if [ "${{ inputs.send }}" != "true" ] && [ "${{ vars.AUTO_POST_PICKS }}" != "true" ]; then
+            {
+              echo "**Built and held.** Nothing was sent. To publish it, re-run this"
+              echo "workflow with the matching board and send \`true\`."
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "::notice::card built and HELD — re-run with send: true to post it"
             exit 0
           fi
           python3 - <<'PY' > card_payload.json
@@ -993,9 +1001,9 @@ jobs:
           # honest and that still happens automatically, every card day, untouched above.
           # Publishing is a different act: it puts a claim in front of paying members.
           #
-          # Set the repository variable AUTO_POST_LOCKED to "true" to have it send itself
+          # Set the repository variable AUTO_POST_PICKS to "true" to have it send itself
           # again. Anything else, including unset, holds.
-          if [ "${{ inputs.send }}" != "true" ] && [ "${{ vars.AUTO_POST_LOCKED }}" != "true" ]; then
+          if [ "${{ inputs.send }}" != "true" ] && [ "${{ vars.AUTO_POST_PICKS }}" != "true" ]; then
             {
               echo "**Frozen and held.** The claim is recorded and gradeable; nothing has"
               echo "been sent. To publish it: re-run this workflow with board \`locked\`"
@@ -1076,9 +1084,16 @@ jobs:
         # render step may well not have run today: it exits early when the day's board has no
         # fixture curve, which is most days. Relying on its side effects would make this work
         # only on the days it was least needed.
+        #
+        # AND IT CANNOT OUTLIVE THE LIST IT DECORATES. The text send above now holds for a
+        # person, and this step's own condition never consulted `send` — it keyed off the
+        # locked.json file existing. That file is written by the BUILD, not by the send, so
+        # on a held card this would have posted the picture of three picks whose text was
+        # deliberately withheld: the louder half of a message nobody had approved.
         if: >-
           steps.when.outputs.card != '' && env.TG_TOKEN != ''
           && hashFiles('locked.json') != ''
+          && (inputs.send == true || vars.AUTO_POST_PICKS == 'true')
         run: |
           # The tool prints WHY on stderr when there is no curve — a failed fetch, a model
           # withheld despite the token, or a fixture with no curve for that group are three

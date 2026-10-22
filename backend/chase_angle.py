@@ -357,6 +357,92 @@ async def run(days=DEFAULT_DAYS, top=DEFAULT_TOP, league_id=None,
     print("opponent does — and is deliberately NOT ranked on.")
 
 
+
+# ---------------------------------------------------------------------------
+# The same shape, asked about a TEAM rather than a fixture
+# ---------------------------------------------------------------------------
+
+async def teams_report(league_id=None, corner_edge=DEFAULT_CORNER_EDGE,
+                       min_leaking=DEFAULT_MIN_LEAKING, top=40):
+    """Which sides ARE the chase half: they ship goals and still win corners.
+
+    THE FIXTURE SCREEN CANNOT ANSWER THIS, which is why this exists. `scan` needs both
+    halves to line up — our leaky corner-winner AND a solid winner opposite who gives
+    corners up — so a side that fits this shape perfectly returns nothing all week
+    because nobody suitable is playing them. Asked of 371 fixtures it answered 2, and
+    "name more teams like Brann" is not a question about who they happen to face.
+
+    So this drops every opponent leg and keeps our side's two: corners won per game
+    ABOVE the division, and goals conceded per game. Venue-split, because a side that
+    chases at home and sits deep away is two different teams and the pooled average is
+    neither.
+
+    RANKED ON THE CORNER HALF, like the fixture screen, and for the same reason: the
+    corners are what gets bet and the leaking is the mechanism behind them. Ordering on
+    how badly a side defends would put the worst team in the division top of a list
+    about corners.
+
+    IT IS A SCREEN AND NOT A FINDING. The chase premise has been falsified five times in
+    its per-game form and this season-shape form has never been tested at all — see the
+    header. A side appearing here means it matches the shape, not that backing its
+    corners pays.
+    """
+    teams = await db.teams.find({}, {"_id": 0}).to_list(4000)
+    if league_id and league_id != "all":
+        teams = [t for t in teams if t.get("league_id") == league_id]
+    pars = league_pars(teams)
+    leagues = {l["league_id"]: l["name"] for l in
+               await db.leagues.find({}, {"_id": 0}).to_list(200)}
+
+    rows = []
+    for t in teams:
+        par = (pars.get(t.get("league_id")) or {}).get("for")
+        if par is None:
+            continue
+        for home in (True, False):
+            games = venue_games(t, home)
+            if len(games) < MIN_GAMES:
+                continue
+            cf = per_game(games, "corners_for")
+            ga = per_game(games, "goals_against")
+            if cf is None or ga is None:
+                continue
+            edge = cf - par
+            if edge < corner_edge or ga < min_leaking:
+                continue
+            rows.append({
+                "name": t.get("name"), "league": leagues.get(t.get("league_id"), "?"),
+                "venue": "home" if home else "away", "games": len(games),
+                "cf": cf, "edge": edge, "ga": ga,
+                "ca": per_game(games, "corners_against"),
+                "thin": len(games) < THIN_GAMES,
+            })
+    rows.sort(key=lambda r: (r["thin"], -r["edge"]))
+
+    print(f"TEAMS THAT SHIP GOALS AND STILL WIN CORNERS\n")
+    print(f"screen: >= {corner_edge:+.2f} corners/game above the division, "
+          f"AND >= {min_leaking:.2f} goals conceded/game, at one venue")
+    print(f"        {MIN_GAMES}+ games minimum; fewer than {THIN_GAMES} is marked thin\n")
+    if not rows:
+        print("Nothing fits the shape.")
+        return
+    solid = [r for r in rows if not r["thin"]]
+    print(f"{len(rows)} team-venues fit ({len(solid)} well sampled)\n")
+    print(f"{'team':<26} {'league':<20} {'at':<5} {'gms':>3} "
+          f"{'corners':>8} {'v div':>7} {'conceded':>9} {'they give up':>13}")
+    for r in rows[:top]:
+        print(f"{r['name'][:26]:<26} {r['league'][:20]:<20} {r['venue']:<5} "
+              f"{r['games']:>3} {r['cf']:>8.2f} {r['edge']:>+7.2f} "
+              f"{r['ga']:>9.2f} {(r['ca'] or 0):>13.2f}"
+              f"{'   thin' if r['thin'] else ''}")
+    if len(rows) > top:
+        print(f"... {len(rows) - top} more")
+    print("\nRanked on the corner edge, not on the leaking — the corners are what gets")
+    print("bet and the goals are the mechanism. A side here matches the SHAPE; the chase")
+    print("premise behind it has never been confirmed, and in its per-game form it was")
+    print("falsified five times. See this file's header before betting any of it.")
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--days", type=int, default=DEFAULT_DAYS)
@@ -368,7 +454,12 @@ def main():
     ap.add_argument("--max-conceded", type=float, default=DEFAULT_MAX_CONCEDED)
     ap.add_argument("--opp-corner-edge", type=float, default=DEFAULT_OPP_CORNER_EDGE)
     ap.add_argument("--min-clean-sheets", type=float, default=DEFAULT_MIN_CLEAN_SHEETS)
+    ap.add_argument("--teams", action="store_true",
+                    help="list the sides that ARE the chase half, ignoring who they play")
     a = ap.parse_args()
+    if a.teams:
+        asyncio.run(teams_report(a.league, a.corner_edge, a.min_leaking, a.top))
+        return
     asyncio.run(run(a.days, a.top, a.league, a.corner_edge, a.min_leaking,
                     a.min_win_rate, a.max_conceded, a.opp_corner_edge,
                     a.min_clean_sheets))

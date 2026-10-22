@@ -47,6 +47,7 @@ on:
           - press_board       # an attack in form vs a defence that concedes nothing away
           - browse_audit      # how much the front door's Streaks/Trends filters keep
           - chase_angle       # a corner side that leaks goals vs a solid winner
+          - chase_teams       # the sides that ARE that shape, whoever they play
           - history_export    # everything the site has published, graded, by week
           - ticker_feed       # the recording ticker's two lists, ready to paste
           - line_ladder      # how many landed, and how many would have one line lower
@@ -205,6 +206,7 @@ jobs:
               press_board)      SCRIPT="press_board" ;;
               browse_audit)     SCRIPT="browse_audit" ;;
               chase_angle)      SCRIPT="chase_angle" ;;
+              chase_teams)      SCRIPT="chase_angle" ;;
               history_export)   SCRIPT="history_export" ;;
               ticker_feed)      SCRIPT="ticker_feed" ;;
               line_ladder)      SCRIPT="line_ladder" ;;

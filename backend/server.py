@@ -7922,6 +7922,98 @@ async def snapshot_mismatches(body: MismatchSnapshotBody, token: Optional[str] =
     return {"status": "created", "tag": tag, "entries": len(entries)}
 
 
+class PerfectSnapshotBody(BaseModel):
+    """Which perfect games the board was showing, so they can be graded later."""
+    tag: Optional[str] = None
+    days: int = 7
+    limit: int = 60
+
+
+@api_router.post("/perfect-games/snapshot")
+async def snapshot_perfect(body: PerfectSnapshotBody, token: Optional[str] = None,
+                           user: dict = Depends(get_current_user)):
+    """Freeze the perfect-games board — the third of three, and the last with no record.
+
+    THE SAME ARGUMENT AS THE OTHER TWO. A board here is computed from the current team
+    records, so the moment a fixture kicks off its row is gone and cannot be rebuilt: the
+    streak that qualified it has either continued or broken, the mismatch averages have
+    moved, and the opponent's leak count now includes the game being graded.
+
+    IT IS THE ONE THAT CAN LEAST AFFORD TO BE REPLAYED, because its whole claim is that
+    THREE things agreed on the day — a run, a mismatch, and an opponent who actually
+    gives that line up. Each leg rests on numbers that move every week, so a replay would
+    be reconstructing three moving quantities at once and calling the result what the
+    board said. Written down now or not knowable.
+
+    Idempotent per tag and stale-refusing, for the reasons on snapshot_streaks.
+
+    `direction` and `subject` ride on every entry so _grade_entries settles these with the
+    same implementation the public record uses — a perfect game is a team over on the
+    streak's own line, which is the leg that gets bet.
+    """
+    _check_tools_token(token)
+    tag = body.tag or datetime.now(timezone.utc).date().isoformat()
+    existing = await db.perfect_snapshots.find_one({"_id": tag}, {"_id": 0})
+    if existing:
+        return {"status": "exists", "tag": tag, "entries": len(existing.get("entries") or [])}
+
+    now_ = datetime.now(timezone.utc)
+    newest = await db.leagues.find({"data_source": "real"}, {"_id": 0, "synced_at": 1}) \
+        .sort("synced_at", -1).limit(1).to_list(1)
+    age_h = None
+    if newest and newest[0].get("synced_at"):
+        try:
+            age_h = round((now_ - datetime.fromisoformat(newest[0]["synced_at"])).total_seconds() / 3600, 1)
+        except Exception:
+            age_h = None
+    if age_h is None or age_h > SNAPSHOT_MAX_AGE_HOURS:
+        return {"status": "stale", "tag": tag, "data_age_hours": age_h,
+                "max_age_hours": SNAPSHOT_MAX_AGE_HOURS, "entries": 0}
+
+    rows = await perfect_games(within_days=body.days,
+                               limit=max(1, min(body.limit, 200)), user={})
+    entries = []
+    for r in (rows if isinstance(rows, list) else (rows.get("rows") or [])):
+        nf = r.get("next_fixture") or {}
+        if not nf.get("fixture_id"):
+            continue
+        st = r.get("streak") or {}
+        mm = r.get("mismatch") or {}
+        lk = r.get("opponent") or r.get("leak") or {}
+        entries.append({
+            "team_id": r["team_id"], "name": r["name"], "league_id": r.get("league_id"),
+            "league_name": r.get("league_name"),
+            "line": st.get("line") or r.get("line"),
+            "direction": "over", "subject": "team",
+            # all three legs as they stood, because the claim is that they AGREED
+            "streak": st, "mismatch": mm, "opponent_leak": lk,
+            "prob": (r.get("projection") or {}).get("prob"),
+            "lambda": (r.get("projection") or {}).get("lambda"),
+            "fair_odds": (r.get("projection") or {}).get("fair_odds"),
+            "games": r.get("real_samples") or 0,
+            "fixture_id": nf["fixture_id"], "kickoff": nf.get("date"),
+            "opponent": nf.get("opponent"), "is_home": nf.get("is_home"),
+            "cross_league": bool(nf.get("cross_league")),
+        })
+    await db.perfect_snapshots.insert_one(
+        {"_id": tag, "tag": tag, "created_at": now_.isoformat(),
+         "days": body.days, "entries": entries})
+    return {"status": "created", "tag": tag, "entries": len(entries)}
+
+
+@api_router.get("/perfect-games/snapshot/{tag}/results")
+async def perfect_snapshot_results(tag: str, token: Optional[str] = None,
+                                   user: dict = Depends(get_current_user)):
+    """How the perfect games in a snapshot actually landed. Same settlement as the rest."""
+    _check_tools_token(token)
+    snap = await db.perfect_snapshots.find_one({"_id": tag}, {"_id": 0})
+    if not snap:
+        raise HTTPException(status_code=404, detail=f"no perfect-games snapshot tagged {tag}")
+    out = _grade_entries(snap["entries"], await _teams_for(snap["entries"]))
+    return {"tag": tag, "created_at": snap.get("created_at"), "days": snap.get("days"),
+            "results": out, **_tally(out)}
+
+
 @api_router.get("/mismatches/snapshot/{tag}/results")
 async def mismatch_snapshot_results(tag: str, token: Optional[str] = None,
                                     user: dict = Depends(get_current_user)):

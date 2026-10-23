@@ -235,6 +235,28 @@ jobs:
             *)       echo "::warning::mismatch snapshot did not run (HTTP $code)" ;;
           esac
 
+      # THE THIRD BOARD, AND THE ONE THAT CAN LEAST AFFORD TO BE REPLAYED. A perfect game
+      # claims that a run, a mismatch and the opponent's own leak count all agreed on the
+      # day. Each of those moves every week, so reconstructing them afterwards would be
+      # rebuilding three moving quantities at once and calling the result what the board
+      # said. Same soft failure as the two above.
+      - name: Freeze today's perfect games
+        env:
+          TOOLS_TOKEN: ${{ secrets.TOOLS_TOKEN }}
+        run: |
+          code=$(curl -s -o pfsnap.json -w '%{http_code}' --max-time 120 -X POST \
+            -H 'Content-Type: application/json' -d '{"days":7}' \
+            "$BACKEND/api/perfect-games/snapshot?token=$TOOLS_TOKEN" || echo 000)
+          status=$(python3 -c "import json;print(json.load(open('pfsnap.json')).get('status',''))" 2>/dev/null || echo "")
+          count=$(python3 -c "import json;print(json.load(open('pfsnap.json')).get('entries',0))" 2>/dev/null || echo 0)
+          echo "perfect-games snapshot: HTTP $code status=$status entries=$count"
+          case "$status" in
+            created) echo "::notice::froze $count perfect games — gradeable once played" ;;
+            exists)  echo "::notice::already snapshotted today — left untouched" ;;
+            stale)   echo "::warning::data too old to snapshot — today cannot be graded" ;;
+            *)       echo "::warning::perfect-games snapshot did not run (HTTP $code)" ;;
+          esac
+
       - name: Report what happened
         # A boot sync is a detached subprocess, so this is a progress check, not a
         # completion check. It exists so a dead sync shows up in the log instead of

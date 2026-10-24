@@ -8,15 +8,21 @@ were written down and two were not:
   RECORDED — gradeable, and it is the real published record
     projection_snapshots   the projections board, frozen daily, every row, ranked by
                            lambda_total. The "highest projected corners" list.
-    streak_snapshots       the angle board, frozen daily, each row carrying the mismatch
-                           evidence it rested on (support.opp_conceded, support.opp_bar,
-                           support.weak_opponent) and whether it was published.
+    streak_snapshots       the angle board, frozen on the days a card goes out, each row
+                           carrying the mismatch evidence it rested on
+                           (support.opp_conceded, support.opp_bar, support.weak_opponent)
+                           and whether it was published.
+    mismatch_snapshots     the quick-scan board, frozen daily from 2026-10-21, each row
+                           carrying the SAMPLE it was judged on — which matters here more
+                           than anywhere else, because _all_mismatches applies no minimum
+                           game count at all.
+    perfect_snapshots      the perfect-games board, frozen daily from 2026-10-24, with
+                           all three legs (run, mismatch, opponent leak) rather than the
+                           verdict, so the record can say which leg does the work.
 
   NOT RECORDED — and no honest version can be produced after the fact
     the 20-of-20 consistency board. snapshot_streaks freezes _angle_rows, which calls
     streaks(window=5, min_hits=5). Only the five-game board was ever frozen.
-    the mismatch board as a board. Its evidence survives per streak row; the board's own
-    ranking does not.
 
 WHAT THIS DOES ABOUT THE SECOND LIST: a walk-forward REPLAY, which is a different claim
 from a snapshot and is labelled as one everywhere it appears. For each past fixture it
@@ -47,6 +53,7 @@ Reads the database only. No API calls, no writes.
 Run: python history_export.py
      python history_export.py --weeks 20
      python history_export.py --csv projections      # row-level, for a spreadsheet
+     python history_export.py --csv mismatch        # the quick scan, one row per claim
 """
 import argparse
 import asyncio
@@ -59,8 +66,8 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 from measure_calibration import wilson
-from server import (LOSS, OVER_LINE_FLOOR, WIN, _grade_entries, _grade_projections,
-                    _src, _teams_for, db)
+from server import (BOARD_MIN_MISMATCH_GAMES, LOSS, OVER_LINE_FLOOR, WIN, _grade_entries,
+                    _grade_projections, _src, _teams_for, db)
 
 ROOT = Path(__file__).parent
 load_dotenv(ROOT / ".env")
@@ -72,7 +79,7 @@ DEFAULT_WEEKS = 26
 DEFAULT_CONSISTENCY_WINDOW = 20
 BAR = "-" * 78
 
-KINDS = ("projections", "streaks", "consistency")
+KINDS = ("projections", "streaks", "mismatch", "perfect", "consistency")
 
 
 def iso_week(value) -> str:
@@ -239,6 +246,90 @@ def streak_row(snap_tag, g):
     }
 
 
+def mismatch_row(snap_tag, g):
+    """One frozen quick-scan row, with the sample quality it was judged on.
+
+    THE SAMPLE IS THE COLUMN THAT MATTERS HERE, and it is why the snapshot stores it.
+    _all_mismatches applies NO minimum game count, while the fixture board gates its
+    own angles at BOARD_MIN_MISMATCH_GAMES — so this board ranks a side whose "8.0
+    corners a game" is a single match alongside one built on ten, and prints the two
+    identically. `thin` is the grouping that answers whether that costs anything, and
+    it can only be answered from a sample frozen while it was still true: counting the
+    games now reads a pool that has since grown.
+    """
+    tg, og = g.get("team_games"), g.get("opp_games")
+    return {
+        "week": iso_week(g.get("kickoff")),
+        "snapshot": snap_tag,
+        "kickoff": (g.get("kickoff") or "")[:16],
+        "team": g.get("name"),
+        "league": g.get("league_name") or g.get("league_id"),
+        "opponent": g.get("opponent"),
+        "is_home": g.get("is_home"),
+        "line": g.get("line"),
+        "direction": g.get("direction"),
+        "lambda": g.get("lambda"),
+        "prob": g.get("prob"),
+        "fair_odds": g.get("fair_odds"),
+        # The two averages the gate compared, as they stood before kick-off.
+        "team_for": g.get("team_for"),
+        "opp_conceded": g.get("opp_conceded"),
+        "team_games": tg,
+        "opp_games": og,
+        # A row measured at the venue it is about to be played at is a stronger claim
+        # than one that fell back to a pooled average, and nothing else distinguishes them.
+        "team_venue_used": g.get("team_venue_used"),
+        "opp_venue_used": g.get("opp_venue_used"),
+        "thin": (None if tg is None or og is None
+                 else min(tg, og) < BOARD_MIN_MISMATCH_GAMES),
+        "cross_league": g.get("cross_league"),
+        "corners": g.get("value"),
+        "result": g.get("result"),
+    }
+
+
+def perfect_row(snap_tag, g):
+    """One frozen perfect game, with each of the three legs it rested on.
+
+    THE CLAIM IS THAT THREE THINGS AGREED, so the record carries all three rather than
+    the verdict: the run (how many of the window cleared the line), the mismatch (the
+    side's own average against what this opponent ships) and the opponent's leak (how
+    many of its last games went over that same line). Which leg is actually doing the
+    work is unanswerable from a win or a loss alone, and every one of the three has
+    moved since — the run has continued or broken, the averages have shifted, and the
+    opponent's leak count now contains the very game being graded.
+    """
+    st = g.get("streak") or {}
+    mm = g.get("mismatch") or {}
+    lk = g.get("opponent_leak") or {}
+    return {
+        "week": iso_week(g.get("kickoff")),
+        "snapshot": snap_tag,
+        "kickoff": (g.get("kickoff") or "")[:16],
+        "team": g.get("name"),
+        "league": g.get("league_name") or g.get("league_id"),
+        "opponent": g.get("opponent"),
+        "is_home": g.get("is_home"),
+        "line": g.get("line"),
+        "prob": g.get("prob"),
+        "lambda": g.get("lambda"),
+        "fair_odds": g.get("fair_odds"),
+        # LEG ONE — the run.
+        "streak_hits": st.get("hits"),
+        "streak_settled": st.get("settled"),
+        "streak_length": st.get("length"),
+        # LEG TWO — the matchup.
+        "team_for": mm.get("team_for"),
+        "opp_conceded": mm.get("opp_conceded"),
+        # LEG THREE — how often this opponent has actually shipped the line.
+        "opp_leak_at_line": lk.get("at_line"),
+        "opp_leak_games": lk.get("games"),
+        "cross_league": g.get("cross_league"),
+        "corners": g.get("value"),
+        "result": g.get("result"),
+    }
+
+
 # ----------------------------- the replay -----------------------------
 
 def consistency_replay(teams, window=DEFAULT_CONSISTENCY_WINDOW):
@@ -299,28 +390,62 @@ def history_depth(teams):
 
 # ----------------------------- gathering -----------------------------
 
+async def _snaps_since(coll, cutoff, cap=400):
+    """Every snapshot in a collection tagged on or after `cutoff`, oldest first.
+
+    THE CUTOFF AND THE SORT BOTH BELONG IN THE QUERY, and this is what happens when
+    they do not. These reads were `.find({}).to_list(cap)` with the cutoff applied in
+    Python afterwards — so once a collection passes the cap, the documents that come
+    back are not the most recent ones (Mongo returns no particular order without a
+    sort), and the ones dropped are dropped before anything reads their tags.
+
+    It presented as the projections record stopping dead on 2026-10-13 while the freeze
+    was still running on the back of every sync, twice a day, successfully. That is the
+    worst failure this file can have: a snapshot that was never taken and one that was
+    taken and never read print identically, and the second silently understates the
+    record while looking like evidence the pipeline is broken.
+    """
+    rows = await coll.find({"tag": {"$gte": cutoff}}, {"_id": 0}) \
+        .sort("tag", -1).limit(cap).to_list(cap)
+    rows.sort(key=lambda s: s.get("tag") or "")
+    return rows
+
+
 async def gather(weeks=DEFAULT_WEEKS, window=DEFAULT_CONSISTENCY_WINDOW):
-    """Every row of all three, graded. Shared by the harness and the CSV endpoint so the
+    """Every row of all five, graded. Shared by the harness and the CSV endpoint so the
     download and the summary can never disagree about what the record says."""
     cutoff = (datetime.now(timezone.utc) - timedelta(weeks=weeks)).date().isoformat()
 
-    psnaps = [s for s in await db.projection_snapshots.find({}, {"_id": 0}).to_list(400)
-              if (s.get("tag") or "") >= cutoff]
-    psnaps.sort(key=lambda s: s.get("tag") or "")
+    psnaps = await _snaps_since(db.projection_snapshots, cutoff)
     projections = []
     for s in psnaps:
         graded = await _grade_projections(s.get("entries") or [])
         for e, g in zip(s.get("entries") or [], graded):
             projections.append(projection_row(s.get("tag"), e, g))
 
-    ssnaps = [s for s in await db.streak_snapshots.find({}, {"_id": 0}).to_list(400)
-              if (s.get("tag") or "") >= cutoff]
-    ssnaps.sort(key=lambda s: s.get("tag") or "")
+    ssnaps = await _snaps_since(db.streak_snapshots, cutoff)
     streaks = []
     for s in ssnaps:
         entries = s.get("entries") or []
         graded = _grade_entries(entries, await _teams_for(entries))
         streaks += [streak_row(s.get("tag"), g) for g in graded]
+
+    # THE TWO NEW RECORDS. Both settle through _grade_entries, the same implementation
+    # behind /results and behind the streak record above — not a second copy that would
+    # eventually disagree with it about what a win is.
+    msnaps = await _snaps_since(db.mismatch_snapshots, cutoff)
+    mismatch = []
+    for s in msnaps:
+        entries = s.get("entries") or []
+        graded = _grade_entries(entries, await _teams_for(entries))
+        mismatch += [mismatch_row(s.get("tag"), g) for g in graded]
+
+    fsnaps = await _snaps_since(db.perfect_snapshots, cutoff)
+    perfect = []
+    for s in fsnaps:
+        entries = s.get("entries") or []
+        graded = _grade_entries(entries, await _teams_for(entries))
+        perfect += [perfect_row(s.get("tag"), g) for g in graded]
 
     teams = await db.teams.find({}, {"_id": 0}).to_list(5000)
     depth = history_depth(teams)
@@ -337,9 +462,12 @@ async def gather(weeks=DEFAULT_WEEKS, window=DEFAULT_CONSISTENCY_WINDOW):
                    if r["played_at"] >= cutoff]
 
     return {"projections": projections, "streaks": streaks,
+            "mismatch": mismatch, "perfect": perfect,
             "consistency": consistency, "window_used": used,
             "coverage": {"projection_tags": [s.get("tag") for s in psnaps],
-                         "streak_tags": [s.get("tag") for s in ssnaps]},
+                         "streak_tags": [s.get("tag") for s in ssnaps],
+                         "mismatch_tags": [s.get("tag") for s in msnaps],
+                         "perfect_tags": [s.get("tag") for s in fsnaps]},
             "depth": depth, "window": window, "weeks": weeks}
 
 
@@ -431,6 +559,37 @@ def _show_weekly(title, rows, note=""):
               f"{pr:>8}{rs:>8}")
 
 
+def _show_split(title, rows, key, labels, note=""):
+    """The same tally cut by one frozen column, with each arm's own interval.
+
+    WHY THE INTERVAL AND NOT JUST THE RATE. Splitting a small record in two makes two
+    smaller records, and the arms will differ by several points from noise alone — so a
+    split printed as two bare percentages invites exactly the conclusion it cannot
+    support. Printing both intervals makes an overlap visible, which is the honest
+    reading nine times out of ten at these sample sizes.
+    """
+    print(f"\n{BAR}\n{title}\n{BAR}")
+    if note:
+        print(f"  {note}")
+    settled = [r for r in rows if r.get("result") in (WIN, LOSS)]
+    if not settled:
+        print("  nothing settled in this range")
+        return
+    buckets = defaultdict(list)
+    for r in rows:
+        buckets[r.get(key)].append(r)
+    print(f"\n  {'arm':<34}{'rows':>6}{'settled':>9}{'landed':>8}{'rate':>8}"
+          f"{'95% interval':>16}{'resid':>8}")
+    for val in sorted(buckets, key=lambda v: (v is None, str(v))):
+        t = tally(buckets[val])
+        label = labels.get(val, "unknown" if val is None else str(val))
+        rate = f"{t['hit_rate']}%" if t["hit_rate"] is not None else "   -"
+        span = (f"{t['lo']}-{t['hi']}%" if t["settled"] else "-")
+        rs = f"{t['residual']:+.1f}" if t["residual"] is not None else "   -"
+        print(f"  {label:<34}{t['rows']:>6}{t['settled']:>9}{t['landed']:>8}{rate:>8}"
+              f"{span:>16}{rs:>8}")
+
+
 async def run(weeks=DEFAULT_WEEKS, window=DEFAULT_CONSISTENCY_WINDOW, csv_kind=None):
     data = await gather(weeks, window)
 
@@ -450,12 +609,36 @@ async def run(weeks=DEFAULT_WEEKS, window=DEFAULT_CONSISTENCY_WINDOW, csv_kind=N
 
     # COVERAGE FIRST, because a week with no snapshot and a week with nothing on look
     # identical in a table that only counts rows.
-    pt, st = data["coverage"]["projection_tags"], data["coverage"]["streak_tags"]
-    print(f"\n  projection snapshots: {len(pt)} days"
-          + (f", {min(pt)} to {max(pt)}" if pt else " — NONE"))
-    print(f"  streak snapshots:     {len(st)} days"
-          + (f", {min(st)} to {max(st)}" if st else " — NONE"))
-    for name, tags in (("projection", pt), ("streak", st)):
+    cov = data["coverage"]
+    # (label, tags, how many days may pass before silence is a fault). The streak board
+    # freezes on the two days a card goes out, so four days of quiet is normal there and
+    # would be a broken pipeline anywhere else.
+    boards = (("projection", cov["projection_tags"], 2),
+              ("streak", cov["streak_tags"], 5),
+              ("quick scan", cov["mismatch_tags"], 2),
+              ("perfect games", cov["perfect_tags"], 2))
+    today = datetime.now(timezone.utc).date()
+    print()
+    for name, tags, grace in boards:
+        if not tags:
+            print(f"  {name + ' snapshots:':<24}NONE in this range")
+            continue
+        print(f"  {name + ' snapshots:':<24}{len(tags)} days, {min(tags)} to {max(tags)}")
+    # A GAP AT THE END IS THE ONE THAT MATTERS, and the interior-gap check below cannot
+    # see it: _weeks_between spans the first tag to the LAST, so a freeze that stopped
+    # dead reports a clean sheet. That is how the projections record sat eleven days
+    # stale while every weekly table above it looked complete.
+    for name, tags, grace in boards:
+        if not tags:
+            continue
+        try:
+            behind = (today - date.fromisoformat(max(tags))).days
+        except ValueError:
+            continue
+        if behind > grace:
+            print(f"  ::  {name.upper()} HAS NOT FROZEN FOR {behind} DAYS "
+                  f"(last {max(tags)}) — every one of those days is ungradeable")
+    for name, tags, _ in boards:
         have = {iso_week(t) for t in tags}
         missing = [w for w in _weeks_between(tags) if w not in have]
         if missing:
@@ -471,6 +654,33 @@ async def run(weeks=DEFAULT_WEEKS, window=DEFAULT_CONSISTENCY_WINDOW, csv_kind=N
                  data["streaks"],
                  "wider than what was shown. Counting this as the record would count "
                  "claims\n  the site never made.")
+
+    _show_weekly("THE QUICK SCAN — recorded, every frozen row",
+                 data["mismatch"],
+                 "both sides had to clear their league average by the mismatch edge. "
+                 "The\n  sample each row rested on is frozen with it — see the split "
+                 "below and, for\n  the row level, kind=mismatch in the CSV.")
+    _show_split("THE QUICK SCAN, BY SAMPLE — does a thin row win less often",
+                data["mismatch"], "thin",
+                {True: f"thin (under {BOARD_MIN_MISMATCH_GAMES} games a side)",
+                 False: f"solid ({BOARD_MIN_MISMATCH_GAMES}+ games a side)"},
+                "The board applies NO minimum game count, so it ranks a one-match "
+                "average\n  beside a ten-match one and prints them identically. This is "
+                "the split that\n  says whether that is a problem, and it is the reason "
+                "the sample is frozen.")
+    _show_split("THE QUICK SCAN, BY VENUE — home rows against away rows",
+                data["mismatch"], "is_home",
+                {True: "home", False: "away"},
+                "The gate needs a venue average to clear the league by the edge, and "
+                "home\n  sides win more corners — so this board is mostly home rows by "
+                "construction.")
+
+    _show_weekly("PERFECT GAMES — recorded, every frozen row",
+                 data["perfect"],
+                 "all three legs are frozen with each row: the run, the mismatch and "
+                 "how\n  often the opponent has actually shipped that line. Which leg "
+                 "does the work\n  is a question for the CSV (kind=perfect), not for a "
+                 "hit rate.")
 
     used = data.get("window_used", window)
     note = ("NOT A RECORD. Rebuilt from each side's games strictly before each "
@@ -495,7 +705,9 @@ async def run(weeks=DEFAULT_WEEKS, window=DEFAULT_CONSISTENCY_WINDOW, csv_kind=N
     print("the same split for the same reason — quoting the replay as the record is the")
     print("mistake, and a hit rate without its denominator is unfalsifiable either way.")
     print("For the row level, pull the CSV: /api/tools/history.csv?kind=projections")
-    print("(also streaks, consistency) with the tools token.")
+    print("(also streaks, mismatch, perfect, consistency) with the tools token. Those")
+    print("four recorded kinds are what a weekly staking comparison should be built on;")
+    print("the replay is there to be looked at, not to be staked.")
 
 
 def main():

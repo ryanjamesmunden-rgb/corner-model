@@ -7979,7 +7979,12 @@ async def snapshot_perfect(body: PerfectSnapshotBody, token: Optional[str] = Non
             continue
         st = r.get("streak") or {}
         mm = r.get("mismatch") or {}
-        lk = r.get("opponent") or r.get("leak") or {}
+        # `opp_leak` IS THE KEY perfect_games EMITS. This read guessed at "opponent" and
+        # "leak", matched neither, and froze {} into the third leg on every row — which
+        # is the one leg that cannot be recovered afterwards, because the opponent's leak
+        # count now contains the game being graded. It failed silently and looked exactly
+        # like a board with no leak evidence, so nothing downstream could notice.
+        lk = r.get("opp_leak") or {}
         entries.append({
             "team_id": r["team_id"], "name": r["name"], "league_id": r.get("league_id"),
             "league_name": r.get("league_name"),

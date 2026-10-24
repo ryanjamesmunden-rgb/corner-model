@@ -316,3 +316,100 @@ class TestTheIntervalRidesWithTheRate:
     def test_nothing_settled_has_no_interval(self):
         t = hx.tally([{"result": "pending"}])
         assert t["lo"] is None and t["hi"] is None
+
+
+class TestTheQuickScanRowCarriesItsSample:
+    """The quick scan is the one board with no minimum game count, so the sample is not
+    a nicety here — it is the column that decides whether the row meant anything. And it
+    is knowable only from the freeze: counting the games now reads a pool that grew."""
+
+    def row(self, **kw):
+        base = {"name": "Brann", "league_name": "Eliteserien", "opponent": "Bodo",
+                "kickoff": "2026-10-24T18:00:00+00:00", "is_home": True, "line": 6,
+                "direction": "over", "lambda": 7.1, "prob": 0.74, "team_for": 7.4,
+                "opp_conceded": 6.2, "team_games": 9, "opp_games": 8,
+                "team_venue_used": "home", "opp_venue_used": "away",
+                "value": 8, "result": WIN}
+        base.update(kw)
+        return hx.mismatch_row("2026-10-24", base)
+
+    def test_both_samples_survive_the_trip(self):
+        r = self.row()
+        assert r["team_games"] == 9 and r["opp_games"] == 8
+        assert r["team_venue_used"] == "home", \
+            "a pooled fallback is a weaker claim than a venue average, and only this says which"
+
+    def test_the_weaker_side_decides_whether_a_row_is_thin(self):
+        # A ten-game team against a two-game opponent is a two-game claim. Taking the
+        # team's own sample would have called this row solid.
+        assert self.row(team_games=10, opp_games=2)["thin"] is True
+        assert self.row(team_games=2, opp_games=10)["thin"] is True
+        assert self.row(team_games=10, opp_games=10)["thin"] is False
+
+    def test_the_boundary_is_the_board_s_own_gate(self):
+        from server import BOARD_MIN_MISMATCH_GAMES as G
+        assert self.row(team_games=G, opp_games=G)["thin"] is False
+        assert self.row(team_games=G - 1, opp_games=G)["thin"] is True
+
+    def test_a_missing_sample_is_unknown_rather_than_solid(self):
+        # Defaulting to False would quietly file every row with no stored sample in with
+        # the good ones, which is the flattering direction.
+        assert self.row(team_games=None)["thin"] is None
+
+    def test_the_week_comes_off_the_kickoff_not_the_snapshot_tag(self):
+        # A board frozen on Wednesday for a Saturday game belongs to Saturday's week.
+        r = hx.mismatch_row("2026-10-21", {"kickoff": "2026-10-24T18:00:00+00:00",
+                                           "name": "A", "result": WIN})
+        assert r["week"] == hx.iso_week("2026-10-24")
+        assert r["snapshot"] == "2026-10-21"
+
+
+class TestPerfectGamesKeepAllThreeLegs:
+    """Its claim is that three things agreed. A verdict alone cannot say which of the
+    three was doing the work, and all three have moved since."""
+
+    def test_each_leg_lands_in_its_own_column(self):
+        r = hx.perfect_row("2026-10-24", {
+            "name": "Barnsley", "opponent": "Wigan", "line": 5,
+            "kickoff": "2026-10-24T14:00:00+00:00",
+            "streak": {"hits": 9, "settled": 10, "length": 6},
+            "mismatch": {"team_for": 7.0, "opp_conceded": 6.1},
+            "opponent_leak": {"at_line": 7, "games": 10},
+            "value": 7, "result": WIN})
+        assert r["streak_hits"] == 9 and r["streak_settled"] == 10
+        assert r["team_for"] == 7.0 and r["opp_conceded"] == 6.1
+        assert r["opp_leak_at_line"] == 7 and r["opp_leak_games"] == 10
+
+    def test_an_empty_leg_reads_as_absent_and_not_as_zero(self):
+        # The leak leg was frozen as {} on every row for a day, because the snapshot
+        # guessed at the wrong key. Zeroes would have looked like real measurements of
+        # an opponent that never ships the line — the opposite of the truth.
+        r = hx.perfect_row("2026-10-24", {"name": "A", "result": WIN,
+                                          "kickoff": "2026-10-24T14:00:00+00:00"})
+        assert r["opp_leak_at_line"] is None and r["opp_leak_games"] is None
+        assert r["streak_hits"] is None
+
+
+class TestASplitPrintsBothIntervals:
+    """Cutting a small record in two makes two smaller records. Two bare percentages
+    invite a conclusion the arms cannot support; overlapping intervals do not."""
+
+    def test_each_arm_is_tallied_against_its_own_denominator(self):
+        rows = ([{"result": WIN, "thin": False}] * 8 + [{"result": LOSS, "thin": False}] * 2
+                + [{"result": WIN, "thin": True}] + [{"result": LOSS, "thin": True}] * 3)
+        solid = hx.tally([r for r in rows if not r["thin"]])
+        thin = hx.tally([r for r in rows if r["thin"]])
+        assert solid["hit_rate"] == 80.0 and thin["hit_rate"] == 25.0
+        assert thin["lo"] < solid["lo"], "the weaker arm must carry the wider floor"
+
+    def test_it_prints_without_a_database_and_names_every_arm(self, capsys):
+        rows = [{"result": WIN, "thin": False}, {"result": LOSS, "thin": True},
+                {"result": WIN, "thin": None}]
+        hx._show_split("T", rows, "thin", {True: "thin", False: "solid"})
+        out = capsys.readouterr().out
+        assert "thin" in out and "solid" in out
+        assert "unknown" in out, "a row with no sample must still be visible as one"
+
+    def test_nothing_settled_says_so_rather_than_printing_an_empty_grid(self, capsys):
+        hx._show_split("T", [{"result": "pending", "thin": True}], "thin", {})
+        assert "nothing settled" in capsys.readouterr().out

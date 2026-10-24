@@ -203,7 +203,19 @@ jobs:
             created) echo "::notice::froze $count projections — gradeable once played" ;;
             exists)  echo "::notice::already snapshotted today — left untouched" ;;
             stale)   echo "::warning::data too old to snapshot — today cannot be graded" ;;
-            *)       echo "::warning::projection snapshot did not run (HTTP $code)" ;;
+            # HTTP 200 AND NO STATUS MEANS THIS IS NOT THE SNAPSHOT ENDPOINT. It is the
+            # shape the bug actually took: the route was stranded on a probability helper
+            # whose arguments FastAPI read as optional query strings, so the POST matched,
+            # every argument defaulted to None, and it answered 200 with {}. Eleven days
+            # of freezes went that way, each one a warning in a green run, each one a day
+            # that can never be graded. A 200 that says nothing is the loudest case here.
+            "") if [ "$code" = "200" ]; then
+                  echo "::error::projections/snapshot answered 200 with no status field —"
+                  echo "::error::the route is almost certainly wired to the wrong function"
+                else
+                  echo "::warning::projection snapshot did not run (HTTP $code)"
+                fi ;;
+            *)       echo "::warning::unexpected snapshot status '$status' (HTTP $code)" ;;
           esac
 
       # THE MISMATCH BOARD, FROZEN FOR THE SAME REASON AND ON THE SAME SCHEDULE.

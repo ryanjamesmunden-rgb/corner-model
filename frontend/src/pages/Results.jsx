@@ -10,6 +10,7 @@ import SignedInOnly from "@/components/SignedInOnly";
 import { renderRecordCard, renderDayCard } from "@/lib/storyImage";
 import { cardFrom, dayCardFrom, settledDays } from "@/lib/recordCard";
 import { runSummary } from "@/lib/angleTone";
+import { boardLines } from "@/lib/boardBreakdown";
 import TopAngle from "@/components/TopAngle";
 import ErrorBoundary from "@/components/ErrorBoundary";
 
@@ -161,6 +162,133 @@ function RecordCardButtons({ data }) {
   );
 }
 
+// WHICH BOARD MADE THE CLAIM.
+//
+// The headline above this is the STREAK board and only the streak board, because
+// /results reads streak_snapshots and nothing else. The quick scan and perfect games
+// were being frozen nightly and read by nobody, so "is the quick scan worth following"
+// had no answer on the site at all.
+//
+// THREE SEPARATE RECORDS, NOT ONE BLENDED PERCENTAGE. They are different arguments and
+// they fail in different weather — a streak is a coin that has landed five times, a
+// mismatch is an opponent who may have signed a defender since. Averaging them would
+// hide the only thing the split is for, which is finding out which kind of reasoning
+// pays.
+//
+// THE RESIDUAL IS THE RESULT, NOT THE HIT RATE. A board that lands 73% while telling
+// you 82% is losing, and a board that lands 61% against a stated 59% is winning. The
+// hit rate on its own describes which games happened to get picked.
+//
+// AND EVERY ROW CARRIES ITS DENOMINATOR AND ITS INTERVAL, because two of these have a
+// few dozen settled games and an interval twenty points wide. A bare percentage there
+// invites a conclusion the sample cannot support.
+function BoardBreakdown() {
+  const [boards, setBoards] = useState(null);
+  const [failed, setFailed] = useState(false);
+
+  useEffect(() => {
+    api.resultBoards().then((d) => setBoards(d?.boards || [])).catch(() => setFailed(true));
+  }, []);
+
+  if (failed || !boards) return null;       // never take the record down with it
+  const live = boardLines(boards);
+  if (!live.length) return null;
+
+  return (
+    <section className="bg-card border border-border rounded-lg overflow-hidden"
+      data-testid="board-breakdown">
+      <div className="px-4 pt-4 pb-2">
+        <h2 className="font-head text-sm font-bold tracking-tight">By section</h2>
+        <p className="text-xs text-muted-foreground mt-1 leading-relaxed max-w-2xl">
+          The same frozen claims, split by which board made them. The headline above is
+          the streak board alone. Each line counts one claim per fixture, however many
+          mornings it was frozen on.
+        </p>
+      </div>
+      <div className="divide-y divide-border">
+        {live.map((b) => <BoardRow key={b.key} b={b} />)}
+      </div>
+    </section>
+  );
+}
+
+// WORD AND SIGN, NEVER THE COLOUR ALONE — the site's four tones are close enough under
+// colour blindness that none of them may carry a meaning by itself, which is the same
+// rule the Mark badge above follows.
+const VERDICT = {
+  beat: { word: "beat its price", cls: "text-tone-strong-fg" },
+  short: { word: "short of its price", cls: "text-tone-under-fg" },
+  level: { word: "level with its price", cls: "text-muted-foreground" },
+};
+
+function BoardRow({ b }) {
+  const v = b.verdict ? VERDICT[b.verdict] : null;
+  return (
+    <div className="px-4 py-3" data-testid={`board-row-${b.key}`}>
+      <div className="flex items-baseline gap-2 flex-wrap">
+        <span className="font-head text-sm font-semibold">{b.label}</span>
+        <span className="text-[10px] text-muted-foreground">{b.blurb}</span>
+      </div>
+      <div className="flex items-end gap-4 flex-wrap mt-2">
+        <div className="min-w-0">
+          {b.rate != null ? (
+            <>
+              <p className="font-mono-data text-2xl font-bold leading-none"
+                data-testid={`board-rate-${b.key}`}>{b.rate}%</p>
+              <p className="text-[11px] text-muted-foreground mt-1.5">
+                <span className="text-foreground font-medium">
+                  {b.landed} of {b.settled}
+                </span>{" "}
+                settled
+                {b.interval && (
+                  <> · 95% interval{" "}
+                    <span className="font-mono-data">
+                      {b.interval.lo}–{b.interval.hi}%
+                    </span></>
+                )}
+              </p>
+            </>
+          ) : (
+            // Not "0%". Nothing settled and everything missed are different facts.
+            <p className="text-xs text-muted-foreground"
+              data-testid={`board-unsettled-${b.key}`}>
+              {b.claims} claim{b.claims === 1 ? "" : "s"} frozen, none settled yet.
+            </p>
+          )}
+        </div>
+        {v && (
+          <div className="min-w-0">
+            <p className={`font-mono-data text-lg font-semibold leading-none ${v.cls}`}
+              data-testid={`board-residual-${b.key}`}>
+              {b.residual > 0 ? "+" : ""}{b.residual}
+            </p>
+            <p className="text-[10px] text-muted-foreground mt-1">
+              points — {v.word} of {b.meanProb}%
+            </p>
+          </div>
+        )}
+        <div className="ml-auto flex gap-3 font-mono-data text-xs">
+          <Stat n={b.landed} label="landed" cls="text-tone-strong-fg" />
+          <Stat n={b.missed} label="missed" cls="text-tone-under-fg" />
+          {b.voided > 0 && <Stat n={b.voided} label="push" cls="text-muted-foreground" />}
+          {b.pending > 0 && <Stat n={b.pending} label="to play" cls="text-tone-streak-fg" />}
+        </div>
+      </div>
+      {/* HOW MUCH OF THE FROZEN PILE WAS THE SAME CLAIM AGAIN. These boards freeze every
+          morning over a seven-day horizon, so this gap is usually large — and it is the
+          difference between an honest denominator and one several times too big. */}
+      {b.repeats && (
+        <p className="text-[10px] text-muted-foreground mt-2"
+          data-testid={`board-repeats-${b.key}`}>
+          {b.repeats.claims} claims from {b.repeats.frozen} frozen rows across{" "}
+          {b.repeats.snapshots} {b.repeats.snapshots === 1 ? "freeze" : "freezes"} — the
+          rest were the same fixture re-frozen on a later day.
+        </p>
+      )}
+    </div>
+  );
+}
+
 function ResultsBoard() {
   const [data, setData] = useState(null);
   const [failed, setFailed] = useState(false);
@@ -252,6 +380,14 @@ function ResultsBoard() {
         )}
       </section>
       )}
+
+      {/* BY SECTION, directly under the headline it qualifies. The headline is the streak
+          board alone, and a reader has no way to know that from the number itself.
+          Wrapped for the same reason as TopAngle: a different endpoint must not be able
+          to take the record down with it. */}
+      <ErrorBoundary label="By section">
+        <BoardBreakdown />
+      </ErrorBoundary>
 
       {weeks.map((w) => <WeekBlock key={w.tag} w={w} />)}
 

@@ -7821,6 +7821,45 @@ def _tally(rows: List[dict]) -> dict:
     }
 
 
+def claim_key(e: dict) -> tuple:
+    """What makes two frozen entries the same claim.
+
+    Lives here, beside _grade_entries and _tally, because the page, the per-board
+    breakdown and history_export all have to agree about it. They did not: the export
+    was written later, read the same collections, and counted per snapshot — see
+    one_claim_per_fixture.
+    """
+    return (e.get("fixture_id"), e.get("team_id"), e.get("line"),
+            e.get("direction"), e.get("subject"))
+
+
+def one_claim_per_fixture(snaps: List[dict]) -> List[tuple]:
+    """[(tag, entry)] with each claim kept once, from the NEWEST snapshot holding it.
+
+    EVERY BOARD IS FROZEN DAILY OVER A MULTI-DAY HORIZON — seven days for the quick scan
+    and perfect games, three for projections, and the streak card's own window — so the
+    same fixture is written down again every morning until it kicks off. Counted once per
+    snapshot, a Saturday game frozen from the Sunday before lands in the rate seven times.
+
+    That is not a cosmetic double count. It weights whichever fixtures sat longest in the
+    window, which are the ones frozen furthest ahead and not a random sample of anything,
+    and no figure in the output would reveal it.
+
+    NEWEST WINS: the claim as it last stood before kick-off is the one that was on screen
+    when the game started, and an earlier freeze may carry a different line or a smaller
+    sample.
+    """
+    seen, out = set(), []
+    for s in sorted(snaps, key=lambda x: x.get("tag") or "", reverse=True):
+        for e in (s.get("entries") or []):
+            k = claim_key(e)
+            if k in seen:
+                continue
+            seen.add(k)
+            out.append((s.get("tag"), e))
+    return out
+
+
 async def _teams_for(entries: List[dict]) -> Dict[str, dict]:
     ids = list({e["team_id"] for e in entries})
     if not ids:
@@ -8446,6 +8485,90 @@ async def _angle_record(count: int) -> dict:
         "rule_days": sum(1 for s in snaps
                          if any(e.get("qualified") for e in (s.get("entries") or []))),
     }
+
+
+# Which frozen collection each board on the site is graded from, and what to call it.
+# The order is the order the Results page shows them in: the two the card is built from
+# first, then the wider boards people browse.
+RESULT_BOARDS = (
+    ("streaks", "Streaks", "streak_snapshots",
+     "A run of clearances, and nothing about the opponent."),
+    ("perfect", "Perfect games", "perfect_snapshots",
+     "A run, a mismatch and a leaky opponent all agreeing."),
+    ("mismatch", "Quick scan", "mismatch_snapshots",
+     "This attack against THIS defence — about the fixture, not the form."),
+)
+
+
+@api_router.get("/results/boards")
+async def results_by_board(weeks: int = RESULTS_WEEKS, token: Optional[str] = None,
+                           user: dict = Depends(get_current_user)):
+    """The record split by which board made the claim.
+
+    WHY THIS EXISTS. /results reads db.streak_snapshots and nothing else, so the Results
+    page has always been the streak board's record presented as "the record". The other
+    boards were frozen and then read by nobody: a reader asking "is the quick scan worth
+    following" could not find out, and neither could the owner.
+
+    THEY ARE DIFFERENT QUESTIONS AND THEY FAIL IN DIFFERENT WEATHER — a streak is a coin
+    that has landed five heads, a mismatch is an opponent who might have signed a
+    defender — so one blended percentage across all three would hide which kind of
+    reasoning is actually paying, which is the only thing the split is for.
+
+    ONE CLAIM PER FIXTURE, through the shared one_claim_per_fixture. These boards freeze
+    daily over a seven-day horizon, so counting per snapshot would weight the fixtures
+    frozen furthest ahead and inflate every denominator here several times over.
+
+    EACH BOARD CARRIES ITS OWN DENOMINATOR AND ITS OWN INTERVAL. A hit rate on
+    twenty-six settled games is not a result and must not be printed as though it were;
+    the page needs the numbers to say so, not a footnote.
+
+    Gated exactly like /results — free account or the tools token — because it is the
+    same record cut a different way.
+    """
+    # Local, like the import in tools_history_csv: measure_calibration opens its own
+    # database client at module scope, and importing it up here would give every server
+    # start a second connection it never uses.
+    from measure_calibration import wilson
+
+    if not _has_tools_token(token) and user.get("user_id") == PUBLIC_USER_ID:
+        raise HTTPException(status_code=401, detail="Sign in to see the record")
+    weeks = max(1, min(weeks, 400))
+
+    out = []
+    for key, label, coll_name, blurb in RESULT_BOARDS:
+        snaps = await db[coll_name].find({}, {"_id": 0}).sort("tag", -1).to_list(weeks)
+        pairs = one_claim_per_fixture(snaps)
+        entries = [e for _, e in pairs]
+        graded = _grade_entries(entries, await _teams_for(entries)) if entries else []
+        t = _tally(graded)
+        lo, hi = wilson(t["landed"], t["settled"]) if t["settled"] else (None, None)
+        # The board's own stated probability, over the SETTLED rows that carry one. The
+        # residual against it is the result; the hit rate on its own says nothing about
+        # whether the board was right, only about which games it happened to pick.
+        pr = [g for g in graded if g.get("result") in (WIN, LOSS)
+              and isinstance(g.get("prob"), (int, float))]
+        mean_p = (sum(g["prob"] for g in pr) / len(pr)) if pr else None
+        if mean_p is not None and mean_p <= 1.0:
+            mean_p *= 100
+        actual = (100.0 * sum(1 for g in pr if g["result"] == WIN) / len(pr)) \
+            if pr else None
+        out.append({
+            "key": key, "label": label, "blurb": blurb,
+            "snapshots": len(snaps),
+            "frozen_rows": sum(len(s.get("entries") or []) for s in snaps),
+            "claims": len(entries),
+            "first_tag": min((s.get("tag") for s in snaps if s.get("tag")), default=None),
+            "last_tag": max((s.get("tag") for s in snaps if s.get("tag")), default=None),
+            **t,
+            "lo": round(lo, 1) if lo is not None else None,
+            "hi": round(hi, 1) if hi is not None else None,
+            "priced_prob": len(pr),
+            "mean_prob": round(mean_p, 1) if mean_p is not None else None,
+            "residual": (round(actual - mean_p, 1)
+                         if mean_p is not None and actual is not None else None),
+        })
+    return {"weeks": weeks, "boards": out}
 
 
 @api_router.get("/angles/card")

@@ -48,6 +48,15 @@ AND A GAP IS NOT A QUIET WEEK. The coverage table prints every week in range and
 how many snapshots it holds, because a week with no freeze and a week with nothing on
 look identical in a summary that only counts rows.
 
+ONE CLAIM PER FIXTURE, FROM THE NEWEST SNAPSHOT THAT HELD IT. Each board is frozen daily
+over a multi-day horizon — seven days for the quick scan and perfect games, three for
+projections — so a Saturday fixture is written down again every morning from the Sunday
+before. Counted once per snapshot it lands in the rate seven times, and the weighting
+falls on whichever fixtures sat longest in the window, which are not a random sample of
+anything. public_results has guarded this since the streak freeze went daily; this file
+did not, and every figure it printed before one_claim_per_fixture existed was inflated
+by it.
+
 Reads the database only. No API calls, no writes.
 
 Run: python history_export.py
@@ -66,8 +75,12 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 from measure_calibration import wilson
+# claim_key and one_claim_per_fixture come from server rather than being defined again
+# here. They were defined again here, briefly, which is how the two ended up disagreeing
+# about what a claim is in the first place.
 from server import (BOARD_MIN_MISMATCH_GAMES, LOSS, OVER_LINE_FLOOR, WIN, _grade_entries,
-                    _grade_projections, _src, _teams_for, db)
+                    _grade_projections, _src, _teams_for, claim_key,
+                    one_claim_per_fixture, db)
 
 ROOT = Path(__file__).parent
 load_dotenv(ROOT / ".env")
@@ -411,6 +424,16 @@ async def _snaps_since(coll, cutoff, cap=400):
     return rows
 
 
+async def _graded_rows(snaps, build):
+    """One claim per fixture, settled, as rows — the shape every recorded board shares."""
+    pairs = one_claim_per_fixture(snaps)
+    entries = [e for _, e in pairs]
+    if not entries:
+        return []
+    graded = _grade_entries(entries, await _teams_for(entries))
+    return [build(tag, g) for (tag, _), g in zip(pairs, graded)]
+
+
 async def gather(weeks=DEFAULT_WEEKS, window=DEFAULT_CONSISTENCY_WINDOW):
     """Every row of all five, graded. Shared by the harness and the CSV endpoint so the
     download and the summary can never disagree about what the record says."""
@@ -418,34 +441,20 @@ async def gather(weeks=DEFAULT_WEEKS, window=DEFAULT_CONSISTENCY_WINDOW):
 
     psnaps = await _snaps_since(db.projection_snapshots, cutoff)
     projections = []
-    for s in psnaps:
-        graded = await _grade_projections(s.get("entries") or [])
-        for e, g in zip(s.get("entries") or [], graded):
-            projections.append(projection_row(s.get("tag"), e, g))
+    for tag, e in one_claim_per_fixture(psnaps):
+        graded = await _grade_projections([e])
+        projections.append(projection_row(tag, e, graded[0] if graded else {}))
 
+    # ALL THREE SETTLE THROUGH _grade_entries, the same implementation behind /results —
+    # not a second copy that would eventually disagree about what a win is.
     ssnaps = await _snaps_since(db.streak_snapshots, cutoff)
-    streaks = []
-    for s in ssnaps:
-        entries = s.get("entries") or []
-        graded = _grade_entries(entries, await _teams_for(entries))
-        streaks += [streak_row(s.get("tag"), g) for g in graded]
+    streaks = await _graded_rows(ssnaps, streak_row)
 
-    # THE TWO NEW RECORDS. Both settle through _grade_entries, the same implementation
-    # behind /results and behind the streak record above — not a second copy that would
-    # eventually disagree with it about what a win is.
     msnaps = await _snaps_since(db.mismatch_snapshots, cutoff)
-    mismatch = []
-    for s in msnaps:
-        entries = s.get("entries") or []
-        graded = _grade_entries(entries, await _teams_for(entries))
-        mismatch += [mismatch_row(s.get("tag"), g) for g in graded]
+    mismatch = await _graded_rows(msnaps, mismatch_row)
 
     fsnaps = await _snaps_since(db.perfect_snapshots, cutoff)
-    perfect = []
-    for s in fsnaps:
-        entries = s.get("entries") or []
-        graded = _grade_entries(entries, await _teams_for(entries))
-        perfect += [perfect_row(s.get("tag"), g) for g in graded]
+    perfect = await _graded_rows(fsnaps, perfect_row)
 
     teams = await db.teams.find({}, {"_id": 0}).to_list(5000)
     depth = history_depth(teams)
@@ -461,6 +470,13 @@ async def gather(weeks=DEFAULT_WEEKS, window=DEFAULT_CONSISTENCY_WINDOW):
     consistency = [r for r in consistency_replay(teams, used)
                    if r["played_at"] >= cutoff]
 
+    # HOW MUCH THE DEDUPLICATION REMOVED, per board, because the figures published before
+    # it existed were inflated by exactly this and a reader deserves the scale of it.
+    def _dupes(snaps, kept):
+        raw = sum(len(s.get("entries") or []) for s in snaps)
+        return {"snapshots": len(snaps), "frozen_rows": raw, "claims": kept,
+                "repeats": raw - kept}
+
     return {"projections": projections, "streaks": streaks,
             "mismatch": mismatch, "perfect": perfect,
             "consistency": consistency, "window_used": used,
@@ -468,6 +484,10 @@ async def gather(weeks=DEFAULT_WEEKS, window=DEFAULT_CONSISTENCY_WINDOW):
                          "streak_tags": [s.get("tag") for s in ssnaps],
                          "mismatch_tags": [s.get("tag") for s in msnaps],
                          "perfect_tags": [s.get("tag") for s in fsnaps]},
+            "dedupe": {"projections": _dupes(psnaps, len(projections)),
+                       "streaks": _dupes(ssnaps, len(streaks)),
+                       "mismatch": _dupes(msnaps, len(mismatch)),
+                       "perfect": _dupes(fsnaps, len(perfect))},
             "depth": depth, "window": window, "weeks": weeks}
 
 
@@ -643,6 +663,21 @@ async def run(weeks=DEFAULT_WEEKS, window=DEFAULT_CONSISTENCY_WINDOW, csv_kind=N
         missing = [w for w in _weeks_between(tags) if w not in have]
         if missing:
             print(f"  weeks with NO {name} snapshot: {', '.join(missing)}")
+
+    # ONE CLAIM PER FIXTURE. Every board here is frozen daily over a multi-day horizon,
+    # so the same fixture is written down again each morning until it kicks off. Counting
+    # per snapshot weights the fixtures frozen furthest ahead, which are not a random
+    # sample. This says how much of the frozen pile was the same claim repeated.
+    dd = data.get("dedupe") or {}
+    if dd:
+        print(f"\n  {'board':<14}{'snaps':>7}{'frozen':>8}{'claims':>8}{'repeats':>9}")
+        for key in ("projections", "streaks", "mismatch", "perfect"):
+            d = dd.get(key) or {}
+            if not d.get("snapshots"):
+                continue
+            print(f"  {key:<14}{d['snapshots']:>7}{d['frozen_rows']:>8}"
+                  f"{d['claims']:>8}{d['repeats']:>9}")
+        print("  repeats are the same fixture re-frozen on a later day, counted once.")
 
     _show_projections(data["projections"])
 

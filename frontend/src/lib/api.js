@@ -125,6 +125,12 @@ export const api = {
   // costs nothing, so it is a door and not a wall, and the share card carries the number
   // to people who have not come through it.
   results: (weeks) => axios.get(`${API}/results`, { params: { weeks } }).then((r) => r.data),
+  // THE SAME RECORD CUT BY WHICH BOARD MADE THE CLAIM. /results reads streak_snapshots
+  // and nothing else, so the page's headline has always been the streak board's record
+  // presented as the record — the quick scan and perfect games were frozen and read by
+  // nobody. Gated identically; see results_by_board.
+  resultBoards: (weeks) =>
+    axios.get(`${API}/results/boards`, { params: { weeks } }).then((r) => r.data),
   // The round ahead — midweek from Monday, the weekend from Wednesday — and the record of
   // the rule that picked it. Gated the same way and for the same reason as the record:
   // this is the same picks, earlier.

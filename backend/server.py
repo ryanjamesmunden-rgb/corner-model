@@ -7197,9 +7197,13 @@ class ProjectionSnapshotBody(BaseModel):
     limit: int = 250
 
 
-@api_router.post("/projections/snapshot")
 def _threshold_probs(lam_home, lam_away, lam_total) -> Dict[str, float]:
     """P(side wins N+ corners) and P(match total N+), as percentages, for the snapshot.
+
+    NOT A ROUTE. The /projections/snapshot decorator sat on this helper for eleven days,
+    stranded here when the function was inserted beneath it, and the snapshot endpoint
+    below was left with no decorator and no way in. See the route-identity tests in
+    tests/test_snapshot_routes.py, which exist because of it.
 
     TEAM LINES THROUGH nb_ge AND TOTALS THROUGH poisson_ge, which is the same split the
     live screens use — the negative binomial is there because a single side's corner count
@@ -7222,6 +7226,7 @@ def _threshold_probs(lam_home, lam_away, lam_total) -> Dict[str, float]:
     return out
 
 
+@api_router.post("/projections/snapshot")
 async def snapshot_projections(body: ProjectionSnapshotBody, token: Optional[str] = None,
                                user: dict = Depends(get_current_user)):
     """Freeze today's projections before the games are played.

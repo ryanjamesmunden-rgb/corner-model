@@ -1,0 +1,143 @@
+# Every claim one board ever froze, graded, as a file you can open.
+#
+# WHY NOT THE HARNESS. `history_export` already prints the summary, and the harness keeps
+# at most TOOL_OUTPUT_CAP characters of a run's output, truncating from the FRONT. That is
+# fine for a dozen weekly lines and useless for "every game in October": the rows would
+# push the summary out of the stored output, and whichever rows fell off the top would do
+# so silently. tools_history_csv exists for exactly this and says so in its docstring.
+#
+# SO THIS GOES STRAIGHT TO THE ENDPOINT, writes the CSV to a file, attaches it to the run,
+# and prints it last. Two destinations because they answer different needs: the artifact is
+# the thing to open in a spreadsheet, the log is the thing to read without downloading
+# anything.
+#
+# FIVE KINDS, AND THE DIFFERENCE BETWEEN THEM IS NOT COSMETIC. projections, streaks,
+# mismatch and perfect are RECORDED — read back from snapshots frozen before kick-off, so
+# what is graded is what was claimed. consistency is a walk-forward REPLAY of a board that
+# was never frozen, and history_export's module docstring sets out the three ways a replay
+# differs from a record. The job prints which it handed you rather than leaving it to be
+# inferred from a filename.
+#
+# DISPATCH ONLY. Nothing here changes as often as a schedule would imply: the record grows
+# when games are played and the freezes run on the back of the sync.
+name: Export the record
+
+on:
+  workflow_dispatch:
+    inputs:
+      kind:
+        description: "Which board's claims to export"
+        required: true
+        type: choice
+        default: mismatch
+        options:
+          - mismatch      # the quick scan — RECORDED, frozen daily from 2026-10-21
+          - streaks       # the angle board — RECORDED, frozen on the days a card goes out
+          - perfect       # perfect games — RECORDED, frozen daily from 2026-10-23
+          - projections   # highest projected corners — RECORDED, no win/loss, a calibration
+          - consistency   # 19-of-19 — REPLAYED, never snapshotted, NOT the record
+      weeks:
+        description: "How far back to look (blank = 26)"
+        required: false
+        default: "26"
+        type: string
+
+concurrency:
+  group: corner-record-export
+
+permissions:
+  contents: read
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: What day is it
+        id: when
+        run: echo "tag=$(TZ=Europe/London date +%F)" >> "$GITHUB_OUTPUT"
+
+      # Render sleeps the service between requests, so the first call can time out while
+      # the container starts. The same two-step wake the harness does, for the same reason.
+      - name: Wake the backend
+        env:
+          BACKEND: ${{ vars.BACKEND_URL || 'https://corner-model.onrender.com' }}
+        run: curl -s -o /dev/null --max-time 60 "$BACKEND/api/health" || true
+
+      - name: Ask for the rows
+        id: pull
+        env:
+          BACKEND: ${{ vars.BACKEND_URL || 'https://corner-model.onrender.com' }}
+          TOOLS_TOKEN: ${{ secrets.TOOLS_TOKEN }}
+          KIND: ${{ inputs.kind }}
+          WEEKS: ${{ inputs.weeks }}
+        run: |
+          out="record-${KIND}-${{ steps.when.outputs.tag }}.csv"
+          # The token is in the query string, so the FILE is safe to print and the request
+          # line is not. Never echo the URL.
+          code=$(curl -s -o "$out" -w '%{http_code}' --max-time 180 \
+            "$BACKEND/api/tools/history.csv?kind=${KIND}&weeks=${WEEKS:-26}&token=$TOOLS_TOKEN" \
+            || echo 000)
+          echo "HTTP $code"
+          case "$code" in
+            200) ;;
+            400) echo "::error::the backend rejected '$KIND' — it is not one of its kinds"
+                 cat "$out"; exit 1 ;;
+            403) echo "::error::backend rejected the token — check the TOOLS_TOKEN secret"
+                 exit 1 ;;
+            *)   echo "::error::could not fetch the record (HTTP $code)"; exit 1 ;;
+          esac
+          # "no rows" is the endpoint's own answer when a board has nothing frozen in
+          # range. It is a fact about coverage, not a failure, and it must not be handed
+          # over as an empty spreadsheet that reads as a board with no record.
+          if [ "$(head -c 7 "$out")" = "no rows" ]; then
+            echo "::warning::$KIND has nothing frozen in the last ${WEEKS:-26} weeks"
+            echo "rows=0" >> "$GITHUB_OUTPUT"
+          else
+            # Subtract the header. A CSV with only a header is zero claims, not one.
+            echo "rows=$(( $(wc -l < "$out") - 1 ))" >> "$GITHUB_OUTPUT"
+          fi
+          echo "file=$out" >> "$GITHUB_OUTPUT"
+          echo "bytes=$(wc -c < "$out")" >> "$GITHUB_OUTPUT"
+
+      - name: Attach it to the run
+        uses: actions/upload-artifact@v4
+        with:
+          name: record-${{ inputs.kind }}-${{ steps.when.outputs.tag }}
+          path: ${{ steps.pull.outputs.file }}
+          # A record only grows, so an old copy is a valid record of a shorter history
+          # rather than something misleading. Ninety days is the default and is fine.
+          if-no-files-found: error
+
+      # LAST, AND DELIBERATELY SO. The runner echoes every line of a run script into the
+      # log before executing it, so anything printed by an earlier step gets pushed past
+      # what the logs API will return. this_week.yml has the same note for the same reason.
+      - name: The rows
+        env:
+          KIND: ${{ inputs.kind }}
+          FILE: ${{ steps.pull.outputs.file }}
+          ROWS: ${{ steps.pull.outputs.rows }}
+          BYTES: ${{ steps.pull.outputs.bytes }}
+        run: |
+          case "$KIND" in
+            consistency)
+              BASIS="REPLAYED — rebuilt from games strictly before each kick-off, under
+          today's rule. This is NOT what anybody was shown." ;;
+            projections)
+              BASIS="RECORDED — frozen before kick-off. No win or loss: a projection is a
+          number, not a bet, and no line was published. Read \`error\`." ;;
+            *)
+              BASIS="RECORDED — every row read back from a snapshot frozen before
+          kick-off, one claim per fixture." ;;
+          esac
+          {
+            echo "## \`$KIND\` — $ROWS claims"
+            echo
+            echo "$BASIS"
+            echo
+            echo "Attached to this run as a CSV (${BYTES} bytes)."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          echo "RECORD_CSV_BEGIN $KIND rows=$ROWS"
+          cat "$FILE"
+          echo "RECORD_CSV_END"

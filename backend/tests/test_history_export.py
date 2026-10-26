@@ -413,3 +413,76 @@ class TestASplitPrintsBothIntervals:
     def test_nothing_settled_says_so_rather_than_printing_an_empty_grid(self, capsys):
         hx._show_split("T", [{"result": "pending", "thin": True}], "thin", {})
         assert "nothing settled" in capsys.readouterr().out
+
+
+class TestOneClaimPerFixture:
+    """Each board is frozen daily over a multi-day horizon, so the same fixture is
+    written down again every morning until it kicks off. Counted per snapshot, a
+    Saturday game frozen from the Sunday before lands in the rate seven times — and the
+    weighting falls on the fixtures frozen furthest ahead, which are not a random sample.
+
+    public_results has guarded this since the streak freeze went daily. This file did
+    not, and the quick-scan figures it printed were inflated by exactly this."""
+
+    def snap(self, tag, *entries):
+        return {"tag": tag, "entries": list(entries)}
+
+    def e(self, fixture="f1", team="t1", line=6, **kw):
+        base = {"fixture_id": fixture, "team_id": team, "line": line,
+                "direction": "over", "subject": "team"}
+        base.update(kw)
+        return base
+
+    def test_a_fixture_frozen_every_day_is_one_claim(self):
+        snaps = [self.snap(f"2026-10-2{d}", self.e()) for d in range(1, 6)]
+        out = hx.one_claim_per_fixture(snaps)
+        assert len(out) == 1, "five freezes of one fixture is one claim, not five"
+
+    def test_the_newest_freeze_is_the_one_kept(self):
+        # The claim as it last stood before kick-off is what was on screen at kick-off.
+        snaps = [self.snap("2026-10-21", self.e(team_games=2)),
+                 self.snap("2026-10-24", self.e(team_games=9))]
+        (tag, kept), = hx.one_claim_per_fixture(snaps)
+        assert tag == "2026-10-24"
+        assert kept["team_games"] == 9, "the stale sample must not win"
+
+    def test_different_fixtures_both_survive(self):
+        snaps = [self.snap("2026-10-24", self.e(fixture="f1"), self.e(fixture="f2"))]
+        assert len(hx.one_claim_per_fixture(snaps)) == 2
+
+    def test_two_lines_on_one_fixture_are_two_claims(self):
+        # 6+ and 8+ on the same side are separate bets with separate outcomes.
+        snaps = [self.snap("2026-10-24", self.e(line=6), self.e(line=8))]
+        assert len(hx.one_claim_per_fixture(snaps)) == 2
+
+    def test_both_sides_of_one_fixture_are_two_claims(self):
+        snaps = [self.snap("2026-10-24", self.e(team="home"), self.e(team="away"))]
+        assert len(hx.one_claim_per_fixture(snaps)) == 2
+
+    def test_a_team_over_and_a_match_total_are_not_the_same_claim(self):
+        snaps = [self.snap("2026-10-24",
+                           self.e(subject="team"), self.e(subject="match"))]
+        assert len(hx.one_claim_per_fixture(snaps)) == 2
+
+    def test_the_key_matches_what_public_results_uses(self):
+        # If these drift, the site and the export will publish different denominators
+        # for the same board and nothing will say which is right.
+        row = self.e()
+        assert hx.claim_key(row) == (row["fixture_id"], row["team_id"], row["line"],
+                                     row["direction"], row["subject"])
+
+    def test_an_empty_pile_is_empty_rather_than_an_error(self):
+        assert hx.one_claim_per_fixture([]) == []
+        assert hx.one_claim_per_fixture([{"tag": "2026-10-24"}]) == []
+
+    def test_a_repeated_loss_cannot_be_counted_seven_times(self):
+        # The failure this prevents, stated as a rate: one losing fixture frozen seven
+        # times alongside one winner reads as 12.5% without deduplication and 50% with.
+        from server import LOSS, WIN
+        snaps = [self.snap(f"2026-10-1{d}", self.e(fixture="loser")) for d in range(1, 8)]
+        snaps.append(self.snap("2026-10-18", self.e(fixture="winner")))
+        claims = hx.one_claim_per_fixture(snaps)
+        assert len(claims) == 2
+        graded = [{"result": WIN if e["fixture_id"] == "winner" else LOSS}
+                  for _, e in claims]
+        assert hx.tally(graded)["hit_rate"] == 50.0

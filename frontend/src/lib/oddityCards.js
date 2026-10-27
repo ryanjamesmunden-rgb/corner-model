@@ -193,6 +193,74 @@ const SPECS = {
     };
   },
 
+  // THE RUN CARDS. The hero is the run length, because that is what the claim is about —
+  // "since 16 August" is the hook but a date is not a number you can set in 200pt type.
+  // A run that fills our stored window gets a "+" and says why in the meta: printing an
+  // exact figure there would be stating where our data stops as a fact about football.
+  unbeaten: (f) => {
+    const run = int(f.run);
+    if (run === null || !f.since) return null;
+    return {
+      hero: f.at_least ? `${run}+` : String(run),
+      unit: "games without losing the count",
+      headline: "Still have not been out-cornered",
+      detail: `${team(f)} — unbeaten on corners since ${onDate(f.since)}`,
+      meta: [int(f.drawn) ? `${int(f.drawn)} finished level` : "won outright every time",
+             f.at_least ? "our record starts there" : ""],
+      tone: "solid",
+    };
+  },
+
+  clearing: (f) => {
+    const run = int(f.run);
+    const line = int(f.line);
+    if (run === null || line === null || !f.since) return null;
+    return {
+      hero: f.at_least ? `${run}+` : String(run),
+      unit: `straight games at ${line}+`,
+      headline: "Has not dipped below it once",
+      detail: `${team(f)} — ${line}+ corners every game since ${onDate(f.since)}`,
+      meta: [f.at_least ? "our record starts there" : "", `${f.games} games on file`],
+      tone: "solid",
+    };
+  },
+
+  barren: (f) => {
+    const run = int(f.run);
+    const mark = int(f.mark);
+    if (run === null || mark === null || !f.since) return null;
+    return {
+      hero: f.at_least ? `${run}+` : String(run),
+      unit: `games under ${mark}`,
+      headline: `Have not managed ${mark} since ${onDate(f.since)}`,
+      detail: `${team(f)} — best in the run, ${int(f.best_in_run)}`,
+      meta: [`${f.games} games on file`],
+      tone: "dim",
+    };
+  },
+
+  // THE PROFILE CARD. Not a superlative, so there is no "most" or "widest" to lead with:
+  // the hero is the club's own corner average and the support is the rest of its season.
+  // Its denominator is its own division, which a reader can picture.
+  club: (f) => {
+    const avg = dec(f.for_avg);
+    if (avg === null) return null;
+    const place = int(f.league_place);
+    const size = int(f.league_size);
+    return {
+      hero: avg,
+      unit: "corners a game",
+      headline: team(f),
+      detail: `${f.games} games — ${dec(f.against_avg)} conceded, `
+        + `best ${int(f.ceiling)}, worst ${int(f.floor)}`,
+      meta: [place !== null && size !== null && size > 1
+               ? `${place} of ${size} in ${f.league || "their division"}` : "",
+             dec(f.home_avg) !== null && dec(f.away_avg) !== null
+               ? `${dec(f.home_avg)} home / ${dec(f.away_avg)} away` : ""],
+      tone: "primary",
+    };
+  },
+
   punching: (f) => {
     const t = f.team || {};
     const b = f.beats || {};

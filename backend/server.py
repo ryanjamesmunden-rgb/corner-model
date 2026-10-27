@@ -7551,7 +7551,13 @@ async def oddities_survey(user: dict = Depends(get_current_user), response: Resp
     meta = {lid: {"country": m.get("country", ""), "tier": m.get("tier"),
                   "name": m.get("name", "")}
             for lid, m in COMPETITION_META.items()}
-    return oddities.survey(list(base["by_id"].values()), leagues, meta)
+    # THE CLUB OF THE DAY NEEDS A DAY, and it comes from the clock here rather than from
+    # the browser so that the screen, the Telegram post and the X draft all name the same
+    # club on the same date. An ordinal rather than a weekday: the pool runs to hundreds,
+    # and anything that wrapped weekly would show seven clubs for ever.
+    day_index = datetime.now(timezone.utc).date().toordinal()
+    return oddities.survey(list(base["by_id"].values()), leagues, meta,
+                           day_index=day_index)
 
 
 @api_router.get("/best-bets")

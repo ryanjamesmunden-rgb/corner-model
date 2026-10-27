@@ -18,9 +18,12 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import oddities  # noqa: E402
-from oddities import (MIN_GAMES, PUNCH_MIN_GAMES, all_corners_no_goals, games_of,  # noqa: E402
+from oddities import (MIN_GAMES, MIN_RUN, PUNCH_MIN_GAMES, all_corners_no_goals,  # noqa: E402
+                      club_of_the_day, games_of,
                       highest_floor,
-                      league_extremes, league_table, leakiest, lowest_ceiling,
+                      league_extremes, league_table, leakiest,
+                      longest_barren_run, longest_clearing_run,
+                      longest_unbeaten_corners, lowest_ceiling,
                       never_outcornered, punching_up, survey, widest_venue_gap,
                       _team_rows)
 
@@ -393,9 +396,187 @@ class TestTheSurveyAsAWhole:
         silently drops a post rather than failing."""
         out = survey([], LEAGUES, META)
         assert set(out["findings"]) == {
+            # The all-time extremes. Each has exactly one holder, so each is one post
+            # until a record breaks.
             "biggest_rout", "biggest_haul", "wildest_game", "highest_floor",
             "lowest_ceiling", "widest_venue_gap", "never_outcornered",
-            "all_corners_no_goals", "leakiest", "league_extremes", "punching_up"}
+            "all_corners_no_goals", "leakiest", "league_extremes", "punching_up",
+            # The four that move: three current runs, which extend or end every time a
+            # side plays, and a club profile, whose subject changes by the day.
+            "unbeaten_corners", "clearing_run", "barren_run", "club_of_the_day"}
 
     def test_match_findings_names_match_the_keys_they_describe(self):
         assert set(oddities.MATCH_FINDINGS) <= set(survey([], LEAGUES, META)["findings"])
+
+
+# ---------------------------------------------------------------------------
+# Runs — the findings that move
+# ---------------------------------------------------------------------------
+#
+# WHAT THESE GUARD, AND IT IS A DIFFERENT RISK FROM THE SUPERLATIVES ABOVE. A superlative
+# is wrong loudly: it names the wrong club and anybody checking the table spots it. A run
+# is wrong QUIETLY. "Unbeaten since 16 August" counted over a shuffled list, or counted
+# from the wrong end, or stated as an exact figure when it really reaches the edge of what
+# we store, all read exactly like the true version. Nobody can check it without the match
+# list, so the tests have to.
+
+def _run_team(name, pairs, start_day=1, league="eng-l1"):
+    """pairs = [(corners_for, corners_against), ...], oldest first."""
+    return {
+        "team_id": f"{league}-{name}", "name": name, "league_id": league,
+        "real_matches": [
+            {"date": f"2026-09-{start_day + i:02d}", "corners_for": cf,
+             "corners_against": ca, "goals_for": 1, "goals_against": 1,
+             "home": i % 2 == 0, "opponent": f"Opp{i}"}
+            for i, (cf, ca) in enumerate(pairs)],
+    }
+
+
+class TestARunIsCountedInDateOrder:
+    def test_the_stored_order_does_not_decide_the_run(self):
+        # A run over a shuffled list is not a run, it is a count. Here the FIRST stored
+        # row carries the LATEST date and breaks the streak, so a walk that trusted the
+        # stored order would report six straight and be wrong by six.
+        t = _run_team("Shuffled", [(9, 1)] * 6)
+        t["real_matches"][0]["date"] = "2026-09-20"
+        t["real_matches"][0]["corners_for"] = 1
+        t["real_matches"][0]["corners_against"] = 9
+        found = longest_unbeaten_corners([t])
+        assert found is None or found["run"] < 6
+
+    def test_the_run_is_the_current_one_not_the_best_one(self):
+        # Eight clear games then a loss is a run of zero, not a run of eight. A best-ever
+        # run would be another static record — the thing this section exists to avoid.
+        t = _run_team("JustLost", [(7, 3)] * 8 + [(2, 9)])
+        assert longest_unbeaten_corners([t]) is None
+
+
+class TestTheUnbeatenRun:
+    def test_it_counts_back_from_the_last_game_and_dates_the_start(self):
+        t = _run_team("Unbeaten", [(2, 9)] + [(7, 3)] * 8)
+        f = longest_unbeaten_corners([t])
+        assert f["run"] == 8
+        assert f["since"] == "2026-09-02"
+
+    def test_a_level_count_does_not_break_it(self):
+        # Not being out-cornered is the test, not winning the count — the same way a push
+        # is not a loss anywhere else on this site. The post says so, so this must hold.
+        t = _run_team("Level", [(1, 9)] + [(4, 4)] * 6)
+        f = longest_unbeaten_corners([t])
+        assert f["run"] == 6 and f["drawn"] == 6
+
+    def test_a_run_filling_the_window_is_at_least_not_exactly(self):
+        # The sync keeps a rolling window per team. A side whose every stored game clears
+        # the test began its run somewhere we do not hold, and an exact figure there would
+        # publish our storage limit as a fact about football.
+        t = _run_team("AllClear", [(7, 3)] * 9)
+        f = longest_unbeaten_corners([t])
+        assert f["run"] == 9 and f["at_least"] is True
+
+    def test_a_run_that_starts_inside_the_window_is_exact(self):
+        t = _run_team("Bounded", [(2, 9)] + [(7, 3)] * 6)
+        assert longest_unbeaten_corners([t])["at_least"] is False
+
+    def test_a_short_run_is_not_a_run(self):
+        t = _run_team("Short", [(7, 3)] * (MIN_RUN - 1))
+        assert longest_unbeaten_corners([t]) is None
+
+
+class TestTheClearingRun:
+    def test_the_line_is_the_highest_the_run_supports(self):
+        # Found per team, not a fixed threshold applied to everybody — which is the
+        # "breadth / today / deep / high" failure the module header is about.
+        t = _run_team("Clearer", [(2, 2), (6, 1), (7, 2), (9, 3), (6, 1), (8, 2), (6, 4)])
+        f = longest_clearing_run([t])
+        assert f["line"] == 6 and f["run"] == 6
+
+    def test_a_dip_caps_the_line_at_the_dip(self):
+        t = _run_team("Mixed", [(9, 1)] * 3 + [(4, 1)] * 3)
+        f = longest_clearing_run([t])
+        assert f["line"] == 4 and f["run"] == 6
+
+    def test_a_longer_run_beats_a_higher_line(self):
+        # Eleven straight at 5+ is the better story and a reader can tell.
+        low = _run_team("LongLow", [(5, 1)] * 11)
+        high = _run_team("ShortHigh", [(1, 1)] + [(9, 1)] * 6)
+        assert longest_clearing_run([low, high])["team"] == "LongLow"
+
+
+class TestTheBarrenRun:
+    def test_the_mark_is_the_lowest_the_run_supports(self):
+        t = _run_team("Barren", [(11, 2), (3, 6), (2, 7), (1, 5), (3, 8), (2, 6), (3, 9)])
+        f = longest_barren_run([t])
+        assert f["mark"] == 4 and f["run"] == 6
+        assert f["best_in_run"] == 3
+
+    def test_over_equal_runs_the_lower_mark_wins(self):
+        # Staying under 4 for six games is a stronger claim than staying under 9.
+        deep = _run_team("Deeper", [(9, 1)] + [(2, 5)] * 6)
+        shallow = _run_team("Shallower", [(9, 1)] + [(8, 5)] * 6)
+        assert longest_barren_run([deep, shallow])["team"] == "Deeper"
+
+
+class TestTheClubOfTheDay:
+    """Not a superlative, which is the entire point: a superlative has one holder and a
+    profile has as many subjects as there are clubs."""
+
+    def rows(self, n=12):
+        return [{"team": f"T{i}", "team_id": f"x-{i:03d}", "league_id": "eng-l1",
+                 "league": "League One", "country": "England", "tier": 3,
+                 "games": 20, "for_avg": 5.0 + i * 0.1, "against_avg": 5.0,
+                 "floor": 2, "ceiling": 9, "window": 10, "home_avg": 6.0,
+                 "away_avg": 4.0, "goals_avg": 1.2, "won_count": 11, "lost_count": 7}
+                for i in range(n)]
+
+    table = [{"league_id": "eng-l1", "league": "League One", "per_match": 10.4}]
+
+    def test_the_index_moves_the_club(self):
+        rows = self.rows()
+        assert (club_of_the_day(rows, self.table, 0)["team"]
+                != club_of_the_day(rows, self.table, 1)["team"])
+
+    def test_the_same_index_gives_the_same_club(self):
+        # Passed in rather than read from a clock, so a surprising post is reproducible.
+        rows = self.rows()
+        assert (club_of_the_day(rows, self.table, 5)["team"]
+                == club_of_the_day(rows, self.table, 5)["team"])
+
+    def test_the_index_wraps(self):
+        rows = self.rows()
+        assert (club_of_the_day(rows, self.table, len(rows))["team"]
+                == club_of_the_day(rows, self.table, 0)["team"])
+
+    def test_a_new_club_joining_does_not_reshuffle_the_rotation(self):
+        # Sorted on team_id, so a side qualifying mid-season must not change who is next.
+        rows = self.rows()
+        grown = rows + [{**rows[0], "team": "ZZZ", "team_id": "x-999", "for_avg": 9.9}]
+        assert (club_of_the_day(grown, self.table, 3)["team"]
+                == club_of_the_day(rows, self.table, 3)["team"])
+
+    def test_a_place_always_arrives_with_its_field_size(self):
+        f = club_of_the_day(self.rows(), self.table, 0)
+        assert f["league_place"] is not None and f["league_size"] == 12
+
+    def test_the_best_attack_in_the_division_places_first(self):
+        rows = self.rows()
+        best = max(rows, key=lambda r: r["for_avg"])
+        f = club_of_the_day(rows, self.table, rows.index(best))
+        assert f["league_place"] == 1
+
+    def test_no_qualifying_club_is_no_club(self):
+        assert club_of_the_day([], self.table, 0) is None
+        assert club_of_the_day([{"team": "X", "team_id": "x", "for_avg": None}],
+                               self.table, 0) is None
+
+
+class TestTheSurveyCarriesTheMovingFindings:
+    def test_all_four_appear_and_the_day_index_reaches_the_club(self):
+        teams = [_run_team(f"Team{i}", [(6, 2)] * 12, league="eng-l1")
+                 for i in range(4)]
+        a = survey(teams, day_index=0)
+        b = survey(teams, day_index=1)
+        for key in ("unbeaten_corners", "clearing_run", "barren_run", "club_of_the_day"):
+            assert key in a["findings"]
+        # The whole reason day_index is threaded through: without it the club never moves.
+        assert (a["findings"]["club_of_the_day"]["team"]
+                != b["findings"]["club_of_the_day"]["team"])

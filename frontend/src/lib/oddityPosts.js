@@ -344,12 +344,110 @@ export const punchingPost = ({ findings = {}, site = "" } = {}) => {
  * because none of them is about a bet. `rotate` moves the lead day by day so the guess
  * does not harden into the same post every morning.
  */
+// ---------------------------------------------------------------------------
+// Runs — the posts that are different every week
+// ---------------------------------------------------------------------------
+//
+// EVERY BUILDER ABOVE IS ABOUT A RECORD, AND A RECORD ONLY CHANGES WHEN IT BREAKS. That
+// is why the account reads as repetitive even with eleven shapes in rotation: the biggest
+// rout on the site is the same match for weeks, so the eleventh day is the first day
+// again with a new date on it. A current run cannot do that — it extends or it ends every
+// time the side plays.
+//
+// "SINCE <DATE>" IS THE HOOK AND THE RUN LENGTH IS THE PROOF. One without the other is
+// either vague or dry: "unbeaten since August" could be three games, and "unbeaten in
+// fourteen" does not tell a reader how long they have been watching it happen. Both, or
+// neither.
+//
+// AND `at_least` IS NOT DECORATION. The sync keeps a rolling window per team, so a run
+// that reaches the oldest game we hold began somewhere we cannot see. Printing it as an
+// exact figure would state our storage limit as a fact about football.
+
+const runLength = (f) => (f.at_least ? `at least ${f.run}` : `${f.run}`);
+
+/** Has not been out-cornered since a date. The closest honest thing to an unbeaten run. */
+export const unbeatenPost = ({ findings = {}, site = "" } = {}) => {
+  const f = findings.unbeaten_corners;
+  if (!f || num(f.run) === null || !f.since) return null;
+  const drawn = num(f.drawn) || 0;
+  return candidate("unbeaten", build([
+    `${who(f)} have not lost the corner count since ${when(f.since)}.`,
+    `That is ${runLength(f)} games.`,
+    // A draw did not break it, so a reader who checks and finds a level game has not
+    // caught us out — the claim already allowed for it.
+    drawn > 0 ? `${drawn} of them finished dead level, which does not break a run.`
+              : `Won outright every time.`,
+    f.at_least ? `Our record of them starts there, so it may well be longer.` : "",
+  ], site), f);
+};
+
+/** The same line cleared every game for weeks. */
+export const clearingPost = ({ findings = {}, site = "" } = {}) => {
+  const f = findings.clearing_run;
+  if (!f || num(f.run) === null || num(f.line) === null || !f.since) return null;
+  return candidate("clearing", build([
+    `${who(f)} have won ${f.line}+ corners in every game since ${when(f.since)}.`,
+    `${runLength(f)} in a row.`,
+    f.at_least ? `Our record of them starts there, so it may well be longer.` : "",
+  ], site), f);
+};
+
+/** The opposite claim, because an account with only good news is an advert. */
+export const barrenPost = ({ findings = {}, site = "" } = {}) => {
+  const f = findings.barren_run;
+  if (!f || num(f.run) === null || num(f.mark) === null || !f.since) return null;
+  const best = num(f.best_in_run);
+  return candidate("barren", build([
+    `${who(f)} have not won more than ${f.mark - 1} corners in a game since `
+    + `${when(f.since)}.`,
+    `${runLength(f)} games.`,
+    best === null ? "" : `Their best in that run is ${best}.`,
+  ], site), f);
+};
+
+/**
+ * One club, several of its own numbers.
+ *
+ * THE ONLY BUILDER HERE THAT IS NOT ABOUT A SUPERLATIVE, and therefore the only one whose
+ * subject changes on its own. Eleven extremes are eleven posts however they are rotated;
+ * this has as many as there are qualifying clubs, so the same club will not come round
+ * for the better part of a year.
+ *
+ * ITS DENOMINATOR IS THE CLUB'S OWN LEAGUE rather than the whole site. "Third of 24 in
+ * League One" is a fact a reader can hold; "ninth of 548" is a number.
+ */
+export const clubPost = ({ findings = {}, site = "" } = {}) => {
+  const f = findings.club_of_the_day;
+  if (!f || num(f.for_avg) === null || num(f.games) === null) return null;
+  const place = num(f.league_place);
+  const size = num(f.league_size);
+  const home = num(f.home_avg);
+  const away = num(f.away_avg);
+  const goals = num(f.goals_avg);
+  return candidate("club", build([
+    `${who(f)}, ${f.games} games in: ${dec(f.for_avg)} corners a game, `
+    + `${dec(f.against_avg)} against.`,
+    place !== null && size !== null && size > 1
+      ? `${place} of ${size} in ${f.league || "their division"} for corners won.`
+      : "",
+    home !== null && away !== null
+      ? `${dec(home)} at home, ${dec(away)} away.`
+      : "",
+    `Best night ${f.ceiling}, worst ${f.floor}.`,
+    goals !== null ? `${dec(goals)} goals a game to go with it.` : "",
+  ], site), f);
+};
+
 export const BUILDERS = [
   ["punching", punchingPost],
+  ["unbeaten", unbeatenPost],
   ["rout", routPost],
+  ["club", clubPost],
   ["floor", floorPost],
+  ["clearing", clearingPost],
   ["leagues", leaguesPost],
   ["ceiling", ceilingPost],
+  ["barren", barrenPost],
   ["venue", venuePost],
   ["perfect", perfectPost],
   ["wildest", wildestPost],

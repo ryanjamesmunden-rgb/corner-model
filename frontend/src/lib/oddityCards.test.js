@@ -104,13 +104,101 @@ describe("it carries the prose it came from", () => {
   });
 });
 
-describe("the eleven findings all have a card", () => {
+describe("every finding has a card", () => {
   it("covers every builder key oddityPosts can produce", () => {
-    // If a twelfth fact is added to oddityPosts and not here, the day it leads the
-    // rotation is the day the tweet silently loses its picture.
+    // If a fact is added to oddityPosts and not here, the day it leads the rotation is
+    // the day the tweet silently loses its picture. Kept in sync with BUILDERS by the
+    // test below, which reads the real list rather than this copy of it.
     expect(CARD_KEYS.sort()).toEqual([
-      "ceiling", "floor", "futility", "haul", "leagues", "leaky",
-      "perfect", "punching", "rout", "venue", "wildest",
+      "barren", "ceiling", "clearing", "club", "floor", "futility", "haul",
+      "leagues", "leaky", "perfect", "punching", "rout", "unbeaten", "venue",
+      "wildest",
     ].sort());
+  });
+
+  it("matches BUILDERS exactly, in both directions", () => {
+    // The hand-written list above can drift from the code. This cannot: a builder with
+    // no card loses its picture, and a card with no builder is dead weight nothing can
+    // ever reach.
+    const { BUILDERS } = require("./oddityPosts.js");
+    expect(CARD_KEYS.sort()).toEqual(BUILDERS.map(([k]) => k).sort());
+  });
+});
+
+describe("a run card carries its run and says when it is only a floor", () => {
+  const run = (over = {}) => ({
+    run: 14, since: "2026-08-16", at_least: false, games: 20, drawn: 0, ...over,
+  });
+
+  it("leads with the run length, because the date cannot be the hero", () => {
+    const c = oddityCard(post("unbeaten", run()));
+    expect(c.hero).toBe("14");
+    expect(c.detail).toContain("16 August");
+  });
+
+  it("marks a run that fills our window as a floor, not a figure", () => {
+    // The sync keeps a rolling window per team, so a run reaching the oldest game we
+    // hold began somewhere we cannot see. "14" there would state our storage limit as
+    // a fact about football.
+    const c = oddityCard(post("unbeaten", run({ at_least: true })));
+    expect(c.hero).toBe("14+");
+    expect(c.meta.join(" ")).toContain("our record starts there");
+  });
+
+  it("says a level count did not break the run, so a checker is not surprised", () => {
+    const c = oddityCard(post("unbeaten", run({ drawn: 3 })));
+    expect(c.meta.join(" ")).toContain("3 finished level");
+  });
+
+  it("refuses without a start date, because half the claim is missing", () => {
+    expect(oddityCard(post("unbeaten", run({ since: null })))).toBeNull();
+  });
+
+  it("puts the line in the unit on a clearing run", () => {
+    const c = oddityCard(post("clearing", run({ line: 6 })));
+    expect(c.hero).toBe("14");
+    expect(c.unit).toContain("6+");
+  });
+
+  it("reads a barren run as the mark they have NOT reached", () => {
+    const c = oddityCard(post("barren", run({ mark: 4, best_in_run: 3 })));
+    expect(c.hero).toBe("14");
+    expect(c.unit).toBe("games under 4");
+    expect(c.headline).toContain("have not managed 4".replace("have", "Have"));
+  });
+
+  it("drops a clearing run with no line and a barren run with no mark", () => {
+    expect(oddityCard(post("clearing", run()))).toBeNull();
+    expect(oddityCard(post("barren", run()))).toBeNull();
+  });
+});
+
+describe("the club profile leads with the club's own average", () => {
+  const club = (over = {}) => ({
+    team: "Barnsley", league: "League One", games: 18, for_avg: 7.75,
+    against_avg: 5.2, floor: 3, ceiling: 13, home_avg: 8.4, away_avg: 6.9,
+    goals_avg: 1.4, league_place: 2, league_size: 24, ...over,
+  });
+
+  it("is a profile, so the hero is an average and the headline is the name", () => {
+    const c = oddityCard(post("club", club()));
+    expect(c.hero).toBe("7.8");
+    expect(c.headline).toBe("Barnsley");
+  });
+
+  it("gives the place a field size, because a place without one is not a place", () => {
+    const c = oddityCard(post("club", club()));
+    expect(c.meta.join(" ")).toContain("2 of 24");
+  });
+
+  it("drops the place rather than printing a rank out of one", () => {
+    const c = oddityCard(post("club", club({ league_size: 1, league_place: 1 })));
+    expect(c.meta.join(" ")).not.toContain("1 of 1");
+  });
+
+  it("survives a club with no venue split", () => {
+    const c = oddityCard(post("club", club({ home_avg: null, away_avg: null })));
+    expect(c.hero).toBe("7.8");
+    expect(c.meta.every((m) => m && m.trim())).toBe(true);
   });
 });

@@ -72,6 +72,29 @@ const survey = (over = {}) => ({
       team: "Grimsby", country: "England", league: "League Two",
       games: 18, against_avg: 8.9, for_avg: 3.2,
     },
+    // THE FOUR THAT MOVE. Every finding above is an all-time extreme and changes only
+    // when a record breaks, which is why eleven of them still read as a repeat. These
+    // change whenever the side plays.
+    unbeaten_corners: {
+      team: "Brann", country: "Norway", league: "Eliteserien",
+      run: 14, since: "2026-08-16T17:00:00Z", at_least: false, games: 20, drawn: 2,
+    },
+    clearing_run: {
+      team: "Criciuma", country: "Brazil", league: "Série B",
+      line: 6, run: 11, since: "2026-08-29T22:30:00Z", at_least: false, games: 20,
+    },
+    barren_run: {
+      team: "Oddevold", country: "Sweden", league: "Superettan",
+      mark: 4, run: 9, since: "2026-09-05T15:00:00Z", at_least: false, games: 20,
+      best_in_run: 3,
+    },
+    club_of_the_day: {
+      team: "Barnsley", country: "England", league: "League One",
+      games: 18, for_avg: 7.75, against_avg: 5.2, floor: 3, ceiling: 13, window: 10,
+      home_avg: 8.4, away_avg: 6.9, goals_avg: 1.4,
+      won_count: 11, lost_count: 6, league_place: 2, league_size: 24,
+      league_per_match: 10.9, pool_index: 3, pool_size: 431,
+    },
     league_extremes: {
       top: { league: "Liga Profesional", country: "Argentina", per_match: 11.8, tier: 1 },
       bottom: { league: "J1 League", country: "Japan", per_match: 8.6, tier: 1 },

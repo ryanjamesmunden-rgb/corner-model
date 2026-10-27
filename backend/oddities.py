@@ -46,11 +46,29 @@ FOUR RULES, AND THEY ARE WHAT KEEP THIS HONEST:
      remarkable thing; over 3 games it is a Tuesday. `games` rides along on every record
      and `MIN_GAMES` keeps the thin ones out of the comparison entirely.
 
+A SUPERLATIVE HAS EXACTLY ONE HOLDER, WHICH IS ITS OTHER FAILURE MODE. Eleven extremes
+over a pool that barely moves are eleven facts: a record changes only when it is broken,
+so the same club tops "the biggest rout" for weeks and rotating the order does not make
+the content new. Two later sections answer that directly rather than by adding a twelfth
+extreme:
+
+  RUNS, which move on their own. A current unbeaten run, a clearing run, a barren run —
+  each extends or ends every time the side plays, so the holder and the number change
+  without anybody writing new code.
+
+  CLUB OF THE DAY, which is not a superlative at all. One club and its own numbers, which
+  gives as many posts as there are qualifying clubs — hundreds, rather than eleven.
+
 WHAT THIS DELIBERATELY DOES NOT DO: invent club trivia. Founding dates, nicknames, ground
 oddities and who-hates-whom are not in this database, and a site whose whole argument is
 "our numbers are checkable" cannot start printing colour it cannot source. Everything here
 is computed from match records we hold. That is a narrower pool of facts than the internet
 has, and it is the only pool that comes with evidence attached.
+
+NOR CAN IT REACH BACK YEARS. "Unbeaten since 1996" is the shape people want and this
+database cannot support it: the sync keeps a rolling window of real matches per team,
+twenty at the most. A run that fills that window is reported as AT LEAST its length and
+never as an exact one, because where it actually began is outside what we hold.
 
 NUMBERS OUT, NOT SENTENCES. Same split as every other board here: the backend returns
 records and frontend/src/lib/oddityPosts.js writes the English. Rendering prose here would
@@ -79,9 +97,58 @@ MIN_LEAGUE_GAMES = 60
 PUNCH_MIN_GAMES = 15
 
 
+# A RUN NEEDS THIS MANY GAMES BEFORE IT IS A RUN. Lower than MIN_GAMES because a current
+# streak is not an average and is not competing against teams with longer records: five
+# straight is a genuine five straight whether the side has played six games or twenty.
+MIN_RUN = 5
+
+
 def games_of(team):
     """The real match record, and only that. See rule 2 — `matches` may be synthetic."""
     return team.get("real_matches") or []
+
+
+def _in_order(team):
+    """The real matches oldest-first, which every run below depends on.
+
+    THE STORED ORDER IS NOT GUARANTEED and a run computed over a shuffled list is not a
+    run, it is a count. Sorting on the date costs one pass and removes the assumption;
+    matches with no date sort to the front, where they cannot corrupt the tail that the
+    current-run walk actually reads.
+    """
+    gs = [m for m in games_of(team)
+          if m.get("corners_for") is not None and m.get("corners_against") is not None]
+    return sorted(gs, key=lambda m: str(m.get("date") or ""))
+
+
+def _current_run(games, holds):
+    """How many games back from the LAST one `holds` has been true without a break.
+
+    CURRENT, NOT BEST-EVER, AND THAT IS THE WHOLE POINT OF THIS SECTION. Every other
+    finding in this file is an all-time extreme over a pool that barely moves, so the
+    same club tops it for weeks and the post reads as a repeat — which is the complaint
+    this section exists to answer. A current run is different in kind: every week it
+    either extends or it ends, so the answer is genuinely new.
+
+    Returns (length, started_on, truncated):
+
+      `started_on`   the date of the FIRST game in the run, so the post can say "since
+                     16 August" rather than only "in 14 games".
+      `truncated`    True when the run reaches the start of what we hold. The sync keeps
+                     a rolling window per team, so a side whose every stored game clears
+                     the test has a run of AT LEAST that many and possibly far more. The
+                     wording must say "at least", and without this flag it would state a
+                     number that is merely where our data stops.
+    """
+    n = 0
+    for m in reversed(games):
+        if not holds(m):
+            break
+        n += 1
+    if n == 0:
+        return 0, None, False
+    run = games[-n:]
+    return n, run[0].get("date"), n == len(games)
 
 
 def _avg(values):
@@ -385,6 +452,170 @@ def punching_up(rows, table, min_games=PUNCH_MIN_GAMES):
 MATCH_FINDINGS = ("biggest_rout", "biggest_haul", "wildest_game")
 
 
+# ---------------------------------------------------------------------------
+# Runs — the findings that move
+# ---------------------------------------------------------------------------
+#
+# WHY THIS SECTION EXISTS. Everything above is an all-time extreme: the biggest rout, the
+# highest floor, the widest split. Those are good hooks and they have one failure mode in
+# common — a record only changes when it is broken, so the same club holds it for weeks
+# and the account posts the same sentence with a new date on it. Eleven superlatives over
+# a static pool is eleven facts, rotated.
+#
+# A CURRENT RUN CANNOT DO THAT. It extends or it breaks every time the side plays, so the
+# holder changes, the number changes, and "since 16 August" moves on its own. These are
+# the same shapes a football account actually posts — unbeaten runs, barren runs, a thing
+# that has not happened since a date.
+#
+# WHAT THEY ARE NOT. They are not "unbeaten since 1996". This database holds a rolling
+# window of real matches per team — twenty at most, ten before a team qualifies for
+# anything — so the furthest back any of this can honestly reach is the start of that
+# window. A run that fills the window is reported as AT LEAST its length, never as an
+# exact one, because where it really began is outside what we hold. See `_current_run`.
+
+def longest_unbeaten_corners(teams, leagues=None, meta=None, min_run=MIN_RUN):
+    """The side that has gone longest without being out-cornered.
+
+    NOT BEING OUT-CORNERED IS THE TEST, not winning the count: a dead-level game did not
+    break the run, the same way a push is not a loss anywhere else on this site. Stated
+    as "has not lost the corner count since", which is true of a draw.
+    """
+    best = None
+    for t in teams:
+        gs = _in_order(t)
+        if len(gs) < min_run:
+            continue
+        n, since, truncated = _current_run(
+            gs, lambda m: m["corners_for"] >= m["corners_against"])
+        if n < min_run:
+            continue
+        row = {**_label(t, leagues, meta), "run": n, "since": since,
+               "at_least": truncated, "games": len(gs),
+               "drawn": sum(1 for m in gs[-n:]
+                            if m["corners_for"] == m["corners_against"])}
+        if best is None or (row["run"], row["games"]) > (best["run"], best["games"]):
+            best = row
+    return best
+
+
+def longest_clearing_run(teams, leagues=None, meta=None, min_run=MIN_RUN):
+    """The side that has cleared the same line every game for longest.
+
+    THE LINE IS FOUND, NOT CHOSEN. For each team this takes the highest N whose run is at
+    least `min_run` long, so the claim is the strongest true one about that side rather
+    than a fixed threshold applied to everybody — which is precisely the "breadth, today,
+    deep, high" failure described at the top of this file.
+
+    Ranked on run length first and the line second: eleven straight at 5+ is a better
+    story than six straight at 7+, and a reader can tell the difference.
+    """
+    best = None
+    for t in teams:
+        gs = _in_order(t)
+        if len(gs) < min_run:
+            continue
+        found = None
+        # Descending, so the first line that produces a long enough run is the highest
+        # one that does. Capped at the team's own best night — above that the run is zero.
+        for line in range(max(m["corners_for"] for m in gs), 0, -1):
+            n, since, truncated = _current_run(gs, lambda m: m["corners_for"] >= line)
+            if n >= min_run:
+                found = (line, n, since, truncated)
+                break
+        if not found:
+            continue
+        line, n, since, truncated = found
+        row = {**_label(t, leagues, meta), "line": line, "run": n, "since": since,
+               "at_least": truncated, "games": len(gs)}
+        if best is None or (row["run"], row["line"]) > (best["run"], best["line"]):
+            best = row
+    return best
+
+
+def longest_barren_run(teams, leagues=None, meta=None, min_run=MIN_RUN):
+    """The side that has gone longest WITHOUT reaching a mark.
+
+    THE OPPOSITE CLAIM, AND IT READS DIFFERENTLY. "Has not won more than three corners in
+    nine games" is a fact about futility, where every other run here is a fact about
+    consistency, and an account needs both or it only ever has good news.
+
+    The mark is the lowest N such that every game in the run stayed UNDER it, found per
+    team for the same reason the clearing line is: a fixed threshold would pick out
+    whoever happens to sit under it rather than whoever is most remarkable.
+    """
+    best = None
+    for t in teams:
+        gs = _in_order(t)
+        if len(gs) < min_run:
+            continue
+        found = None
+        ceiling = max(m["corners_for"] for m in gs[-min_run:]) + 1
+        for mark in range(1, ceiling + 1):
+            n, since, truncated = _current_run(gs, lambda m: m["corners_for"] < mark)
+            if n >= min_run:
+                found = (mark, n, since, truncated)
+                break
+        if not found:
+            continue
+        mark, n, since, truncated = found
+        row = {**_label(t, leagues, meta), "mark": mark, "run": n, "since": since,
+               "at_least": truncated, "games": len(gs),
+               "best_in_run": max(m["corners_for"] for m in gs[-n:])}
+        # Longest run first, then the LOWER mark, because staying under 4 is a stronger
+        # claim than staying under 9 over the same number of games.
+        if best is None or (row["run"], -row["mark"]) > (best["run"], -best["mark"]):
+            best = row
+    return best
+
+
+def club_of_the_day(rows, table, index=0):
+    """One club, several of its own numbers — not a superlative at all.
+
+    THIS IS THE ANSWER TO REPETITION, AND IT IS A DIFFERENT ANSWER FROM THE RUNS ABOVE.
+    A superlative has exactly one holder, so eleven superlatives are eleven posts however
+    they are rotated. A club profile has as many subjects as there are clubs: this site
+    holds hundreds with enough record to qualify, which is hundreds of days before
+    anything comes round again.
+
+    NOTHING HERE IS A RANKING AGAINST THE SITE. It is this club's own for and against,
+    its venue split, its best and worst night, and where it sits in ITS OWN league — a
+    denominator a reader can hold in their head, unlike "of 548 teams".
+
+    `index` picks the club and is passed in rather than read from a clock, so the same day
+    gives the same club on every run and a surprising post can be reproduced later. Sorted
+    by team_id first so the order does not drift when the pool grows: a new team joining
+    must not reshuffle who comes next.
+    """
+    usable = sorted((r for r in rows if r.get("for_avg") is not None),
+                    key=lambda r: str(r.get("team_id") or r.get("team")))
+    if not usable:
+        return None
+    row = usable[index % len(usable)]
+    same_league = [r for r in rows
+                   if r.get("league_id") == row.get("league_id")
+                   and r.get("for_avg") is not None]
+    ranked = sorted(same_league, key=lambda r: r["for_avg"], reverse=True)
+    place = next((i + 1 for i, r in enumerate(ranked)
+                  if r.get("team_id") == row.get("team_id")), None)
+    league_row = next((t for t in (table or [])
+                       if t.get("league_id") == row.get("league_id")), None)
+    return {
+        **{k: row[k] for k in ("team", "team_id", "league_id", "league", "country", "tier")
+           if k in row},
+        "games": row["games"],
+        "for_avg": row["for_avg"], "against_avg": row["against_avg"],
+        "floor": row["floor"], "ceiling": row["ceiling"], "window": row["window"],
+        "home_avg": row.get("home_avg"), "away_avg": row.get("away_avg"),
+        "goals_avg": row.get("goals_avg"),
+        "won_count": row["won_count"], "lost_count": row["lost_count"],
+        # Where they sit among the sides in their own division that qualify, and how many
+        # that is. A place with no field size is not a place.
+        "league_place": place, "league_size": len(ranked) or None,
+        "league_per_match": (league_row or {}).get("per_match"),
+        "pool_index": index % len(usable), "pool_size": len(usable),
+    }
+
+
 def _same_game(a, b):
     """Two records describing one match. Compared on team + opponent + date rather than a
     fixture id, because these come from a team's own match list and carry no id."""
@@ -394,7 +625,7 @@ def _same_game(a, b):
            (b.get("team"), b.get("opponent"), b.get("date"))
 
 
-def survey(teams, leagues=None, meta=None, min_games=MIN_GAMES):
+def survey(teams, leagues=None, meta=None, min_games=MIN_GAMES, day_index=0):
     """Every finding, in one walk of the collection.
 
     Returns findings that are each either a record or None. NONE IS A REAL ANSWER and the
@@ -422,6 +653,12 @@ def survey(teams, leagues=None, meta=None, min_games=MIN_GAMES):
         "leakiest": leakiest(rows),
         "league_extremes": league_extremes(table),
         "punching_up": punching_up(rows, table),
+        # THE FOUR THAT MOVE. Everything above holds until a record breaks; these change
+        # as soon as somebody plays, which is the point of having them.
+        "unbeaten_corners": longest_unbeaten_corners(teams, leagues, meta),
+        "clearing_run": longest_clearing_run(teams, leagues, meta),
+        "barren_run": longest_barren_run(teams, leagues, meta),
+        "club_of_the_day": club_of_the_day(rows, table, day_index),
     }
 
     # ONE MATCH, ONE FINDING. The biggest rout is very often also the biggest haul, and

@@ -3397,6 +3397,185 @@ async def tools_history_csv(token: Optional[str] = None, kind: str = "projection
                  f'attachment; filename="corner-model-{kind}.csv"'})
 
 
+# The lines a corners-over is actually bought at, and the ones the sheet below prices.
+# calibration.TEAM_LINES runs 3..8; the sheet keeps 5..8 because that is the range asked
+# for, and 3+ and 4+ are short enough that no book price makes them interesting.
+SHEET_LINES = tuple(L for L in calibration.TEAM_LINES if L >= 5)
+
+
+def _form_block(team, venue=None, window=5):
+    """A side's recent corner record, and the hit counts the lines are judged on.
+
+    REAL MATCHES ONLY, for the reason oddities.py gives in full: sync_real pads a thin
+    team with gaussian noise around its average, so `matches` can hold games nobody
+    played. A padded game in a form table is a number that cannot be checked against a
+    scoreline, which is the one thing this sheet is for.
+
+    NEWEST LAST, and every slice is taken off the END. The stored order is not
+    guaranteed, so this sorts on the date rather than trusting it.
+    """
+    rms = [m for m in ((team or {}).get("real_matches") or [])
+           if m.get("corners_for") is not None]
+    if venue == "home":
+        rms = [m for m in rms if m.get("home")]
+    elif venue == "away":
+        rms = [m for m in rms if not m.get("home")]
+    rms = sorted(rms, key=lambda m: str(m.get("date") or ""))
+    last = rms[-window:]
+    cf = [m["corners_for"] for m in last]
+    ca = [m.get("corners_against") for m in last if m.get("corners_against") is not None]
+    return {
+        "games": len(rms),
+        "n": len(last),
+        "avg": round(sum(cf) / len(cf), 2) if cf else None,
+        "against_avg": round(sum(ca) / len(ca), 2) if ca else None,
+        "values": cf[::-1],                      # newest first, how a form string reads
+        "low": min(cf) if cf else None,
+        "high": max(cf) if cf else None,
+        "matches": rms,
+    }
+
+
+def _hits_and_run(matches, line):
+    """(hits in the window, current consecutive run at this line).
+
+    TWO DIFFERENT CLAIMS AND THE SHEET NEEDS BOTH. "9 of the last 10" is a rate and
+    tolerates one bad night; "9 in a row" is a run and does not. A team can be 9/10 with
+    a run of 2 — the miss was the second-most-recent game — and those are not the same
+    bet. Reporting only the rate would hide that; only the run would hide the 9/10.
+    """
+    hits = sum(1 for m in matches if m["corners_for"] >= line)
+    run = 0
+    for m in reversed(matches):
+        if m["corners_for"] < line:
+            break
+        run += 1
+    return hits, run
+
+
+@api_router.get("/tools/sheet.csv")
+async def tools_sheet_csv(kind: str = "form", days: int = 7, window: int = 5,
+                          min_games: int = 5, token: Optional[str] = None,
+                          user: dict = Depends(get_current_user)):
+    """The two tables an EV sheet is built from, as CSV.
+
+    WHY NOT /share/rows OR /streaks. Both answer "what qualifies", which is the right
+    question for a board and the wrong one for a spreadsheet: a sheet needs every team so
+    the reader can sort it themselves, and it needs the lines that did NOT qualify so a
+    near-miss is visible as a near-miss. /streaks with a loose gate would come close and
+    still filter on its own rules; this filters on nothing but sample size.
+
+    kind=form      one row per team, every league. Corners won over the last `window`
+                   games and over the last 10, the venue splits, and for each line from
+                   5+ to 8+ both the HIT COUNT and the CURRENT RUN — see _hits_and_run
+                   for why a rate and a run are different claims.
+
+    kind=fixtures  one row per side per upcoming fixture inside `days`, with that side's
+                   projected lambda and, at each line, the model's probability and fair
+                   price. The ladder comes from nb_ge, the same function the site and the
+                   snapshots price with, so a figure here and a figure on the fixture page
+                   cannot disagree.
+
+    NO BOOK ODDS AND THEREFORE NO EV, which is the half that stays manual — there is no
+    price feed. The sheet built from this leaves the book column empty and computes EV
+    from it, so what is typed in is the only thing EV depends on.
+
+    Token-gated like the rest of /tools: kind=form reaches the same recent-form numbers
+    the streak screen is built on, and that screen is the paid product.
+    """
+    _check_tools_token(token)
+    if kind not in ("form", "fixtures"):
+        raise HTTPException(400, "kind must be form or fixtures")
+    days = max(1, min(days, 21))
+    window = max(2, min(window, 20))
+
+    base = await _browse_base()
+    teams = list(base["by_id"].values())
+    leagues = {lid: l.get("name", "") for lid, l in base["leagues"].items()}
+    rows = []
+
+    if kind == "form":
+        for t in teams:
+            overall = _form_block(t, None, window)
+            if overall["games"] < min_games or overall["avg"] is None:
+                continue
+            ten = _form_block(t, None, 10)
+            home = _form_block(t, "home", window)
+            away = _form_block(t, "away", window)
+            row = {
+                "team": t.get("name"), "team_id": t.get("team_id"),
+                "league": leagues.get(t.get("league_id")) or t.get("league_id"),
+                "games": overall["games"],
+                f"last{window}_avg": overall["avg"],
+                f"last{window}": "-".join(str(v) for v in overall["values"]),
+                f"last{window}_low": overall["low"], f"last{window}_high": overall["high"],
+                "last10_avg": ten["avg"], "conceded_last10": ten["against_avg"],
+                "home_avg": home["avg"], "home_games": home["n"],
+                "away_avg": away["avg"], "away_games": away["n"],
+            }
+            for line in SHEET_LINES:
+                h5, run = _hits_and_run(overall["matches"][-window:], line)
+                h10, _ = _hits_and_run(overall["matches"][-10:], line)
+                row[f"hit{line}_of{window}"] = h5
+                row[f"hit{line}_of10"] = h10
+                row[f"run{line}"] = run
+            rows.append(row)
+        # Best recent attack first, which is the question the sheet was asked.
+        rows.sort(key=lambda r: r.get(f"last{window}_avg") or 0, reverse=True)
+    else:
+        proj = await _fixture_projections(days)
+        by_id = base["by_id"]
+        name_to_team = {}
+        for t in teams:
+            name_to_team.setdefault((t.get("league_id"), t.get("name")), t)
+        for fx in proj.values():
+            for side in ("home", "away"):
+                lam = fx.get(f"lambda_{side}")
+                if lam is None:
+                    continue
+                team_name = fx.get(side)
+                opp = fx.get("away" if side == "home" else "home")
+                t = name_to_team.get((fx.get("league_id"), team_name))
+                # Form at the venue this game is actually played at, not pooled: a side
+                # that wins 8 at home and 4 away has no single recent average worth
+                # printing next to a home fixture.
+                f_at = _form_block(t, side, window) if t else None
+                row = {
+                    "kickoff": (fx.get("date") or "")[:16],
+                    "league": fx.get("league_name"), "fixture_id": fx.get("fixture_id"),
+                    "team": team_name, "side": side, "opponent": opp,
+                    "lambda": round(float(lam), 2),
+                    "lambda_total": fx.get("lambda_total"),
+                    "league_avg_total": fx.get("league_avg_total"),
+                    "corner_edge": fx.get("corner_edge"),
+                    "games": fx.get(f"{side}_games"),
+                    f"venue_last{window}_avg": (f_at or {}).get("avg"),
+                    f"venue_last{window}": "-".join(
+                        str(v) for v in (f_at or {}).get("values") or []),
+                    "is_cup": fx.get("is_cup"), "cross_league": fx.get("cross_league"),
+                }
+                for line in SHEET_LINES:
+                    p = nb_ge(line, float(lam))
+                    row[f"p{line}"] = round(p * 100, 1)
+                    row[f"fair{line}"] = fair_odds(p)
+                rows.append(row)
+        rows.sort(key=lambda r: (r.get("lambda") or 0), reverse=True)
+
+    if not rows:
+        from fastapi.responses import PlainTextResponse
+        return PlainTextResponse("no rows\n", media_type="text/csv")
+    import csv as _csv
+    import io as _io
+    buf = _io.StringIO()
+    w = _csv.DictWriter(buf, fieldnames=list(rows[0].keys()), extrasaction="ignore")
+    w.writeheader()
+    w.writerows(rows)
+    from fastapi.responses import PlainTextResponse
+    return PlainTextResponse(
+        buf.getvalue(), media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="corner-{kind}.csv"'})
+
+
 @api_router.get("/backtest")
 async def backtest(league_id: str = "all", window: int = 10, min_games: int = 5,
                    model: str = "v1", blocked_weight: float = V3_BLOCKED_WEIGHT,

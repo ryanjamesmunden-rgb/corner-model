@@ -36,10 +36,22 @@ on:
           - perfect       # perfect games — RECORDED, frozen daily from 2026-10-23
           - projections   # highest projected corners — RECORDED, no win/loss, a calibration
           - consistency   # 19-of-19 — REPLAYED, never snapshotted, NOT the record
+          - form          # every team's recent corner form, hit counts and current runs
+          - fixtures      # every upcoming side, with the 5+ to 8+ ladder priced
       weeks:
-        description: "How far back to look (blank = 26)"
+        description: "How far back to look — the record kinds only (blank = 26)"
         required: false
         default: "26"
+        type: string
+      days:
+        description: "How far AHEAD to look — form/fixtures only (blank = 7)"
+        required: false
+        default: "7"
+        type: string
+      window:
+        description: "How many recent games form is measured over (blank = 5)"
+        required: false
+        default: "5"
         type: string
 
 concurrency:
@@ -71,13 +83,25 @@ jobs:
           TOOLS_TOKEN: ${{ secrets.TOOLS_TOKEN }}
           KIND: ${{ inputs.kind }}
           WEEKS: ${{ inputs.weeks }}
+          DAYS: ${{ inputs.days }}
+          WINDOW: ${{ inputs.window }}
         run: |
           out="record-${KIND}-${{ steps.when.outputs.tag }}.csv"
+          # TWO ENDPOINTS, BECAUSE THESE ARE TWO DIFFERENT QUESTIONS. The record kinds read
+          # snapshots frozen BEFORE kick-off and look backwards; form and fixtures are
+          # about games still to play and look forwards. One route serving both would need
+          # a `weeks` that means nothing to half its callers and a `days` that means
+          # nothing to the other half.
+          case "$KIND" in
+            form|fixtures)
+              path="tools/sheet.csv?kind=${KIND}&days=${DAYS:-7}&window=${WINDOW:-5}" ;;
+            *)
+              path="tools/history.csv?kind=${KIND}&weeks=${WEEKS:-26}" ;;
+          esac
           # The token is in the query string, so the FILE is safe to print and the request
           # line is not. Never echo the URL.
           code=$(curl -s -o "$out" -w '%{http_code}' --max-time 180 \
-            "$BACKEND/api/tools/history.csv?kind=${KIND}&weeks=${WEEKS:-26}&token=$TOOLS_TOKEN" \
-            || echo 000)
+            "$BACKEND/api/${path}&token=$TOOLS_TOKEN" || echo 000)
           echo "HTTP $code"
           case "$code" in
             200) ;;
@@ -91,7 +115,11 @@ jobs:
           # range. It is a fact about coverage, not a failure, and it must not be handed
           # over as an empty spreadsheet that reads as a board with no record.
           if [ "$(head -c 7 "$out")" = "no rows" ]; then
-            echo "::warning::$KIND has nothing frozen in the last ${WEEKS:-26} weeks"
+            case "$KIND" in
+              form)     echo "::warning::no team has enough real games for a form table" ;;
+              fixtures) echo "::warning::no fixture inside ${DAYS:-7} days" ;;
+              *) echo "::warning::$KIND has nothing frozen in the last ${WEEKS:-26} weeks" ;;
+            esac
             echo "rows=0" >> "$GITHUB_OUTPUT"
           else
             # Subtract the header. A CSV with only a header is zero claims, not one.
@@ -126,6 +154,14 @@ jobs:
             projections)
               BASIS="RECORDED — frozen before kick-off. No win or loss: a projection is a
           number, not a bet, and no line was published. Read \`error\`." ;;
+            form)
+              BASIS="FORM, not a record and not a tip — corners already won, over the
+          last few games. Every line carries both a hit count and a current run, which
+          are different claims: 9 of 10 tolerates a miss, 9 in a row does not." ;;
+            fixtures)
+              BASIS="FORWARD-LOOKING, and the only section here that is. Model
+          probabilities for games not yet played, priced with the same nb_ge the site
+          uses. NO BOOK ODDS, so no EV: that column is yours to fill." ;;
             *)
               BASIS="RECORDED — every row read back from a snapshot frozen before
           kick-off, one claim per fixture." ;;

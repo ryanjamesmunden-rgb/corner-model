@@ -18,6 +18,12 @@
 # differs from a record. The job prints which it handed you rather than leaving it to be
 # inferred from a filename.
 #
+# AND ONE KIND IS A WORKBOOK RATHER THAN A FILE. `sheet` pulls the form table and the
+# fixture ladder together and builds the two-tab .xlsx from them, because that pairing is
+# the thing somebody actually sits down with: form answers "who is winning corners" and
+# fixtures answers "at what price", and neither is much use in isolation. It is the only
+# kind that needs the repo checked out, since the builder lives in tools/.
+#
 # DISPATCH ONLY. Nothing here changes as often as a schedule would imply: the record grows
 # when games are played and the freezes run on the back of the sync.
 name: Export the record
@@ -38,6 +44,7 @@ on:
           - consistency   # 19-of-19 — REPLAYED, never snapshotted, NOT the record
           - form          # every team's recent corner form, hit counts and current runs
           - fixtures      # every upcoming side, with the 5+ to 8+ ladder priced
+          - sheet         # BOTH of the above, as a two-tab fill-in .xlsx
       weeks:
         description: "How far back to look — the record kinds only (blank = 26)"
         required: false
@@ -65,6 +72,20 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
+      # Only the workbook needs the repo: tools/sheet_xlsx.py does the building. Every
+      # other kind is a curl and a cat.
+      - uses: actions/checkout@v4
+        if: inputs.kind == 'sheet'
+
+      - uses: actions/setup-python@v5
+        if: inputs.kind == 'sheet'
+        with:
+          python-version: "3.11"
+
+      - name: Install openpyxl
+        if: inputs.kind == 'sheet'
+        run: pip install --quiet openpyxl
+
       - name: What day is it
         id: when
         run: echo "tag=$(TZ=Europe/London date +%F)" >> "$GITHUB_OUTPUT"
@@ -92,16 +113,57 @@ jobs:
           # about games still to play and look forwards. One route serving both would need
           # a `weeks` that means nothing to half its callers and a `days` that means
           # nothing to the other half.
+          # ONE HELPER, BECAUSE `sheet` FETCHES TWICE. Repeating the curl and its status
+          # handling per kind is how the two copies end up treating a 403 differently.
+          fetch () {
+            local p="$1" dest="$2"
+            # The token is in the query string, so the FILE is safe to print and the
+            # request line is not. Never echo the URL.
+            local c
+            c=$(curl -s -o "$dest" -w '%{http_code}' --max-time 180 \
+              "$BACKEND/api/${p}&token=$TOOLS_TOKEN" || echo 000)
+            echo "HTTP $c  ->  $dest"
+            case "$c" in
+              200) ;;
+              400) echo "::error::the backend rejected this request"; cat "$dest"; return 1 ;;
+              403) echo "::error::backend rejected the token — check TOOLS_TOKEN"; return 1 ;;
+              *)   echo "::error::could not fetch (HTTP $c)"; return 1 ;;
+            esac
+          }
+          sheet_path () {
+            echo "tools/sheet.csv?kind=$1&days=${DAYS:-7}&window=${WINDOW:-5}"
+          }
+
+          if [ "$KIND" = "sheet" ]; then
+            fetch "$(sheet_path form)" form.csv || exit 1
+            fetch "$(sheet_path fixtures)" fixtures.csv || exit 1
+            # A header-only file is zero rows, not one. "no rows" is the endpoint's own
+            # answer when nothing qualifies, and it is a fact about coverage.
+            count () {
+              if [ "$(head -c 7 "$1")" = "no rows" ]; then echo 0
+              else echo $(( $(wc -l < "$1") - 1 )); fi
+            }
+            fr=$(count form.csv); xr=$(count fixtures.csv)
+            echo "form rows=$fr  fixture sides=$xr"
+            if [ "$fr" = "0" ] && [ "$xr" = "0" ]; then
+              echo "::error::both tables came back empty — nothing to build"; exit 1
+            fi
+            [ "$fr" = "0" ] && echo "::warning::no team has enough real games for a form table"
+            [ "$xr" = "0" ] && echo "::warning::no fixture inside ${DAYS:-7} days"
+            {
+              echo "form_rows=$fr"; echo "fixture_rows=$xr"
+              echo "rows=$(( fr + xr ))"
+              echo "file=corner-ev-sheet-${{ steps.when.outputs.tag }}.xlsx"
+            } >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
           case "$KIND" in
-            form|fixtures)
-              path="tools/sheet.csv?kind=${KIND}&days=${DAYS:-7}&window=${WINDOW:-5}" ;;
-            *)
-              path="tools/history.csv?kind=${KIND}&weeks=${WEEKS:-26}" ;;
+            form|fixtures) path="$(sheet_path "$KIND")" ;;
+            *)             path="tools/history.csv?kind=${KIND}&weeks=${WEEKS:-26}" ;;
           esac
-          # The token is in the query string, so the FILE is safe to print and the request
-          # line is not. Never echo the URL.
-          code=$(curl -s -o "$out" -w '%{http_code}' --max-time 180 \
-            "$BACKEND/api/${path}&token=$TOOLS_TOKEN" || echo 000)
+          fetch "$path" "$out" || exit 1
+          code=200
           echo "HTTP $code"
           case "$code" in
             200) ;;
@@ -128,11 +190,26 @@ jobs:
           echo "file=$out" >> "$GITHUB_OUTPUT"
           echo "bytes=$(wc -c < "$out")" >> "$GITHUB_OUTPUT"
 
+      - name: Build the workbook
+        if: inputs.kind == 'sheet'
+        env:
+          WINDOW: ${{ inputs.window }}
+          DAYS: ${{ inputs.days }}
+        run: |
+          python tools/sheet_xlsx.py form.csv fixtures.csv \
+            "${{ steps.pull.outputs.file }}" "${WINDOW:-5}" "${DAYS:-7}"
+          ls -l "${{ steps.pull.outputs.file }}"
+
       - name: Attach it to the run
         uses: actions/upload-artifact@v4
         with:
           name: record-${{ inputs.kind }}-${{ steps.when.outputs.tag }}
-          path: ${{ steps.pull.outputs.file }}
+          # The workbook ships with the two CSVs it was built from, so a figure in a cell
+          # can be traced back to the row it came from without re-running anything.
+          path: |
+            ${{ steps.pull.outputs.file }}
+            ${{ inputs.kind == 'sheet' && 'form.csv' || '' }}
+            ${{ inputs.kind == 'sheet' && 'fixtures.csv' || '' }}
           # A record only grows, so an old copy is a valid record of a shorter history
           # rather than something misleading. Ninety days is the default and is fine.
           if-no-files-found: error
@@ -158,6 +235,11 @@ jobs:
               BASIS="FORM, not a record and not a tip — corners already won, over the
           last few games. Every line carries both a hit count and a current run, which
           are different claims: 9 of 10 tolerates a miss, 9 in a row does not." ;;
+            sheet)
+              BASIS="A WORKBOOK, two tabs. Form is backward-looking and fixtures is
+          forward-looking, which is why they are separate tabs and not one table. The
+          Book column is empty: there is no price feed, so EV depends only on what you
+          type." ;;
             fixtures)
               BASIS="FORWARD-LOOKING, and the only section here that is. Model
           probabilities for games not yet played, priced with the same nb_ge the site
@@ -174,6 +256,23 @@ jobs:
             echo "Attached to this run as a CSV (${BYTES} bytes)."
           } >> "$GITHUB_STEP_SUMMARY"
 
-          echo "RECORD_CSV_BEGIN $KIND rows=$ROWS"
-          cat "$FILE"
-          echo "RECORD_CSV_END"
+          if [ "$KIND" = "sheet" ]; then
+            # NOT THE WHOLE THING. The workbook is binary and the two CSVs behind it run
+            # to hundreds of rows each — printing both would bury the summary, which is
+            # the failure the log-cap note at the top of this file is about. The artifact
+            # is where the rows live; this is the part worth reading in passing.
+            echo "SHEET_SUMMARY_BEGIN"
+            echo "form rows: ${{ steps.pull.outputs.form_rows }}   "\
+                 "fixture sides: ${{ steps.pull.outputs.fixture_rows }}"
+            echo
+            echo "-- best recent corner form (top 25 by last-5 average) --"
+            head -26 form.csv | cut -d, -f1,3,4,5,6
+            echo
+            echo "-- highest projected sides in the window (top 25) --"
+            head -26 fixtures.csv | cut -d, -f1,2,4,5,6,7
+            echo "SHEET_SUMMARY_END"
+          else
+            echo "RECORD_CSV_BEGIN $KIND rows=$ROWS"
+            cat "$FILE"
+            echo "RECORD_CSV_END"
+          fi

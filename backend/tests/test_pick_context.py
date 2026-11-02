@@ -135,16 +135,28 @@ class TestNothingShorterThanTheWindowIsPrinted:
         c = by_key(ctx(rows), "no_clean_sheet")
         assert c and c["run"] == 5
 
-    @pytest.mark.parametrize("key", ["corner_run", "second_half_goals", "unbeaten",
-                                     "scored_in", "no_clean_sheet"])
-    def test_no_run_claim_ever_reports_under_the_floor(self, key):
-        for n in range(1, 12):
-            rows = [match(d, 1, 9, gf=0, ga=3) for d in range(1, 12 - n)]
-            rows += [match(d, 9, 1, gf=2, ga=2, fh_for=0, fh_against=0)
-                     for d in range(12 - n, 12)]
-            c = by_key(ctx(rows), key)
-            if c and "run" in c:
-                assert c["run"] >= MIN_WINDOW, f"{key} printed a {c['run']}-game run"
+    def test_no_run_claim_anywhere_reports_under_the_floor(self):
+        # Sweeps EVERY claim carrying a run rather than a hand-picked list of keys: the
+        # first version named five keys and e_losing_run, which fired at three games,
+        # was simply not among them.
+        shapes = [
+            dict(cf=9, ca=1, gf=2, ga=2, fh=(0, 0)),     # corner + scoring runs
+            dict(cf=1, ca=9, gf=0, ga=3, fh=(0, 1)),     # losing / conceding runs
+            dict(cf=5, ca=5, gf=1, ga=0, fh=(1, 0)),     # clean-sheet runs
+            dict(cf=5, ca=5, gf=2, ga=1, fh=(0, 1)),     # comeback shapes
+        ]
+        for tail in shapes:
+            for n in range(1, 13):
+                head = [match(d, 4, 4, gf=1, ga=1, fh_for=1, fh_against=1)
+                        for d in range(1, 13 - n)]
+                rest = [match(d, tail["cf"], tail["ca"], gf=tail["gf"], ga=tail["ga"],
+                              fh_for=tail["fh"][0], fh_against=tail["fh"][1])
+                        for d in range(13 - n, 13)]
+                res = ctx(head + rest)
+                for c in res["all"] + res["compound"]:
+                    if isinstance(c.get("run"), int):
+                        assert c["run"] >= MIN_WINDOW, \
+                            f"{c['key']} printed a {c['run']}-game run"
 
 
 class TestVenueLinesAreMeasuredAtThatVenue:
@@ -243,7 +255,97 @@ class TestTheSelectionDoesNotRepeatItself:
 
     def test_every_generator_is_reachable(self):
         # a generator nothing can trigger is dead code pretending to be a feature
-        assert len(GENERATORS) == 26
+        assert len(GENERATORS) == 28
+
+
+class TestARateIsNotARun:
+    """"9 of 10" and "9 in a row" are different bets. A side can be 9 of 10 with a run
+    of two, when the miss was the second-most-recent game."""
+
+    def test_nine_of_ten_is_reported_as_a_rate(self):
+        rows = [match(d, 8, 3) for d in range(1, 10)]
+        rows.insert(8, match(9, 2, 3))          # one miss, second from last
+        rows = sorted(rows, key=lambda m: m["date"])
+        c = by_key(ctx(rows), "corner_rate")
+        assert c, "a 9-of-10 record should produce a rate line"
+        assert f"of their last {c['of']}" in c["text"], c["text"]
+        assert c["hits"] < c["of"], "a rate line that is perfect should be a run instead"
+
+    def test_a_perfect_window_is_left_to_the_run_claim(self):
+        rows = [match(d, 8, 3) for d in range(1, 12)]
+        assert by_key(ctx(rows), "corner_rate") is None
+        assert by_key(ctx(rows), "corner_run") is not None
+
+    def test_a_rate_below_the_floor_is_not_printed(self):
+        rows = [match(d, 8, 3) for d in range(1, 7)]      # 6 clear
+        rows += [match(d, 1, 3) for d in range(7, 11)]    # 4 do not -> 60%
+        c = by_key(ctx(rows), "corner_rate")
+        assert c is None or c["hits"] / c["of"] >= 0.8
+
+    def test_the_rate_window_needs_a_real_denominator(self):
+        rows = [match(d, 8, 3) for d in range(1, 7)]      # only 6 games
+        c = by_key(ctx(rows), "corner_rate")
+        assert c is None, "a rate needs enough games to be worth quoting"
+
+
+class TestFactsJoinIntoOneSentence:
+    def rich(self):
+        rows = [match(d, 8, 3, gf=2, ga=2, fh_for=0, fh_against=1,
+                      blocked_shots_for=7, shots_for=16) for d in range(1, 11)]
+        rows.insert(8, match(9, 2, 3, gf=2, ga=2, fh_for=0, fh_against=1))
+        opp = [match(d, 3, 9, home=False, gf=0, ga=0) for d in range(1, 13)]
+        return sorted(rows, key=lambda m: m["date"]), opp
+
+    def test_two_facts_about_one_side_share_their_subject(self):
+        rows, opp = self.rich()
+        res = ctx(rows, opp_rows=opp)
+        comp = next((c for c in res["compound"] if c["subject"] == "team"), None)
+        assert comp, res["compound"]
+        assert " and " in comp["text"]
+        assert comp["text"].count("Our Team") == 1, comp["text"]
+
+    def test_a_compound_never_joins_two_facts_from_one_group(self):
+        rows, opp = self.rich()
+        res = ctx(rows, opp_rows=opp)
+        for comp in res["compound"]:
+            groups = [next(c["group"] for c in res["all"] if c["key"] == k)
+                      for k in comp["parts"]]
+            assert len(set(groups)) == len(groups), f"same group twice: {comp['text']}"
+
+    def test_a_compound_is_only_evidence_if_both_halves_are(self):
+        rows, opp = self.rich()
+        res = ctx(rows, opp_rows=opp)
+        for comp in res["compound"]:
+            tiers = [next(c["tier"] for c in res["all"] if c["key"] == k)
+                     for k in comp["parts"]]
+            if COLOUR in tiers:
+                assert comp["tier"] == COLOUR, comp["text"]
+
+    def test_the_headline_names_both_sides(self):
+        rows, opp = self.rich()
+        res = ctx(rows, opp_rows=opp)
+        assert res["headline"], "both sides had verified facts; expected a headline"
+        assert "Our Team" in res["headline"] and "Them" in res["headline"]
+
+    def test_the_opponent_clean_sheet_run_is_available(self):
+        rows, opp = self.rich()
+        c = by_key(ctx(rows, opp_rows=opp), "opp_clean_sheets")
+        assert c and c["run"] == 12, c
+        assert c["subject"] == "opponent"
+
+    def test_the_clean_sheet_line_states_the_run_and_claims_no_mechanism(self):
+        # "No goals conceded means more corners conceded when it gets desperate" is a
+        # mechanism, not a measurement. Until it is measured the line reports the run.
+        rows, opp = self.rich()
+        c = by_key(ctx(rows, opp_rows=opp), "opp_clean_sheets")
+        assert not re.search(r"desperate|so they|which means|because", c["text"], re.I), \
+            c["text"]
+
+    def test_no_headline_when_only_one_side_has_anything(self):
+        rows = [match(d, 8, 3) for d in range(1, 11)]
+        res = pick_context(team(rows), {"name": "Them"}, "home")
+        assert res["headline"] is None
+        assert [c for c in res["compound"] if c["subject"] == "opponent"] == []
 
 
 class TestEveryClaimCarriesItsDenominator:

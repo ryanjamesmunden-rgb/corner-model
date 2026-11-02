@@ -33,6 +33,7 @@ import record_view
 import calibration
 import oddities
 import projection_record
+import state_corners
 from pick_context import pick_context
 from settlement import settle_pending
 
@@ -3575,6 +3576,37 @@ async def tools_sheet_csv(kind: str = "form", days: int = 7, window: int = 5,
     return PlainTextResponse(
         buf.getvalue(), media_type="text/csv",
         headers={"Content-Disposition": f'attachment; filename="corner-{kind}.csv"'})
+
+
+@api_router.get("/tools/state_corners")
+async def tools_state_corners(token: Optional[str] = None,
+                              user: dict = Depends(get_current_user)):
+    """Does a side concede more corners in the games it keeps clean?
+
+    THE MEASUREMENT BEHIND A SENTENCE WE HAVE NOT EARNED YET. The claim is that a clean
+    sheet means a side spent the match protecting a lead while the other threw bodies
+    forward, so it concedes MORE corners. It is plausible and it is not obvious — a
+    defence nobody breaches may just be facing nobody who gets near the box, which would
+    run the other way.
+
+    `pick_context.d_opp_clean_sheets` prints the clean-sheet run and deliberately stops
+    there. This endpoint is what decides whether it may ever say more than that, and the
+    verdict it returns is allowed to be "contradicts" or "unclear".
+
+    WHAT IT CANNOT SETTLE, stated here because the number will be quoted: corner data is
+    full-match only (probe_corner_halves.py, issue #260), so a late siege reads diluted
+    across ninety minutes. Support here is consistent with the mechanism rather than
+    proof of it, and a null does not rule it out.
+
+    Token-gated like the rest of /tools; it reads the same match pool the paid screens do.
+    """
+    _check_tools_token(token)
+    base = await _browse_base()
+    agg = state_corners.bucket_state_corners(list(base["by_id"].values()))
+    agg["caveat"] = ("Full-match corner counts only — no half split exists "
+                     "(probe_corner_halves.py, issue #260). A chase concentrated in the "
+                     "last ten minutes reads diluted over ninety.")
+    return agg
 
 
 @api_router.get("/backtest")

@@ -50,6 +50,9 @@ MIN_COVERED = 5     # covered games a provider-stat average needs (see rule 4)
 MIN_BUCKET = 4      # games in a half-time state bucket before its average means anything
 THIN_SEASON = 15    # below this the text says "in N games", never "this season"
 RECENT = 5          # the standard short window, so every "recent" line means the same thing
+RATE_WINDOW = 10    # the window a "9 of 10" style rate is taken over
+RATE_FLOOR = 0.8    # a rate below this is not worth a sentence
+MAX_COMPOUND = 2    # facts joined into one line. Three in a sentence stops being read.
 
 EVIDENCE, COLOUR = "evidence", "colour"
 
@@ -100,11 +103,26 @@ def _season_phrase(n: int) -> str:
     return f"in {n} games" if n < THIN_SEASON else "this season"
 
 
-def _claim(key, group, tier, text, n, strength, **extra) -> dict:
+def _claim(key, group, tier, text, n, strength, subject="team", predicate=None,
+           **extra) -> dict:
+    """One verified line.
+
+    `predicate` is the sentence WITHOUT its subject — "have won 5+ corners in 9 of 10".
+    It is what makes two facts about the same side joinable into one line, which is how
+    a reader actually wants them: "Boro have won 5+ in 9 of 10 and conceded in each of
+    the last five", not two sentences starting with the same name. A claim with no
+    predicate is one that does not read well joined to anything, and `compound()` leaves
+    it alone."""
     out = {"key": key, "group": group, "tier": tier, "text": text,
-           "n": n, "strength": round(float(strength), 3), "ambiguous": False}
+           "n": n, "strength": round(float(strength), 3), "ambiguous": False,
+           "subject": subject, "predicate": predicate}
     out.update(extra)
     return out
+
+
+def _sentence(name: str, predicate: str) -> str:
+    """A predicate said as a sentence. Ends it, so no caller has to remember to."""
+    return f"{name} {predicate}."
 
 
 # HOW LINES ARE RANKED, and why it is stated here rather than tuned per claim.
@@ -176,10 +194,11 @@ def a_corner_run(team, pool, name, **_):
     if run < MIN_WINDOW:
         return None
     return _claim("corner_run", "corners", EVIDENCE,
-                  f"{name} have won {line}+ corners in {run} straight games.",
+                  _sentence(name, f"have won {line}+ corners in {run} straight games"),
                   run, _strength("corners", EVIDENCE,
                                  0.65 * _run_effect(run) + 0.35 * min(line / 10.0, 1.0),
                                  run),
+                  predicate=f"have won {line}+ corners in {run} straight games",
                   line=line, run=run)
 
 
@@ -192,11 +211,42 @@ def a_corner_run_plain(team, pool, name, **_):
     if run < MIN_WINDOW:
         return None
     return _claim("corner_run_plain", "corners", EVIDENCE,
-                  f"{name} have not been held under {line} corners in {run} games.",
+                  _sentence(name, f"have not been held under {line} corners in {run} games"),
                   run, _strength("corners", EVIDENCE,
                                  0.65 * _run_effect(run) + 0.35 * min(line / 10.0, 1.0),
                                  run),
+                  predicate=f"have not been held under {line} corners in {run} games",
                   line=line, run=run)
+
+
+def a_corner_rate(team, pool, name, **_):
+    """"Won 5+ corners in 9 of 10" — a RATE, which is a different claim from a run.
+
+    A run of 9 cannot survive one bad night; 9 of 10 already has. A side can be 9 of 10
+    with a run of two, when the miss was the second-most-recent game, and those are not
+    the same bet. _hits_and_run in server.py splits them for the sheet export for the
+    same reason, and the two must never be collapsed into one sentence here either."""
+    window = pool[-RATE_WINDOW:]
+    if len(window) < 8:
+        return None
+    best = None
+    for line in range(1, 16):
+        hits = _hits(window, lambda m, L=line: m["corners_for"] >= L)
+        if hits / len(window) >= RATE_FLOOR:
+            best = (line, hits)
+    if not best:
+        return None
+    line, hits = best
+    # A perfect rate IS a run, and a_corner_run says it better. Leave it to that one.
+    if hits == len(window):
+        return None
+    pred = f"have won {line}+ corners in {hits} of their last {len(window)}"
+    return _claim("corner_rate", "corners", EVIDENCE, _sentence(name, pred),
+                  len(window),
+                  _strength("corners", EVIDENCE,
+                            0.6 * _rate_effect(hits, len(window), 0.5)
+                            + 0.4 * min(line / 10.0, 1.0), len(window)),
+                  predicate=pred, line=line, hits=hits, of=len(window))
 
 
 def a_corner_avg(team, pool, name, league_avg=None, **_):
@@ -206,9 +256,11 @@ def a_corner_avg(team, pool, name, league_avg=None, **_):
     avg = _avg([m["corners_for"] for m in recent])
     ref = league_avg or avg
     return _claim("corner_avg", "corners", EVIDENCE,
-                  f"{name} are averaging {avg:.1f} corners a game across their last "
-                  f"{len(recent)}.", len(recent),
+                  _sentence(name, f"are averaging {avg:.1f} corners a game across their "
+                            f"last {len(recent)}"), len(recent),
                   _strength("corners", EVIDENCE, _ratio_effect(avg, ref), len(recent)),
+                  predicate=f"are averaging {avg:.1f} corners a game across their last "
+                            f"{len(recent)}",
                   value=round(avg, 2))
 
 
@@ -236,6 +288,8 @@ def a_out_cornered(team, pool, name, venue=None, **_):
                   f"{name} have out-cornered the opposition in {won} of {len(vp)} "
                   f"{where}.".replace("  ", " "),
                   len(vp), _strength("corners", EVIDENCE, _rate_effect(won, len(vp), 0.5), len(vp)),
+                  predicate=f"have out-cornered the opposition in {won} of {len(vp)} "
+                            f"{where}".strip(),
                   won=won, of=len(vp))
 
 
@@ -250,7 +304,10 @@ def a_double_figures(team, pool, name, **_):
                   f"{name} have hit double figures for corners {big} times in their "
                   f"last {len(recent)}.", len(recent),
                   _strength("corners", EVIDENCE, _rate_effect(big, len(recent), 0.2),
-                            len(recent)), count=big)
+                            len(recent)),
+                  predicate=f"have hit double figures for corners {big} times in their "
+                            f"last {len(recent)}",
+                  count=big)
 
 
 # =============================== B. pressure proxies =============================
@@ -405,8 +462,10 @@ def c_second_half_goals(team, pool, name, **_):
     if run < MIN_WINDOW:
         return None
     return _claim("second_half_goals", "state", EVIDENCE,
-                  f"{name} have scored in the second half in {run} straight games.",
-                  run, _strength("state", EVIDENCE, _run_effect(run), run), run=run)
+                  _sentence(name, f"have scored in the second half in {run} straight games"),
+                  run, _strength("state", EVIDENCE, _run_effect(run), run),
+                  predicate=f"have scored in the second half in {run} straight games",
+                  run=run)
 
 
 def c_opp_led_ht(team, pool, name, opp_pool=None, opp_name=None, **_):
@@ -485,6 +544,8 @@ def d_opp_concedes(team, pool, name, opp_pool=None, opp_name=None, opp_venue=Non
                   f"{opp_name} have conceded {avg:.1f} corners {where} "
                   f"({len(vp)} games).", len(vp),
                   _strength("opponent", EVIDENCE, _ratio_effect(avg, ref), len(vp)),
+                  subject="opponent",
+                  predicate=f"have conceded {avg:.1f} corners {where} over {len(vp)} games",
                   value=round(avg, 2))
 
 
@@ -502,6 +563,9 @@ def d_opp_concedes_run(team, pool, name, opp_pool=None, opp_name=None, opp_venue
                   f"{opp_name} have conceded {line}+ corners in {hits} of {len(vp)} "
                   f"{where}.".replace("  ", " "), len(vp),
                   _strength("opponent", EVIDENCE, _rate_effect(hits, len(vp), 0.5), len(vp)),
+                  subject="opponent",
+                  predicate=f"have conceded {line}+ corners in {hits} of {len(vp)} "
+                            f"{where}".strip(),
                   hits=hits, of=len(vp))
 
 
@@ -519,6 +583,8 @@ def d_opp_shots_faced(team, pool, name, opp_pool=None, opp_name=None, opp_venue=
                   f"{opp_name} face {avg:.0f} shots a game {where}{tail}.".replace("  ", " "),
                   n, _strength("opponent", EVIDENCE,
                             _ratio_effect(avg, ref) if ref else 0.20, n),
+                  subject="opponent",
+                  predicate=f"face {avg:.0f} shots a game {where}".strip(),
                   value=round(avg, 2))
 
 
@@ -536,6 +602,8 @@ def d_opp_quiet_attack(team, pool, name, opp_pool=None, opp_name=None, opp_venue
                   f"{league_avg:.1f} league average — the corners in this one should be "
                   f"one-sided.".replace("  ", " "), len(vp),
                   _strength("opponent", EVIDENCE, _ratio_effect(league_avg, avg), len(vp)),
+                  subject="opponent",
+                  predicate=f"take only {avg:.1f} corners a game {where}".strip(),
                   value=round(avg, 2))
 
 
@@ -549,8 +617,9 @@ def e_unbeaten(team, pool, name, **_):
     if run < MIN_WINDOW:
         return None
     return _claim("unbeaten", "colour", COLOUR,
-                  f"{name} are unbeaten in {run}.", run,
-                  _strength("colour", COLOUR, _run_effect(run), run), run=run)
+                  _sentence(name, f"are unbeaten in {run}"), run,
+                  _strength("colour", COLOUR, _run_effect(run), run),
+                  predicate=f"are unbeaten in {run}", run=run)
 
 
 def e_no_clean_sheet(team, pool, name, **_):
@@ -559,8 +628,9 @@ def e_no_clean_sheet(team, pool, name, **_):
     if run < MIN_WINDOW:
         return None
     c = _claim("no_clean_sheet", "colour", COLOUR,
-               f"{name} have not kept a clean sheet in {run}.", run,
-               _strength("colour", COLOUR, _run_effect(run), run), run=run)
+               _sentence(name, f"have conceded in each of their last {run}"), run,
+               _strength("colour", COLOUR, _run_effect(run), run),
+               predicate=f"have conceded in each of their last {run}", run=run)
     # Points both ways: a side conceding every week may be getting overrun, which feeds
     # the opponent's corners, or playing stretched open games, which feeds both. The
     # direction is not recoverable from the sentence, so it is marked rather than ranked.
@@ -581,6 +651,7 @@ def e_venue_wins(team, pool, name, venue=None, **_):
                   f"{name} have won {wins} of their last {len(recent)} "
                   f"{where}.".replace("  ", " "), len(recent),
                   _strength("colour", COLOUR, _rate_effect(wins, len(recent), 0.4), len(recent)),
+                  predicate=f"have won {wins} of their last {len(recent)} {where}".strip(),
                   wins=wins, of=len(recent))
 
 
@@ -590,32 +661,107 @@ def e_scored_in(team, pool, name, **_):
     if run < MIN_WINDOW:
         return None
     return _claim("scored_in", "colour", COLOUR,
-                  f"{name} have scored in {run} straight.", run,
-                  _strength("colour", COLOUR, _run_effect(run), run), run=run)
+                  _sentence(name, f"have scored in {run} straight"), run,
+                  _strength("colour", COLOUR, _run_effect(run), run),
+                  predicate=f"have scored in {run} straight", run=run)
 
 
 def e_losing_run(team, pool, name, venue=None, **_):
     vp = [m for m in _venue_pool(pool, venue) if _ft(m) is not None]
     run = _run(vp, lambda m: _ft(m) == -1)
-    if run < 3:
+    if run < MIN_WINDOW:
         return None
     where = "at home" if venue == "home" else "away" if venue == "away" else ""
     return _claim("losing_run", "colour", COLOUR,
                   f"{name} have lost their last {run} {where}.".replace("  ", " "),
-                  run, _strength("colour", COLOUR, _run_effect(run), run), run=run)
+                  run, _strength("colour", COLOUR, _run_effect(run), run),
+                  predicate=f"have lost their last {run} {where}".strip(), run=run)
+
+
+def d_opp_clean_sheets(team, pool, name, opp_pool=None, opp_name=None, **_):
+    """The opponent's clean-sheet run.
+
+    WHY THIS IS STATED AND NOT EXPLAINED. The obvious reading is that a side which has
+    not conceded in ten is about to protect a lead, the other side gets desperate, and
+    the corners pile up at one end. That is a mechanism, not a measurement, and it could
+    equally go the other way: a defence nobody breaks down may simply be facing nobody
+    who gets near the box.
+
+    Which it is, is answerable from the data we hold — corners conceded split by result
+    is already computed by team_state_splits — and until it HAS been answered this line
+    reports the run and stops. See measure_state_corners.py. The causal clause goes in
+    only if the number supports it, and then it carries the number."""
+    known = [m for m in (opp_pool or []) if m.get("goals_against") is not None]
+    run = _run(known, lambda m: m["goals_against"] == 0)
+    if run < MIN_WINDOW:
+        return None
+    pred = f"have not conceded a goal in {run} straight games"
+    return _claim("opp_clean_sheets", "opponent", EVIDENCE,
+                  _sentence(opp_name, pred), run,
+                  _strength("opponent", EVIDENCE, _run_effect(run), run),
+                  subject="opponent", predicate=pred, run=run)
 
 
 GENERATORS = (
-    a_corner_run, a_corner_run_plain, a_corner_avg, a_corner_string,
+    a_corner_run, a_corner_run_plain, a_corner_rate, a_corner_avg, a_corner_string,
     a_out_cornered, a_double_figures,
     b_blocked, b_shots, b_opp_blocks, b_dangerous, b_fouls,
     c_trailed_ht, c_second_half_goals, c_opp_led_ht, c_comeback, c_btts,
     c_opp_conceded_two,
     d_opp_concedes, d_opp_concedes_run, d_opp_shots_faced, d_opp_quiet_attack,
+    d_opp_clean_sheets,
     e_unbeaten, e_no_clean_sheet, e_venue_wins, e_scored_in, e_losing_run,
 )
 
 GROUP_ORDER = ("corners", "pressure", "state", "opponent", "colour")
+
+
+def _compound(claims: List[dict], subject: str, name: str,
+              limit: int = MAX_COMPOUND) -> Optional[dict]:
+    """Join facts about ONE side into one line, as a person would say them.
+
+    "Boro have won 5+ in 9 of 10 and conceded in each of their last five" reads as one
+    thought. The same two facts as separate sentences, both opening with the same name,
+    read as a list being padded.
+
+    ONE FACT PER GROUP. Two corner facts joined with "and" is the same fact twice in a
+    longer sentence, which is worse than printing it once — it sounds like corroboration
+    and is not. The compound's tier is the WEAKEST of its parts, so a line that is half
+    colour cannot be published as evidence."""
+    parts, groups = [], set()
+    for c in claims:
+        if c["subject"] != subject or not c.get("predicate"):
+            continue
+        if c["group"] in groups:
+            continue
+        parts.append(c)
+        groups.add(c["group"])
+        if len(parts) >= limit:
+            break
+    if len(parts) < 2:
+        return None
+    tier = EVIDENCE if all(c["tier"] == EVIDENCE for c in parts) else COLOUR
+    return {"key": "compound_" + subject,
+            "group": parts[0]["group"], "tier": tier,
+            "subject": subject,
+            "text": name + " " + " and ".join(c["predicate"] for c in parts) + ".",
+            "n": min(c["n"] for c in parts),
+            "strength": max(c["strength"] for c in parts),
+            "ambiguous": any(c["ambiguous"] for c in parts),
+            "parts": [c["key"] for c in parts]}
+
+
+def _headline(claims: List[dict], name: str, opp_name: str) -> Optional[str]:
+    """The strongest fact about each side, in one two-sided line.
+
+    This is the shape that carries a pick best, because the two halves are about
+    different teams and so cannot be the same fact wearing two hats."""
+    mine = next((c for c in claims if c["subject"] == "team" and c.get("predicate")), None)
+    theirs = next((c for c in claims
+                   if c["subject"] == "opponent" and c.get("predicate")), None)
+    if not mine or not theirs:
+        return None
+    return (f"{name} {mine['predicate']}. {opp_name} {theirs['predicate']}.")
 
 
 def pick_context(team: dict, opp: dict, venue: str, league_avg: float = 0.0,
@@ -681,4 +827,11 @@ def pick_context(team: dict, opp: dict, venue: str, league_avg: float = 0.0,
     return {"team": name, "opponent": opp_name, "venue": venue,
             "games_on_file": len(pool), "thin": len(pool) < THIN_SEASON,
             "lines": selected, "all": found,
+            # Two facts about one side, said as one sentence. Built from the ranked list,
+            # so the compound is the strongest pair rather than the first pair found.
+            "compound": [c for c in (_compound(found, "team", name),
+                                     _compound(found, "opponent", opp_name)) if c],
+            # One line, both sides. The two halves are about different teams, so they
+            # cannot be the same fact twice.
+            "headline": _headline(found, name, opp_name),
             "counts": {g: sum(1 for c in found if c["group"] == g) for g in GROUP_ORDER}}

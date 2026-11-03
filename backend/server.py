@@ -33,6 +33,8 @@ import record_view
 import calibration
 import oddities
 import projection_record
+import state_corners
+from pick_context import pick_context
 from settlement import settle_pending
 
 ROOT_DIR = Path(__file__).parent
@@ -3576,6 +3578,37 @@ async def tools_sheet_csv(kind: str = "form", days: int = 7, window: int = 5,
         headers={"Content-Disposition": f'attachment; filename="corner-{kind}.csv"'})
 
 
+@api_router.get("/tools/state_corners")
+async def tools_state_corners(token: Optional[str] = None,
+                              user: dict = Depends(get_current_user)):
+    """Does a side concede more corners in the games it keeps clean?
+
+    THE MEASUREMENT BEHIND A SENTENCE WE HAVE NOT EARNED YET. The claim is that a clean
+    sheet means a side spent the match protecting a lead while the other threw bodies
+    forward, so it concedes MORE corners. It is plausible and it is not obvious — a
+    defence nobody breaches may just be facing nobody who gets near the box, which would
+    run the other way.
+
+    `pick_context.d_opp_clean_sheets` prints the clean-sheet run and deliberately stops
+    there. This endpoint is what decides whether it may ever say more than that, and the
+    verdict it returns is allowed to be "contradicts" or "unclear".
+
+    WHAT IT CANNOT SETTLE, stated here because the number will be quoted: corner data is
+    full-match only (probe_corner_halves.py, issue #260), so a late siege reads diluted
+    across ninety minutes. Support here is consistent with the mechanism rather than
+    proof of it, and a null does not rule it out.
+
+    Token-gated like the rest of /tools; it reads the same match pool the paid screens do.
+    """
+    _check_tools_token(token)
+    base = await _browse_base()
+    agg = state_corners.bucket_state_corners(list(base["by_id"].values()))
+    agg["caveat"] = ("Full-match corner counts only — no half split exists "
+                     "(probe_corner_halves.py, issue #260). A chase concentrated in the "
+                     "last ten minutes reads diluted over ninety.")
+    return agg
+
+
 @api_router.get("/backtest")
 async def backtest(league_id: str = "all", window: int = 10, min_games: int = 5,
                    model: str = "v1", blocked_weight: float = V3_BLOCKED_WEIGHT,
@@ -3936,6 +3969,10 @@ async def get_fixtures(league_id: str, user: dict = Depends(get_current_user)):
 # the data does not, and it stays silent rather than guessing when the sample is thin.
 
 PROFILE_MIN_GAMES = 4      # below this a "trait" is noise wearing a confident sentence
+# How many context lines a pick is published with. Low on purpose: the module verifies
+# every line it can and hands back the lot, and a panel that prints twenty sentences
+# buries the one number the reader came for. Three is a run, a reason and the opponent.
+PICK_CONTEXT_LINES = 3
 BIG_EDGE, MILD_EDGE = 1.20, 1.08
 
 
@@ -4304,6 +4341,17 @@ async def fixture_detail(fixture_id: str, token: Optional[str] = None,
         ls, lb = _refs(team)
         return {sp: intent_breakdown(team, sp, ls, lb) for sp in ["home", "away", "overall"]}
 
+    def _ctx_refs(team):
+        """League yardsticks for the context lines, with NO fallback substituted.
+
+        Deliberately not `_refs`, which swaps in REF_SHOTS when a league has no stored
+        average. That fallback is right for pricing — lambda needs a number — and wrong
+        here, because the yardstick gets PRINTED. "against a league average of 12" when
+        12 is a hardcoded default is a made-up sentence, so an absent average is passed
+        as None and the line reports the bare rate instead."""
+        lg = league_docs.get(side_lids.get((team or {}).get("team_id"))) or {}
+        return {"avg_shots": lg.get("avg_shots"), "avg_blocked": lg.get("avg_blocked")}
+
     # League corners-per-team-per-game, the yardstick every trait is measured against.
     # Computed from the teams in this league rather than stored on the league doc, so it is
     # right the moment the code deploys instead of after the next sync.
@@ -4404,6 +4452,22 @@ async def fixture_detail(fixture_id: str, token: Optional[str] = None,
             # Game state next to the corner line: who is on the front foot and who is
             # likely to be chasing. Both produce corners, for opposite reasons.
             "form": fixture_form(home, away, home["name"], away["name"]),
+            # THE SENTENCES THAT SIT UNDER A POSTED PICK. Both sides, because either can
+            # be the pick, and each side's lines are measured against the OTHER side's
+            # venue record — the opponent-facing lines are frequently the real reason a
+            # projection is high, and leading with the picked team's form instead can
+            # assert something its own record contradicts.
+            #
+            # Rides on this payload for the same reason `streaks` does: the page already
+            # loads it, and a second endpoint would be a second thing to keep in step.
+            # `limit` is deliberately low — every verified line is in `all`, and what to
+            # print is a layout decision, not a data one.
+            "pick_context": {
+                "home": pick_context(home, away, "home", lg_avg,
+                                     refs=_ctx_refs(home), limit=PICK_CONTEXT_LINES),
+                "away": pick_context(away, home, "away", lg_avg,
+                                     refs=_ctx_refs(away), limit=PICK_CONTEXT_LINES),
+            },
             # The evidence a posted pick quotes — both sides' corner ladders and the
             # defence each is meeting. Named on the fixture because the post is written
             # from the fixture page, with a line that has just been priced there.

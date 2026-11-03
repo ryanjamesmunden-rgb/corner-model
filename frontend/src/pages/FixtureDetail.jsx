@@ -26,6 +26,9 @@ import {
   thisSeasonOnly,
 } from "@/lib/consistency";
 import { claimLine, hasMismatch, headline as mismatchHeadline, mismatches } from "@/lib/mismatch";
+import {
+  CONTEXT_FOOTNOTE, contextView, defaultSide as defaultContextSide, thinNote,
+} from "@/lib/pickContext";
 import { useAuth } from "@/context/AuthContext";
 import { useLeague } from "@/context/LeagueContext";
 import { canWritePrices } from "@/lib/locked";
@@ -344,6 +347,15 @@ export default function FixtureDetail() {
         <TeamRead name={fixture.home_name} profile={home_team.profile} where="home" />
         <TeamRead name={fixture.away_name} profile={away_team.profile} where="away" />
       </div>
+
+      {/* WHAT A POSTED PICK QUOTES. Directly under the two "in words" cards, because it
+          is the same question continued: those say what each side is, this says what is
+          running into this particular game and which of it bears on corners.
+
+          KEYED ON THE FIXTURE so navigating to another game recomputes which side the
+          panel opens on, rather than keeping the previous fixture's choice. */}
+      <PickContextPanel key={fixture.fixture_id} fixture={fixture}
+        context={data.pick_context} />
 
       {/* THE RUN THAT BROUGHT THEM HERE. /streaks advertises it, and clicking the fixture
           used to lose it: this payload was already on the page and went only to the share
@@ -1944,6 +1956,118 @@ function TeamRead({ name, profile, where }) {
         </div>
       )}
       <p className="text-xs text-muted-foreground leading-relaxed">{profile.summary}</p>
+    </div>
+  );
+}
+
+/* THE SENTENCES THAT GO UNDER A POSTED PICK.
+ *
+ * ONE SIDE AT A TIME, because a pick is about one side. Showing both at once describes
+ * each team twice — once as the subject and once as the opponent of the other — which
+ * reads as four facts when it is two.
+ *
+ * EVIDENCE AND COLOUR ARE DRAWN DIFFERENTLY ON PURPOSE. The backend labels every line
+ * and the whole point is lost if they render the same: "unbeaten in 5" set in the same
+ * type as "won 5+ corners in 9 of 10" reads as a second reason, and it is not a reason.
+ * So colour sits behind its own disclosure with its own heading, and a side with no
+ * evidence says so rather than filling the panel with form chatter.
+ *
+ * The rules live in lib/pickContext.js, where they are tested. This is the markup. */
+function PickContextPanel({ fixture, context }) {
+  const [side, setSide] = useState(() => defaultContextSide(context));
+  const [openColour, setOpenColour] = useState(false);
+  const view = contextView(context?.[side]);
+  if (!view) return null;
+  const other = side === "home" ? "away" : "home";
+  const names = { home: fixture.home_name, away: fixture.away_name };
+
+  return (
+    <div className="bg-card border border-border rounded-lg p-4" data-testid="pick-context">
+      <div className="flex items-center gap-2 mb-3 flex-wrap">
+        <h3 className="font-head font-semibold text-sm">Pick context</h3>
+        {view.thin && (
+          <span data-testid="pick-context-thin"
+            className="font-mono-data text-[10px] px-1.5 py-0.5 rounded border border-amber-500/40 text-amber-600 dark:text-amber-400">
+            {thinNote(view.games)}
+          </span>
+        )}
+        <div className="ml-auto flex rounded-md bg-secondary p-0.5" role="group"
+          aria-label="Which side the context describes">
+          {["home", "away"].map((s) => (
+            <button key={s} type="button" onClick={() => setSide(s)}
+              data-testid={`pick-context-side-${s}`}
+              aria-pressed={side === s}
+              className={`text-[11px] px-2 py-0.5 rounded truncate max-w-[9rem] ${
+                side === s ? "bg-background shadow-sm font-semibold" : "text-muted-foreground"
+              }`}>
+              {names[s] || s}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {view.headline && (
+        <p className="text-sm leading-relaxed mb-3" data-testid="pick-context-headline">
+          {view.headline}
+        </p>
+      )}
+
+      {view.empty ? (
+        /* No verified evidence for this side. Said plainly: the alternative is a panel
+           of colour that looks like a case. */
+        <p className="text-xs text-muted-foreground" data-testid="pick-context-empty">
+          Nothing on {names[side] || "this side"}'s record stands out for corners.
+          {view.colour.length > 0 && " Form notes below."}
+        </p>
+      ) : (
+        <ul className="space-y-2" data-testid="pick-context-lines">
+          {[...view.joined, ...view.shown].map((c) => (
+            <li key={c.key} className="flex items-start gap-2"
+              data-testid={`pick-context-line-${c.key}`}>
+              <span className="mt-[2px] shrink-0 font-mono-data text-[10px] px-1.5 py-0.5 rounded-full border border-border text-muted-foreground">
+                {c.groupLabel}
+              </span>
+              <span className="text-xs leading-relaxed">
+                {c.text}
+                {c.ambiguous && (
+                  <span className="text-muted-foreground"> (cuts both ways)</span>
+                )}
+              </span>
+            </li>
+          ))}
+        </ul>
+      )}
+
+      {view.colour.length > 0 && (
+        <div className="mt-3 pt-3 border-t border-border">
+          <button type="button" onClick={() => setOpenColour((v) => !v)}
+            data-testid="pick-context-colour-toggle"
+            aria-expanded={openColour}
+            className="text-[11px] text-muted-foreground hover:text-foreground">
+            {openColour ? "Hide" : "Show"} form notes ({view.colour.length})
+          </button>
+          {openColour && (
+            <>
+              <p className="text-[10px] text-muted-foreground mt-2 mb-1.5">
+                Not corner evidence — context for reading the game only.
+              </p>
+              <ul className="space-y-1" data-testid="pick-context-colour">
+                {view.colour.map((c) => (
+                  <li key={c.key} className="text-xs text-muted-foreground">
+                    {c.text}
+                    {c.ambiguous && <span> (cuts both ways)</span>}
+                  </li>
+                ))}
+              </ul>
+            </>
+          )}
+        </div>
+      )}
+
+      <p className="text-[10px] text-muted-foreground mt-3 leading-relaxed">
+        {CONTEXT_FOOTNOTE} Measured against {names[other] || "the opponent"}'s record at
+        the other venue.
+      </p>
     </div>
   );
 }

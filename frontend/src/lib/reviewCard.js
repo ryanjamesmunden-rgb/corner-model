@@ -22,7 +22,7 @@
 //      already makes that call and is used rather than re-decided here.
 //   3. No profit figure on the verified half. Not because it would be unflattering —
 //      because it would have to be invented.
-import { summarise } from "./resultsSummary.js";
+import { signedUnits, summarise } from "./resultsSummary.js";
 import { recentPeriods, SOURCE_NOTE } from "./channelResults.js";
 
 export { SOURCE_NOTE };
@@ -37,11 +37,16 @@ const num = (v) => {
   return Number.isFinite(n) ? n : null;
 };
 
-/** "+20.73u" / "-4.50u" — a unit figure always wears its sign. */
+/** "+20.73u" / "−4.50u" — a unit figure always wears its sign.
+ *
+ * The sign itself comes from resultsSummary.signedUnits, which the join page's table also
+ * uses. Two implementations of "how a unit figure is written" would drift, and the thing
+ * they would drift about is whether the same month reads the same on the page as on the
+ * card. This adds the suffix and nothing else. */
 export const unitsText = (units) => {
   const n = num(units);
   if (n === null) return "";
-  return `${n > 0 ? "+" : n < 0 ? "−" : ""}${Math.abs(n).toFixed(2)}u`;
+  return `${signedUnits(n)}u`;
 };
 
 /**

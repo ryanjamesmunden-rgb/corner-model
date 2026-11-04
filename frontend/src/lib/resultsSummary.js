@@ -44,3 +44,33 @@ export const totalLabel = (rows = [], since = "Since June") => {
 
 /** The suffix beside a single row. Empty for a closed month. */
 export const periodNote = (row = {}) => (row.partial ? "month to date" : "");
+
+/**
+ * A unit figure wearing its own sign: "+48.70" / "−12.54" / "0.00".
+ *
+ * WHY THIS IS NOT LEFT TO THE MARKUP. The join page's total row printed a literal "+"
+ * and a literal green, while the rows above it branched on the sign properly. With the
+ * running total positive that read correctly and looked finished — but a losing month
+ * big enough to turn the total over would have rendered "+−12.54" in green, on the one
+ * table this file's header calls the first thing a sceptical buyer checks. A sign that
+ * is only right while the number happens to be positive is not a sign.
+ *
+ * The minus is U+2212, not a hyphen, matching reviewCard.unitsText so the same figure
+ * reads the same whether it is on the page or on a card.
+ */
+export const signedUnits = (units, dp = 2) => {
+  // "" must not become 0.00: Number("") is 0 and finite, so a blank figure would print
+  // as a real result. A missing number is blank, never zero.
+  if (units === null || units === undefined || units === "") return "";
+  const n = Number(units);
+  if (!Number.isFinite(n)) return "";
+  const sign = n > 0 ? "+" : n < 0 ? "−" : "";
+  return `${sign}${Math.abs(n).toFixed(dp)}`;
+};
+
+/** Which way a figure should read: "up", "down", or "flat" for exactly zero. */
+export const unitsTone = (units) => {
+  const n = Number(units);
+  if (!Number.isFinite(n) || n === 0) return "flat";
+  return n > 0 ? "up" : "down";
+};

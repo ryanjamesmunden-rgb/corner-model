@@ -7,7 +7,9 @@ import Faq from "@/components/Faq";
 import { supportPhrase } from "@/lib/support";
 import { trialOffer, offerStillStands } from "@/lib/trialOffer";
 import { closedNotice } from "@/lib/signupWindow";
-import { summarise, totalLabel, periodNote } from "@/lib/resultsSummary";
+import {
+  summarise, totalLabel, periodNote, signedUnits, unitsTone,
+} from "@/lib/resultsSummary";
 import { CHANNEL_RESULTS as RESULTS } from "@/lib/channelResults";
 import { useAuth } from "@/context/AuthContext";
 
@@ -36,6 +38,14 @@ import { useAuth } from "@/context/AuthContext";
 // deployment does not lose its link.
 const BUILD_JOIN_URL = process.env.REACT_APP_JOIN_URL || "";
 const PRICE = "£20";
+
+// Which colour a unit figure wears. Keyed off unitsTone so the rows and the total
+// cannot disagree about what counts as up.
+const TONE = {
+  up: "text-emerald-400",
+  down: "text-red-400",
+  flat: "text-foreground",
+};
 
 // RESULTS AS RECORDED IN THE CHANNEL.
 //
@@ -189,17 +199,20 @@ export default function Join() {
                 {periodNote(r) && (
                   <span className="text-xs text-muted-foreground/70">{periodNote(r)}</span>
                 )}
-                <span className={`ml-auto font-mono-data text-lg ${
-                  r.units > 0 ? "text-emerald-400" : r.units < 0 ? "text-red-400" : "text-foreground"}`}>
-                  {r.units > 0 ? "+" : ""}{r.units.toFixed(2)}
+                <span className={`ml-auto font-mono-data text-lg ${TONE[unitsTone(r.units)]}`}>
+                  {signedUnits(r.units)}
                 </span>
                 <span className="text-xs text-muted-foreground w-8">pts</span>
               </div>
             ))}
+            {/* The total reads its own sign, like every row above it. It used to print a
+                literal "+" in a literal green, which was right only for as long as the
+                running total stayed positive. */}
             <div className="flex items-baseline gap-3 px-4 py-2.5 bg-secondary/40">
               <span className="text-sm font-medium">{totalLabel(RESULTS)}</span>
-              <span className="ml-auto font-mono-data text-lg text-emerald-400">
-                +{summarise(RESULTS).total.toFixed(2)}
+              <span className={`ml-auto font-mono-data text-lg ${
+                TONE[unitsTone(summarise(RESULTS).total)]}`}>
+                {signedUnits(summarise(RESULTS).total)}
               </span>
               <span className="text-xs text-muted-foreground w-8">pts</span>
             </div>

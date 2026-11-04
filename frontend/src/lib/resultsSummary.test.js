@@ -5,7 +5,9 @@
 // final. Same trap the day card had, on the page where a buyer is deciding whether to
 // believe anything else on the site.
 
-import { summarise, totalLabel, periodNote } from "./resultsSummary.js";
+import {
+  summarise, totalLabel, periodNote, signedUnits, unitsTone,
+} from "./resultsSummary.js";
 
 const CLOSED = [
   { period: "June - July", units: 17.14 },
@@ -67,5 +69,42 @@ describe("what the table says about itself", () => {
     expect(periodNote({ period: "September", partial: true })).toBe("month to date");
     expect(periodNote({ period: "August" })).toBe("");
     expect(periodNote()).toBe("");
+  });
+});
+
+describe("a unit figure wears its own sign", () => {
+  test("positive, negative and flat", () => {
+    expect(signedUnits(48.698)).toBe("+48.70");
+    expect(signedUnits(-12.54)).toBe("−12.54");
+    expect(signedUnits(0)).toBe("0.00");
+  });
+
+  test("the minus is a real minus, not a hyphen", () => {
+    // Matches reviewCard.unitsText, so the same month reads the same on the page and on
+    // the card. A hyphen here and a minus there is how that drifts.
+    expect(signedUnits(-4.5)).not.toContain("-");
+    expect(signedUnits(-4.5)).toBe("−4.50");
+  });
+
+  test("a missing figure is blank rather than zero", () => {
+    // Number("") is 0 and finite, so a blank would otherwise print as a real result.
+    expect(signedUnits("")).toBe("");
+    expect(signedUnits(null)).toBe("");
+    expect(signedUnits(undefined)).toBe("");
+    expect(signedUnits("nonsense")).toBe("");
+  });
+
+  test("the total of the real list reads correctly", () => {
+    // The bug this replaced: the join page printed a literal "+" before the total, so a
+    // negative total would have rendered "+−12.54" on the table a buyer checks first.
+    expect(signedUnits(summarise(CLOSED).total)).toBe("+37.87");
+    expect(signedUnits(summarise([{ period: "x", units: -5 }]).total)).toBe("−5.00");
+  });
+
+  test("tone agrees with the sign", () => {
+    expect(unitsTone(48.698)).toBe("up");
+    expect(unitsTone(-12.54)).toBe("down");
+    expect(unitsTone(0)).toBe("flat");
+    expect(unitsTone(null)).toBe("flat");
   });
 });

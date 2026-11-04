@@ -34,6 +34,10 @@ export const CHANNEL_RESULTS = [
   // is gone because the month is over; it read +16.00 month-to-date on 30 September and
   // finished here.
   { period: "September", units: -12.54 },
+  // Closed. Stored to three decimals because that is the figure as recorded; the table
+  // renders two, so it reads +48.70. The stored number stays exact rather than being
+  // pre-rounded, so the total is summed from the record and not from its display.
+  { period: "October", units: 48.698 },
 ];
 
 /** Where these came from, in one line, for anything that publishes them. */

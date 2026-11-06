@@ -3611,6 +3611,89 @@ async def tools_state_corners(token: Optional[str] = None,
     return agg
 
 
+# ----------------------------- Fetching prices over HTTP -----------------------------
+#
+# WHY THESE EXIST AS ENDPOINTS AT ALL. fetch_odds.py is a CLI, and a CLI needs MONGO_URL
+# and the provider key — which the backend already has and a GitHub runner does not. Every
+# scheduled job in this repo is a workflow that curls an endpoint with TOOLS_TOKEN, so a
+# CLI-only fetcher had nothing a cron could call. In particular the CLOSING pass cannot be
+# a CLI: a closing price is captured in the hour before kick-off or lost for that fixture
+# for good, and no amount of running it later recovers one.
+#
+# BOTH REPORT `calls`, EVERY TIME. These are the only endpoints here that spend money per
+# fixture rather than per league, so the bill has to be readable from the run that caused
+# it rather than discovered on an invoice.
+
+
+def _odds_fetcher(name: str):
+    """Import a fetch_odds function, turning a missing variable into a readable answer.
+
+    IMPORTED LATE, NOT AT MODULE SCOPE, for the reason the local import in
+    /results/boards gives: fetch_odds pulls in sync_real, which opens its own Mongo client
+    and reads API_FOOTBALL_KEY at import time. A server start that never fetches a price
+    should pay neither.
+
+    AND A MISSING KEY SAYS WHICH ONE. sync_real does `os.environ["API_FOOTBALL_KEY"]` at
+    module scope, so on a deployment without it this import raises KeyError and the caller
+    gets a bare 500 — which looks identical to the provider being down, and the two need
+    completely different fixes. 503 and the variable's name instead: this is a deployment
+    that is not finished being set up, not a request that did anything wrong.
+    """
+    try:
+        import fetch_odds
+    except KeyError as e:
+        raise HTTPException(status_code=503,
+                            detail=f"{e.args[0] if e.args else 'an environment variable'} "
+                                   "is not set on the backend, so prices cannot be fetched")
+    except Exception as e:
+        logger.exception("could not load the odds fetcher")
+        raise HTTPException(status_code=503,
+                            detail=f"the odds fetcher could not be loaded: "
+                                   f"{type(e).__name__}")
+    return getattr(fetch_odds, name)
+
+
+@api_router.post("/odds/fetch")
+async def odds_fetch(days: int = 2, limit: int = 40, token: Optional[str] = None):
+    """Fetch corner prices for the next few days of fixtures.
+
+    ONE API CALL PER FIXTURE. `limit` is the ceiling and it is deliberately low: the board
+    carries roughly 300 fixtures a week and a price is only useful while it is fresh, so
+    fetching everything repeatedly is the expensive way to do this. Soonest-first, so a
+    cap keeps the fixtures about to be bet rather than whichever the database returned.
+
+    Token-gated, unlike /sync/if-stale. That one is safe to leave open because it is
+    self-limiting — it does nothing unless the data is already stale. This one spends on
+    every call, so it cannot be.
+    """
+    _check_tools_token(token)
+    fetch_window = _odds_fetcher("fetch_window")
+    got = await fetch_window(db, days=max(1, min(days, 7)), limit=max(1, min(limit, 120)))
+    return {"mode": "window", **got}
+
+
+@api_router.post("/odds/closing")
+async def odds_closing(minutes: int = 90, limit: int = 60, token: Optional[str] = None):
+    """Capture the last price before kick-off, so CLV can be computed at all.
+
+    THIS IS THE ONE WITH A DEADLINE. The provider serves PRE-MATCH markets: once a fixture
+    has been played there is nothing left to ask for. So this is not a backfill that can be
+    run when somebody gets round to it — a closing price exists for a fixture only if
+    something called this inside the window before it kicked off. That is why the P&L has
+    107 bets with the CLV column blank: nothing was ever capturing it.
+
+    SAFE TO CALL OFTEN, WHICH IS WHY AN HOURLY CRON IS SENSIBLE. It only reaches fixtures
+    kicking off within `minutes`, and a second capture replaces the first only when it is
+    CLOSER to kick-off — so a repeat inside the window improves the reading rather than
+    spending for nothing, and a late call cannot overwrite a good capture with an empty one.
+    """
+    _check_tools_token(token)
+    fetch_closing = _odds_fetcher("fetch_closing")
+    got = await fetch_closing(db, minutes=max(5, min(minutes, 240)),
+                              limit=max(1, min(limit, 120)))
+    return {"mode": "closing", "window_minutes": minutes, **got}
+
+
 @api_router.get("/tools/clv")
 async def tools_clv(limit: int = 300, token: Optional[str] = None,
                     user: dict = Depends(get_current_user)):

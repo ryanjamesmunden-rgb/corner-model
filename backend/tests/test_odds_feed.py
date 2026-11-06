@@ -320,6 +320,41 @@ class TestTheFetcherIsHonestAboutItsCost:
         assert "minutes_before_kickoff" in block
         assert "kept_earlier" in block, "a worse reading must not displace a better one"
 
+    def test_both_passes_are_reachable_over_http_and_token_gated(self):
+        """A CLI cannot be put on a schedule here.
+
+        Every scheduled job in this repo is a workflow that curls an endpoint with
+        TOOLS_TOKEN; fetch_odds needs MONGO_URL and the provider key, which the backend has
+        and a GitHub runner does not. For the WINDOW pass that is an inconvenience. For the
+        CLOSING pass it is the whole thing: a closing price is captured before kick-off or
+        lost for that fixture for good, so with no endpoint there was nothing a cron could
+        call and CLV could never be filled in.
+
+        Token-gated, because these spend one API call per fixture. /api/sync/if-stale can
+        be left open — it does nothing unless the data is already stale — and these cannot.
+        """
+        here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        with open(os.path.join(here, "server.py")) as fh:
+            s = fh.read()
+        for route in ('@api_router.post("/odds/fetch")',
+                      '@api_router.post("/odds/closing")'):
+            assert route in s, route
+            body = s.split(route, 1)[1][:1600]
+            assert "_check_tools_token(token)" in body, f"{route} must be gated"
+
+    def test_a_schedule_actually_calls_the_closing_pass(self):
+        """The endpoint existing is not the same as anything calling it.
+
+        This is the one piece of the pipeline that cannot be caught up on later, so a
+        workflow that forgets it leaves an unrecoverable hole rather than a backlog.
+        """
+        root = os.path.dirname(os.path.dirname(os.path.dirname(
+            os.path.abspath(__file__))))
+        with open(os.path.join(root, ".github", "workflows", "odds.yml")) as fh:
+            wf = fh.read()
+        assert "/api/odds/closing" in wf
+        assert "cron:" in wf, "a dispatch-only workflow captures nothing unattended"
+
     def test_it_says_a_closing_price_cannot_be_fetched_afterwards(self):
         # The constraint that makes this a scheduled job rather than a backfill. If this
         # sentence goes, somebody will write the backfill and find it returns nothing.

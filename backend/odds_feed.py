@@ -170,6 +170,32 @@ def extract(entry: dict) -> dict:
     return {"taken": taken, "skipped": skipped, "books": sorted(books)}
 
 
+def first_entry(resp):
+    """The one /odds entry out of whatever sync_real.af_get handed back.
+
+    THE BUG THIS IS NAMED AFTER. af_get ends `return data["response"]` — it unwraps the
+    provider's envelope and returns the LIST. The first version of the fetcher did
+    `resp.get("response")`, which is what the raw API returns, and every call raised
+    AttributeError: 'list' object has no attribute 'get'.
+
+    It cost sixty real API calls to find out, and nothing was stored for any of them.
+    Worse, it was invisible from outside: the fetcher reported `calls: 0` because the
+    counter only incremented after a fixture parsed, so the run looked free as well as
+    empty. A mapping bug that spends money and reports nothing is the exact failure the
+    call count exists to make impossible.
+
+    So the shape is handled here, in one tested place, and BOTH forms are accepted: the
+    list af_get returns, and the envelope the provider sends, in case anything ever calls
+    this with a raw response. Guessing between them at the call site is what went wrong.
+    """
+    if isinstance(resp, dict):
+        resp = resp.get("response") or []
+    if not isinstance(resp, list) or not resp:
+        return None
+    first = resp[0]
+    return first if isinstance(first, dict) else None
+
+
 def feed_doc(fixture_id: str, api_fixture_id, entry: dict, fetched_at: str) -> dict:
     """The document stored per fixture in db.odds_feed.
 

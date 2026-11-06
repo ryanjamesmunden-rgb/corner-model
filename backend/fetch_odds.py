@@ -40,7 +40,7 @@ import httpx
 from dotenv import load_dotenv
 from motor.motor_asyncio import AsyncIOMotorClient
 
-from odds_feed import SOURCE, feed_doc
+from odds_feed import SOURCE, feed_doc, first_entry
 from sync_real import af_get
 
 ROOT = Path(__file__).parent
@@ -84,12 +84,11 @@ async def upcoming(db, days: int, leagues, limit: int):
 
 async def fetch_one(hc, db, fx, api_fid, write=True):
     """One fixture: one API call, one upsert. Returns a short result line."""
-    resp = await af_get(hc, "/odds", {"fixture": api_fid})
-    entries = resp.get("response") or []
-    if not entries:
+    entry = first_entry(await af_get(hc, "/odds", {"fixture": api_fid}))
+    if entry is None:
         return {"fixture_id": fx["fixture_id"], "priced": 0, "books": 0,
                 "note": "no bookmaker quotes this fixture yet"}
-    doc = feed_doc(fx["fixture_id"], api_fid, entries[0], _now().isoformat())
+    doc = feed_doc(fx["fixture_id"], api_fid, entry, _now().isoformat())
     if write:
         await db.odds_feed.update_one({"fixture_id": doc["fixture_id"]},
                                       {"$set": doc}, upsert=True)
@@ -149,14 +148,15 @@ async def fetch_closing(db, minutes: int = CLOSING_MINUTES, limit: int = DEFAULT
     now = _now()
     async with httpx.AsyncClient() as hc:
         for fx, api_fid in todo:
+            # Before the call, for the reason fetch_window's loop explains: a charged
+            # call that is not counted is worse than one counted twice.
+            out["calls"] += 1
             try:
-                resp = await af_get(hc, "/odds", {"fixture": api_fid})
-                out["calls"] += 1
-                entries = resp.get("response") or []
-                if not entries:
+                entry = first_entry(await af_get(hc, "/odds", {"fixture": api_fid}))
+                if entry is None:
                     out["unpriced"] += 1
                     continue
-                doc = feed_doc(fx["fixture_id"], api_fid, entries[0], now.isoformat())
+                doc = feed_doc(fx["fixture_id"], api_fid, entry, now.isoformat())
                 if not doc["odds"]:
                     out["unpriced"] += 1
                     continue
@@ -210,9 +210,15 @@ async def fetch_window(db, days: int = DEFAULT_DAYS, limit: int = DEFAULT_LIMIT,
         return out
     async with httpx.AsyncClient() as hc:
         for fx, fid in todo:
+            # COUNTED BEFORE THE CALL, NOT AFTER IT SUCCEEDS. It was the other way round
+            # and sixty calls went out against a mapping bug while this reported `calls:
+            # 0` — so the run read as free as well as empty, and the one number that was
+            # supposed to make the cost visible hid it instead. A call that is made is a
+            # call that is charged, whatever happens to the answer, and over-counting a
+            # request that never left is the safe direction for a bill.
+            out["calls"] += 1
             try:
                 r = await fetch_one(hc, db, fx, fid)
-                out["calls"] += 1
             except Exception as e:
                 out["errors"] += 1
                 out.setdefault("last_error", f"{type(e).__name__}: {e}"[:200])

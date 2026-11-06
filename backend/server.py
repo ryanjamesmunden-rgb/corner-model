@@ -4072,8 +4072,94 @@ async def corner_table(league_id: str, user: dict = Depends(get_current_user)):
 
 
 async def _odds_for(fixture_id: str) -> Dict[str, float]:
-    doc = await db.odds.find_one({"fixture_id": fixture_id}, {"_id": 0})
-    return doc["odds"] if doc else {}
+    """Every price this app holds for one fixture — typed in OR fetched.
+
+    WHY THIS READS BOTH STORES. The value board merged them from the day fetching landed
+    and nothing else did, so a market the feed had priced showed a live EV on the Value
+    page and an empty box on the fixture's own page. A price that exists on one screen and
+    not on the next is worse than no price at all: it does not read as a feature boundary,
+    it reads as the site being wrong about something, and then neither screen gets
+    believed. This function is what the fixture page, the league list, the scanner and bet
+    logging all go through, so merging here is what makes the site agree with itself.
+
+    MANUAL STILL WINS, PER MARKET, via odds_feed.merge_prices — a human who typed a number
+    has seen the market and chosen it, and a fetch must never quietly replace that.
+
+    TWO QUERIES INSTEAD OF ONE, and this is called inside a loop over fixtures by
+    /leagues/{id}/fixtures. That loop was already one query per fixture; this makes it two,
+    which is why `_odds_for_many` exists beside it — any caller holding a list of fixtures
+    should use that instead and pay two queries in total.
+    """
+    doc, feed = await asyncio.gather(
+        db.odds.find_one({"fixture_id": fixture_id}, {"_id": 0}),
+        db.odds_feed.find_one({"fixture_id": fixture_id}, {"_id": 0}))
+    return {k: v["price"] for k, v in _merge_one(doc, feed).items()}
+
+
+def _merge_one(manual: Optional[dict], feed: Optional[dict]) -> Dict[str, dict]:
+    """One fixture's two documents -> per-key prices, each labelled with its source.
+
+    The staleness rule lives here rather than in merge_prices because it is about the
+    DOCUMENT's clock, not the price: a fetched number older than a sync cycle has had team
+    news happen underneath it, while a hand-typed one is left alone at any age because
+    somebody chose to put it there and nothing here knows better."""
+    feed_odds = (feed or {}).get("odds") or {}
+    if feed_odds and _feed_is_stale((feed or {}).get("fetched_at")):
+        feed_odds = {}
+    return odds_feed.merge_prices((manual or {}).get("odds"), feed_odds)
+
+
+def _feed_is_stale(fetched_at) -> bool:
+    """True when a fetched price is too old to rank on, or carries no readable clock.
+
+    No clock means it cannot be aged, which means it cannot be shown to be current — so it
+    is treated as stale rather than waved through."""
+    try:
+        got = datetime.fromisoformat(str(fetched_at or ""))
+    except Exception:
+        return True
+    if got.tzinfo is None:
+        got = got.replace(tzinfo=timezone.utc)
+    return (datetime.now(timezone.utc) - got).total_seconds() > FEED_PRICE_STALE_HOURS * 3600
+
+
+async def _odds_for_many(fixture_ids) -> Dict[str, dict]:
+    """Prices and their source for many fixtures, in TWO queries rather than two per row.
+
+    `{fixture_id: {"odds": {key: price}, "source": "manual" | "api"}}`.
+
+    The boards that carry a price column — streaks, the chase board and everything built
+    on them — read their odds in bulk precisely because a per-fixture query across a few
+    hundred rows is what makes a board slow. Adding the feed had to keep that property.
+
+    THE SOURCE IS PER FIXTURE HERE, NOT PER MARKET, because that is the question its one
+    consumer asks: `projection["odds_source"]` feeds the frontend's isRealPrice, which
+    decides whether a row may be published as carrying a real price at all. It answers
+    "manual" whenever a human typed anything on this fixture, so the flag keeps the exact
+    meaning every existing caller already reads it as, and "api" only when none did.
+    """
+    ids = [f for f in (fixture_ids or []) if f]
+    if not ids:
+        return {}
+    cap = len(ids) + 100
+    manual, feed = await asyncio.gather(
+        db.odds.find({"fixture_id": {"$in": ids}}, {"_id": 0}).to_list(cap),
+        db.odds_feed.find({"fixture_id": {"$in": ids}}, {"_id": 0}).to_list(cap))
+    m = {d["fixture_id"]: d for d in manual}
+    f = {d["fixture_id"]: d for d in feed}
+    out: Dict[str, dict] = {}
+    for fid in set(m) | set(f):
+        merged = _merge_one(m.get(fid), f.get(fid))
+        if not merged:
+            continue
+        out[fid] = {
+            "odds": {k: v["price"] for k, v in merged.items()},
+            # `.get("odds")` and not the document's presence: a row can exist carrying an
+            # empty odds dict, and that is not a human having chosen anything.
+            "source": (m.get(fid) or {}).get("source") if (m.get(fid) or {}).get("odds")
+            else odds_feed.SOURCE,
+        }
+    return out
 
 
 async def purge_orphan_odds(database=None) -> int:
@@ -4878,20 +4964,12 @@ async def _merged_prices(manual_docs: Dict[str, dict]) -> Dict[str, dict]:
     """
     feed_docs = await db.odds_feed.find({}, {"_id": 0}) \
         .sort("fetched_at", -1).to_list(ODDS_SCAN)
-    now = datetime.now(timezone.utc)
-    feed: Dict[str, dict] = {}
-    for d in feed_docs:
-        if not d.get("odds"):
-            continue
-        try:
-            got = datetime.fromisoformat(str(d.get("fetched_at") or ""))
-            if got.tzinfo is None:
-                got = got.replace(tzinfo=timezone.utc)
-        except Exception:
-            continue                      # no readable clock on it: cannot age it, so skip
-        if (now - got).total_seconds() > FEED_PRICE_STALE_HOURS * 3600:
-            continue
-        feed[d["fixture_id"]] = d
+    # ONE STALENESS RULE, in _feed_is_stale, shared with _odds_for and _odds_for_many.
+    # It was written out twice and that is how the Value page and the fixture page end up
+    # disagreeing about whether a price still counts — the bug this whole merge exists to
+    # stop, reintroduced one layer down.
+    feed = {d["fixture_id"]: d for d in feed_docs
+            if d.get("odds") and not _feed_is_stale(d.get("fetched_at"))}
 
     out: Dict[str, dict] = {}
     for fid in set(manual_docs) | set(feed):
@@ -5917,11 +5995,14 @@ async def streaks(league_id: Optional[str] = None, side: str = "overall", window
     next_fx = await _next_fixtures(q)
     # odds entered for the relevant upcoming fixtures (for live edge %)
     fx_ids = list({v["fixture_id"] for v in next_fx.values()})
-    odds_docs = await db.odds.find({"fixture_id": {"$in": fx_ids}}, {"_id": 0}).to_list(2000)
-    odds_map = {o["fixture_id"]: o.get("odds", {}) for o in odds_docs}
+    # BOTH PRICE STORES, merged per market with a hand-typed price winning. Reading only
+    # db.odds here is what left this board's EV column blank on fixtures the feed had
+    # already priced, while the Value page showed an edge on the very same market.
+    priced = await _odds_for_many(fx_ids)
+    odds_map = {fid: row["odds"] for fid, row in priced.items()}
     # Unmarked documents predate the stamp OR came from a seeder; either way they are not
     # known to be a real bookmaker's price, and "unknown" must not read as "real".
-    odds_src = {o["fixture_id"]: o.get("source") for o in odds_docs}
+    odds_src = {fid: row["source"] for fid, row in priced.items()}
     now = datetime.now(timezone.utc)
 
     direction = "under" if direction == "under" else "over"
@@ -6540,8 +6621,9 @@ async def _chase_board(within_days: int = 7, limit: int = 25, league_id: Optiona
         league_avgs.setdefault(t["league_id"], []).extend(m["corners_for"] for m in _src(t))
     league_avgs = {k: (sum(v) / len(v) if v else 5.0) for k, v in league_avgs.items()}
     fx_ids = list({v["fixture_id"] for v in next_fx.values()})
-    odds_docs = await db.odds.find({"fixture_id": {"$in": fx_ids}}, {"_id": 0}).to_list(5000)
-    odds_map = {o["fixture_id"]: o.get("odds", {}) for o in odds_docs}
+    # Both stores, as in streaks above — perfect_games builds on these rows, so a price
+    # missing here is a missing EV on the board the owner actually picks from.
+    odds_map = {fid: row["odds"] for fid, row in (await _odds_for_many(fx_ids)).items()}
     now = datetime.now(timezone.utc)
     out = []
     for t in teams:

@@ -23,6 +23,23 @@ def _bot(secret="s3cret", token="123:abc"):
     return importlib.reload(telegram_bot)
 
 
+def run(coro):
+    """Run a coroutine WITHOUT disturbing the process-wide event loop.
+
+    NOT asyncio.run(), which clears the current loop when it returns. pytest-xdist groups
+    by module but REUSES the worker process, and test_bot_menu runs
+    `asyncio.get_event_loop().run_until_complete(...)` in sync code — so a tidy-looking
+    asyncio.run() in this file made that one fail with "there is no current event loop",
+    in a different module, for no reason visible from either end. Own loop, closed after,
+    policy untouched.
+    """
+    loop = asyncio.new_event_loop()
+    try:
+        return loop.run_until_complete(coro)
+    finally:
+        loop.close()
+
+
 def msg(text, chat_type="private", chat_id=42, update_id=1):
     return {"update_id": update_id,
             "message": {"message_id": 7, "text": text,
@@ -191,20 +208,20 @@ class TestTheMembershipGate:
         # no trace that it happened.
         monkeypatch.setenv("TELEGRAM_VIP_CHAT_ID", "")
         b = _bot()
-        out = asyncio.run(b.member_status(777))
+        out = run(b.member_status(777))
         assert out["allowed"] is False
         assert "TELEGRAM_VIP_CHAT_ID" in out["error"]
 
     def test_a_message_with_no_sender_is_refused(self, monkeypatch):
         monkeypatch.setenv("TELEGRAM_VIP_CHAT_ID", "-100123")
         b = _bot()
-        out = asyncio.run(b.member_status(None))
+        out = run(b.member_status(None))
         assert out["allowed"] is False and out["error"]
 
     def test_an_unset_bot_token_is_refused_before_any_call(self, monkeypatch):
         monkeypatch.setenv("TELEGRAM_VIP_CHAT_ID", "-100123")
         b = _bot(token="")
-        out = asyncio.run(b.member_status(777))
+        out = run(b.member_status(777))
         assert out["allowed"] is False
         assert "TELEGRAM_BOT_TOKEN" in out["error"]
 

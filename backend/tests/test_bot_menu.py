@@ -63,10 +63,18 @@ class TestEveryMenuItemIsAnswered:
 class TestTheListIsWhatWorks:
     def test_nothing_unbuilt_is_advertised(self):
         # Same rule the help text follows. A menu is a stronger promise than a help line,
-        # because the item is tappable.
+        # because the item is tappable — tapping one that answers nothing is how a bot
+        # gets written off.
+        #
+        # The rule is unchanged; the facts moved. /results, /perfect, /value, /week and
+        # /settled are now dispatched against the database in server.py, so they belong
+        # here. The check is the two-way one: everything dispatched is offered, and
+        # nothing else is.
         b = _bot()
         names = {c["command"] for c in b.COMMANDS}
-        for unbuilt in ("value", "game", "streaks", "weekend", "board", "results"):
+        for built in b.STATS_COMMANDS:
+            assert built in names, f"/{built} is dispatched but not offered in the menu"
+        for unbuilt in ("game", "streaks", "weekend", "board", "chase", "table"):
             assert unbuilt not in names
 
     def test_telegrams_own_limits_are_respected(self):

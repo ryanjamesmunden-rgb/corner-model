@@ -6,6 +6,7 @@ secret is the only thing separating the two. The other is the bot talking when i
 quiet: a bot that replies to every message in a group is a bot that gets muted, and then
 nobody notices it has also stopped answering the commands that matter.
 """
+import asyncio
 import os
 import sys
 import importlib
@@ -20,6 +21,23 @@ def _bot(secret="s3cret", token="123:abc"):
     os.environ["TELEGRAM_BOT_TOKEN"] = token
     import telegram_bot
     return importlib.reload(telegram_bot)
+
+
+def run(coro):
+    """Run a coroutine WITHOUT disturbing the process-wide event loop.
+
+    NOT asyncio.run(), which clears the current loop when it returns. pytest-xdist groups
+    by module but REUSES the worker process, and test_bot_menu runs
+    `asyncio.get_event_loop().run_until_complete(...)` in sync code — so a tidy-looking
+    asyncio.run() in this file made that one fail with "there is no current event loop",
+    in a different module, for no reason visible from either end. Own loop, closed after,
+    policy untouched.
+    """
+    loop = asyncio.new_event_loop()
+    try:
+        return loop.run_until_complete(coro)
+    finally:
+        loop.close()
 
 
 def msg(text, chat_type="private", chat_id=42, update_id=1):
@@ -90,12 +108,32 @@ class TestReplies:
 
     def test_help_lists_only_what_exists(self):
         # The daily angle menu already ends "Reply with a number and I'll write that one
-        # up" at a bot that cannot hear it. Listing /value here before /value exists would
-        # be the same mistake in the other direction.
+        # up" at a bot that cannot hear it. Listing a command here before it exists would
+        # be the same mistake in the other direction — so the test is the two-way check:
+        # every command that IS built appears, and nothing that is not does.
         b = _bot()
         assert "/help" in b.HELP
-        for unbuilt in ("/value", "/game", "/streaks", "/weekend"):
+        for built in b.STATS_COMMANDS:
+            assert f"/{built}" in b.HELP, f"/{built} is dispatched but not in HELP"
+        for unbuilt in ("/game", "/streaks", "/weekend", "/chase"):
             assert unbuilt not in b.HELP
+
+    def test_the_menu_and_the_help_text_cannot_drift_apart(self):
+        # Telegram's dropdown is what most people read; HELP is what the rest read. A
+        # command in one and not the other looks broken from whichever side is missing it.
+        b = _bot()
+        menu = {c["command"] for c in b.COMMANDS}
+        assert set(b.STATS_COMMANDS) <= menu
+        for c in menu:
+            assert f"/{c}" in b.HELP, f"/{c} is in the menu but not in HELP"
+
+    def test_every_menu_entry_fits_telegrams_limits(self):
+        # Telegram rejects the whole setMyCommands call on one bad entry, so a single
+        # over-long description silently leaves the bot with no menu at all.
+        b = _bot()
+        for c in b.COMMANDS:
+            assert 1 <= len(c["command"]) <= 32 and c["command"].islower()
+            assert 1 <= len(c["description"]) <= 256
 
     def test_a_group_gets_silence_for_anything_it_did_not_ask_for(self):
         # A bot that replies to every message in a group is one that gets removed.
@@ -112,12 +150,80 @@ class TestReplies:
         # bot, so an unrecognised one gets pointed somewhere rather than dropped.
         b = _bot()
         assert "/help" in b.reply_for(msg("hello?"))
-        assert "/help" in b.reply_for(msg("/value"))
+        assert "/help" in b.reply_for(msg("/wibble"))
 
     def test_an_unknown_command_does_not_pretend_to_know_it(self):
         b = _bot()
-        out = b.reply_for(msg("/value"))
-        assert "don't know" in out and "value" in out
+        out = b.reply_for(msg("/wibble"))
+        assert "don't know" in out and "wibble" in out
+
+    def test_a_stats_command_is_never_answered_as_unknown(self):
+        # server.py dispatches these against the database before reply_for is reached, so
+        # arriving here at all means that dispatcher failed. The answer must still not be
+        # "I don't know /results yet" about a command in the menu and in HELP — which is
+        # exactly the wrong answer this module already shipped once for a bare /pick.
+        b = _bot()
+        for name in b.STATS_COMMANDS:
+            out = b.reply_for(msg(f"/{name}"))
+            assert out and "don't know" not in out, name
+            assert "database" in out, name
+
+    def test_a_stats_command_in_a_group_is_still_silence(self):
+        b = _bot()
+        for name in b.STATS_COMMANDS:
+            assert b.reply_for(msg(f"/{name}", chat_type="group")) is None
+
+    def test_the_paid_boards_are_a_subset_of_the_stats_commands(self):
+        # A gated name that is not dispatched would be gated by nothing at all.
+        b = _bot()
+        assert set(b.MEMBER_COMMANDS) <= set(b.STATS_COMMANDS)
+        assert "settled" not in b.MEMBER_COMMANDS, "a result is history, not a live board"
+
+
+class TestWhoSentIt:
+    def test_the_sender_is_read_apart_from_the_chat(self):
+        # chat_id_of answers where to reply; membership is checked against the person.
+        b = _bot()
+        up = {"message": {"chat": {"id": -100123, "type": "group"},
+                          "from": {"id": 777}}}
+        assert b.chat_id_of(up) == -100123
+        assert b.sender_id(up) == 777
+
+    def test_an_update_with_no_sender_does_not_throw(self):
+        # A channel post arrives with no `from` at all.
+        b = _bot()
+        assert b.sender_id({"message": {"chat": {"id": 1, "type": "channel"}}}) is None
+        assert b.sender_id({}) is None
+
+
+class TestTheMembershipGate:
+    """Every case here is one where no HTTP call should be made at all — the gate decides
+    before reaching Telegram. monkeypatch, not os.environ, because _bot() re-reads the
+    environment on reload and a leaked TELEGRAM_VIP_CHAT_ID would change what
+    vip_configured() answers in every test that runs after."""
+
+    def test_it_refuses_rather_than_guesses_when_the_channel_is_unconfigured(
+            self, monkeypatch):
+        # FAILS CLOSED. The alternative hands the paid boards to whoever asks, and leaves
+        # no trace that it happened.
+        monkeypatch.setenv("TELEGRAM_VIP_CHAT_ID", "")
+        b = _bot()
+        out = run(b.member_status(777))
+        assert out["allowed"] is False
+        assert "TELEGRAM_VIP_CHAT_ID" in out["error"]
+
+    def test_a_message_with_no_sender_is_refused(self, monkeypatch):
+        monkeypatch.setenv("TELEGRAM_VIP_CHAT_ID", "-100123")
+        b = _bot()
+        out = run(b.member_status(None))
+        assert out["allowed"] is False and out["error"]
+
+    def test_an_unset_bot_token_is_refused_before_any_call(self, monkeypatch):
+        monkeypatch.setenv("TELEGRAM_VIP_CHAT_ID", "-100123")
+        b = _bot(token="")
+        out = run(b.member_status(777))
+        assert out["allowed"] is False
+        assert "TELEGRAM_BOT_TOKEN" in out["error"]
 
     def test_a_message_with_no_text_does_not_throw(self):
         # A sticker, a photo, a joined-the-group notice. All arrive here.

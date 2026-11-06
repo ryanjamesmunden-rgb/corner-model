@@ -1,0 +1,200 @@
+# Corner prices: fetch them, and capture the close before it is gone.
+#
+# WHAT THIS REPLACES. Every price on the site was typed in by hand. db.odds held one
+# document per fixture stamped `source: "manual"`, the value board ranked on nothing else,
+# and scanning a whole matchday by hand is the job nobody has time for — so the board was
+# empty most days and the one card that can claim a profit had nothing to put on it.
+#
+# TWO JOBS, AND ONLY ONE OF THEM HAS A DEADLINE.
+#
+#   WINDOW — prices for the days ahead, so the value board has something to rank. Nothing
+#     is lost by running it later; a price fetched at 7am and one fetched at noon are both
+#     usable, and the later one is better.
+#
+#   CLOSING — the last price before kick-off, which is the whole basis of CLV. The
+#     provider serves PRE-MATCH markets only: once a game has been played there is nothing
+#     left to ask for. A closing price therefore exists for a fixture if and only if
+#     something called the endpoint inside the window before it kicked off. It cannot be
+#     backfilled, and that is why the P&L has 107 settled bets with the CLV column blank —
+#     not carelessness, just nothing ever capturing it.
+#
+# WHY CLV IS WORTH AN HOURLY JOB. A hundred settled bets cannot separate a five percent
+# edge from noise; October finished +48.7 units with 76% of that on a single day, which is
+# the same point from the other direction. The closing price is an independent read on
+# EVERY bet, won or lost, and it is the only evidence available that does not need
+# hundreds of games to mean something.
+#
+# WHAT IT COSTS, BECAUSE THIS IS THE ONLY SCHEDULED JOB HERE THAT SPENDS PER FIXTURE.
+# Every other one costs calls per league. This costs ONE API CALL PER FIXTURE, so:
+#
+#   closing, hourly, 90-minute window  ->  one call per fixture kicking off in that window
+#                                          (a busy Saturday afternoon: 40-60 an hour)
+#   window, once a day, 2 days, cap 40 ->  up to 40
+#
+# Read `calls` in each run's summary; it is the bill. If that is more than the plan
+# allows, narrow it: `hours` on the closing cron below, or a shorter window. Turning the
+# schedule off entirely still leaves both jobs available by hand.
+#
+# THE ENDPOINTS ARE TOKEN-GATED, unlike /api/sync/if-stale. That one is open because it is
+# self-limiting — it does nothing unless the data is already stale. These spend on every
+# call, so they cannot be.
+name: Corner odds
+
+on:
+  schedule:
+    # HOURLY, ON PURPOSE AND NOT MORE OFTEN. The window is 90 minutes, so every fixture is
+    # seen at least once before it kicks off, and a second look inside the window replaces
+    # the first only when it is CLOSER to the off — a repeat improves the reading rather
+    # than paying twice for the same number.
+    #
+    # Minute 17 rather than 0: a job on the hour queues behind everything else scheduled
+    # on the hour, and GitHub's scheduler is late under load. Late matters here in a way it
+    # does not elsewhere — a capture that slips past kick-off captures nothing.
+    - cron: "17 * * * *"
+    # The day's prices, once, before the European cards go out at 09:00.
+    - cron: "41 6 * * *"
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "Which pass to run"
+        required: false
+        default: "closing"
+        type: choice
+        options: [closing, window, both]
+      minutes:
+        description: "Closing window, in minutes before kick-off (default 90)"
+        required: false
+        default: "90"
+        type: string
+      days:
+        description: "Window pass: how many days ahead (default 2)"
+        required: false
+        default: "2"
+        type: string
+      limit:
+        description: "Most fixtures to price in one run — this is the call count"
+        required: false
+        default: "60"
+        type: string
+
+concurrency:
+  # Never two of these at once. Two overlapping runs would each pay for the same fixtures,
+  # and the second would be refused as not closer to kick-off — spending twice for one
+  # reading. cancel-in-progress stays FALSE: a run already part-way through has captures
+  # worth keeping, and a cancelled one loses the fixtures it had left.
+  group: corner-odds
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  odds:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Fetch
+        env:
+          BACKEND: ${{ vars.BACKEND_URL || 'https://corner-model.onrender.com' }}
+          TOOLS_TOKEN: ${{ secrets.TOOLS_TOKEN }}
+          MODE: ${{ inputs.mode }}
+          MINUTES: ${{ inputs.minutes }}
+          DAYS: ${{ inputs.days }}
+          LIMIT: ${{ inputs.limit }}
+          # WHICH CRON FIRED IS NOT KNOWABLE from inside a scheduled run — GitHub does not
+          # say. daily_slip.yml's header is a post-mortem of gating on the hour and losing
+          # three of its first five runs to it. So the hour is read from the CLOCK, and the
+          # one decision it makes is whether to add the window pass to the closing one.
+          # Being wrong about that costs at most one extra cheap pass, never a missed close.
+          HOUR: ${{ github.event.schedule == '41 6 * * *' && 'window' || '' }}
+        run: |
+          set -uo pipefail
+          : "${TOOLS_TOKEN:?TOOLS_TOKEN is not set — add it in Settings > Secrets}"
+
+          mode="${MODE:-}"
+          if [ -z "$mode" ]; then
+            # A scheduled run: the 06:41 cron does both, every other hour does the close.
+            mode="closing"
+            [ "$HOUR" = "window" ] && mode="both"
+          fi
+          minutes="${MINUTES:-90}"; days="${DAYS:-2}"; limit="${LIMIT:-60}"
+
+          {
+            echo "## Corner odds — $(date -u '+%Y-%m-%d %H:%M UTC')"
+            echo
+            echo "Mode \`$mode\`. One API call per fixture — \`calls\` below is the cost."
+            echo
+            echo "| Pass | Result |"
+            echo "|---|---|"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          # 300s because the first request of the hour may pay a cold start on the free
+          # instance, and a capture abandoned mid-window is a capture lost for good.
+          call () {
+            local label="$1" url="$2" out code
+            out=$(curl -sS -X POST --max-time 300 -o body.json \
+                  -w '%{http_code}' "$url" 2>&1) || {
+                    echo "| $label | ❌ did not respond — \`${out//|/ }\` |" \
+                      >> "$GITHUB_STEP_SUMMARY"
+                    echo "FAIL $label: $out"
+                    return 1
+                  }
+            code="$out"
+            cat body.json; echo
+            python3 - "$label" "$code" <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import json, sys
+          label, code = sys.argv[1], sys.argv[2]
+          try:
+              d = json.load(open("body.json"))
+          except Exception:
+              print(f"| {label} | ⚠️ HTTP {code}, and the body was not JSON |")
+              raise SystemExit(0)
+          if code != "200":
+              print(f"| {label} | ⚠️ HTTP {code} — {str(d.get('detail'))[:120]} |")
+              raise SystemExit(0)
+          calls = d.get("calls", 0)
+          bits = [f"**{calls} API call(s)**"]
+          # A pass that reached no fixtures is the normal quiet-hour case, not a failure,
+          # and saying so is the difference between "nothing to do" and "did not work".
+          if not d.get("fixtures"):
+              print(f"| {label} | ✅ nothing in the window — 0 calls |")
+              raise SystemExit(0)
+          if d.get("mode") == "closing":
+              bits.append(f"captured {d.get('captured', 0)}/{d.get('fixtures', 0)}")
+              if d.get("kept_earlier"):
+                  bits.append(f"{d['kept_earlier']} already had a closer reading")
+          else:
+              bits.append(f"priced {d.get('priced', 0)}/{d.get('fixtures', 0)}")
+              bits.append(f"{d.get('lines', 0)} line(s)")
+          if d.get("unpriced"):
+              bits.append(f"{d['unpriced']} had no corner market")
+          if d.get("errors"):
+              bits.append(f"⚠️ {d['errors']} error(s): {str(d.get('last_error'))[:80]}")
+          if d.get("capped"):
+              bits.append("hit the limit — raise it or narrow the window")
+          print(f"| {label} | ✅ " + " · ".join(bits) + " |")
+          PY
+          }
+
+          failed=0
+          if [ "$mode" = "closing" ] || [ "$mode" = "both" ]; then
+            call "Closing (${minutes}m before kick-off)" \
+              "$BACKEND/api/odds/closing?minutes=$minutes&limit=$limit&token=$TOOLS_TOKEN" \
+              || failed=1
+          fi
+          if [ "$mode" = "window" ] || [ "$mode" = "both" ]; then
+            call "Window (${days}d ahead)" \
+              "$BACKEND/api/odds/fetch?days=$days&limit=$limit&token=$TOOLS_TOKEN" \
+              || failed=1
+          fi
+
+          {
+            echo
+            echo "A closing price CANNOT be fetched after the game — the provider serves"
+            echo "pre-match markets only. Every hour this job does not run is an hour of"
+            echo "kick-offs whose CLV can never be filled in."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          # Fails the run on a dead backend, which is right: a silent green here means
+          # closing prices are quietly not being captured, and the gap is unrecoverable.
+          exit "$failed"

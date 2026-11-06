@@ -48,6 +48,15 @@ SECRET_HEADER = "x-telegram-bot-api-secret-token"
 # otherwise, which is the one setup mistake worth expecting.
 VIP_CHAT_ID = os.environ.get("TELEGRAM_VIP_CHAT_ID", "").strip()
 
+# WHERE A WARNING ABOUT THE SITE ITSELF GOES, which is not the paid channel. On 4 November
+# the 07:00 sync failed on all 36 competitions, the failure was recorded honestly in
+# db.sync_runs, and it was announced to nobody — found six hours later because the boards
+# looked wrong. That is the alarm this id exists for. It is NOT VIP_CHAT_ID: subscribers
+# cannot fix a broken sync, and a channel post saying the data is stale devalues the day's
+# cards without giving anyone a way to act. Unset means the alarm is off and says so
+# rather than falling back to the channel.
+OWNER_CHAT_ID = os.environ.get("TELEGRAM_OWNER_CHAT_ID", "").strip()
+
 # Telegram caps a message at 4096 characters and answers a longer one with HTTP 400 and
 # nothing else. Same limit that silently ate the weekend card twice.
 MAX_MESSAGE = 4096
@@ -162,6 +171,76 @@ def is_private(update: dict) -> bool:
     return ((update.get("message") or {}).get("chat") or {}).get("type") == "private"
 
 
+def sender_id(update: dict):
+    """Who sent it, as opposed to where it arrived. chat_id_of answers where to reply;
+    this is the person, which is what channel membership is checked against."""
+    return ((update.get("message") or {}).get("from") or {}).get("id")
+
+
+#: Commands answered from the database rather than from a string in this module. reply_for
+#: cannot serve them — it is deliberately pure and synchronous — so server.py dispatches
+#: them before calling it, and this set is what it dispatches on. Listed here so the names,
+#: the menu and the help text cannot drift apart.
+STATS_COMMANDS = ("results", "perfect", "value", "week", "settled")
+
+#: Which of those publish the paid product. `results` is the record — the thing that
+#: persuades somebody to subscribe — and the site gates it behind a free account, which a
+#: bot cannot check; the other three are boards on games that have not kicked off, which is
+#: what the £20 buys. All four are gated on channel membership, because the channel IS the
+#: subscription and it is the only thing about a Telegram sender this bot can verify.
+MEMBER_COMMANDS = ("results", "perfect", "value", "week")
+
+
+async def member_status(tg_user_id) -> dict:
+    """Is this person in the paid channel? Asked of Telegram, never inferred.
+
+    THERE IS NO LINK FROM A TELEGRAM SENDER TO A SITE ACCOUNT. Nothing stores one: invites
+    are minted per user and revoked, but a DM arrives with only a Telegram id, and anybody
+    who finds the bot can send it one. So "is this a paying member" cannot be answered from
+    our own database at all, and channel membership is the one fact available.
+
+    IT FAILS CLOSED, and that is a deliberate trade. A network error or a missing
+    VIP_CHAT_ID returns allowed=False with the reason attached, so a broken configuration
+    locks the boards rather than publishing them to whoever asks. The alternative — fail
+    open — turns one failed request into the paid product handed out free, and leaves no
+    trace that it happened.
+
+    `left` and `kicked` are refusals: Telegram reports a former member as a member record
+    with a status, not as an absence, so testing "did getChatMember succeed" would let
+    anybody who had ever been in the channel keep reading it.
+    """
+    out = {"allowed": False, "status": None, "error": None}
+    if not BOT_TOKEN:
+        out["error"] = "TELEGRAM_BOT_TOKEN is not set"
+        return out
+    if not VIP_CHAT_ID:
+        out["error"] = "TELEGRAM_VIP_CHAT_ID is not set"
+        return out
+    if not tg_user_id:
+        out["error"] = "the message arrived without a sender"
+        return out
+    try:
+        async with httpx.AsyncClient(timeout=20) as hc:
+            r = await hc.get(f"https://api.telegram.org/bot{BOT_TOKEN}/getChatMember",
+                             params={"chat_id": VIP_CHAT_ID, "user_id": tg_user_id})
+        data = r.json() if r.status_code == 200 else {}
+        if not data.get("ok"):
+            # "user not found" is the normal answer for somebody who was never in the
+            # channel, so it is a refusal rather than a fault.
+            out["error"] = (r.json() or {}).get("description") or r.text[:200]
+            return out
+        res = data.get("result") or {}
+        out["status"] = (res.get("status") or "").lower()
+        # `restricted` covers two opposite cases in one word — someone muted who is still
+        # in the chat, and someone restricted who has left — and only `is_member` tells
+        # them apart.
+        out["allowed"] = (out["status"] in ("member", "administrator", "creator")
+                          or (out["status"] == "restricted" and bool(res.get("is_member"))))
+    except Exception as e:
+        out["error"] = f"{type(e).__name__}: {e}"
+    return out
+
+
 HELP = (
     "🎯 The Corner Model\n"
     "\n"
@@ -173,13 +252,20 @@ HELP = (
     "\n"
     "A stake needs the u — a bare second number is read as the price.\n"
     "\n"
+    "/pick does the same with the command in front: /pick 3 @ 1.80 1.5u\n"
+    "\n"
     "Logging the price is what lets the results cards report units. Without one they can "
     "only ever report a hit rate.\n"
     "\n"
+    "/results — how each board has actually landed against its own claim\n"
+    "/perfect — today's perfect games\n"
+    "/value — positive EV against a stored price\n"
+    "/week — the best fixtures over the next seven days\n"
+    "/settled — what landed yesterday\n"
     "/help — this message\n"
     "\n"
-    "Stats commands are still being built. I would rather list what works than what is "
-    "planned."
+    "The four board commands answer in a direct message and only for members of the VIP "
+    "channel — they are the paid boards, on games that have not kicked off."
 )
 
 
@@ -212,6 +298,15 @@ def reply_for(update: dict) -> Optional[str]:
         # group. Short on purpose — a bot that talks in a group is a bot that gets muted.
         return PICK_HELP if is_private(update) else \
             "Send me /pick in a direct message — picks are logged against the sender."
+    # A STATS COMMAND SHOULD NEVER REACH THIS FUNCTION. server.py dispatches every name in
+    # STATS_COMMANDS against the database before calling reply_for, and that dispatcher
+    # always returns something — a board, a refusal, or an error. This branch is what
+    # happens if it ever stops doing so, and it must not say "I don't know /results yet"
+    # about a command listed in the menu and in HELP: that is the exact wrong answer this
+    # module already learned once with a bare /pick.
+    if name in STATS_COMMANDS:
+        return ("Couldn't read that one just now — it needs the database and the database "
+                "didn't answer. Try again in a minute." if is_private(update) else None)
     if name:
         return (f"I don't know /{name} yet. /help lists what I can do."
                 if is_private(update) else None)
@@ -460,6 +555,11 @@ COMMANDS = [
     # Telegram requires lowercase, 1-32 chars; descriptions 1-256. The description is what
     # people read in the dropdown, so it says what the thing does rather than naming it again.
     {"command": "pick", "description": "Log an angle from the menu — /pick 3 @ 1.80 1.5u"},
+    {"command": "results", "description": "How each board landed against its own claim"},
+    {"command": "perfect", "description": "Today's perfect games — run, mismatch and a leaky opponent"},
+    {"command": "value", "description": "Positive EV against a stored price"},
+    {"command": "week", "description": "The best fixtures over the next seven days"},
+    {"command": "settled", "description": "What landed yesterday"},
     {"command": "help", "description": "What I can do, and how to reply to the daily menu"},
 ]
 

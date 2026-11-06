@@ -142,6 +142,15 @@ describe("the value section", () => {
     expect(text).not.toContain("Mainz");
   });
 
+  test("a price off the bookmaker feed does reach the card", () => {
+    // The mirror of the test above, and the regression that mattered more: refusing
+    // "api" would have made a fully priced board report nothing to bet. See
+    // priceSource.js — real means "somebody could have taken this", not "typed by hand".
+    const { text, counts } = dailyCard({ ...base, value: [valueRow(401, 12.0, "api")] });
+    expect(counts.value).toBe(1);
+    expect(text).toContain("Mainz");
+  });
+
   test("a priced market with no edge is not an edge", () => {
     const { counts } = dailyCard({ ...base, value: [valueRow(401, -3.0)] });
     expect(counts.value).toBe(0);

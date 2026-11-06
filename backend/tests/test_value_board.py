@@ -59,8 +59,13 @@ class FakeCollection:
 
 
 class FakeDB:
-    def __init__(self, odds, fixtures, teams, leagues):
+    def __init__(self, odds, fixtures, teams, leagues, odds_feed=None):
         self.odds = FakeCollection(odds, "fixture_id")
+        # The second price store. The board reads BOTH now and merges them per market key
+        # with a hand-typed price always winning — see server._merged_prices. Defaulting
+        # it to empty keeps every test below asking its original question: what the board
+        # does with the prices somebody entered.
+        self.odds_feed = FakeCollection(list(odds_feed or []), "fixture_id")
         self.fixtures = FakeCollection(fixtures, "fixture_id")
         self.teams = FakeCollection(teams, "team_id")
         self.leagues = FakeCollection(leagues, "league_id")
@@ -85,10 +90,13 @@ def market(ev):
             "prob": 61.5, "ev": ev, "tier": "small"}
 
 
-def install(monkeypatch, *, odds, fixtures, teams=None, markets=None):
+def install(monkeypatch, *, odds, fixtures, teams=None, markets=None, feed=None):
     """Wire a board up over the fake db, with the model stubbed to a fixed ladder."""
     teams = teams if teams is not None else [{"team_id": "t-home"}, {"team_id": "t-away"}]
-    monkeypatch.setattr(server, "db", FakeDB(odds, fixtures, teams, [{"league_id": "eng-pl", "name": "Premier League"}]))
+    monkeypatch.setattr(server, "db",
+                        FakeDB(odds, fixtures, teams,
+                               [{"league_id": "eng-pl", "name": "Premier League"}],
+                               odds_feed=feed))
     ladder = markets if markets is not None else [market(6.0), market(1.0)]
     monkeypatch.setattr(server, "fixture_model_from",
                         lambda h, a, lg, o: {"markets": ladder,
@@ -257,3 +265,100 @@ def test_a_flood_of_dead_prices_cannot_bury_the_live_rows(monkeypatch):
     rows = board()
     assert [r["status"] for r in rows] == ["ok", "no_fixture", "no_fixture"]
     assert rows[-1]["more_orphans"] == 3
+
+
+# --- two price stores, one board ----------------------------------------------------
+#
+# Prices now arrive two ways: typed in on a fixture page (db.odds, source "manual") and
+# fetched from the bookmaker feed (db.odds_feed, source "api"). They are kept in separate
+# collections because db.odds is ONE document per fixture with a single `source` flag that
+# set_odds merges dicts into — so a fetched price written there would either overwrite a
+# price somebody chose or be overwritten by one, and that one flag could never say which
+# key came from where.
+#
+# So the merge happens on the read, per market key, and these are its rules.
+
+def fetched(fid, odds=None, hours_ago=1):
+    return {"fixture_id": fid, "source": "api",
+            "odds": odds if odds is not None else {"total_over_9.5": 2.10},
+            "books": {"total_over_9.5": "Pinnacle"},
+            "fetched_at": iso(-hours_ago)}
+
+
+def test_a_fetched_price_alone_still_makes_a_row(monkeypatch):
+    """The point of the whole pipeline: a board that works without anybody typing."""
+    install(monkeypatch, odds=[], fixtures=[fixture("fx1")], feed=[fetched("fx1")])
+    rows = board()
+    assert [r["fixture_id"] for r in rows] == ["fx1"]
+    assert rows[0]["status"] == "ok"
+    assert rows[0]["odds_source"] == "api"
+    assert rows[0]["best"]["price_source"] == "api"
+
+
+def test_a_hand_typed_price_beats_a_fetched_one_on_the_same_market(monkeypatch):
+    """A person typing a price has looked at the market and chosen that number. A fetched
+    price is whatever was quoted when the job last ran."""
+    install(monkeypatch, odds=[priced("fx1")], fixtures=[fixture("fx1")],
+            feed=[fetched("fx1")])
+    rows = board()
+    assert rows[0]["best"]["price_source"] == "manual"
+    # And the fixture-level flag still answers its own, older question: did a human type
+    # anything here at all.
+    assert rows[0]["odds_source"] != "api"
+
+
+def test_a_better_fetched_price_is_reported_beside_it_never_swapped_in(monkeypatch):
+    """So the row can say "2.10 is available elsewhere" without overriding a choice
+    somebody made. Switching silently would mean the board quoting a price the owner
+    never agreed to take."""
+    install(monkeypatch, odds=[priced("fx1")], fixtures=[fixture("fx1")],
+            feed=[fetched("fx1", {"total_over_9.5": 2.10})])
+    best = board()[0]["best"]
+    assert best["price_source"] == "manual"
+    assert best["feed_price"] == 2.10
+
+
+def test_a_worse_fetched_price_is_not_mentioned_at_all(monkeypatch):
+    install(monkeypatch, odds=[priced("fx1")], fixtures=[fixture("fx1")],
+            feed=[fetched("fx1", {"total_over_9.5": 1.50})])
+    assert "feed_price" not in board()[0]["best"]
+
+
+def test_a_stale_fetched_price_is_dropped_rather_than_ranked_on(monkeypatch):
+    """An edge measured against a price that was available yesterday is not an edge. A
+    hand-typed price is left alone at any age — somebody chose to put it there."""
+    install(monkeypatch, odds=[], fixtures=[fixture("fx1")],
+            feed=[fetched("fx1", hours_ago=server.FEED_PRICE_STALE_HOURS + 2)])
+    assert board() == []
+
+
+def test_a_fetched_price_with_no_readable_clock_is_not_trusted(monkeypatch):
+    """It cannot be aged, so it cannot be shown to be current."""
+    doc = fetched("fx1")
+    doc.pop("fetched_at")
+    install(monkeypatch, odds=[], fixtures=[fixture("fx1")], feed=[doc])
+    assert board() == []
+
+
+def test_the_two_stores_combine_rather_than_replace(monkeypatch):
+    """A fixture can carry one typed line and a fetched ladder around it, and both reach
+    the model. Merging on the FIXTURE rather than on the market key would throw one of
+    them away — which is the mistake that made two collections necessary in the first
+    place."""
+    install(monkeypatch,
+            odds=[{"fixture_id": "fx1", "odds": {"total_over_9.5": 1.8},
+                   "updated_at": iso(-1), "source": "manual"}],
+            fixtures=[fixture("fx1")],
+            feed=[fetched("fx1", {"total_over_10.5": 2.40, "home_over_4.5": 1.75})])
+
+    seen = {}
+    monkeypatch.setattr(server, "fixture_model_from",
+                        lambda h, a, lg, o: seen.update(o) or {
+                            "markets": [market(6.0)],
+                            "confidence": {"score": 70, "label": "High"},
+                            "lambdas": {"total": 10.4}})
+    rows = board()
+    assert len(rows) == 1
+    # All three prices are handed to the model, each from whichever store had it.
+    assert seen == {"total_over_9.5": 1.8, "total_over_10.5": 2.40,
+                    "home_over_4.5": 1.75}

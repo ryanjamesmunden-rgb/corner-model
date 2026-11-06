@@ -1162,6 +1162,19 @@ describe("the menu of angles", () => {
     expect(text).not.toContain("nothing is priced yet");
   });
 
+  test("a price off the bookmaker feed IS offered as value", () => {
+    // The regression this pins. Every check here read `odds_source === "manual"`, which
+    // was right until fetch_odds started storing prices stamped "api": a fully priced
+    // board would have reported no real prices at all, so this section would have printed
+    // "nothing is priced yet" on a day with live market prices on every fixture. A fetched
+    // price is the best of several books — if anything a better number than one typed from
+    // memory. See priceSource.js.
+    const { items, text } = menu({ streaks: [S("Viking", 8)], value: [V(11.5, "api")] });
+    expect(items.some((i) => i.kind === "value")).toBe(true);
+    expect(text).not.toContain("nothing is priced yet");
+    expect(text).not.toContain("seeded demo numbers");
+  });
+
   test("a seeded price is never offered as value, and the menu says so", () => {
     // seed_team_odds writes fair_odds * uniform(0.90, 1.15). An EV against that is the
     // model finding value in its own jitter, and on screen it looks like a real edge — so

@@ -26,6 +26,7 @@ from collections import Counter, defaultdict, deque
 
 import settlement
 import angle_of_day
+import bot_cards
 import cups
 import h2h
 import log_redact
@@ -34,6 +35,7 @@ import calibration
 import oddities
 import projection_record
 import state_corners
+import odds_feed
 from pick_context import pick_context
 from settlement import settle_pending
 
@@ -3609,6 +3611,194 @@ async def tools_state_corners(token: Optional[str] = None,
     return agg
 
 
+# ----------------------------- Fetching prices over HTTP -----------------------------
+#
+# WHY THESE EXIST AS ENDPOINTS AT ALL. fetch_odds.py is a CLI, and a CLI needs MONGO_URL
+# and the provider key — which the backend already has and a GitHub runner does not. Every
+# scheduled job in this repo is a workflow that curls an endpoint with TOOLS_TOKEN, so a
+# CLI-only fetcher had nothing a cron could call. In particular the CLOSING pass cannot be
+# a CLI: a closing price is captured in the hour before kick-off or lost for that fixture
+# for good, and no amount of running it later recovers one.
+#
+# BOTH REPORT `calls`, EVERY TIME. These are the only endpoints here that spend money per
+# fixture rather than per league, so the bill has to be readable from the run that caused
+# it rather than discovered on an invoice.
+
+
+def _odds_fetcher(name: str):
+    """Import a fetch_odds function, turning a missing variable into a readable answer.
+
+    IMPORTED LATE, NOT AT MODULE SCOPE, for the reason the local import in
+    /results/boards gives: fetch_odds pulls in sync_real, which opens its own Mongo client
+    and reads API_FOOTBALL_KEY at import time. A server start that never fetches a price
+    should pay neither.
+
+    AND A MISSING KEY SAYS WHICH ONE. sync_real does `os.environ["API_FOOTBALL_KEY"]` at
+    module scope, so on a deployment without it this import raises KeyError and the caller
+    gets a bare 500 — which looks identical to the provider being down, and the two need
+    completely different fixes. 503 and the variable's name instead: this is a deployment
+    that is not finished being set up, not a request that did anything wrong.
+    """
+    try:
+        import fetch_odds
+    except KeyError as e:
+        raise HTTPException(status_code=503,
+                            detail=f"{e.args[0] if e.args else 'an environment variable'} "
+                                   "is not set on the backend, so prices cannot be fetched")
+    except Exception as e:
+        logger.exception("could not load the odds fetcher")
+        raise HTTPException(status_code=503,
+                            detail=f"the odds fetcher could not be loaded: "
+                                   f"{type(e).__name__}")
+    return getattr(fetch_odds, name)
+
+
+@api_router.post("/odds/fetch")
+async def odds_fetch(days: int = 2, limit: int = 40, token: Optional[str] = None):
+    """Fetch corner prices for the next few days of fixtures.
+
+    ONE API CALL PER FIXTURE. `limit` is the ceiling and it is deliberately low: the board
+    carries roughly 300 fixtures a week and a price is only useful while it is fresh, so
+    fetching everything repeatedly is the expensive way to do this. Soonest-first, so a
+    cap keeps the fixtures about to be bet rather than whichever the database returned.
+
+    Token-gated, unlike /sync/if-stale. That one is safe to leave open because it is
+    self-limiting — it does nothing unless the data is already stale. This one spends on
+    every call, so it cannot be.
+    """
+    _check_tools_token(token)
+    fetch_window = _odds_fetcher("fetch_window")
+    got = await fetch_window(db, days=max(1, min(days, 7)), limit=max(1, min(limit, 120)))
+    return {"mode": "window", **got}
+
+
+@api_router.post("/odds/closing")
+async def odds_closing(minutes: int = 90, limit: int = 60, token: Optional[str] = None):
+    """Capture the last price before kick-off, so CLV can be computed at all.
+
+    THIS IS THE ONE WITH A DEADLINE. The provider serves PRE-MATCH markets: once a fixture
+    has been played there is nothing left to ask for. So this is not a backfill that can be
+    run when somebody gets round to it — a closing price exists for a fixture only if
+    something called this inside the window before it kicked off. That is why the P&L has
+    107 bets with the CLV column blank: nothing was ever capturing it.
+
+    SAFE TO CALL OFTEN, WHICH IS WHY AN HOURLY CRON IS SENSIBLE. It only reaches fixtures
+    kicking off within `minutes`, and a second capture replaces the first only when it is
+    CLOSER to kick-off — so a repeat inside the window improves the reading rather than
+    spending for nothing, and a late call cannot overwrite a good capture with an empty one.
+    """
+    _check_tools_token(token)
+    fetch_closing = _odds_fetcher("fetch_closing")
+    got = await fetch_closing(db, minutes=max(5, min(minutes, 240)),
+                              limit=max(1, min(limit, 120)))
+    return {"mode": "closing", "window_minutes": minutes, **got}
+
+
+@api_router.get("/tools/clv")
+async def tools_clv(limit: int = 300, token: Optional[str] = None,
+                    user: dict = Depends(get_current_user)):
+    """Did we beat the closing price? Per posted angle, and in total.
+
+    THE COLUMN IN THE P&L THAT HAS NEVER HAD A NUMBER IN IT. 107 logged bets, CLV blank on
+    every one — not from carelessness but because nothing captured a closing price, so
+    there was nothing to compare against. fetch_odds --closing is what fills it.
+
+    WHY IT MATTERS MORE THAN THE RESULT ON THIS SAMPLE. A hundred settled bets cannot
+    separate a five percent edge from noise; October finished +48.7 units with 76% of it
+    on a single day, which is the same point from the other direction. The closing price
+    is an independent read on every bet, win or lose, and it is the only evidence here
+    that does not need hundreds of games to mean something.
+
+    EVERY ANGLE IS REPORTED, INCLUDING THE ONES THAT CANNOT BE MEASURED, each with the
+    reason. A summary over only the measurable ones, with the rest dropped silently, would
+    be a mean CLV over an unstated subset — exactly the mistake _tally's priced/unpriced
+    split exists to prevent. `measured` is the denominator to quote.
+
+    Token-gated: it reads what was staked and at what price.
+    """
+    _check_tools_token(token)
+    angles = await db.posted_angles.find({}, {"_id": 0}) \
+        .sort("kickoff", -1).to_list(max(1, min(limit, 2000)))
+    if not angles:
+        return {"angles": 0, "measured": 0, "mean_clv": None, "rows": [],
+                "note": "no angles have been logged"}
+
+    days = {(a.get("kickoff") or "")[:10] for a in angles if a.get("kickoff")}
+    team_ids = [a["team_id"] for a in angles if a.get("team_id")]
+    fixtures = await db.fixtures.find(
+        {"$or": [{"home_team_id": {"$in": team_ids}},
+                 {"away_team_id": {"$in": team_ids}}]},
+        {"_id": 0, "fixture_id": 1, "date": 1,
+         "home_team_id": 1, "away_team_id": 1}).to_list(20000)
+    # (team, day) -> fixture. A side plays once a day, so this is unambiguous, and it
+    # avoids one query per angle.
+    by_team_day = {}
+    for fx in fixtures:
+        day = (fx.get("date") or "")[:10]
+        if day not in days:
+            continue
+        for tid in (fx.get("home_team_id"), fx.get("away_team_id")):
+            by_team_day.setdefault((tid, day), fx)
+
+    closing = {d["fixture_id"]: d for d in await db.odds_closing.find(
+        {}, {"_id": 0}).to_list(20000)}
+
+    rows, measured, total = [], 0, 0.0
+    for a in angles:
+        row = {"name": a.get("name"), "line": a.get("line"),
+               "direction": a.get("direction"), "subject": a.get("subject"),
+               "opponent": a.get("opponent"), "kickoff": a.get("kickoff"),
+               "price": a.get("price"), "stake": a.get("stake"),
+               "clv": None, "closing": None, "why": None}
+        if not a.get("price"):
+            row["why"] = "no price was logged for this angle"
+            rows.append(row)
+            continue
+        key, why = odds_feed.market_key(a.get("subject"), a.get("is_home"),
+                                        a.get("line"), a.get("direction"))
+        if key is None:
+            row["why"] = why
+            rows.append(row)
+            continue
+        row["market_key"] = key
+        fx = by_team_day.get((a.get("team_id"), (a.get("kickoff") or "")[:10]))
+        if not fx:
+            row["why"] = "could not find the fixture this angle was about"
+            rows.append(row)
+            continue
+        doc = closing.get(fx["fixture_id"])
+        if not doc:
+            row["why"] = ("no closing price was captured for this fixture — it cannot be "
+                          "fetched after the game, so this one is lost")
+            rows.append(row)
+            continue
+        close = (doc.get("odds") or {}).get(key)
+        if close is None:
+            row["why"] = f"the closing capture carried no price for {key}"
+            rows.append(row)
+            continue
+        row["closing"] = close
+        row["closing_book"] = (doc.get("books") or {}).get(key)
+        row["captured_minutes_before"] = doc.get("minutes_before_kickoff")
+        row["clv"] = odds_feed.clv_percent(a["price"], close)
+        if row["clv"] is not None:
+            measured += 1
+            total += row["clv"]
+        rows.append(row)
+
+    beat = sum(1 for r in rows if isinstance(r.get("clv"), (int, float)) and r["clv"] > 0)
+    return {
+        "angles": len(angles), "measured": measured,
+        # Over the measured rows only, and `measured` is published beside it so the
+        # denominator is never implied.
+        "mean_clv": round(total / measured, 2) if measured else None,
+        "beat_the_close": beat if measured else None,
+        "beat_rate": round(beat / measured * 100, 1) if measured else None,
+        "reasons": dict(Counter(r["why"] for r in rows if r["why"]).most_common()),
+        "rows": rows,
+    }
+
+
 @api_router.get("/backtest")
 async def backtest(league_id: str = "all", window: int = 10, min_games: int = 5,
                    model: str = "v1", blocked_weight: float = V3_BLOCKED_WEIGHT,
@@ -4660,6 +4850,70 @@ VALUE_STATUS_ORDER = ["ok", "below_floor", "no_market", "outside_window", "kicke
 # show before folding the rest into a count. purge_orphan_odds should keep the dead ones
 # at zero; this is what stops a flood of them burying the live rows if it ever doesn't.
 ODDS_SCAN = 2000
+
+#: A fetched price older than this is a memory of a price rather than a price. The feed
+#: refreshes on the sync's clock, so anything much past a cycle has had a team-news
+#: announcement happen underneath it. Matches fetch_odds.STALE_HOURS deliberately.
+FEED_PRICE_STALE_HOURS = 12
+
+
+async def _merged_prices(manual_docs: Dict[str, dict]) -> Dict[str, dict]:
+    """Hand-entered prices and fetched ones, per fixture, with the human's always winning.
+
+    WHY THE TWO STORES ARE MERGED HERE RATHER THAN IN ONE COLLECTION. db.odds holds ONE
+    document per fixture with a single `source` flag that set_odds merges dicts into, so a
+    fetched price written there would either overwrite a price somebody chose or be
+    overwritten by one — and that one flag could never say which key came from where. Kept
+    apart, a manual price always wins, a fetched price ages on its own clock, and neither
+    can quietly become the other. odds_feed.merge_prices owns the per-key rule.
+
+    `price_sources` IS PER KEY, AND THAT IS THE WHOLE POINT. The row-level `odds_source`
+    the board has always carried answers "did a human type anything on this fixture",
+    which is not the same question as "where did the price on the market I am about to
+    back come from". A fixture can now hold both kinds at once.
+
+    A STALE FETCHED PRICE IS DROPPED, NOT SHOWN. An edge measured against a price that was
+    available yesterday is not an edge; a hand-typed price is left alone because a person
+    chose to put it there and nothing here knows better.
+    """
+    feed_docs = await db.odds_feed.find({}, {"_id": 0}) \
+        .sort("fetched_at", -1).to_list(ODDS_SCAN)
+    now = datetime.now(timezone.utc)
+    feed: Dict[str, dict] = {}
+    for d in feed_docs:
+        if not d.get("odds"):
+            continue
+        try:
+            got = datetime.fromisoformat(str(d.get("fetched_at") or ""))
+            if got.tzinfo is None:
+                got = got.replace(tzinfo=timezone.utc)
+        except Exception:
+            continue                      # no readable clock on it: cannot age it, so skip
+        if (now - got).total_seconds() > FEED_PRICE_STALE_HOURS * 3600:
+            continue
+        feed[d["fixture_id"]] = d
+
+    out: Dict[str, dict] = {}
+    for fid in set(manual_docs) | set(feed):
+        m, f = manual_docs.get(fid) or {}, feed.get(fid) or {}
+        merged = odds_feed.merge_prices(m.get("odds"), f.get("odds"))
+        if not merged:
+            continue
+        sources = {k: v["source"] for k, v in merged.items()}
+        out[fid] = {
+            **m, "fixture_id": fid,
+            "odds": {k: v["price"] for k, v in merged.items()},
+            "price_sources": sources,
+            # Where a BETTER price was quoted elsewhere than the one a human typed, so a
+            # row can say so without the board switching off somebody's own choice.
+            "feed_better": {k: v["feed_price"] for k, v in merged.items()
+                            if v.get("feed_better")},
+            "updated_at": m.get("updated_at") or f.get("fetched_at"),
+            # The row-level flag keeps meaning what every caller already reads it as — a
+            # human typed something on this fixture — and only says "api" when none did.
+            "source": m.get("source") if m.get("odds") else odds_feed.SOURCE,
+        }
+    return out
 ORPHAN_ROWS = 10
 # How long a price outlives the fixture it was entered against. Played games leave the
 # fixture list, so this is the window in which your record of what you backed survives.
@@ -4733,7 +4987,8 @@ async def value_board(within_days: Optional[int] = 7, min_ev: float = 0.0,
     # typed in today sat past the cap and were never read. Sorting by when the price was
     # entered means the board can only ever be starved by real, recent prices.
     odds_docs = await db.odds.find({}, {"_id": 0}).sort("updated_at", -1).to_list(ODDS_SCAN)
-    priced = {d["fixture_id"]: d for d in odds_docs if d.get("odds")}
+    manual_docs = {d["fixture_id"]: d for d in odds_docs if d.get("odds")}
+    priced = await _merged_prices(manual_docs)
     if not priced:
         if explain:
             return {"counts": {}, "note": "no odds stored at all"}
@@ -4755,11 +5010,24 @@ async def value_board(within_days: Optional[int] = 7, min_ev: float = 0.0,
     now = datetime.now(timezone.utc)
     horizon = now + timedelta(days=within_days) if within_days else None
 
-    def shape(m):
-        return {"key": m["key"], "group": m["group"],
-                "label": f"{m['group_label']} {m['label']}",
-                "line": m["line"], "book_odds": m["book_odds"], "fair_odds": m["fair_odds"],
-                "prob": m["prob"], "ev": m["ev"], "tier": m["tier"]}
+    def shape(m, doc=None):
+        """One market row. `price_source` IS PER MARKET, not per fixture.
+
+        The row-level `odds_source` says whether a human typed anything on this fixture;
+        this says who chose the number THIS EV was computed against. They differ as soon
+        as a fixture carries one hand-entered line and a fetched ladder around it, and the
+        difference is exactly what a reader needs to judge the edge."""
+        out = {"key": m["key"], "group": m["group"],
+               "label": f"{m['group_label']} {m['label']}",
+               "line": m["line"], "book_odds": m["book_odds"], "fair_odds": m["fair_odds"],
+               "prob": m["prob"], "ev": m["ev"], "tier": m["tier"]}
+        if doc:
+            out["price_source"] = (doc.get("price_sources") or {}).get(m["key"])
+            better = (doc.get("feed_better") or {}).get(m["key"])
+            if better:
+                # Said, never acted on: a price somebody chose stands.
+                out["feed_price"] = better
+        return out
 
     rows = []
     for fid, doc in priced.items():
@@ -4815,10 +5083,10 @@ async def value_board(within_days: Optional[int] = 7, min_ev: float = 0.0,
             continue
 
         marks.sort(key=lambda m: m["ev"], reverse=True)
-        row["best"] = shape(marks[0])
+        row["best"] = shape(marks[0], doc)
         # Capped: the point is the shortlist, and a fixture whose whole ladder is priced
         # over would otherwise bring its whole ladder with it.
-        row["alternatives"] = [shape(m) for m in marks[1:4]]
+        row["alternatives"] = [shape(m, doc) for m in marks[1:4]]
         row["other_count"] = len(marks) - 1
 
         if kickoff and horizon and kickoff > horizon:
@@ -8991,6 +9259,121 @@ async def _log_menu_pick(item: dict, pick: dict) -> str:
     return (f"Logged at {pick['price']:.2f}, {stake}u, {when}")
 
 
+# ----------------------------- What the bot answers from the database -----------------
+#
+# telegram_bot.reply_for is pure and synchronous on purpose — it is the half of the bot
+# that can be tested without a database — so it cannot read a board. These are the
+# commands that need one, and server.py dispatches them BEFORE reply_for.
+#
+# WHY THESE FIVE AND NOT THE CHASE BOARD. The owner finds games on three boards: perfect
+# games, the EV+ rows off the mismatches, and the best league fixtures that week. The
+# chase board is measured and does not rank (measure_chase_board: every ordering scores
+# the same as random), so putting it in the bot would be offering a shortcut to something
+# that has been shown not to be one.
+#
+# THE WINDOW ON /results IS WIDE ON PURPOSE. A fortnight of a board that freezes a couple
+# of dozen claims a week is a denominator too small to say anything, and a card that
+# prints it anyway invites exactly the wrong conclusion.
+BOT_RESULT_WEEKS = 26
+BOT_PERFECT_DAYS = 2
+BOT_VALUE_DAYS = 3
+#: The same floor the value board's own default screen uses. A row that clears nothing is
+#: not an edge, and a card listing every priced row would be a card of noise.
+BOT_VALUE_MIN_EV = 5.0
+BOT_WEEK_DAYS = 7
+#: How many days of snapshots to read back when grading a single day. A snapshot freezes
+#: daily over a seven-day horizon, so one day's claims appear in several of them.
+BOT_SETTLED_LOOKBACK = 21
+
+
+async def _bot_settled(day: str) -> List[dict]:
+    """Every board's claims for one kick-off day, graded.
+
+    GROUPED ON THE DAY IT WAS CLAIMED FOR, not the day the result arrived. `kickoff` is
+    what the snapshot froze and what the post said; `played_at` comes from the synced
+    match and can land on the next calendar day for a late kick-off. Grouping on the
+    latter would file a Saturday night game under Sunday and quietly move a result
+    between two cards.
+
+    ONE CLAIM PER FIXTURE, through the shared helper, for the same reason
+    /results/boards uses it: these boards freeze daily over a seven-day horizon, so
+    counting per snapshot would multiply every denominator.
+    """
+    out = []
+    for key, label, coll_name, _blurb in RESULT_BOARDS:
+        snaps = await db[coll_name].find({}, {"_id": 0}).sort("tag", -1) \
+            .to_list(BOT_SETTLED_LOOKBACK)
+        entries = [e for _, e in one_claim_per_fixture(snaps)]
+        graded = _grade_entries(entries, await _teams_for(entries)) if entries else []
+        rows = [g for g in graded if (g.get("kickoff") or "")[:10] == day]
+        if not rows:
+            continue
+        counted = [r for r in rows if r.get("result") in (WIN, LOSS)]
+        out.append({"key": key, "label": label, "rows": rows,
+                    "tally": _tally(counted)})
+    return out
+
+
+async def _bot_stats_reply(update: dict, name: str) -> Optional[str]:
+    """Answer one of STATS_COMMANDS, or explain why not. Never None for a known name.
+
+    IT ALWAYS RETURNS A STRING, because reply_for runs after this and would otherwise
+    answer "I don't know /results yet" about a command listed in the menu — the exact
+    wrong answer this bot already shipped once for a bare /pick.
+
+    THE PAID BOARDS ANSWER IN A DIRECT MESSAGE ONLY. A member running /value in a group
+    publishes the board to whoever is in the room, which is the scenario telegram_bot's
+    is_private note was written for.
+
+    EVERY CARD IS PREFIXED WITH THE AGE OF THE DATA WHEN IT IS STALE. Each of these is
+    computed from the last sync, so a card built on three-day-old form is wrong in a way
+    nothing on its face reveals.
+    """
+    private = telegram_bot.is_private(update)
+    if name in telegram_bot.MEMBER_COMMANDS:
+        if not private:
+            return ("Send me that one in a direct message — it's a members' board and "
+                    "this is a group.")
+        gate = await telegram_bot.member_status(telegram_bot.sender_id(update))
+        if not gate["allowed"]:
+            # The reason is included because the two failures need different fixes: not
+            # being a member is for the reader to act on, a missing VIP_CHAT_ID is for
+            # the owner, and "it didn't work" is not a diagnosis of either.
+            why = gate.get("error") or f"you are not in the channel (status: {gate.get('status')})"
+            return ("That board is for VIP members.\n\n"
+                    f"Why I can't show it: {why}\n\n"
+                    "thecornermodel.com has the join link.")
+
+    try:
+        if name == "results":
+            text = bot_cards.results_card(
+                await results_by_board(weeks=BOT_RESULT_WEEKS, token=TOOLS_TOKEN, user={}))
+        elif name == "perfect":
+            text = bot_cards.perfect_card(
+                await perfect_games(within_days=BOT_PERFECT_DAYS, limit=12,
+                                    response=None, user={}))
+        elif name == "value":
+            rows = await value_board(within_days=BOT_VALUE_DAYS,
+                                     min_ev=BOT_VALUE_MIN_EV, limit=60,
+                                     response=None, user={})
+            text = bot_cards.value_card(bot_cards.value_rows(rows))
+        elif name == "week":
+            text = bot_cards.week_card(
+                await _fixture_board(days=BOT_WEEK_DAYS, user={}))
+        elif name == "settled":
+            day = (datetime.now(timezone.utc) - timedelta(days=1)).date().isoformat()
+            text = bot_cards.settled_card(day, await _bot_settled(day))
+        else:
+            return None
+    except Exception:
+        logger.exception("telegram: /%s failed", name)
+        return ("Couldn't build that one — something went wrong reading the board. "
+                "It's logged.")
+
+    warning = bot_cards.stale_warning(await _data_age_hours(), STALE_HOURS)
+    return f"{warning}\n\n{text}" if warning else text
+
+
 async def _telegram_reply(update: dict):
     """Work out the answer and send it. Runs AFTER the webhook has already returned 200 —
     see the endpoint below for why that ordering is not optional."""
@@ -9002,7 +9385,13 @@ async def _telegram_reply(update: dict):
         # A NUMBER IS ONLY A PICK IN A DIRECT CHAT. In a group "3" is somebody talking, and
         # a bot that answers it is a bot that gets muted.
         pick = telegram_bot.parse_pick_reply(msg) if telegram_bot.is_private(update) else None
-        text = await _telegram_pick(chat, pick) if pick else telegram_bot.reply_for(update)
+        cmd, _args = telegram_bot.parse_command(msg)
+        if pick:
+            text = await _telegram_pick(chat, pick)
+        elif cmd in telegram_bot.STATS_COMMANDS:
+            text = await _bot_stats_reply(update, cmd)
+        else:
+            text = telegram_bot.reply_for(update)
         if text:
             await telegram_bot.send(chat, text)
     except Exception:
@@ -9359,6 +9748,128 @@ async def telegram_chat_probe(chat_id: str, token: Optional[str] = None):
     if not telegram_bot.BOT_TOKEN:
         raise HTTPException(status_code=503, detail="TELEGRAM_BOT_TOKEN is not set")
     return await telegram_bot.vip_check(chat_id=chat_id)
+
+
+# ----------------------------- The morning post, and the alarm -----------------------
+#
+# Both are PUSHED rather than waited for, which is the difference that matters. Every
+# command above answers somebody who already thought to ask; these two reach the one
+# person who would otherwise not know to.
+
+#: How long the alarm stays quiet after firing. The scheduled caller runs far more often
+#: than a broken sync needs announcing, and an alarm that arrives every ten minutes is an
+#: alarm that gets muted — which is the same outcome as not having one.
+ALARM_COOLDOWN_HOURS = 6
+
+
+@api_router.post("/telegram/alarm")
+async def telegram_alarm(token: Optional[str] = None, force: bool = False):
+    """Tell the owner when the data behind every board has gone stale.
+
+    THE FAILURE THIS EXISTS FOR, and it is not hypothetical. On 4 November the 07:00 sync
+    failed on all 36 competitions, recorded `errors=36` honestly in db.sync_runs, and told
+    nobody. The site kept serving boards built on the previous day's form for six hours,
+    looking entirely normal, and it was caught because somebody happened to look.
+
+    IT GOES TO THE OWNER, NOT THE CHANNEL. Subscribers cannot fix a sync, and a post
+    telling them today's cards are stale devalues the cards without giving anyone a way to
+    act. TELEGRAM_OWNER_CHAT_ID unset therefore means the alarm is OFF, and this says so
+    rather than quietly falling back to the paid channel.
+
+    NOTHING IS SENT WHEN THE DATA IS FINE, and that is what makes it safe to call on a
+    schedule: the quiet case is the common case, and a channel that only ever carries real
+    news is a channel that gets read.
+    """
+    _check_tools_token(token)
+    age = await _data_age_hours()
+    warning = bot_cards.stale_warning(age, STALE_HOURS)
+    out = {"age_hours": age, "stale_after_hours": STALE_HOURS,
+           "stale": warning is not None, "sent": False}
+    if warning is None:
+        out["note"] = "data is fresh — nothing to say"
+        return out
+    if not telegram_bot.OWNER_CHAT_ID:
+        out["note"] = ("TELEGRAM_OWNER_CHAT_ID is not set, so there is nowhere to send "
+                       "this. It is deliberately not sent to the VIP channel.")
+        return out
+    now = datetime.now(timezone.utc)
+    last = await db.meta.find_one({"_id": "bot_alarm"})
+    if last and last.get("sent_at") and not force:
+        try:
+            since = (now - datetime.fromisoformat(last["sent_at"])).total_seconds() / 3600
+            if since < ALARM_COOLDOWN_HOURS:
+                out["note"] = (f"already warned {since:.1f}h ago; quiet for "
+                               f"{ALARM_COOLDOWN_HOURS}h")
+                return out
+        except Exception:
+            pass
+    out["sent"] = await telegram_bot.send(telegram_bot.OWNER_CHAT_ID, warning)
+    if out["sent"]:
+        await db.meta.update_one({"_id": "bot_alarm"},
+                                 {"$set": {"sent_at": now.isoformat(),
+                                           "age_hours": age}}, upsert=True)
+    return out
+
+
+@api_router.post("/telegram/digest")
+async def telegram_digest(token: Optional[str] = None, to: str = "owner",
+                          dry_run: bool = False):
+    """The morning post: today's boards in one message.
+
+    IT DEFAULTS TO THE OWNER, NOT THE CHANNEL. `to=channel` posts it to the VIP channel
+    and is the explicit choice; without that it goes to the owner, who can read it and
+    forward what is worth forwarding. The default is the cautious one because a scheduled
+    job that posts to paying subscribers unattended is a different thing from one that
+    sends a summary to one person, and the first should be switched on deliberately.
+
+    `dry_run` BUILDS IT AND SENDS NOTHING, so the text can be checked before a schedule
+    is pointed at it.
+
+    THE STALENESS LINE RIDES ALONG AT THE TOP. A digest is the one message most likely to
+    be read without anybody checking the site, so it is the worst place for old form to
+    arrive looking current.
+    """
+    _check_tools_token(token)
+    now = datetime.now(timezone.utc)
+    yesterday = (now - timedelta(days=1)).date().isoformat()
+
+    # EACH SECTION IS BUILT IN ITS OWN try. One board failing should cost its section,
+    # not the whole post — a morning with no digest at all is indistinguishable from a
+    # morning nobody looked at.
+    sections = []
+    try:
+        sections.append(bot_cards.perfect_card(
+            await perfect_games(within_days=1, limit=12, response=None, user={})))
+    except Exception:
+        logger.exception("digest: perfect games failed")
+    try:
+        rows = await value_board(within_days=BOT_VALUE_DAYS, min_ev=BOT_VALUE_MIN_EV,
+                                 limit=60, response=None, user={})
+        sections.append(bot_cards.value_card(bot_cards.value_rows(rows)))
+    except Exception:
+        logger.exception("digest: value board failed")
+    try:
+        sections.append(bot_cards.settled_card(yesterday, await _bot_settled(yesterday)))
+    except Exception:
+        logger.exception("digest: settled failed")
+
+    text = bot_cards.digest_card(
+        now.strftime("%A %-d %B") if os.name != "nt" else now.strftime("%A %d %B"),
+        sections, stale=bot_cards.stale_warning(await _data_age_hours(), STALE_HOURS))
+
+    target = (telegram_bot.VIP_CHAT_ID if to == "channel"
+              else telegram_bot.OWNER_CHAT_ID)
+    out = {"to": to, "sections": len(sections), "chars": len(text), "sent": False,
+           "text": text}
+    if dry_run:
+        out["note"] = "dry run — built and not sent"
+        return out
+    if not target:
+        out["note"] = ("TELEGRAM_OWNER_CHAT_ID is not set" if to != "channel"
+                       else "TELEGRAM_VIP_CHAT_ID is not set")
+        return out
+    out["sent"] = await telegram_bot.send(target, text)
+    return out
 
 
 async def _reconcile_billing() -> dict:
@@ -10422,6 +10933,38 @@ def run_sync_all(trigger="scheduled"):
                      env={**_os.environ, "SYNC_TRIGGER": trigger})
 
 
+def _synced_age_hours(newest: List[dict], now=None) -> Optional[float]:
+    """Hours since the newest real league synced, or None when that cannot be known.
+
+    ONE PARSER, because two of them drift. This was computed twice inside _sync_if_stale —
+    once to decide staleness and once to report the age — and the bot's alarm needs the
+    same number. Three copies would eventually have the alarm announcing an age the sync
+    did not agree was stale.
+
+    None rather than a large number when nothing has synced or the stamp will not parse:
+    "we do not know how old this is" is not the same fact as "it is very old", and only
+    the caller can decide what to do about it. _sync_if_stale treats None as stale, which
+    is right for deciding to sync; the alarm stays quiet on it, which is right for a
+    warning that names an age.
+    """
+    if not newest or not newest[0].get("synced_at"):
+        return None
+    try:
+        last = datetime.fromisoformat(newest[0]["synced_at"])
+    except Exception:
+        return None
+    if last.tzinfo is None:
+        last = last.replace(tzinfo=timezone.utc)
+    return round(((now or datetime.now(timezone.utc)) - last).total_seconds() / 3600, 1)
+
+
+async def _data_age_hours() -> Optional[float]:
+    """How old the data behind every board is. Read-only; see _synced_age_hours."""
+    newest = await db.leagues.find({"data_source": "real"}, {"_id": 0, "synced_at": 1}) \
+        .sort("synced_at", -1).limit(1).to_list(1)
+    return _synced_age_hours(newest)
+
+
 async def _sync_if_stale(trigger: str) -> dict:
     """Sync ONLY when the data is actually old. Returns what it decided and why.
 
@@ -10436,19 +10979,10 @@ async def _sync_if_stale(trigger: str) -> dict:
     real = await db.leagues.count_documents({"data_source": "real"})
     newest = await db.leagues.find({"data_source": "real"}, {"_id": 0, "synced_at": 1}) \
         .sort("synced_at", -1).limit(1).to_list(1)
-    stale = True
-    if newest and newest[0].get("synced_at"):
-        try:
-            last = datetime.fromisoformat(newest[0]["synced_at"])
-            stale = (now - last).total_seconds() > STALE_HOURS * 3600
-        except Exception:
-            stale = True
-    age_h = None
-    if newest and newest[0].get("synced_at"):
-        try:
-            age_h = round((now - datetime.fromisoformat(newest[0]["synced_at"])).total_seconds() / 3600, 1)
-        except Exception:
-            pass
+    # An unreadable or missing stamp counts as stale HERE — deciding to sync on an unknown
+    # age is the safe direction, and the sync is self-limiting anyway.
+    age_h = _synced_age_hours(newest, now)
+    stale = age_h is None or age_h > STALE_HOURS
     if real > 0 and not stale:
         return {"status": "fresh", "synced_hours_ago": age_h, "stale_after_hours": STALE_HOURS}
     lock = await db.meta.find_one({"_id": "sync_lock"})

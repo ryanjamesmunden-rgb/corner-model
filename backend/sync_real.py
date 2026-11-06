@@ -572,6 +572,33 @@ async def main():
     except Exception as e:
         print(f"pick settlement skipped: {e}")
 
+    # CORNER PRICES — OFF UNLESS SWITCHED ON, and the flag is the point.
+    #
+    # Every other step in this sync costs calls PER LEAGUE. This one costs one call PER
+    # FIXTURE, so enabling it silently on deploy would quietly change the shape of the
+    # subscription bill on a run nobody asked for. FETCH_ODDS=1 is the owner saying yes,
+    # and the printed call count is so the cost stays visible afterwards rather than
+    # becoming a line on an invoice.
+    #
+    # It runs LAST for the same reason the two steps above do: a price is a convenience
+    # on top of the data, and nothing here may put the form sync at risk.
+    if os.environ.get("FETCH_ODDS", "").strip().lower() in ("1", "true", "yes", "on"):
+        try:
+            from fetch_odds import fetch_window
+            got = await fetch_window(db)
+            print(f"odds: {got['calls']} API call(s), priced {got['priced']}/"
+                  f"{got['fixtures']} fixtures, {got['lines']} line(s), "
+                  f"{got['errors']} error(s)")
+            await db.sync_runs.update_one({"_id": run_id}, {"$set": {"odds": got}})
+        except Exception as e:
+            # Recorded, not raised. A provider hiccup on the odds endpoint must not mark a
+            # successful form sync as failed — that was the symptom that sent somebody
+            # looking for a broken sync when the sync was fine.
+            print(f"odds fetch failed (data sync unaffected): {e}")
+    else:
+        print("odds: not enabled — set FETCH_ODDS=1 to fetch prices "
+              "(one API call per fixture, ~40 per run by default)")
+
 
 if __name__ == "__main__":
     asyncio.run(main())

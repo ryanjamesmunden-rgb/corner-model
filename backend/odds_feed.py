@@ -67,19 +67,37 @@ REFUSED = {
 #: against anything auto-generated must be distinguishable. See set_odds in server.py.
 SOURCE = "api"
 
+#: The lines this app actually prices, mirroring TEAM_LINES and TOTAL_LINES in server.py.
+#: A FEED LINE OUTSIDE THESE IS REFUSED, for the same reason the half-time markets are:
+#: build_markets never creates a key for it, so there would be no fair price to compare a
+#: stored book price against, and an EV column with no fair value behind it is not a
+#: smaller edge but an invented one. The feed quotes "Over 14.5" totals and "Over 1.5"
+#: team lines that fall outside both.
+TEAM_FEED_LINES = frozenset({2.5, 3.5, 4.5, 5.5, 6.5, 7.5, 8.5, 9.5})
+TOTAL_FEED_LINES = frozenset({6.5, 7.5, 8.5, 9.5, 10.5, 11.5, 12.5, 13.5})
+GROUP_LINES = {"home": TEAM_FEED_LINES, "away": TEAM_FEED_LINES,
+               "total": TOTAL_FEED_LINES}
+
 _OVER_HALF = re.compile(r"^over\s+(\d+)\.5$", re.I)
 _OVER_INT = re.compile(r"^over\s+(\d+)$", re.I)
 
 
-def parse_line(label: str) -> Tuple[Optional[int], Optional[str]]:
-    """"Over 4.5" -> (4, None). Anything else -> (None, why not).
+def parse_line(label: str) -> Tuple[Optional[float], Optional[str]]:
+    """"Over 4.5" -> (4.5, None). Anything else -> (None, why not).
 
-    The returned integer is the N in this app's `{group}_over_{N}` key, which prices
-    P(X >= N+1) — the same event as the feed's "Over N.5"."""
+    THE .5 IS KEPT BECAUSE THE KEY KEEPS IT. server.py's TEAM_LINES and TOTAL_LINES are
+    lists of floats, so build_markets writes `home_over_4.5` — not `home_over_4` — and
+    that spelling is what every reader of db.odds looks up. Returning the integer 4 here
+    produced keys in the right shape for a key nothing queries: the prices would have
+    stored cleanly, merged cleanly, and silently never matched a market. A mapping that
+    fails by doing nothing is worse than one that throws.
+
+    The key prices P(X >= int(line) + 1), which is the same event the feed means by
+    "Over N.5"."""
     s = str(label or "").strip()
     m = _OVER_HALF.match(s)
     if m:
-        return int(m.group(1)), None
+        return float(m.group(1)) + 0.5, None
     if _OVER_INT.match(s):
         return None, "integer line — exactly N is a push, which this model cannot price"
     if s.lower().startswith("under"):
@@ -125,12 +143,20 @@ def extract(entry: dict) -> dict:
                     skipped.append({"market": name, "book": book,
                                     "line": str(val.get("value")), "why": why})
                     continue
+                if line not in GROUP_LINES[group]:
+                    skipped.append({"market": name, "book": book,
+                                    "line": str(val.get("value")),
+                                    "why": f"line {line} is outside the ladder this model "
+                                           f"prices, so there is no fair price for it"})
+                    continue
                 price = _price(val.get("odd"))
                 if price is None:
                     skipped.append({"market": name, "book": book,
                                     "line": str(val.get("value")),
                                     "why": f"unusable price {val.get('odd')!r}"})
                     continue
+                # SPELLED EXACTLY AS build_markets SPELLS IT — "home_over_4.5". See
+                # parse_line: a key with the .5 dropped matches nothing and fails silently.
                 key = f"{group}_over_{line}"
                 cur = taken.get(key)
                 if cur is None:
@@ -169,6 +195,57 @@ def feed_doc(fixture_id: str, api_fixture_id, entry: dict, fetched_at: str) -> d
         "skipped": got["skipped"][:40],
         "skipped_total": len(got["skipped"]),
     }
+
+
+def market_key(subject: str, is_home, line, direction: str = "over") -> Tuple[Optional[str], Optional[str]]:
+    """A claim as it was posted -> the market key its price lives under, or why not.
+
+    THE CLAIM AND THE KEY COUNT DIFFERENTLY, which is the whole reason this is a function
+    and not an f-string at each call site. A post says "5+ corners"; the key for that bet
+    is `home_over_4.5`, because build_markets spells its lines as the .5 the bet is struck
+    on. Subtracting the 0.5 in one place and forgetting it in another is how a price gets
+    compared against the wrong line.
+
+    UNDERS COME BACK REFUSED, and honestly. build_markets only ever creates `_over_` keys,
+    and this module refuses the feed's under side, so no fetched price exists for an under
+    at all — answering with a key that nothing will ever hold would turn "we cannot
+    measure this" into "this had no closing price", which are different facts.
+    """
+    if str(direction or "over").lower() != "over":
+        return None, "unders have no fetched price — the feed's under side is not stored"
+    n = None
+    try:
+        n = float(line)
+    except (TypeError, ValueError):
+        return None, f"unusable line {line!r}"
+    group = "total" if str(subject or "team").lower() == "match" else \
+        ("home" if is_home else "away" if is_home is False else None)
+    if group is None:
+        return None, "which side's corners this was about was never recorded"
+    # "5+" is the bet; 4.5 is the line it is struck on.
+    return f"{group}_over_{n - 0.5}", None
+
+
+def clv_percent(taken, closing) -> Optional[float]:
+    """How much better than the closing price you got, as a percentage of the odds.
+
+    WHY CLV IS WORTH MORE THAN THE RESULT ON A SMALL SAMPLE. A hundred settled bets is
+    not enough football to tell a 5% edge from noise, but the price the market closed at
+    is a second opinion on every single one of them — available whether the bet won or
+    lost. Beating the close repeatedly is the one piece of evidence that does not need
+    hundreds of games to mean something.
+
+    POSITIVE MEANS YOU TOOK THE BETTER PRICE. (2.10 taken, 2.00 close) is +5.0%.
+
+    None rather than 0 when either price is missing or unusable, for the same reason
+    settlement.pick_profit answers None for a win at an unknown price: an unmeasured CLV
+    and a CLV of zero are different facts, and averaging the first as the second drags
+    every summary towards nothing.
+    """
+    t, c = _price(taken), _price(closing)
+    if t is None or c is None:
+        return None
+    return round((t / c - 1.0) * 100, 2)
 
 
 def merge_prices(manual: Dict[str, float], feed: Dict[str, float]) -> Dict[str, dict]:

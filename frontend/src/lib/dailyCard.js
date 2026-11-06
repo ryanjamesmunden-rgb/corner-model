@@ -33,6 +33,7 @@
 // corroboration rather than as the card stuttering.
 import { recordLine, reasonFor, slateFrom, slateRow } from "./chaseSlate.js";
 import { flagBullet } from "./countryFlag.js";
+import { isRealPrice } from "./priceSource.js";
 import { plusLine, postDayTime, TELEGRAM_MAX } from "./shareText.js";
 
 export const CARD_PER_SECTION = 5;
@@ -84,7 +85,7 @@ const host = (site) => String(site || "").replace(/^https?:\/\//, "").replace(/\
  * shown with a caveat — a caveat on a fabricated number still puts the number on the card.
  */
 export const pricedFixtures = (value = []) => new Set(
-  value.filter((v) => v.odds_source === "manual" && Number(v.best?.ev) > 0)
+  value.filter((v) => isRealPrice(v.odds_source) && Number(v.best?.ev) > 0)
        .map((v) => v.fixture_id));
 
 /**
@@ -170,7 +171,7 @@ export const buildCard = ({ chase = [], mismatches = [], streaks = [], value = [
   // "Nothing priced" and "priced, and nothing beats its price" are opposite facts: the
   // first is a job to do this evening, the second is a reason not to bet tonight. A blank
   // section reads as neither, and a reader fills the gap with the more flattering one.
-  const realPriced = value.filter((v) => v.odds_source === "manual" && v.best
+  const realPriced = value.filter((v) => isRealPrice(v.odds_source) && v.best
                                          && Number(v.best.ev) > 0)
     .sort((a, b) => Number(b.best.ev) - Number(a.best.ev));
   const valueLines = realPriced.slice(0, per).map((v) => {
@@ -182,7 +183,7 @@ export const buildCard = ({ chase = [], mismatches = [], streaks = [], value = [
       + link(v.fixture_id);
   });
   counts.value = valueLines.length;
-  const anyPrices = value.some((v) => v.odds_source === "manual");
+  const anyPrices = value.some((v) => isRealPrice(v.odds_source));
   const valueBody = valueLines.length ? valueLines.join("\n\n")
     : anyPrices ? "Priced up, and nothing beats its price today. No bet."
                 : "No prices entered yet — nothing to check a number against.";

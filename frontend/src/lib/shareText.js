@@ -14,6 +14,7 @@
 // tail has to keep matching the list above it at every size. See lib/xLimit.
 
 import { flagBullet, flagFor, withFlag } from "./countryFlag.js";
+import { isRealPrice } from "./priceSource.js";
 import { kickoffLabel, timesFooter } from "./kickoff.js";
 
 const more = (total, limit) => (total > limit ? `\n+${total - limit} more on the site` : "");
@@ -511,11 +512,14 @@ export const GAME_MIN_PROB = 50;
  * is a claim about THIS game. So when a real bookmaker's number exists, the pick is the
  * biggest edge over it, and the run only breaks ties.
  *
- * "REAL" MEANS `odds_source === "manual"`, and the check is not paranoia. seed_team_odds
- * and reseed_odds generate demo prices as `fair_odds * rng.uniform(0.90, 1.15)` — the
- * model's own number with noise on it. An EV computed against that is the model finding
- * value in its own jitter, and it would look exactly like a real edge. Unmarked documents
- * predate the stamp, so they are treated as unknown rather than as real.
+ * "REAL" MEANS `isRealPrice(odds_source)` — a price somebody could actually have taken,
+ * whether a person typed it in or it came off the bookmaker feed. The check is not
+ * paranoia: seed_team_odds and reseed_odds generate demo prices as
+ * `fair_odds * rng.uniform(0.90, 1.15)`, the model's own number with noise on it, and an
+ * EV computed against that is the model finding value in its own jitter — indistinguishable
+ * from a real edge on screen. Unmarked documents predate the stamp and count as unknown
+ * rather than real. See priceSource.js for why this is one predicate and not six copies
+ * of a string comparison.
  *
  * WITHOUT A PRICE THIS IS NOT A VALUE RANKING AND MUST NOT BE READ AS ONE. It falls back
  * to the model's probability, which is CONFIDENCE — how likely the line is to land, not
@@ -528,7 +532,7 @@ export const pickGameDetailed = (rows = [], minProb = GAME_MIN_PROB) => {
   const run = (r) => Number(r?.streak?.length) || 0;
   const prob = (r) => Number(r?.projection?.prob ?? 0);
   const ev = (r) => Number(r?.projection?.ev);
-  const realPrice = (r) => r?.projection?.odds_source === "manual" && Number.isFinite(ev(r));
+  const realPrice = (r) => isRealPrice(r?.projection?.odds_source) && Number.isFinite(ev(r));
 
   const live = (rows || []).filter((r) => r?.next_fixture?.date && run(r) >= 2);
   if (!live.length) return { row: null, basis: "none" };
@@ -935,7 +939,7 @@ const buildMenu = ({ streaks = [], mismatches = [], chase = [], value = [],
   // different claims about the same game, and the second is the one worth posting. But a
   // game appearing twice with nothing connecting the two reads as the menu repeating
   // itself, and the reader picks the first one — which is the weaker of the two.
-  const priced = new Set(value.filter((v) => v.odds_source === "manual"
+  const priced = new Set(value.filter((v) => isRealPrice(v.odds_source)
                                              && Number(v.best?.ev) > 0)
                               .map((v) => v.fixture_id));
   const markers = (name, fid) =>
@@ -1001,7 +1005,7 @@ const buildMenu = ({ streaks = [], mismatches = [], chase = [], value = [],
   // a price someone typed in. A seeded price is the model's own number with noise on it, so
   // an EV against one is the model finding value in its own jitter — refused here rather
   // than shown with a caveat, because on screen it is indistinguishable from a real edge.
-  const realPriced = value.filter((v) => v.odds_source === "manual" && v.best
+  const realPriced = value.filter((v) => isRealPrice(v.odds_source) && v.best
                                          && Number(v.best.ev) > 0);
   const valueRows = [];
   for (const v of realPriced.slice(0, per)) {
@@ -1024,15 +1028,15 @@ const buildMenu = ({ streaks = [], mismatches = [], chase = [], value = [],
   // exists only against a price the model generated is neither — it is a warning, because
   // that row looks exactly like a real edge and would be the most attractive thing on the
   // menu. Collapsing the three into one blank section loses the only one that can mislead.
-  const typed = value.filter((v) => v.odds_source === "manual");
-  const fakeEdge = value.some((v) => v.odds_source !== "manual" && Number(v.best?.ev) > 0);
+  const typed = value.filter((v) => isRealPrice(v.odds_source));
+  const fakeEdge = value.some((v) => !isRealPrice(v.odds_source) && Number(v.best?.ev) > 0);
   // WHERE TO SEND SOMEBODY TO PRICE A GAME. It used to be /prices, the bulk paste screen,
   // which has been removed — a card telling a reader to visit a page that 404s is worse
   // than one that says nothing. Prices go in on the fixture page, which is also where the
   // model's own number sits, so it is the honest destination as well as the only one.
   const priceAt = `Open a game on ${where || "the site"} and paste its prices`;
   const valueEmpty = typed.length
-    ? "every price you typed in is shorter than the model's — no edge on the board today"
+    ? "every stored price is shorter than the model's — no edge on the board today"
     : fakeEdge
       ? "the only prices stored are seeded demo numbers, which are the model's own with "
         + `noise on them. An edge against one of those is not an edge. ${priceAt}`

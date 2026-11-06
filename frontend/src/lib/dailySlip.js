@@ -15,7 +15,7 @@
 // check a bookmaker finds the card was wrong about the only figure on it they cared about.
 //
 // So the two are separated at the source, here, rather than left to the renderer's styling:
-// `priceKind` is "book" only when a real price was typed in (odds_source === "manual"), and
+// `priceKind` is "book" only for a real price — typed in or fetched, see priceSource.js — and
 // "fair" otherwise. The card draws them differently and labels the difference. Everything
 // downstream can be dumb about it because this is not.
 //
@@ -71,6 +71,8 @@ export const slipZoneLabel = (iso, tz = SLIP_TZ) => {
 /** Fewer than this is not a slate, it is a single pick with decoration around it. */
 export const MIN_SLIP_ROWS = 2;
 /** More than this and the rows are too short to read on a phone at 1080x1350. */
+import { isRealPrice } from "./priceSource.js";
+
 export const MAX_SLIP_ROWS = 5;
 
 // NULL AND "" ARE NOT ZERO, however much Number disagrees — `Number(null)` is 0 and so is
@@ -86,12 +88,13 @@ const num = (v) => {
 /**
  * Is this a price somebody could actually take?
  *
- * `odds_source === "manual"` is the backend's mark for a price a person typed in. Anything
+ * `isRealPrice(odds_source)` covers a price somebody could have taken: typed in, or off
+ * the bookmaker feed. Anything
  * else on `projection` is derived from the model, including `fair_odds` — which is a
  * break-even number, not an offer.
  */
 export const isBookPrice = (r = {}) =>
-  r?.projection?.odds_source === "manual" && num(r?.projection?.book_odds) !== null;
+  isRealPrice(r?.projection?.odds_source) && num(r?.projection?.book_odds) !== null;
 
 /**
  * Which day a moment falls on, ON THE SAME CLOCK THE CARD STATES ITS TIMES IN.

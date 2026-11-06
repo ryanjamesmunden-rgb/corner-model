@@ -98,6 +98,133 @@ async def fetch_one(hc, db, fx, api_fid, write=True):
             "keys": sorted(doc["odds"])}
 
 
+#: How close to kick-off a capture counts as the closing price. The real closing line is
+#: the last price before the off; this is the last price we can reliably reach.
+CLOSING_MINUTES = 90
+
+
+async def kicking_off_soon(db, minutes: int, limit: int):
+    """Fixtures inside the closing window that have not kicked off yet."""
+    now = _now()
+    q = {"date": {"$gte": now.isoformat(),
+                  "$lte": (now + timedelta(minutes=minutes)).isoformat()}}
+    rows = await db.fixtures.find(q, {"_id": 0}).sort("date", 1).to_list(limit * 3)
+    out = []
+    for fx in rows:
+        api_fid = fx.get("api_fixture_id") or str(fx.get("fixture_id", "")).split("-")[-1]
+        if not str(api_fid).isdigit():
+            continue
+        out.append((fx, int(api_fid)))
+        if len(out) >= limit:
+            break
+    return out
+
+
+async def fetch_closing(db, minutes: int = CLOSING_MINUTES, limit: int = DEFAULT_LIMIT,
+                        write: bool = True) -> dict:
+    """Capture the last price before kick-off, so CLV can be computed at all.
+
+    THIS CANNOT BE DONE AFTER THE GAME, which is the fact that shapes the whole design.
+    The provider's /odds endpoint serves PRE-MATCH markets; once a fixture is played
+    there is nothing left to ask for. So a closing price is not something to backfill
+    later — it is something that is either captured in the hour before the off or lost for
+    that fixture for good. That is why this is a separate scheduled pass rather than part
+    of the twice-daily sync: the sync runs at 07:00 and 19:00, and a 15:00 kick-off is not
+    near either.
+
+    WHY IT IS WORTH A SCHEDULED JOB OF ITS OWN. A hundred settled bets cannot separate a
+    5% edge from noise, but the closing price is a second opinion on every one of them,
+    win or lose. It is the only evidence available that does not need hundreds of games.
+
+    IT OVERWRITES NOTHING IT SHOULD NOT. Each capture is stamped with how many minutes
+    before kick-off it was taken, and a later capture replaces an earlier one only when it
+    is CLOSER to the off — so a job that runs twice in the window keeps the better
+    reading, and a re-run after kick-off cannot overwrite a good capture with an empty one.
+    """
+    todo = await kicking_off_soon(db, minutes, limit)
+    out = {"fixtures": len(todo), "calls": 0, "captured": 0, "unpriced": 0,
+           "errors": 0, "kept_earlier": 0}
+    if not todo:
+        return out
+    now = _now()
+    async with httpx.AsyncClient() as hc:
+        for fx, api_fid in todo:
+            try:
+                resp = await af_get(hc, "/odds", {"fixture": api_fid})
+                out["calls"] += 1
+                entries = resp.get("response") or []
+                if not entries:
+                    out["unpriced"] += 1
+                    continue
+                doc = feed_doc(fx["fixture_id"], api_fid, entries[0], now.isoformat())
+                if not doc["odds"]:
+                    out["unpriced"] += 1
+                    continue
+                try:
+                    ko = datetime.fromisoformat((fx.get("date") or "").replace("Z", "+00:00"))
+                    if ko.tzinfo is None:
+                        ko = ko.replace(tzinfo=timezone.utc)
+                    before = round((ko - now).total_seconds() / 60, 1)
+                except Exception:
+                    before = None
+                doc["minutes_before_kickoff"] = before
+                doc["captured_at"] = now.isoformat()
+                doc["kickoff"] = fx.get("date")
+                if write:
+                    prev = await db.odds_closing.find_one(
+                        {"fixture_id": doc["fixture_id"]},
+                        {"_id": 0, "minutes_before_kickoff": 1})
+                    old = (prev or {}).get("minutes_before_kickoff")
+                    # Closer to the off wins. A capture with no readable clock never
+                    # displaces one that has it.
+                    if prev is not None and (before is None or
+                                             (old is not None and old <= before)):
+                        out["kept_earlier"] += 1
+                        continue
+                    await db.odds_closing.update_one({"fixture_id": doc["fixture_id"]},
+                                                     {"$set": doc}, upsert=True)
+                out["captured"] += 1
+            except Exception as e:
+                out["errors"] += 1
+                out.setdefault("last_error", f"{type(e).__name__}: {e}"[:200])
+    return out
+
+
+async def fetch_window(db, days: int = DEFAULT_DAYS, limit: int = DEFAULT_LIMIT,
+                       leagues=None) -> dict:
+    """Price the next `days` of fixtures. The entry point the sync calls.
+
+    ONE API CALL PER FIXTURE, and the returned `calls` says how many were made, because
+    this is the only step in the sync that spends per-fixture rather than per-league.
+    Whoever turns it on should be able to read the bill off the run record.
+
+    A FAILURE HERE IS NEVER THE SYNC'S FAILURE. Form, fixtures and results are the data
+    the whole site is built on; a price is a convenience on top of it. So every fixture is
+    caught individually and the summary reports `errors` rather than raising — a provider
+    hiccup on the odds endpoint must not mark a successful form sync as failed.
+    """
+    todo = await upcoming(db, days, leagues, limit)
+    out = {"fixtures": len(todo), "calls": 0, "priced": 0, "unpriced": 0, "errors": 0,
+           "lines": 0, "capped": len(todo) >= limit}
+    if not todo:
+        return out
+    async with httpx.AsyncClient() as hc:
+        for fx, fid in todo:
+            try:
+                r = await fetch_one(hc, db, fx, fid)
+                out["calls"] += 1
+            except Exception as e:
+                out["errors"] += 1
+                out.setdefault("last_error", f"{type(e).__name__}: {e}"[:200])
+                continue
+            if r["priced"]:
+                out["priced"] += 1
+                out["lines"] += r["priced"]
+            else:
+                out["unpriced"] += 1
+    return out
+
+
 async def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--days", type=int, default=DEFAULT_DAYS)
@@ -105,9 +232,31 @@ async def main():
     ap.add_argument("--leagues", nargs="*", default=None)
     ap.add_argument("--dry-run", action="store_true",
                     help="list what would be fetched; no API calls and no writes")
+    ap.add_argument("--closing", action="store_true",
+                    help="capture the last price before kick-off (db.odds_closing) "
+                         "instead of pricing the days ahead")
+    ap.add_argument("--minutes", type=int, default=CLOSING_MINUTES,
+                    help="how close to kick-off counts as closing (with --closing)")
     a = ap.parse_args()
 
     db = AsyncIOMotorClient(os.environ["MONGO_URL"])[os.environ["DB_NAME"]]
+
+    if a.closing:
+        todo = await kicking_off_soon(db, a.minutes, a.limit)
+        print(f"fixtures kicking off within {a.minutes}m: {len(todo)}")
+        print(f"this run will make {0 if a.dry_run else len(todo)} API call(s)\n")
+        for fx, _fid in todo:
+            print(f"  {fx['date'][:16]}  {fx.get('home_name')} v {fx.get('away_name')}")
+        if a.dry_run:
+            return
+        got = await fetch_closing(db, a.minutes, a.limit)
+        print(f"\ncaptured {got['captured']}/{got['fixtures']}; {got['unpriced']} had no "
+              f"lines, {got['kept_earlier']} already had a closer reading, "
+              f"{got['errors']} error(s)")
+        print("A closing price CANNOT be fetched after the game — the provider serves "
+              "pre-match markets only. Run this on a schedule or it is lost per fixture.")
+        return
+
     todo = await upcoming(db, a.days, a.leagues, a.limit)
 
     print(f"fixtures in the next {a.days}d with a provider id: {len(todo)}"

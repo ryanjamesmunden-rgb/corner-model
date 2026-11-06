@@ -25,8 +25,9 @@ WHAT THIS PRINTS, IN THREE PARTS:
      this replaces hand-entry or merely supplements it. 90% of the Premier League and 5%
      of everything else would mean the board still waits on a human for most rows.
 
-SPENDS API CREDITS: one /odds/bets call plus one /odds call per sampled fixture. Cheap,
-and much cheaper than building a fetch path for a market the feed does not carry.
+SPENDS API CREDITS: one /odds/bookmakers call, one /odds/bets call, and one /odds call per
+sampled fixture. Cheap, and much cheaper than building a fetch path for a market the feed
+does not carry.
 
 WHAT THIS DELIBERATELY DOES NOT DO: scrape bookmaker websites. It is against their terms,
 it breaks whenever they ship a layout change, and a price that silently goes stale or
@@ -67,6 +68,49 @@ BAR = "-" * 78
 def is_corner(name):
     low = str(name or "").lower()
     return any(w in low for w in CORNER_WORDS)
+
+
+#: Books worth calling out by name, because the only price that matters is one you can
+#: actually get on. The feed quotes 5-7 books per fixture and takes the best of them — but
+#: a best-of-seven that includes Pinnacle and 1xBet is not a price available to somebody
+#: holding a UK high-street account, and an EV computed against it overstates every edge
+#: they can really take. So the probe reports which of these the provider carries.
+UK_BOOKS = ("sky bet", "skybet", "bet365", "william hill", "betfair", "paddy power",
+            "ladbrokes", "coral", "betfred", "unibet", "betvictor", "boylesports")
+
+
+async def bookmakers(hc):
+    """Every bookmaker the provider will quote, with the UK ones called out.
+
+    ONE CALL, AND IT ANSWERS A QUESTION THE REST OF THIS PROBE CANNOT. Section 2 below
+    reports who quoted the sampled fixtures, which is a sample and therefore evidence of
+    presence and never of absence — a book missing from eight fixtures may simply not have
+    priced those eight. This is the provider's own list, so a book absent HERE is one the
+    feed genuinely cannot supply at any price.
+    """
+    try:
+        rows = await af_get(hc, "/odds/bookmakers", {})
+    except Exception as e:
+        print(f"{BAR}\n0. THE BOOKMAKERS THE FEED CARRIES\n{BAR}")
+        print(f"  could not read the list: {type(e).__name__}: {e}")
+        return []
+    names = sorted((b.get("name") or "") for b in rows)
+    print(f"{BAR}\n0. THE BOOKMAKERS THE FEED CARRIES\n{BAR}")
+    print(f"  {len(names)} bookmaker(s) supported by the provider\n")
+    low = [n.lower() for n in names]
+    print("  UK books, which are the ones whose prices can actually be taken:")
+    for want in UK_BOOKS:
+        hit = next((n for n, l in zip(names, low) if want in l), None)
+        print(f"    {'YES' if hit else 'no ':<4} {want:<14}" + (f"-> {hit}" if hit else ""))
+    print("\n  the full list:")
+    for i in range(0, len(names), 4):
+        print("    " + "  ".join(f"{n[:17]:<17}" for n in names[i:i + 4]))
+    print("\n  WHY THIS MATTERS MORE THAN THE COUNT. odds_feed.extract takes the BEST")
+    print("  price across every quoting book. If the books you hold accounts with are a")
+    print("  subset of those, the stored price is one you cannot get and the EV against")
+    print("  it is overstated on every line. A preferred-book filter is the fix, and this")
+    print("  list is what decides whether it can be built from this feed at all.")
+    return names
 
 
 async def catalogue(hc):
@@ -144,6 +188,10 @@ async def probe_fixture(hc, fx, corner_ids):
 
 async def run(league_id=None, fixtures=DEFAULT_FIXTURES):
     async with httpx.AsyncClient() as hc:
+        # First, because "which books" decides whether a fetched price is one you can
+        # take, and that is upstream of every other question here.
+        await bookmakers(hc)
+        print()
         corner = await catalogue(hc)
         corner_ids = {b["id"] for b in corner}
         if not corner:

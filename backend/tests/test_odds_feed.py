@@ -24,7 +24,8 @@ import pytest  # noqa: E402
 
 from odds_feed import (GROUP_LINES, MARKET_GROUP, REFUSED, SOURCE,  # noqa: E402
                        TEAM_FEED_LINES, TOTAL_FEED_LINES, clv_percent,
-                       extract, feed_doc, market_key, merge_prices, parse_line)
+                       extract, feed_doc, first_entry, market_key, merge_prices,
+                       parse_line)
 
 
 def bet(name, *pairs):
@@ -271,6 +272,50 @@ class TestBeatingTheClose:
         assert clv_percent(*pair) is None
 
 
+class TestWhatAfGetActuallyHandsBack:
+    """The bug that cost sixty API calls and reported none of them.
+
+    sync_real.af_get ends `return data["response"]` — it unwraps the envelope and returns
+    the LIST. The fetcher called `.get("response")` on that, which is the shape the raw
+    provider sends, so every fixture raised AttributeError and nothing was stored.
+
+    It was invisible from outside, which is the part worth testing against: the run came
+    back `priced: 0` with `calls: 0`, so it looked free as well as empty.
+    """
+
+    def test_the_list_af_get_returns_is_accepted(self):
+        e = entry(("Bet365", [bet("Home Corners Over/Under", ("Over 4.5", "1.80"))]))
+        assert first_entry([e]) is e
+
+    def test_the_raw_envelope_is_accepted_too(self):
+        # Nothing calls it this way today. Accepting both is cheaper than a call site
+        # guessing which it has — the guess is what went wrong.
+        e = entry(("Bet365", []))
+        assert first_entry({"response": [e]}) is e
+
+    def test_only_the_first_entry_is_taken(self):
+        a, b = entry(("A", [])), entry(("B", []))
+        assert first_entry([a, b]) is a
+
+    @pytest.mark.parametrize("empty", [[], None, {}, {"response": []},
+                                       {"response": None}, "", 0])
+    def test_a_fixture_nobody_prices_is_none_not_an_exception(self, empty):
+        # The common case on a lower division, and it must not look like a fault.
+        assert first_entry(empty) is None
+
+    @pytest.mark.parametrize("junk", [["x"], [None], [[]], [1]])
+    def test_a_response_of_the_wrong_shape_is_none_rather_than_a_crash(self, junk):
+        assert first_entry(junk) is None
+
+    def test_the_fetcher_uses_it_rather_than_reaching_into_the_response(self):
+        here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        with open(os.path.join(here, "fetch_odds.py")) as fh:
+            s = fh.read()
+        assert "first_entry(" in s
+        assert '.get("response")' not in s, \
+            "af_get already unwrapped it — this is the sixty-call bug"
+
+
 class TestTheFetcherIsHonestAboutItsCost:
     """Source-level: fetch_odds.py needs a database and the provider to import."""
 
@@ -300,6 +345,22 @@ class TestTheFetcherIsHonestAboutItsCost:
     def test_it_sorts_soonest_first_so_a_cap_keeps_the_useful_ones(self):
         s = self.src()
         assert '.sort("date", 1)' in s
+
+    def test_a_call_is_counted_when_it_is_MADE_not_when_it_succeeds(self):
+        """The number that was supposed to make the cost visible, and hid it.
+
+        `calls` incremented after fetch_one returned, so sixty charged calls against a
+        mapping bug reported `calls: 0`. The run looked free as well as empty, which is
+        the opposite of what this counter is for. It must now sit above the try, where a
+        failure cannot skip it."""
+        s = self.src()
+        for fn in ("async def fetch_window", "async def fetch_closing"):
+            body = s.split(fn, 1)[1][:2600]
+            count_at = body.find('out["calls"] += 1')
+            try_at = body.find("try:")
+            assert count_at != -1 and try_at != -1, fn
+            assert count_at < try_at, \
+                f"{fn} counts the call inside the try — a failed call would be free"
 
     def test_one_bad_fixture_does_not_end_the_run(self):
         s = self.src()

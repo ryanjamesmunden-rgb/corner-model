@@ -128,6 +128,11 @@ class FakeDB:
         self.fixtures = FakeCollection(fixtures)
         self.leagues = FakeCollection(leagues)
         self.odds = FakeCollection([])
+        # The fetched-price store. _odds_for and _odds_for_many read both collections now,
+        # so a double that knows only about db.odds raises AttributeError on every path
+        # that looks up a price. Empty: these tests are about which league prices a cup
+        # tie, not about where the number came from.
+        self.odds_feed = FakeCollection([])
         # The results cache the head-to-head panel reads. Empty unless a test hands it
         # meetings: most of this file is about which league prices a cup tie, and a
         # pairing with no stored history is the ordinary case anyway.

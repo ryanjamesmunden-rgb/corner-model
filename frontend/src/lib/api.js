@@ -109,6 +109,14 @@ export const api = {
   exportMarkdown: () => axios.get(`${API}/export`, { responseType: "text" }).then((r) => r.data),
   exportStreaks: (days = 7) => axios.get(`${API}/export/streaks`, { params: { days }, responseType: "text" }).then((r) => r.data),
   exportCsv: (type) => axios.get(`${API}/export/csv`, { params: { type }, responseType: "text" }).then((r) => r.data),
+  // The projected corners list, priced at every line. Book odds and EV columns ride along
+  // only for a member — the backend decides that, not this call.
+  exportProjections: (days = 7) =>
+    axios.get(`${API}/export/projections.csv`, { params: { days }, responseType: "text" }).then((r) => r.data),
+  // One row per graded claim, for the questions that need a season: CLV, claims per
+  // fixture, day concentration, calibration by band.
+  exportTracking: (weeks = 52) =>
+    axios.get(`${API}/export/tracking.csv`, { params: { weeks }, responseType: "text" }).then((r) => r.data),
   // Token-gated, unconditional. The scheduled workflow uses /sync/if-stale instead,
   // which needs no token because it only acts when the data is actually old.
   toolSyncNow: (token) => axios.post(`${API}/sync/refresh-all`, null, { params: { token } }).then((r) => r.data),

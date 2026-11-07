@@ -1316,6 +1316,314 @@ async def whoami(user: dict = Depends(get_current_user)):
 
 # ----------------------------- App Routes -----------------------------
 
+def _csv_response(rows: List[dict], filename: str):
+    """Rows of dicts -> a CSV download, with the header taken from the widest row.
+
+    THE HEADER COMES FROM THE UNION, not from rows[0]. DictWriter is given one row's keys
+    everywhere else in this file, which is right only while every row has the same shape —
+    and the projections export does not: a match-total row carries the total ladder and a
+    team row carries the team ladder. Keyed off the first row, every column the first row
+    happened not to have would be silently dropped by `extrasaction="ignore"`, and the
+    file would look complete.
+    """
+    import csv as _csv
+    import io as _io
+    from fastapi.responses import PlainTextResponse
+    if not rows:
+        return PlainTextResponse("no rows\n", media_type="text/csv")
+    cols: List[str] = []
+    seen = set()
+    for r in rows:
+        for k in r:
+            if k not in seen:
+                seen.add(k)
+                cols.append(k)
+    buf = _io.StringIO()
+    w = _csv.DictWriter(buf, fieldnames=cols, extrasaction="ignore")
+    w.writeheader()
+    w.writerows(rows)
+    return PlainTextResponse(
+        buf.getvalue(), media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'})
+
+
+@api_router.get("/export/projections.csv")
+async def export_projections_csv(days: int = 7, league_id: Optional[str] = None,
+                                 user: dict = Depends(get_current_user)):
+    """Every upcoming fixture's projected corners, priced at every line, as a spreadsheet.
+
+    WHAT WAS MISSING. /export/csv?type=fixtures has been on the site all along and carries
+    the three lambdas and nothing else, so working out an EV from it meant rebuilding the
+    whole ladder by hand in the sheet — which is both the work this model exists to do and
+    the step where a hand-built sheet stops agreeing with the site. /tools/sheet.csv does
+    price the ladder, but it is token-gated, team-lines only, and predates the price feed.
+
+    THE NUMBERS COME FROM fixture_model_from, THE SAME CALL THE FIXTURE PAGE MAKES. Not
+    from a re-derivation with nb_ge: two implementations of a ladder eventually disagree,
+    and a figure in a downloaded sheet that differs from the one on screen for the same
+    line is worse than no sheet, because the sheet is the one that gets acted on later.
+
+    ONE ROW PER SUBJECT, THREE PER FIXTURE — the home side's corners, the away side's, and
+    the match total. A fixture is not one bet; those are three different claims with
+    different ladders, and flattening them into one row is what forces a reader to
+    remember which columns belong to whom.
+
+    PRICES AND EV ARE MEMBERS-ONLY, and the model's own numbers are not. That is the line
+    the rest of the site already draws: /projections shows every lambda to everyone, and
+    /value-board — a ranked list of live prices the model disagrees with — is the finished
+    product behind require_member. A CSV carrying book prices and EV is that board in
+    another format, so it follows the same rule rather than quietly routing around it.
+    """
+    days = max(1, min(days, 21))
+    member = bool(user.get("member"))
+    rows_by_fid = await _fixture_projections(days, league_id)
+    if not rows_by_fid:
+        return _csv_response([], "corner-model-projections.csv")
+
+    fx_ids = list(rows_by_fid)
+    priced = await _odds_for_many(fx_ids)
+    base = await _browse_base()
+    by_id, leagues = base["by_id"], base["leagues"]
+    # THE TEAM IDS, WHICH THE PROJECTION ROWS DO NOT CARRY — they hold names only.
+    # Matching on (league_id, name) is what sheet.csv does and it is wrong for a cup tie,
+    # where the fixture's league is the competition and neither side belongs to it. One
+    # query for the ids avoids guessing, and avoids the name-collision trap entirely:
+    # "Athletic Club" exists in both La Liga and Série B.
+    sides = {f["fixture_id"]: f for f in await db.fixtures.find(
+        {"fixture_id": {"$in": fx_ids}},
+        {"_id": 0, "fixture_id": 1, "home_team_id": 1, "away_team_id": 1}).to_list(5000)}
+
+    out: List[dict] = []
+    for fid, fx in rows_by_fid.items():
+        ids = sides.get(fid) or {}
+        home = by_id.get(ids.get("home_team_id")) or {}
+        away = by_id.get(ids.get("away_team_id")) or {}
+        if not home or not away:
+            continue
+        lg = leagues.get(fx.get("league_id")) or {}
+        row = priced.get(fid) or {}
+        model = fixture_model_from(home, away, lg, row.get("odds") or {},
+                                   away_league=leagues.get(away.get("league_id")))
+        conf = model.get("confidence") or {}
+        for group, subject, opponent in (
+                ("home", fx.get("home"), fx.get("away")),
+                ("away", fx.get("away"), fx.get("home")),
+                ("total", f"{fx.get('home')} v {fx.get('away')}", "")):
+            base_row = {
+                "kickoff": (fx.get("date") or "")[:16],
+                "league": fx.get("league_name"),
+                "fixture_id": fid,
+                "home": fx.get("home"), "away": fx.get("away"),
+                "subject": group,
+                "team": subject, "opponent": opponent,
+                "lambda": model["lambdas"].get(group),
+                "lambda_total": model["lambdas"].get("total"),
+                "league_avg_total": fx.get("league_avg_total"),
+                "corner_edge": fx.get("corner_edge"),
+                "home_games": fx.get("home_games"), "away_games": fx.get("away_games"),
+                "confidence": conf.get("score"), "confidence_label": conf.get("label"),
+                "is_cup": fx.get("is_cup"), "cross_league": fx.get("cross_league"),
+            }
+            if member:
+                # Where the price on this fixture came from, carried so a reader can
+                # refuse to act on an EV computed against a number the model effectively
+                # wrote itself — the seeders generate fair_odds * uniform(0.90, 1.15).
+                base_row["price_source"] = row.get("source")
+            for m in model["markets"]:
+                if m["group"] != group:
+                    continue
+                # "Over 4.5" is five or more, and the channel's posts say "5+". The column
+                # is named for the bet, not for the stored line, because a reader pricing
+                # a 5+ claim against a column headed 4.5 is the error this costs nothing
+                # to prevent. See bot_cards.plus_line.
+                n = int(m["line"]) + 1
+                base_row[f"p{n}plus"] = m["prob"]
+                base_row[f"fair{n}plus"] = m["fair_odds"]
+                if member:
+                    base_row[f"book{n}plus"] = m["book_odds"]
+                    base_row[f"ev{n}plus"] = m["ev"]
+            out.append(base_row)
+
+    # Biggest projected total first: the question the sheet gets opened to answer.
+    out.sort(key=lambda r: (-(r.get("lambda_total") or 0), r.get("kickoff") or ""))
+    return _csv_response(out, "corner-model-projections.csv")
+
+
+def _add_discipline_columns(rows: List[dict]) -> List[dict]:
+    """The two columns that are about BEHAVIOUR rather than about the model.
+
+    Both need the whole list, which is why they are added after it is built rather than
+    per row, and both come straight out of the October P&L:
+
+    CLAIMS ON ONE FIXTURE. Three or more bets on the same game returned -4.4% over 112
+    units while one or two returned +13.0% over 512.5, and 59% of those ladders won or
+    lost as a block — so a ladder is one opinion with several stakes, not several bets. A
+    row with no fixture resolved counts as 1 rather than 0: it is still one claim, and a
+    zero there would read as "no claims on this fixture", which is false of a row that is
+    itself a claim on it.
+
+    DAY TOTALS. October finished +48.7 units with 76% of that on 24 October; ex-that-day
+    the ROI was +6.5%. Per-day figures are what let a month carried by one afternoon read
+    as one afternoon instead of as an edge.
+
+    `day_units` sums only the rows that HAVE units, and most do not — a frozen board entry
+    is a claim with no stake behind it. So it is the day's realised P/L over the priced
+    rows, and `day_claims` counts everything, priced or not. They are deliberately
+    different denominators and the names say which is which.
+    """
+    per_fixture: Dict[str, int] = {}
+    per_day_units: Dict[str, float] = {}
+    per_day_claims: Dict[str, int] = {}
+    for r in rows:
+        if r.get("fixture_id"):
+            per_fixture[r["fixture_id"]] = per_fixture.get(r["fixture_id"], 0) + 1
+        day = r.get("day") or ""
+        per_day_claims[day] = per_day_claims.get(day, 0) + 1
+        if isinstance(r.get("units"), (int, float)):
+            per_day_units[day] = round(per_day_units.get(day, 0.0) + r["units"], 2)
+    for r in rows:
+        r["claims_on_fixture"] = per_fixture.get(r.get("fixture_id")) or 1
+        r["day_claims"] = per_day_claims.get(r.get("day") or "")
+        r["day_units"] = per_day_units.get(r.get("day") or "")
+    return rows
+
+
+#: How far back the tracking export reads snapshots. Long, because the whole point of it
+#: is the questions that need a season rather than a week — and it reads frozen rows, so
+#: a wide window costs a query and not an API call.
+TRACKING_WEEKS = 52
+
+
+@api_router.get("/export/tracking.csv")
+async def export_tracking_csv(weeks: int = TRACKING_WEEKS, token: Optional[str] = None,
+                              user: dict = Depends(get_current_user)):
+    """Every graded claim, with the columns that decide whether this is profitable.
+
+    WHY THIS EXISTS RATHER THAN ANOTHER BOARD. The site can already say what the record is.
+    What it cannot say is WHY, and the October P&L is the argument for the difference: it
+    finished +48.7 units, 76% of which came on a single day, and ex-that-day the ROI was
+    +6.5%. A headline number that one afternoon can carry is not a measurement of an edge.
+    Three things in that sheet actually predicted profit and none of them were tracked:
+
+      - CLV. A hundred settled bets cannot separate a 5% edge from noise. The closing
+        price is a second opinion on every one of them, win or lose, and it is the only
+        evidence available that does not need hundreds of games. `clv` and `closing` here
+        are empty for everything bet before the capture existed — that is a fact about
+        the past, not a gap to fill in.
+      - CLAIMS PER FIXTURE. Three or more bets on one game returned -4.4% over 112 units
+        while one or two returned +13.0% over 512.5. `claims_on_fixture` is the column
+        that makes that visible; 59% of those ladders won or lost as a block, so they are
+        one bet with one outcome and several stakes.
+      - CONCENTRATION. `day_units` and `day_claims` are per kick-off day, so a month
+        carried by one afternoon reads as one afternoon.
+
+    Everything else here exists to be pivoted: `prob` against `result` is calibration,
+    `league` and `line` against `units` is where the model is actually right, and `run`
+    against `result` is the one that tests the premise the whole streak board rests on —
+    whether a longer run actually lands more often.
+
+    MOST ROWS HAVE NO PRICE, AND THAT IS NOT A BUG TO WORK AROUND. A frozen snapshot entry
+    records the claim, not a bet: the boards store `prob` and `fair_odds` and nothing was
+    ever staked against them. Only angles posted by hand carry `price` and `stake`, so
+    `units`, `clv` and `closing` populate for those and stay empty for the rest. Filling
+    them in with a fair price would turn the model's own number into a result, which is
+    the one substitution that makes a record meaningless.
+
+    UNPRICED ROWS ARE KEPT, WITH units EMPTY. settlement.pick_profit answers None for a win
+    at an unknown price rather than 0, and dropping those rows instead would quietly change
+    the denominator of every ROI computed from this file.
+    """
+    if not _has_tools_token(token) and user.get("user_id") == PUBLIC_USER_ID:
+        raise HTTPException(status_code=401, detail="Sign in to see the record")
+    weeks = max(1, min(weeks, 400))
+
+    closing = {d["fixture_id"]: d for d in
+               await db.odds_closing.find({}, {"_id": 0}).to_list(20000)}
+
+    graded_rows: List[dict] = []
+    for key, label, coll_name, _blurb in RESULT_BOARDS:
+        snaps = await db[coll_name].find({}, {"_id": 0}).sort("tag", -1).to_list(weeks)
+        entries = [e for _, e in one_claim_per_fixture(snaps)]
+        if not entries:
+            continue
+        for g in _grade_entries(entries, await _teams_for(entries)):
+            graded_rows.append((key, label, g))
+
+    # Hand-posted angles count too, and only the ones recorded BEFORE kick-off: a rate you
+    # can add winners to is not a rate. The flag is already on the document.
+    posted = await db.posted_angles.find({}, {"_id": 0}).sort("kickoff", -1).to_list(2000)
+    if posted:
+        for g in _grade_entries(posted, await _teams_for(posted)):
+            if g.get("before_kickoff"):
+                graded_rows.append(("posted", "Posted by hand", g))
+
+    # Resolve each claim to its fixture once, so a closing price can be found for it.
+    team_ids = [g.get("team_id") for _, _, g in graded_rows if g.get("team_id")]
+    fixtures = await db.fixtures.find(
+        {"$or": [{"home_team_id": {"$in": team_ids}},
+                 {"away_team_id": {"$in": team_ids}}]},
+        {"_id": 0, "fixture_id": 1, "date": 1,
+         "home_team_id": 1, "away_team_id": 1}).to_list(20000) if team_ids else []
+    by_team_day = {}
+    for fx in fixtures:
+        day = (fx.get("date") or "")[:10]
+        for tid in (fx.get("home_team_id"), fx.get("away_team_id")):
+            by_team_day.setdefault((tid, day), fx)
+
+    out: List[dict] = []
+    for board_key, board_label, g in graded_rows:
+        day = (g.get("kickoff") or "")[:10]
+        # A frozen entry already knows its fixture; a hand-posted angle does not, so only
+        # that half needs resolving by (team, day). Preferring the stored id also keeps a
+        # claim attached to the right game when a side plays twice in a week.
+        fid = g.get("fixture_id") or (by_team_day.get((g.get("team_id"), day)) or {}).get("fixture_id")
+        price, stake = g.get("price"), g.get("stake") or 1.0
+        units = None
+        if g.get("result") in (WIN, LOSS):
+            p = settlement.pick_profit(
+                settlement.WON if g["result"] == WIN else settlement.LOST, price)
+            units = round(p * float(stake), 2) if p is not None else None
+
+        clv = closing_price = closing_book = None
+        key, _why = odds_feed.market_key(g.get("subject"), g.get("is_home"),
+                                         g.get("line"), g.get("direction"))
+        if key and price and fid:
+            doc = closing.get(fid)
+            if doc:
+                closing_price = (doc.get("odds") or {}).get(key)
+                closing_book = (doc.get("books") or {}).get(key)
+                clv = odds_feed.clv_percent(price, closing_price)
+
+        out.append({
+            "day": day, "kickoff": g.get("kickoff"), "board": board_label,
+            "league": g.get("league_id"),
+            "team": g.get("name"), "opponent": g.get("opponent"),
+            "venue": "home" if g.get("is_home") else
+                     "away" if g.get("is_home") is False else "",
+            "subject": g.get("subject"), "direction": g.get("direction"),
+            "line": g.get("line"),
+            # The bet as the channel states it: "5+", not the 4.5 line it is struck on.
+            "claim": f"{g.get('line')}+" if g.get("direction") == "over"
+                     else f"under {g.get('line')}",
+            "prob": g.get("prob"), "fair_odds": g.get("fair_odds"),
+            "price": price, "stake": stake,
+            "closing": closing_price, "closing_book": closing_book, "clv": clv,
+            "result": g.get("result"), "corners": g.get("value"), "units": units,
+            # THE EVIDENCE THE CLAIM WAS MADE ON, frozen with it. `run` against `result`
+            # tests the premise the streak board rests on; `hits`/`window` is the rate,
+            # which is a different claim from a live run — a 4/5 whose most recent game
+            # was the miss is a broken streak wearing a good record.
+            "run": (g.get("streak") or {}).get("length") or g.get("streak_len"),
+            "hits": g.get("hits"), "window": g.get("window"),
+            "market_key": key or "",
+            "fixture_id": fid or "",
+        })
+
+    _add_discipline_columns(out)
+    out.sort(key=lambda r: (r.get("kickoff") or "", r.get("team") or ""), reverse=True)
+    return _csv_response(out, "corner-model-tracking.csv")
+
+
 @api_router.get("/export/csv")
 async def export_csv(type: str = "teams", user: dict = Depends(get_current_user)):
     from fastapi.responses import PlainTextResponse

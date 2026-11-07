@@ -64,6 +64,21 @@ export default function ExportMenu() {
     download(await api.exportCsv(type), `corner-model-${type}.csv`, "text/csv");
     toast.success(`${type} CSV downloaded`);
   });
+  // THE SHEET THIS SITE IS ACTUALLY USED TO BUILD. The fixtures CSV carries the three
+  // lambdas and stops, so pricing a line from it means rebuilding the whole ladder by
+  // hand — which is the work the model exists to do, and the step where a hand-built
+  // sheet stops agreeing with the fixture page.
+  const dlProjections = (days) => run(async () => {
+    download(await api.exportProjections(days),
+             `corner-model-projections-${days}d.csv`, "text/csv");
+    toast.success(member
+      ? `${days}-day projections downloaded — with prices and EV`
+      : `${days}-day projections downloaded — fair odds only`);
+  });
+  const dlTracking = () => run(async () => {
+    download(await api.exportTracking(), "corner-model-tracking.csv", "text/csv");
+    toast.success("Tracking log downloaded");
+  });
 
   return (
     <DropdownMenu>
@@ -102,6 +117,19 @@ export default function ExportMenu() {
           <FileText className="h-4 w-4" /> Download .md
         </DropdownMenuItem>
         </>)}
+        <DropdownMenuSeparator className="bg-border" />
+        <DropdownMenuLabel className="text-xs text-muted-foreground">Projected corners, priced at every line</DropdownMenuLabel>
+        <DropdownMenuItem data-testid="export-projections-7" onClick={() => dlProjections(7)} className="text-sm gap-2 cursor-pointer">
+          <Table className="h-4 w-4" /> Projections CSV — 7 days
+        </DropdownMenuItem>
+        <DropdownMenuItem data-testid="export-projections-3" onClick={() => dlProjections(3)} className="text-sm gap-2 cursor-pointer">
+          <Table className="h-4 w-4" /> Projections CSV — 3 days
+        </DropdownMenuItem>
+        {member && (
+          <DropdownMenuItem data-testid="export-tracking" onClick={dlTracking} className="text-sm gap-2 cursor-pointer">
+            <FileText className="h-4 w-4" /> Tracking log CSV (every graded claim)
+          </DropdownMenuItem>
+        )}
         <DropdownMenuSeparator className="bg-border" />
         <DropdownMenuItem data-testid="export-csv-teams" onClick={() => dlCsv("teams")} className="text-sm gap-2 cursor-pointer">
           <Table className="h-4 w-4" /> Download teams CSV

@@ -121,7 +121,7 @@ def install_projections(monkeypatch, *, odds=None, source="manual"):
                                 {"group": "home", "line": 4.5, "prob": 70.1,
                                  "fair_odds": 1.43, "book_odds": o.get("home_over_4.5"),
                                  "ev": 8.2 if o.get("home_over_4.5") else None},
-                                {"group": "away", "line": 3.5, "prob": 66.0,
+                                {"group": "away", "line": 6.5, "prob": 66.0,
                                  "fair_odds": 1.52, "book_odds": None, "ev": None},
                                 {"group": "total", "line": 9.5, "prob": 58.3,
                                  "fair_odds": 1.72, "book_odds": None, "ev": None},
@@ -144,12 +144,17 @@ class TestTheProjectedCornersList:
         # 4.5 stored, P(X>=5) priced, "5+" posted. The column says 5plus.
         install_projections(monkeypatch)
         head, rows = parse(run(server.export_projections_csv(user=MEMBER)))
+        # 4.5 stored -> 5+ offered, so the column is p5plus.
         assert "p5plus" in head and "fair5plus" in head
-        assert "p4plus" not in head and "p4.5plus" not in head
         assert rows[0]["p5plus"] == "70.1" and rows[0]["fair5plus"] == "1.43"
-        # the away ladder and the total ladder keep their own numbering
-        assert rows[1]["p4plus"] == "66.0"
+        # Each group keeps its own numbering: 6.5 -> 7+, 9.5 -> 10+.
+        assert rows[1]["p7plus"] == "66.0"
         assert rows[2]["p10plus"] == "58.3"
+        # AND NOTHING IS NAMED FOR THE RAW STORED LINE. A column headed p4.5plus beside
+        # the probability of five-or-more is the exact confusion this naming prevents,
+        # and no bet in this model is struck on a half.
+        assert not [c for c in head if "." in c], head
+        assert "p4plus" not in head, "the 4.5 line must not be named for four"
 
     def test_every_row_carries_the_fixture_and_the_sample_behind_it(self, monkeypatch):
         install_projections(monkeypatch)
@@ -284,7 +289,10 @@ class TestTheTrackingExportIsGatedLikeTheRecord:
         assert e.value.status_code == 401
 
     def test_the_window_is_clamped(self):
+        # Read the WHOLE function, not a fixed slice: the docstring alone is longer than
+        # the 2000 characters this first looked at, so it tested the prose and passed over
+        # the code.
         src = open(os.path.join(os.path.dirname(os.path.dirname(
             os.path.abspath(__file__))), "server.py")).read()
-        block = src.split("async def export_tracking_csv", 1)[1][:2000]
-        assert "max(1, min(weeks, 400))" in block
+        body = src.split("async def export_tracking_csv", 1)[1].split("@api_router")[0]
+        assert "max(1, min(weeks, 400))" in body

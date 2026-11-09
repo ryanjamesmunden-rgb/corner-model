@@ -2970,6 +2970,13 @@ MEASURE_MODES = {
     "sweep": ("measure_features", ["--sweep"], True),
     "game_state": ("measure_features", ["--game-state"], True),
     "chase_board": ("measure_chase_board", [], True),
+    # CAN THE CHASE BE PREDICTED, as opposed to observed. game_state above found the
+    # trailing bias and cannot be acted on: its buckets are decided by what happened in
+    # the match being priced. This buckets on rates knowable BEFORE kick-off — how often
+    # the opponent scores at all, how often this side concedes — and carries the falsified
+    # first-half feature plus a random split as controls, so a gap can be told apart from
+    # the harness inventing one.
+    "chase_predictor": ("measure_chase_predictor", [], False),
     # IS THE PRINTED PROBABILITY HONEST. Distinct from `chase_board` above, which asks
     # whether the ORDER finds better spots; this asks whether the NUMBER is true. It
     # scores the published ledger against the model_prob frozen into each pick before

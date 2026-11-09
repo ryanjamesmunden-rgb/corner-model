@@ -338,6 +338,23 @@ class TestTheFetcherIsHonestAboutItsCost:
         limit = int(re.search(r"DEFAULT_LIMIT = (\d+)", s).group(1))
         assert days <= 3 and limit <= 60, "default run must stay cheap"
 
+    def test_the_window_is_one_day_because_the_markets_do_not_exist_earlier(self):
+        """MEASURED, NOT ASSUMED, and it cost 62 calls to find out.
+
+        A window pass over 62 fixtures spanning seven days returned priced: 2,
+        unpriced: 60, errors: 0 — the books had not opened a corner market on anything
+        beyond that evening. Serie B priced fine when sampled on the day and returned
+        nothing four days out, so it is timing and not coverage.
+
+        A wider default does not fetch prices earlier; it spends one call per fixture to
+        be told there is nothing there yet. The file has to keep saying so, because
+        raising this number looks free and is not."""
+        import re
+        s = self.src()
+        assert int(re.search(r"DEFAULT_DAYS = (\d+)", s).group(1)) == 1
+        assert "priced: 2" in s or "`priced: 2" in s, \
+            "the measurement behind the default must stay written down"
+
     def test_it_offers_a_dry_run_that_makes_no_calls(self):
         s = self.src()
         assert "--dry-run" in s and "no API calls" in s

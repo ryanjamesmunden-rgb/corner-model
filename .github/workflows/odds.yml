@@ -29,7 +29,12 @@
 #
 #   closing, hourly, 90-minute window  ->  one call per fixture kicking off in that window
 #                                          (a busy Saturday afternoon: 40-60 an hour)
-#   window, once a day, 2 days, cap 40 ->  up to 40
+#   window, once a day, 1 day, cap 40  ->  up to 40
+#
+# WHY ONE DAY AND NOT SEVEN, measured rather than assumed. A window pass over 62 fixtures
+# spanning a week returned `priced: 2, unpriced: 60` with no errors: the books had not
+# opened a corner market on anything beyond that evening. A wider window does not fetch
+# prices earlier, it spends a call per fixture to be told there is nothing there yet.
 #
 # Read `calls` in each run's summary; it is the bill. If that is more than the plan
 # allows, narrow it: `hours` on the closing cron below, or a shorter window. Turning the
@@ -67,9 +72,9 @@ on:
         default: "90"
         type: string
       days:
-        description: "Window pass: how many days ahead (default 2)"
+        description: "Window pass: how many days ahead (1 is usually right — see below)"
         required: false
-        default: "2"
+        default: "1"
         type: string
       limit:
         description: "Most fixtures to price in one run — this is the call count"

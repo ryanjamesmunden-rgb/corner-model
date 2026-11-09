@@ -9738,6 +9738,18 @@ BOT_VALUE_DAYS = 3
 #: The same floor the value board's own default screen uses. A row that clears nothing is
 #: not an edge, and a card listing every priced row would be a card of noise.
 BOT_VALUE_MIN_EV = 5.0
+#: How much better a bet's EV has to get before it is sent A SECOND time.
+#:
+#: The value send runs off the back of the odds fetch, so the same bet is looked at again
+#: every time a price lands — several times on a matchday. Sending it each time would
+#: reproduce the exact failure social_draft.yml's header is a post-mortem of: a stream of
+#: messages nobody reads, with the useful one buried inside it. Saying nothing at all on a
+#: re-look would be the opposite mistake, because a price drifting from +5% to +15% is new
+#: information and the second message is the one worth acting on.
+#:
+#: Four points, which is wide enough that ordinary noise on a single book's price does not
+#: clear it and narrow enough that a genuine move does.
+VALUE_RESEND_EV_GAIN = 4.0
 BOT_WEEK_DAYS = 7
 #: How many days of snapshots to read back when grading a single day. A snapshot freezes
 #: daily over a seven-day horizon, so one day's claims appear in several of them.
@@ -10327,6 +10339,104 @@ async def telegram_digest(token: Optional[str] = None, to: str = "owner",
                        else "TELEGRAM_VIP_CHAT_ID is not set")
         return out
     out["sent"] = await telegram_bot.send(target, text)
+    return out
+
+
+@api_router.post("/telegram/value")
+async def telegram_value(token: Optional[str] = None, to: str = "owner",
+                         min_ev: Optional[float] = None, days: Optional[int] = None,
+                         dry_run: bool = False, force: bool = False):
+    """Send the bets where the model disagrees with a price that is actually on offer.
+
+    THE MESSAGE THIS REPO HAS BEEN MISSING. social_draft.yml's header records the
+    complaint it was built from — "the bot sends me so many messages that are not value,
+    just a streak or fair price with no context" — and digest.yml's answer was to stop
+    sending the other boards unasked. It could not put this one in their place: EV needs a
+    BOOK price to disagree with, and until the odds feed landed there were none, so the
+    value board had nothing to rank. Now there are, and this is the message that was the
+    point of fetching them.
+
+    IT IS SAFE TO CALL OFTEN, WHICH IS WHY IT IS BUILT THIS WAY. Corner markets open
+    around matchday, so EV does not exist until a few hours before kick-off and then
+    changes every time a price moves. A once-a-morning send would mostly find an empty
+    board. So this is designed to be called from the odds job, every time prices land, on
+    the same principle as /telegram/alarm: NOTHING IS SENT WHEN THERE IS NOTHING NEW. The
+    quiet case is the common case, and a chat that only ever carries real news gets read.
+
+    WHAT STOPS IT REPEATING ITSELF. Every bet sent is recorded by fixture and market, and
+    a bet is only sent again if its EV has IMPROVED by VALUE_RESEND_EV_GAIN — see
+    bot_cards.worth_sending. A shrinking edge is not re-announced; the first message
+    already made that claim.
+
+    IT DEFAULTS TO THE OWNER. `to=channel` is the explicit choice, for the reason
+    /telegram/digest gives: a job that posts to paying subscribers unattended is a
+    different thing from one that sends a summary to one person.
+
+    NOTHING IS LOGGED AS A POSTED ANGLE HERE. /angles/posted is the record, and its whole
+    integrity rests on `before_kickoff` marking a real claim — so it records that a post
+    was MADE. Being told about a bet is not posting it, and writing these in would pad
+    that record with claims nobody published.
+    """
+    _check_tools_token(token)
+    floor = BOT_VALUE_MIN_EV if min_ev is None else float(min_ev)
+    window = BOT_VALUE_DAYS if days is None else max(1, int(days))
+    out = {"to": to, "min_ev": floor, "days": window, "sent": False}
+
+    rows = await value_board(within_days=window, min_ev=floor, limit=60,
+                             response=None, user={})
+    live = [r for r in (rows or [])
+            if isinstance(r, dict) and r.get("status") == "ok"
+            and isinstance((r.get("best") or {}).get("ev"), (int, float))]
+    out["priced"] = len(rows or [])
+    out["clearing_floor"] = len(live)
+
+    # WHAT HAS ALREADY BEEN SAID, read in one query rather than one per row.
+    keys = {f"{r.get('fixture_id')}:{(r.get('best') or {}).get('key')}" for r in live}
+    seen = {}
+    if keys and not force:
+        seen = {d["_id"]: d for d in
+                await db.bot_value_sent.find({"_id": {"$in": sorted(keys)}}).to_list(200)}
+
+    fresh, keyed = [], []
+    for r in live:
+        key = f"{r.get('fixture_id')}:{(r.get('best') or {}).get('key')}"
+        ev = (r.get("best") or {}).get("ev")
+        if bot_cards.worth_sending(ev, (seen.get(key) or {}).get("ev"),
+                                   VALUE_RESEND_EV_GAIN):
+            fresh.append(r)
+            keyed.append((key, ev))
+    out["new"] = len(fresh)
+    out["repeats_suppressed"] = len(live) - len(fresh)
+
+    if not fresh:
+        out["note"] = ("nothing new — either no price clears the floor, or every bet "
+                       "that does has already been sent and has not improved since")
+        return out
+
+    text = bot_cards.value_card(bot_cards.value_rows(fresh))
+    out["chars"] = len(text)
+    if dry_run:
+        out["text"] = text
+        out["note"] = "dry run — built and not sent, and nothing recorded"
+        return out
+
+    target = (telegram_bot.VIP_CHAT_ID if to == "channel"
+              else telegram_bot.OWNER_CHAT_ID)
+    if not target:
+        out["note"] = ("TELEGRAM_OWNER_CHAT_ID is not set" if to != "channel"
+                       else "TELEGRAM_VIP_CHAT_ID is not set")
+        return out
+
+    out["sent"] = await telegram_bot.send(target, text)
+    # RECORDED ONLY ON A SEND THAT WORKED. Marking a bet as told-about when the message
+    # never arrived would suppress it for good — the one failure mode worse than a
+    # duplicate, because it is silent and permanent.
+    if out["sent"]:
+        now = datetime.now(timezone.utc).isoformat()
+        for key, ev in keyed:
+            await db.bot_value_sent.update_one(
+                {"_id": key}, {"$set": {"ev": ev, "sent_at": now, "to": to}},
+                upsert=True)
     return out
 
 

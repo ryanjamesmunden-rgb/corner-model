@@ -2923,6 +2923,11 @@ TOOL_COOLDOWN = {"backfill_shots": 600, "measure_features": 120,
                  "measure_chase_board": 300,
                  # Same shape of replay as the chase board, single pass (no null).
                  "measure_mismatch_board": 300,
+                 # One pass over fixture_stats keeping five short histories per team, no
+                 # null replay — measured at ~3s, the same shape as measure_game_state.
+                 # Paced with the other read-only measures rather than the replays: the
+                 # answer only moves when the sync adds finished games.
+                 "measure_chase_predictor": 120,
                  # One window query and two name lookups; the answer only moves
                  # when a game finishes and the sync catches up.
                  "night_results": 120,

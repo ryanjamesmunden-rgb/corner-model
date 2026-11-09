@@ -208,7 +208,7 @@ def worth_sending(ev, previous_ev=None, gain: float = 0.0) -> bool:
     return (now - before) >= step
 
 
-def value_rows(rows: List[dict]) -> List[dict]:
+def value_rows(rows: List[dict], min_ev: Optional[float] = None) -> List[dict]:
     """Value-board rows -> what value_card prints.
 
     ONLY `status == "ok"` ROWS. The board deliberately returns everything it looked at,
@@ -216,28 +216,133 @@ def value_rows(rows: List[dict]) -> List[dict]:
     why a fixture is absent instead of silently dropping it. A card is not that screen: a
     row that did not clear the floor is not a pick, and one whose game has kicked off is
     not a bet at all.
+
+    `min_ev` TURNS ON EVERY ANGLE, NOT JUST THE BEST ONE. Each board row carries `best`
+    plus up to three `alternatives` — the same fixture's other priced markets, already
+    computed and, until this existed, thrown away. One game can be value at 6+ AND at 7+,
+    and a card showing only the single highest EV hides the safer line on the same match.
+    Left as None only `best` is emitted, which is what the digest's section has always
+    shown.
+
+    THE ALTERNATIVES ARE NOT PRE-FILTERED. The board keeps the next three by EV whatever
+    they are, so they reach here including negative ones — the floor has to be applied
+    here or a +12% bet would arrive with a -4% bet printed underneath it as though both
+    were picks.
     """
+    floor = _pct(min_ev)
     out = []
     for r in (rows or []):
         if not isinstance(r, dict) or r.get("status") != "ok":
             continue
-        best = r.get("best") or {}
-        group = best.get("group")
         home, away = r.get("home_name") or "?", r.get("away_name") or "?"
-        if group == "home":
-            team = home
-        elif group == "away":
-            team = away
-        else:
-            team = f"{home} v {away} total"
-        out.append({"team": team, "line": plus_line(best.get("line")),
-                    "ev": best.get("ev"), "book_odds": best.get("book_odds"),
-                    "fair_odds": best.get("fair_odds"),
-                    # From the odds document, not the market: it says who chose the price,
-                    # and a price the model effectively wrote itself (the seeders generate
-                    # fair_odds * uniform(0.90, 1.15)) must stay distinguishable.
-                    "odds_source": r.get("odds_source")})
+        picks = [r.get("best") or {}]
+        if floor is not None:
+            picks += [m for m in (r.get("alternatives") or [])
+                      if isinstance(m, dict) and (_pct(m.get("ev")) or 0) >= floor
+                      and _pct(m.get("ev")) is not None]
+        for m in picks:
+            group = m.get("group")
+            if group == "home":
+                team, subject = home, home
+            elif group == "away":
+                team, subject = away, away
+            else:
+                team, subject = f"{home} v {away} total", "Match total"
+            out.append({
+                "team": team, "line": plus_line(m.get("line")),
+                "ev": m.get("ev"), "book_odds": m.get("book_odds"),
+                "fair_odds": m.get("fair_odds"),
+                # From the odds document, not the market: it says who chose the price,
+                # and a price the model effectively wrote itself (the seeders generate
+                # fair_odds * uniform(0.90, 1.15)) must stay distinguishable.
+                "odds_source": r.get("odds_source"),
+                # WHICH GAME, so several angles on one fixture group under it instead of
+                # repeating the pair on every line.
+                "match": f"{home} v {away}", "subject": subject,
+                # The identity a send is remembered by. Per MARKET, not per fixture, so
+                # two angles on the same game are tracked — and suppressed — separately.
+                "dedup_key": f"{r.get('fixture_id')}:{m.get('key')}",
+            })
     return out
+
+
+#: Angles in one value message, and how many of them one fixture may take.
+#:
+#: MAX_ROWS is six because Telegram collapses a long message behind "show more". These are
+#: higher because a grouped card spends a line on each fixture heading and because several
+#: angles on one game is the point — but the per-game cap exists so a single fixture with
+#: a fully priced ladder cannot fill the message and push every other game out of it.
+MAX_VALUE_ANGLES = 10
+MAX_ANGLES_PER_GAME = 4
+
+
+def value_plan(rows: List[dict]):
+    """Which angles a value message will actually carry, grouped by game.
+
+    SPLIT OUT OF value_card BECAUSE THE CAPS DECIDE WHAT GETS REMEMBERED. The sender
+    records every angle it sent so it does not repeat itself, and the card drops whatever
+    does not fit. If those two disagree, an angle gets recorded as told-about without ever
+    appearing in a message — and because a recorded angle is suppressed until its EV
+    improves, it would be silently and permanently lost. That is strictly worse than a
+    duplicate, so there is one function deciding it and both callers use it.
+
+    Returns (plan, dropped): plan is [(match, [angle, ...]), ...] in EV order, dropped is
+    how many cleared the floor and did not fit.
+    """
+    rows = [r for r in (rows or []) if isinstance(r, dict) and _pct(r.get("ev")) is not None]
+    rows.sort(key=lambda r: -_pct(r["ev"]))
+    order, by_match = [], {}
+    for r in rows:
+        key = str(r.get("match") or r.get("team") or r.get("name") or "?")
+        if key not in by_match:
+            by_match[key] = []
+            order.append(key)
+        by_match[key].append(r)
+
+    plan, shown, dropped = [], 0, 0
+    for key in order:
+        angles = by_match[key]
+        # PER-GAME CAP as well as a total one. One fixture whose whole ladder is priced
+        # over would otherwise fill the message on its own and push every other game out.
+        keep = angles[:MAX_ANGLES_PER_GAME]
+        dropped += len(angles) - len(keep)
+        room = MAX_VALUE_ANGLES - shown
+        if room <= 0:
+            dropped += len(keep)
+            continue
+        if len(keep) > room:
+            dropped += len(keep) - room
+            keep = keep[:room]
+        plan.append((key, keep))
+        shown += len(keep)
+    return plan, dropped
+
+
+def value_sent(rows: List[dict]) -> List[dict]:
+    """The angles a value message really carries — what the sender must record, and only
+    that. See value_plan for why the two cannot be allowed to drift apart."""
+    plan, _ = value_plan(rows)
+    return [r for _match, angles in plan for r in angles]
+
+
+def _value_line(r: dict, subject: bool = False) -> str:
+    """One priced angle. `subject` names the side instead of repeating the fixture, which
+    is what a row under a fixture heading needs."""
+    who = r.get("subject") if subject else None
+    who = str(who or r.get("team") or r.get("name") or "?")
+    line = r.get("line")
+    head = f"• {who} {line}+" if line is not None else f"• {who}"
+    book = r.get("book_odds")
+    fair = r.get("fair_odds")
+    if isinstance(book, (int, float)):
+        head += f" @ {book:.2f}"
+    if isinstance(fair, (int, float)):
+        head += f" (fair {fair:.2f})"
+    head += f" — EV {r['ev']:+.1f}%"
+    src = r.get("odds_source")
+    if src and src != "manual":
+        head += f" [{src} price]"
+    return head
 
 
 def value_card(rows: List[dict]) -> str:
@@ -254,24 +359,29 @@ def value_card(rows: List[dict]) -> str:
                 "against — the board can only find value against a price somebody "
                 "entered.")
     rows.sort(key=lambda r: -r["ev"])
+
+    # GROUPED BY GAME WHEN THERE IS A GAME TO GROUP BY. Several angles on one fixture
+    # printed flat repeat the team on every line and read as separate games; under one
+    # heading they read as what they are, a ladder on the same match with the safer line
+    # visible beside the biggest edge. Rows with no `match` (the digest's long-standing
+    # shape) fall through to the flat list, so nothing that worked before changes.
+    grouped = [r for r in rows if r.get("match")]
+    if not grouped:
+        return "\n".join(["💰 Positive EV", ""] + [_value_line(r) for r in rows[:MAX_ROWS]]
+                         + ([f"\n…and {len(rows) - MAX_ROWS} more on the site."]
+                            if len(rows) > MAX_ROWS else []))
+
+    plan, dropped = value_plan(rows)
     out = ["💰 Positive EV", ""]
-    for r in rows[:MAX_ROWS]:
-        team = str(r.get("team") or r.get("name") or "?")
-        line = r.get("line")
-        head = f"• {team} {line}+" if line is not None else f"• {team}"
-        book = r.get("book_odds")
-        fair = r.get("fair_odds")
-        if isinstance(book, (int, float)):
-            head += f" @ {book:.2f}"
-        if isinstance(fair, (int, float)):
-            head += f" (fair {fair:.2f})"
-        head += f" — EV {r['ev']:+.1f}%"
-        src = r.get("odds_source")
-        if src and src != "manual":
-            head += f" [{src} price]"
-        out.append(head)
-    if len(rows) > MAX_ROWS:
-        out.append(f"\n…and {len(rows) - MAX_ROWS} more on the site.")
+    for match, angles in plan:
+        out.append(match)
+        for r in angles:
+            out.append(_value_line(r, subject=True))
+        out.append("")
+    while out and out[-1] == "":
+        out.pop()
+    if dropped:
+        out.append(f"\n…and {dropped} more angle(s) on the site.")
     return "\n".join(out)
 
 

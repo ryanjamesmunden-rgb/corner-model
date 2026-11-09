@@ -10373,7 +10373,16 @@ def _value_ladders(rows, fresh, seen, floor):
     picked = {a["dedup_key"] for a in fresh}
     out = []
     for r in (rows or []):
-        if r.get("status") != "ok":
+        # EVERY PRICED FIXTURE, NOT JUST THE ONES WITH A BET ON THEM. Filtering to
+        # `status == "ok"` answered "why is this rung missing" and could not answer "what
+        # is on tonight and what is it worth" — which is the question anyone looking at a
+        # board actually asks. A fixture whose whole ladder is bad value is a fact worth
+        # seeing, and so is one dropped for having kicked off.
+        if not r.get("best") and r.get("status") not in ("below_floor", "ok"):
+            # no_fixture / no_teams / no_market carry no ladder to show
+            out.append({"match": f"{r.get('home_name') or '?'} v {r.get('away_name') or '?'}",
+                        "fixture_id": r.get("fixture_id"), "kickoff": r.get("date"),
+                        "status": r.get("status"), "rungs": []})
             continue
         rungs = []
         for m in (r.get("ladder") or []):
@@ -10403,7 +10412,11 @@ def _value_ladders(rows, fresh, seen, floor):
                           "prob": m.get("prob"), "ev": m.get("ev"), "why": why})
         rungs.sort(key=lambda x: (str(x["group"]), x["plus"] or 0))
         out.append({"match": f"{r.get('home_name')} v {r.get('away_name')}",
-                    "fixture_id": r.get("fixture_id"), "rungs": rungs})
+                    "fixture_id": r.get("fixture_id"), "kickoff": r.get("date"),
+                    "status": r.get("status"), "rungs": rungs})
+    # Kick-off order, so the list reads as a night's football rather than as whatever
+    # order the price documents happened to come back in.
+    out.sort(key=lambda d: (d.get("kickoff") or "9999"))
     return out
 
 

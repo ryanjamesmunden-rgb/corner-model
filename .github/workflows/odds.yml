@@ -260,13 +260,20 @@ jobs:
                 f"suppressed {d.get('repeats_suppressed')}  "
                 f"refs {d.get('reference_rungs')}")
           for lad in d.get("ladders") or []:
-              print(f"\n--- {lad['match']} ({lad['fixture_id']}) ---")
-              for r in lad["rungs"]:
-                  bk = "none" if r["book"] is None else f"{r['book']:.2f}"
-                  ev = "   -  " if r["ev"] is None else f"{r['ev']:+6.1f}%"
+              ko = (lad.get("kickoff") or "")[:16].replace("T", " ")
+              print(f"\n--- {ko}  {lad['match']}  [{lad.get('status')}] ---")
+              # PRICED RUNGS ONLY, BEST EV FIRST. An unpriced rung has no EV, so listing
+              # all 24 buries the ones that answer "what is worth backing here".
+              priced = [r for r in lad["rungs"] if r["book"] is not None]
+              for r in sorted(priced, key=lambda x: -(x["ev"] or 0)):
                   print(f"  {r['group']:<5} {str(r['plus']) + '+':<4} "
-                        f"book {bk:<5} fair {r['fair']:<6} p {r['prob']:<5} "
-                        f"ev {ev}  {r['why']}")
+                        f"book {r['book']:<6} fair {r['fair']:<6} p {r['prob']:<5} "
+                        f"ev {r['ev']:+6.1f}%  {r['why']}")
+              blank = len(lad["rungs"]) - len(priced)
+              if blank:
+                  print(f"  ({blank} rung(s) with no fetched price)")
+              if not lad["rungs"]:
+                  print("  (no ladder — see status)")
           print("\n--- message as it would read ---")
           print(d.get("text") or "(nothing)")
           PY

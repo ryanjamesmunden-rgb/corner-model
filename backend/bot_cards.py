@@ -179,6 +179,35 @@ def plus_line(line) -> Optional[int]:
 GROUP_NAME = {"home": "home", "away": "away", "total": "total"}
 
 
+def worth_sending(ev, previous_ev=None, gain: float = 0.0) -> bool:
+    """Should this bet go in a message, given what was already said about it?
+
+    THE PROBLEM THIS SOLVES. The value send runs off the back of the odds fetch, so every
+    bet is re-examined each time a price lands — several times on a matchday. Sending the
+    same row every time is how social_draft.yml produced "the bot sends me so many
+    messages that are not value"; saying nothing on a re-look is the opposite error,
+    because a price drifting from +5% to +15% is new information and that second message
+    is the one worth acting on.
+
+    So a bet is sent when it has never been sent, or when its EV has IMPROVED by at least
+    `gain`. A bet whose edge has shrunk is not re-sent: the first message already made the
+    claim and a worse price does not need announcing.
+
+    NaN AND INFINITY ARE NOT NUMBERS HERE, for the reason _pct exists — a non-finite EV
+    passing a `>=` test is how "nanh old" reached a message once already. An unreadable
+    `previous_ev` is treated as never sent, which risks one duplicate rather than
+    permanently silencing a live bet.
+    """
+    now = _pct(ev)
+    if now is None:
+        return False
+    before = _pct(previous_ev)
+    if before is None:
+        return True
+    step = _pct(gain) or 0.0
+    return (now - before) >= step
+
+
 def value_rows(rows: List[dict]) -> List[dict]:
     """Value-board rows -> what value_card prints.
 

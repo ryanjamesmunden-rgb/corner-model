@@ -81,6 +81,16 @@ on:
         required: false
         default: "60"
         type: string
+      notify:
+        # OFF BY DEFAULT ON A MANUAL RUN, and this file is where that lesson was learned.
+        # social_draft.yml was dispatched with `send: false` on the understanding that it
+        # gated every send; it gated only the channel post, and a draft went to Telegram
+        # unasked. A scheduled run sends because that is the feature; a run somebody is
+        # trying out says nothing until they ask it to.
+        description: "Also send the positive-EV bets to Telegram (schedules always do)"
+        required: false
+        default: false
+        type: boolean
 
 concurrency:
   # Never two of these at once. Two overlapping runs would each pay for the same fixtures,
@@ -207,3 +217,55 @@ jobs:
           # Fails the run on a dead backend, which is right: a silent green here means
           # closing prices are quietly not being captured, and the gap is unrecoverable.
           exit "$failed"
+
+      - name: Send the bets worth having
+        # WHY THIS LIVES HERE AND NOT ON ITS OWN SCHEDULE. EV is the model against a
+        # price, so it changes when and only when a price lands — and prices land here.
+        # Corner markets open around matchday, so a once-a-morning job would look at an
+        # empty board most days and miss every price that opened after it ran. Hanging the
+        # send off the fetch means it fires exactly when there is something new to say.
+        #
+        # SAFE TO RUN THIS OFTEN because the endpoint says nothing unless a bet is new or
+        # its edge has grown — /telegram/alarm's rule, and the reason that one can sit on
+        # an hourly cron without becoming noise.
+        #
+        # NOT `if: always()`. A failed fetch means the backend did not answer, so there is
+        # nothing fresh to rank and the send would either repeat yesterday or say nothing.
+        if: github.event_name == 'schedule' || inputs.notify
+        env:
+          BACKEND: ${{ vars.BACKEND_URL || 'https://corner-model.onrender.com' }}
+          TOOLS_TOKEN: ${{ secrets.TOOLS_TOKEN }}
+        run: |
+          set -uo pipefail
+          code=$(curl -sS -o value.json -w '%{http_code}' --max-time 120 \
+            -X POST "$BACKEND/api/telegram/value?token=$TOOLS_TOKEN" || echo 000)
+          cat value.json; echo
+          python3 - "$code" <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import json, sys
+          code = sys.argv[1]
+          try:
+              d = json.load(open("value.json"))
+          except Exception:
+              print(f"| Positive EV | ⚠️ HTTP {code}, and the body was not JSON |")
+              raise SystemExit(0)
+          if code != "200":
+              print(f"| Positive EV | ⚠️ HTTP {code} — {str(d.get('detail'))[:120]} |")
+              raise SystemExit(0)
+          # A QUIET RUN IS THE NORMAL RUN, and it has to read as "nothing to say" rather
+          # than as a job that did not work.
+          if d.get("sent"):
+              bits = [f"**sent {d.get('new', 0)} bet(s)**"]
+              if d.get("repeats_suppressed"):
+                  bits.append(f"{d['repeats_suppressed']} already sent and not improved")
+              print(f"| Positive EV | ✅ " + " · ".join(bits) + " |")
+          elif d.get("new"):
+              # Built something and could not deliver it — the one case worth a warning,
+              # because the bets existed and nobody was told.
+              print(f"| Positive EV | ⚠️ {d['new']} bet(s) found but NOT sent — "
+                    f"{str(d.get('note'))[:120]} |")
+          else:
+              n = d.get("clearing_floor", 0)
+              print(f"| Positive EV | ✅ nothing new to send "
+                    f"({n} clearing the {d.get('min_ev')}% floor, "
+                    f"{d.get('priced', 0)} priced) |")
+          PY

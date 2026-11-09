@@ -263,3 +263,119 @@ def test_the_plan_and_the_card_agree_on_the_empty_case():
     assert bot_cards.value_plan([]) == ([], 0)
     assert bot_cards.value_sent([]) == []
     assert "No positive-EV rows" in bot_cards.value_card([])
+
+
+# --- the rungs no book quoted -------------------------------------------------------
+
+def rung(group, line, ev=None, book=None, fair=2.0, prob=50.0):
+    return {"group": group, "line": line, "ev": ev, "book_odds": book, "fair_odds": fair,
+            "prob": prob, "key": f"{group}_over_{line}", "group_label": group,
+            "label": f"Over {line}", "tier": None}
+
+
+# Valerenga's real shape on 2026-11-09: 5+ priced by the model at 69.6% and quoted by
+# nobody in the feed, while 6+ and 7+ were quoted. The 5+ was the biggest edge available
+# and the message did not mention it at all.
+LADDER = [rung("away", 3.5, fair=1.12, prob=89.0),
+          rung("away", 4.5, fair=1.44, prob=69.6),
+          rung("away", 5.5, ev=12.4, book=1.80, fair=1.60, prob=62.5),
+          rung("away", 6.5, ev=9.2, book=2.50, fair=2.29, prob=43.7),
+          rung("away", 7.5, fair=3.10, prob=32.3)]
+
+LADDER_BOARD = [{"status": "ok", "fixture_id": "nor-el-1494798",
+                 "home_name": "Kristiansund BK", "away_name": "Valerenga",
+                 "odds_source": "api", "best": LADDER[2], "alternatives": [LADDER[3]],
+                 "ladder": LADDER}]
+
+
+def test_the_unpriced_safer_rung_is_shown():
+    """THE COMPLAINT THIS FIXES. 5+ at a fair 1.44 never appeared, because EV needs a
+    fetched price and no book in the feed quoted that rung."""
+    rows = bot_cards.value_rows(LADDER_BOARD, min_ev=5.0, with_ladder=True)
+    refs = [r for r in rows if r.get("reference")]
+    assert [r["line"] for r in refs] == [5, 4], "nearest safer rung first"
+    assert refs[0]["fair_odds"] == 1.44
+
+
+def test_a_rung_above_the_priced_ones_is_not_shown():
+    """8+ is unpriced too, and a longer shot — the opposite of what was missing."""
+    rows = bot_cards.value_rows(LADDER_BOARD, min_ev=5.0, with_ladder=True)
+    assert 8 not in [r["line"] for r in rows if r.get("reference")]
+
+
+def test_a_rung_that_has_a_price_is_never_a_reference():
+    """It is a bet, or it failed the floor. Either way it is not a missing price."""
+    rows = bot_cards.value_rows(LADDER_BOARD, min_ev=5.0, with_ladder=True)
+    for r in rows:
+        if r.get("reference"):
+            assert r.get("book_odds") is None
+
+
+def test_reference_rungs_are_capped():
+    deep = [rung("away", x / 10, fair=1.1 + x / 100) for x in (5, 15, 25, 35, 45)]
+    deep.append(rung("away", 5.5, ev=9.0, book=2.0, fair=1.8))
+    board = [{"status": "ok", "fixture_id": "f", "home_name": "H", "away_name": "A",
+              "best": deep[-1], "alternatives": [], "ladder": deep}]
+    refs = [r for r in bot_cards.value_rows(board, min_ev=5.0, with_ladder=True)
+            if r.get("reference")]
+    assert len(refs) == bot_cards.MAX_REFERENCE_RUNGS
+
+
+def test_without_the_ladder_nothing_changes():
+    """The digest does not ask for these, and must not start getting them."""
+    rows = bot_cards.value_rows(LADDER_BOARD, min_ev=5.0)
+    assert not any(r.get("reference") for r in rows)
+
+
+def test_a_missing_ladder_is_survivable():
+    for bad in (None, [], "nope", [None, 3, {}]):
+        board = [{"status": "ok", "fixture_id": "f", "home_name": "H", "away_name": "A",
+                  "best": rung("home", 5.5, ev=9.0, book=2.0), "alternatives": [],
+                  "ladder": bad}]
+        rows = bot_cards.value_rows(board, min_ev=5.0, with_ladder=True)
+        assert [r for r in rows if not r.get("reference")], repr(bad)
+        assert not [r for r in rows if r.get("reference")], repr(bad)
+
+
+# --- a reference is not a bet, and must never be recorded as one --------------------
+
+def test_a_reference_rung_is_never_recorded_as_sent():
+    """IF IT WERE, the real bet on that market would be suppressed the moment a price
+    finally arrived for it — the silent, permanent loss value_plan exists to prevent."""
+    rows = bot_cards.value_rows(LADDER_BOARD, min_ev=5.0, with_ladder=True)
+    sent = bot_cards.value_sent(rows)
+    assert len(sent) == 2
+    assert all(not r.get("reference") for r in sent)
+    assert sorted(r["dedup_key"] for r in sent) == [
+        "nor-el-1494798:away_over_5.5", "nor-el-1494798:away_over_6.5"]
+
+
+def test_a_reference_rung_carries_no_dedup_key():
+    """So a caller that forgets to filter them crashes loudly instead of writing a key
+    that silences a future bet."""
+    rows = bot_cards.value_rows(LADDER_BOARD, min_ev=5.0, with_ladder=True)
+    for r in rows:
+        if r.get("reference"):
+            assert "dedup_key" not in r
+
+
+# --- how it reads -------------------------------------------------------------------
+
+def test_the_card_marks_a_reference_as_not_a_bet():
+    card = bot_cards.value_card(
+        bot_cards.value_rows(LADDER_BOARD, min_ev=5.0, with_ladder=True))
+    assert "↳ Valerenga 5+ — fair 1.44 (70%), no price fetched" in card
+    # No bullet and no EV on that line: it must not read as a pick.
+    assert "• Valerenga 5+" not in card
+    for line in card.splitlines():
+        if "no price fetched" in line:
+            assert "EV" not in line and not line.strip().startswith("•")
+
+
+def test_references_alone_do_not_make_a_card():
+    """A safer line on a game nobody is being told about is a line with no context, and
+    the empty-board message must still be the empty-board message."""
+    refs = [r for r in bot_cards.value_rows(LADDER_BOARD, min_ev=5.0, with_ladder=True)
+            if r.get("reference")]
+    assert refs
+    assert "No positive-EV rows" in bot_cards.value_card(refs)

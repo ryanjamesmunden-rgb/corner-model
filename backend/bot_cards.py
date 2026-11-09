@@ -208,7 +208,52 @@ def worth_sending(ev, previous_ev=None, gain: float = 0.0) -> bool:
     return (now - before) >= step
 
 
-def value_rows(rows: List[dict], min_ev: Optional[float] = None) -> List[dict]:
+#: Unpriced rungs shown per side, beneath the lowest line that IS priced.
+#:
+#: Two, because the point is "here is the safer line and what it is worth", not a printout
+#: of the whole ladder. These are not bets and carry no EV — a book price for them was
+#: never fetched, so the only honest thing to show is the model's own number.
+MAX_REFERENCE_RUNGS = 2
+
+
+def reference_rungs(ladder: List[dict], group: str, below: Optional[int]) -> List[dict]:
+    """The SAFER rungs on one side that no book price was fetched for.
+
+    WHY THESE ARE WORTH A LINE EACH. EV needs a fetched price, so a rung nothing quoted
+    produces no market row, no EV and no mention — the message simply has a hole in it
+    where the lowest line should be. That is not a near-miss being filtered out, it is the
+    model having an opinion nobody was shown: a 5+ priced at 69.6% is a fair 1.44, and
+    against a book offering 1.70 it is the best bet on the card by some distance.
+
+    So the fair price goes in, clearly not as a pick. Whoever reads it can compare it to
+    whatever their own book is showing, which is the only way to use a line this feed
+    cannot see — the provider carries 33 books and Sky Bet, Paddy Power, Coral and
+    BoyleSports are not among them.
+
+    LOWER ONLY. A rung above the priced ones is a longer shot, which is the opposite of
+    what is missing, and the ladder is long enough that printing all of it would bury the
+    bets it sits under.
+    """
+    out = []
+    for m in (ladder or []):
+        if not isinstance(m, dict) or m.get("group") != group:
+            continue
+        if m.get("book_odds") is not None:
+            continue                       # it has a price; it is a bet or it is not value
+        line = plus_line(m.get("line"))
+        if line is None or (below is not None and line >= below):
+            continue
+        if _pct(m.get("fair_odds")) is None:
+            continue
+        out.append({"line": line, "fair_odds": m.get("fair_odds"),
+                    "prob": m.get("prob"), "reference": True})
+    # Closest to the priced lines first: the nearest safer rung is the one being asked for.
+    out.sort(key=lambda r: -r["line"])
+    return out[:MAX_REFERENCE_RUNGS]
+
+
+def value_rows(rows: List[dict], min_ev: Optional[float] = None,
+               with_ladder: bool = False) -> List[dict]:
     """Value-board rows -> what value_card prints.
 
     ONLY `status == "ok"` ROWS. The board deliberately returns everything it looked at,
@@ -263,6 +308,22 @@ def value_rows(rows: List[dict], min_ev: Optional[float] = None) -> List[dict]:
                 # two angles on the same game are tracked — and suppressed — separately.
                 "dedup_key": f"{r.get('fixture_id')}:{m.get('key')}",
             })
+        if with_ladder and picks:
+            # THE SAFER RUNGS NOBODY QUOTED, per side that produced a bet. Keyed off the
+            # lowest line actually priced for that side, so these sit underneath it.
+            by_group = {}
+            for m in picks:
+                g = m.get("group")
+                ln = plus_line(m.get("line"))
+                if ln is None:
+                    continue
+                by_group[g] = min(ln, by_group.get(g, ln))
+            for group, lowest in by_group.items():
+                subject = (home if group == "home" else
+                           away if group == "away" else "Match total")
+                for ref in reference_rungs(r.get("ladder"), group, lowest):
+                    out.append({**ref, "match": f"{home} v {away}", "subject": subject,
+                                "team": subject, "ev": None})
     return out
 
 
@@ -351,7 +412,15 @@ def value_card(rows: List[dict]) -> str:
     EV NEEDS A PRICE AND SAYS SO WHEN IT HAS NONE. An empty value board usually means no
     prices are stored, not that no edge exists, and those are opposite problems — one is
     the market being efficient, the other is nobody having typed anything in."""
+    # THE REFERENCE RUNGS ARE PULLED OUT BEFORE THE EV FILTER, because they deliberately
+    # have no EV — there is no fetched price to compute one from. Filtering first dropped
+    # them silently, which is the same disappearing act this whole change exists to undo.
+    refs = {}
+    for r in (rows or []):
+        if isinstance(r, dict) and r.get("reference"):
+            refs.setdefault(str(r.get("match") or ""), []).append(r)
     rows = [r for r in (rows or []) if isinstance(r, dict)
+            and not r.get("reference")
             and isinstance(r.get("ev"), (int, float))]
     if not rows:
         return ("💰 No positive-EV rows.\n\n"
@@ -371,12 +440,24 @@ def value_card(rows: List[dict]) -> str:
                          + ([f"\n…and {len(rows) - MAX_ROWS} more on the site."]
                             if len(rows) > MAX_ROWS else []))
 
+    # `refs` was collected above, and is deliberately NOT part of the plan: the plan is
+    # what gets RECORDED as sent, and a reference rung is not a bet — recording one would
+    # suppress the real bet on that market if a price ever arrived for it.
     plan, dropped = value_plan(rows)
     out = ["💰 Positive EV", ""]
     for match, angles in plan:
         out.append(match)
         for r in angles:
             out.append(_value_line(r, subject=True))
+        for r in refs.get(match, []):
+            # NO BULLET AND NO EV, so it cannot be read as a pick. It is the model's price
+            # for a rung this feed could not fetch, to check against your own book.
+            fair = _pct(r.get("fair_odds"))
+            pct = _pct(r.get("prob"))
+            tail = f"  ↳ {r.get('subject')} {r.get('line')}+ — fair {fair:.2f}"
+            if pct is not None:
+                tail += f" ({pct:.0f}%)"
+            out.append(tail + ", no price fetched")
         out.append("")
     while out and out[-1] == "":
         out.pop()

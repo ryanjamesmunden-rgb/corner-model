@@ -5407,7 +5407,7 @@ def _orphan_note(priced_at) -> str:
 @api_router.get("/value-board")
 async def value_board(within_days: Optional[int] = 7, min_ev: float = 0.0,
                       league_id: Optional[str] = None, limit: int = 40,
-                      explain: bool = False,
+                      explain: bool = False, ladder: bool = False,
                       response: Response = None,
                       user: dict = Depends(require_member)):
     """Every price you have entered, best line first — and never an unexplained blank.
@@ -5542,6 +5542,18 @@ async def value_board(within_days: Optional[int] = 7, min_ev: float = 0.0,
         # over would otherwise bring its whole ladder with it.
         row["alternatives"] = [shape(m, doc) for m in marks[1:4]]
         row["other_count"] = len(marks) - 1
+        # EVERY RUNG, PRICED OR NOT, when asked for — and OFF BY DEFAULT because this is
+        # twenty-four markets a fixture and the member board does not read it.
+        #
+        # WHY IT HAS TO BE AVAILABLE AT ALL. `marks` keeps only markets with an EV, and an
+        # EV needs a fetched price, so a rung no book quoted is absent from this row
+        # entirely — no row, no note, nothing. That is how a +18% bet on a 5+ line went
+        # unmentioned while a +12% bet on 6+ was sent: the model had priced 5+ at 69.6%
+        # all along and simply had nothing to compare it against. shape() carries `prob`
+        # and `fair_odds` whether or not `book_odds` exists, so the fair price for an
+        # unquoted rung is already computed and was only ever being thrown away.
+        if ladder:
+            row["ladder"] = [shape(m, doc) for m in model["markets"]]
 
         if kickoff and horizon and kickoff > horizon:
             rows.append({**row, "status": "outside_window"})
@@ -10383,41 +10395,57 @@ async def telegram_value(token: Optional[str] = None, to: str = "owner",
     out = {"to": to, "min_ev": floor, "days": window, "sent": False}
 
     rows = await value_board(within_days=window, min_ev=floor, limit=60,
-                             response=None, user={})
+                             ladder=True, response=None, user={})
     # EVERY ANGLE THAT CLEARS THE FLOOR, not one per fixture. A game can be value at 6+
     # and at 7+, and sending only the single biggest edge hid the safer line on the same
     # match — which is the whole reason somebody would want the ladder rather than a tip.
-    angles = bot_cards.value_rows(rows, min_ev=floor)
+    #
+    # `with_ladder` ADDS THE SAFER RUNGS NOBODY QUOTED, as fair prices rather than bets.
+    # Without it the message has a silent hole where an unpriced line should be: a 5+ the
+    # model had at 69.6% went unmentioned while a 6+ at +12.4% was sent, because EV needs
+    # a fetched price and no book in the feed quoted that rung.
+    angles = bot_cards.value_rows(rows, min_ev=floor, with_ladder=True)
+    bets = [a for a in angles if not a.get("reference")]
     out["priced"] = len(rows or [])
-    out["clearing_floor"] = len(angles)
-    out["games"] = len({a["match"] for a in angles})
+    out["clearing_floor"] = len(bets)
+    out["reference_rungs"] = len(angles) - len(bets)
+    out["games"] = len({a["match"] for a in bets})
 
     # WHAT HAS ALREADY BEEN SAID, read in one query rather than one per angle. Keyed per
     # MARKET, so two angles on the same fixture are remembered — and suppressed —
     # independently: a 6+ already sent does not silence a 7+ that has just become value.
-    keys = {a["dedup_key"] for a in angles}
+    # BETS ONLY. A reference rung has no price and no EV, so it is nothing to remember —
+    # and giving one a dedup key would suppress the real bet on that market if a price
+    # ever arrived for it.
+    keys = {a["dedup_key"] for a in bets}
     seen = {}
     if keys and not force:
         seen = {d["_id"]: d for d in
                 await db.bot_value_sent.find({"_id": {"$in": sorted(keys)}}).to_list(400)}
 
-    fresh = [a for a in angles
+    fresh = [a for a in bets
              if bot_cards.worth_sending(a.get("ev"),
                                         (seen.get(a["dedup_key"]) or {}).get("ev"),
                                         VALUE_RESEND_EV_GAIN)]
     out["new"] = len(fresh)
-    out["repeats_suppressed"] = len(angles) - len(fresh)
+    out["repeats_suppressed"] = len(bets) - len(fresh)
 
     if not fresh:
         out["note"] = ("nothing new — either no price clears the floor, or every angle "
                        "that does has already been sent and has not improved since")
         return out
 
-    text = bot_cards.value_card(fresh)
-    # EXACTLY WHAT THE MESSAGE CARRIES, which is not always everything that cleared the
-    # floor — the card caps angles per game and in total. Recording more than it printed
-    # would suppress an angle nobody was ever shown. See bot_cards.value_plan.
-    went_out = bot_cards.value_sent(fresh)
+    # The reference rungs only for games a bet is actually going out on — a safer line on
+    # a game nobody is being told about is a line with no context.
+    live_games = {a["match"] for a in fresh}
+    shown = fresh + [a for a in angles
+                     if a.get("reference") and a.get("match") in live_games]
+    text = bot_cards.value_card(shown)
+    # EXACTLY WHAT THE MESSAGE CARRIES AS A BET, which is not always everything that
+    # cleared the floor — the card caps angles per game and in total. Recording more than
+    # it printed would suppress an angle nobody was ever shown, and value_plan drops the
+    # reference rungs here because they are not bets. See bot_cards.value_plan.
+    went_out = bot_cards.value_sent(shown)
     out["in_message"] = len(went_out)
     out["chars"] = len(text)
     if dry_run:

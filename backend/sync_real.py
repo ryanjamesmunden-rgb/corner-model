@@ -57,6 +57,71 @@ STATS_CAP = int(os.environ.get("STATS_CAP", "250"))
 # a round, so 80 covers a month even with two rounds a week.
 UPCOMING_FIXTURES = 80
 
+# WHICH STATUSES COUNT AS "NOT YET PLAYED", and the one that was missing.
+#
+# This filter used to be the literal tuple ("NS", "TBD") written out twice — once in the
+# league sync and once in the cup sync. Both were blind to PST, which is the status a
+# postponed fixture carries, and the consequence is not that a postponed game shows the
+# wrong date: it is that the game DISAPPEARS. The sync replaces a league's upcoming
+# fixtures with what it fetched, so the moment a match was postponed it stopped matching
+# here and was deleted, and nothing downstream could report a fixture that was not there.
+#
+# Found on Kristiansund v Vålerenga, postponed from Saturday 7 November 2026 after an
+# illness outbreak and rescheduled to the Monday. The fixture was not in the database at
+# all, so it could not be projected, could not be priced, and did not appear on any board
+# — and there was no error anywhere, because deleting a fixture the provider no longer
+# lists as NS is the correct behaviour for a fixture that has actually been cancelled.
+#
+# A POSTPONED MATCH IS ONLY UPCOMING ONCE IT HAS A NEW DATE, which is what separates the
+# two things PST means. Rescheduled: the provider moves the date forward and the fixture
+# is an ordinary upcoming game that happens to have been moved. Postponed indefinitely:
+# the date stays on the round it was meant to be played in, which is now in the past.
+# Storing the second kind would put a game that is not going to be played onto the board,
+# so PST is admitted on the DATE rather than on the status alone.
+#
+# NOTHING ELSE JOINS THIS LIST. SUSP and INT are matches already in progress, so part of
+# their corner count has been taken and pricing them from zero would be wrong. ABD, CANC,
+# AWD and WO are over, however they ended. Each of those is correctly deleted today.
+#
+# THIS COSTS NO API CALLS. Every fixture here came out of the single /fixtures?league&
+# season response the sync already makes, so admitting more of them is free.
+UPCOMING_STATUSES = ("NS", "TBD")
+
+
+def fixture_dt(f):
+    """The kick-off as an aware UTC datetime, or None if it cannot be read.
+
+    The provider sends "2026-11-09T19:00:00+00:00", but a missing or malformed date has
+    to be survivable: this runs over every fixture of every league and one bad row must
+    not end a sync.
+    """
+    raw = ((f or {}).get("fixture") or {}).get("date")
+    if not isinstance(raw, str) or not raw:
+        return None
+    try:
+        dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return dt.replace(tzinfo=timezone.utc) if dt.tzinfo is None else dt
+
+
+def is_upcoming(f, now=None) -> bool:
+    """Has this fixture not been played yet, and is it going to be?
+
+    NS and TBD pass on the status alone, exactly as before — a past NS is the provider
+    lagging behind a game that has kicked off, and every reader downstream already
+    filters on the date. PST passes only with a kick-off in the FUTURE, because that is
+    what distinguishes a match that has been moved from one that has merely been called
+    off; see UPCOMING_STATUSES above.
+    """
+    short = (((f or {}).get("fixture") or {}).get("status") or {}).get("short")
+    if short in UPCOMING_STATUSES:
+        return True
+    if short != "PST":
+        return False
+    dt = fixture_dt(f)
+    return dt is not None and dt > (now or datetime.now(timezone.utc))
+
 # Shot-volume stats pulled out of /fixtures/statistics alongside corners. The provider
 # labels these inconsistently across leagues (and "Dangerous Attacks" is only present
 # where the coverage includes it), so each feature matches on a set of normalised
@@ -203,7 +268,7 @@ async def sync_league(hc, my_lid):
 
     fixtures = await af_get(hc, "/fixtures", {"league": api_id, "season": season})
     ft = [f for f in fixtures if f["fixture"]["status"]["short"] == "FT"]
-    ns = [f for f in fixtures if f["fixture"]["status"]["short"] in ("NS", "TBD")]
+    ns = [f for f in fixtures if is_upcoming(f)]
     # Top up from last season whenever this one has not yet produced enough finished
     # matches to fill the pool. The old trigger was `< 40`, which only ever fired in the
     # opening weeks of a season — a league 12 rounds in had 120 games, cleared the bar,
@@ -477,7 +542,7 @@ async def sync_cup(hc, cup_id):
           f"({(entry.get('league') or {}).get('name')})")
 
     fixtures = await af_get(hc, "/fixtures", {"league": api_id, "season": season})
-    ns = sorted((f for f in fixtures if f["fixture"]["status"]["short"] in ("NS", "TBD")),
+    ns = sorted((f for f in fixtures if is_upcoming(f)),
                 key=lambda f: f["fixture"]["date"])
 
     teams = await db.teams.find({}, {"_id": 0, "team_id": 1, "api_team_id": 1,

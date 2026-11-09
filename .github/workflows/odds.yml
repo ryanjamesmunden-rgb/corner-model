@@ -91,6 +91,14 @@ on:
         required: false
         default: false
         type: boolean
+      preview:
+        # READ THE LADDER WITHOUT SENDING ANYTHING. dry_run is enforced on the BACKEND, so
+        # this cannot post whatever the workflow does — the lesson from gating a send in
+        # the caller and discovering the caller was not the thing that decided it.
+        description: "Print every rung and why it is or is not in the message. Sends nothing"
+        required: false
+        default: false
+        type: boolean
 
 concurrency:
   # Never two of these at once. Two overlapping runs would each pay for the same fixtures,
@@ -231,14 +239,38 @@ jobs:
         #
         # NOT `if: always()`. A failed fetch means the backend did not answer, so there is
         # nothing fresh to rank and the send would either repeat yesterday or say nothing.
-        if: github.event_name == 'schedule' || inputs.notify
+        if: github.event_name == 'schedule' || inputs.notify || inputs.preview
         env:
           BACKEND: ${{ vars.BACKEND_URL || 'https://corner-model.onrender.com' }}
           TOOLS_TOKEN: ${{ secrets.TOOLS_TOKEN }}
+          DRY: ${{ inputs.preview && 'true' || 'false' }}
         run: |
           set -uo pipefail
           code=$(curl -sS -o value.json -w '%{http_code}' --max-time 120 \
-            -X POST "$BACKEND/api/telegram/value?token=$TOOLS_TOKEN" || echo 000)
+            -X POST "$BACKEND/api/telegram/value?token=$TOOLS_TOKEN&dry_run=$DRY" \
+            || echo 000)
+          # A PREVIEW IS READ FROM THE LOG, so it is printed readably rather than as one
+          # line of JSON with a 24-rung ladder inside it.
+          if [ "$DRY" = "true" ]; then
+            python3 - <<'PY'
+          import json
+          d = json.load(open("value.json"))
+          print(f"floor {d.get('min_ev')}%  priced {d.get('priced')}  "
+                f"clearing {d.get('clearing_floor')}  new {d.get('new')}  "
+                f"suppressed {d.get('repeats_suppressed')}  "
+                f"refs {d.get('reference_rungs')}")
+          for lad in d.get("ladders") or []:
+              print(f"\n--- {lad['match']} ({lad['fixture_id']}) ---")
+              for r in lad["rungs"]:
+                  bk = "none" if r["book"] is None else f"{r['book']:.2f}"
+                  ev = "   -  " if r["ev"] is None else f"{r['ev']:+6.1f}%"
+                  print(f"  {r['group']:<5} {str(r['plus']) + '+':<4} "
+                        f"book {bk:<5} fair {r['fair']:<6} p {r['prob']:<5} "
+                        f"ev {ev}  {r['why']}")
+          print("\n--- message as it would read ---")
+          print(d.get("text") or "(nothing)")
+          PY
+          fi
           cat value.json; echo
           python3 - "$code" <<'PY' >> "$GITHUB_STEP_SUMMARY"
           import json, sys

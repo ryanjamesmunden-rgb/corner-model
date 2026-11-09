@@ -379,3 +379,74 @@ def test_references_alone_do_not_make_a_card():
             if r.get("reference")]
     assert refs
     assert "No positive-EV rows" in bot_cards.value_card(refs)
+
+
+# --- the cap must not discard the safe line -----------------------------------------
+
+# Torreense v União de Leiria, 2026-11-09, as the preview printed it. EV rises with every
+# rung of the home ladder, which is why "top four by EV" kept the three longest shots and
+# threw away the 5+ the message was asked about.
+TORREENSE = [rung("home", 2.5, ev=-10.1, book=1.035, fair=1.15, prob=86.8),
+             rung("home", 3.5, ev=2.0, book=1.36, fair=1.33, prob=75.0),
+             rung("home", 4.5, ev=9.8, book=1.80, fair=1.64, prob=61.0),
+             rung("home", 5.5, ev=12.4, book=2.40, fair=2.14, prob=46.8),
+             rung("home", 6.5, ev=22.6, book=3.60, fair=2.94, prob=34.0),
+             rung("home", 7.5, ev=29.6, book=5.50, fair=4.24, prob=23.6),
+             rung("total", 8.5, ev=5.1, book=1.52, fair=1.45, prob=69.1),
+             rung("total", 9.5, ev=11.0, book=1.95, fair=1.76, prob=56.9)]
+
+TORREENSE_BOARD = [{"status": "ok", "fixture_id": "por-l2-1576529",
+                    "home_name": "Torreense", "away_name": "União de Leiria",
+                    "odds_source": "api", "best": TORREENSE[5],
+                    "alternatives": [TORREENSE[4], TORREENSE[3], TORREENSE[7]],
+                    "ladder": TORREENSE}]
+
+
+def test_the_safest_qualifying_rung_survives_the_cap():
+    """THE COMPLAINT. 5+ at 1.80 is +9.8%, clears the floor, and ranked sixth by EV on
+    its own fixture — so the board's top-four cut it before any card logic ran."""
+    rows = bot_cards.value_rows(TORREENSE_BOARD, min_ev=5.0, with_ladder=True)
+    sent = bot_cards.value_sent(rows)
+    lines = {(r["subject"], r["line"]) for r in sent}
+    assert ("Torreense", 5) in lines, "the safest home rung must be in the message"
+
+
+def test_the_biggest_edge_also_survives():
+    """Both are wanted. Keeping only the safe line would be the same mistake mirrored."""
+    sent = bot_cards.value_sent(
+        bot_cards.value_rows(TORREENSE_BOARD, min_ev=5.0, with_ladder=True))
+    assert ("Torreense", 8) in {(r["subject"], r["line"]) for r in sent}
+
+
+def test_every_subject_gets_its_safest_rung():
+    sent = bot_cards.value_sent(
+        bot_cards.value_rows(TORREENSE_BOARD, min_ev=5.0, with_ladder=True))
+    by_subject = {}
+    for r in sent:
+        by_subject.setdefault(r["subject"], []).append(r["line"])
+    assert min(by_subject["Torreense"]) == 5
+    assert "Match total" in by_subject, "the total's safest rung too"
+
+
+def test_the_ladder_beats_the_boards_top_four():
+    """value_rows must read the ladder, not best+alternatives, or the fifth-ranked rung
+    is unreachable however the card is written."""
+    rows = [r for r in bot_cards.value_rows(TORREENSE_BOARD, min_ev=5.0, with_ladder=True)
+            if not r.get("reference")]
+    assert len(rows) == 6, "six rungs clear +5%, not the four the board carries"
+
+
+def test_rungs_are_shown_in_ladder_order():
+    """A reader comparing rungs on one side is reading a ladder; EV order scatters it."""
+    sent = bot_cards.value_sent(
+        bot_cards.value_rows(TORREENSE_BOARD, min_ev=5.0, with_ladder=True))
+    tor = [r["line"] for r in sent if r["subject"] == "Torreense"]
+    assert tor == sorted(tor)
+
+
+def test_a_below_floor_rung_is_still_excluded():
+    """3+ at -10.1% and 4+ at +2.0% must not ride in on the "safest rung" rule."""
+    sent = bot_cards.value_sent(
+        bot_cards.value_rows(TORREENSE_BOARD, min_ev=5.0, with_ladder=True))
+    lines = {(r["subject"], r["line"]) for r in sent}
+    assert ("Torreense", 3) not in lines and ("Torreense", 4) not in lines

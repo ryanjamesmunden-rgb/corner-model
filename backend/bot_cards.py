@@ -280,11 +280,31 @@ def value_rows(rows: List[dict], min_ev: Optional[float] = None,
         if not isinstance(r, dict) or r.get("status") != "ok":
             continue
         home, away = r.get("home_name") or "?", r.get("away_name") or "?"
-        picks = [r.get("best") or {}]
-        if floor is not None:
-            picks += [m for m in (r.get("alternatives") or [])
-                      if isinstance(m, dict) and (_pct(m.get("ev")) or 0) >= floor
-                      and _pct(m.get("ev")) is not None]
+        # EVERY QUALIFYING RUNG WHEN THE LADDER IS THERE, not the board's top four.
+        #
+        # `best` + `alternatives` is marks[0:4] by EV, and that cap is upstream of every
+        # choice this module makes — so a rung ranked fifth could not be shown however
+        # the card was written. Torreense's 5+ at +9.8% ranked sixth on its own fixture
+        # and never reached here at all. The ladder carries the lot; the per-game cap
+        # below decides what fits, and _pick_per_game decides WHICH, by more than EV.
+        lad = [m for m in (r.get("ladder") or []) if isinstance(m, dict)]
+        picks = []
+        if floor is not None and lad:
+            picks = [m for m in lad
+                     if _pct(m.get("ev")) is not None and _pct(m.get("ev")) >= floor]
+            picks.sort(key=lambda m: -_pct(m["ev"]))
+        # FALLS BACK RATHER THAN RETURNING NOTHING. A `status == "ok"` row has a `best`
+        # that already cleared the floor, so a ladder yielding no qualifying rung is a
+        # broken ladder, not a fixture without value — and preferring it would drop a
+        # real bet to silence. Caught by the junk-ladder test: `[None, 3, {}]` survives
+        # the isinstance filter as one empty dict, qualifies nothing, and took the bet
+        # with it.
+        if not picks:
+            picks = [r.get("best") or {}]
+            if floor is not None:
+                picks += [m for m in (r.get("alternatives") or [])
+                          if isinstance(m, dict) and _pct(m.get("ev")) is not None
+                          and _pct(m.get("ev")) >= floor]
         for m in picks:
             group = m.get("group")
             if group == "home":
@@ -337,6 +357,38 @@ MAX_VALUE_ANGLES = 10
 MAX_ANGLES_PER_GAME = 4
 
 
+def _pick_per_game(angles: List[dict], cap: int) -> List[dict]:
+    """Which of one game's angles to carry: the safest of each side, then the best edges.
+
+    `angles` arrives sorted by EV descending. Returned in LADDER order — by subject, then
+    by line — because a reader comparing rungs on the same side is reading a ladder, and
+    EV order scatters it.
+    """
+    if cap <= 0:
+        return []
+    lowest, rest = {}, []
+    for a in angles:
+        subject = str(a.get("subject") or a.get("team") or "?")
+        line = _pct(a.get("line"))
+        best_so_far = lowest.get(subject)
+        if line is not None and (best_so_far is None
+                                 or line < (_pct(best_so_far.get("line")) or line)):
+            if best_so_far is not None:
+                rest.append(best_so_far)
+            lowest[subject] = a
+        else:
+            rest.append(a)
+    # The safe rungs first, worst-priced side last if they do not all fit — then fill on
+    # EV, which `rest` is already ordered by.
+    keep = sorted(lowest.values(), key=lambda a: -(_pct(a.get("ev")) or 0))[:cap]
+    for a in rest:
+        if len(keep) >= cap:
+            break
+        keep.append(a)
+    return sorted(keep, key=lambda a: (str(a.get("subject") or ""),
+                                       _pct(a.get("line")) or 0))
+
+
 def value_plan(rows: List[dict]):
     """Which angles a value message will actually carry, grouped by game.
 
@@ -365,7 +417,20 @@ def value_plan(rows: List[dict]):
         angles = by_match[key]
         # PER-GAME CAP as well as a total one. One fixture whose whole ladder is priced
         # over would otherwise fill the message on its own and push every other game out.
-        keep = angles[:MAX_ANGLES_PER_GAME]
+        #
+        # BUT NOT THE TOP FOUR BY EV, WHICH IS WHAT THIS USED TO BE. Measured on
+        # Torreense v União de Leiria: the home ladder ran +9.8% at 5+, +12.4% at 6+,
+        # +22.6% at 7+, +29.6% at 8+. EV rose monotonically with the line, so ranking on
+        # it alone kept the three longest shots and the match total, and discarded the
+        # safest bet on the board. That is not a one-off — a book's margin on a long
+        # corner count is where this model most often disagrees with it, so "best EV"
+        # systematically means "longest odds" and the safe line never survives the cap.
+        #
+        # So each SUBJECT's lowest qualifying rung is kept first, and the rest of the
+        # slots go to the biggest edges. The safe line and the big edge are different
+        # bets and both are worth seeing; picking between them on EV answers a question
+        # nobody asked.
+        keep = _pick_per_game(angles, MAX_ANGLES_PER_GAME)
         dropped += len(angles) - len(keep)
         room = MAX_VALUE_ANGLES - shown
         if room <= 0:

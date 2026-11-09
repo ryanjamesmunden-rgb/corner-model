@@ -10380,14 +10380,23 @@ def _value_ladders(rows, fresh, seen, floor):
             if not isinstance(m, dict):
                 continue
             key = f"{r.get('fixture_id')}:{m.get('key')}"
+            ev = m.get("ev")
             if m.get("book_odds") is None:
                 why = "no price fetched"
             elif key in picked:
                 why = "in this message"
             elif key in seen:
                 why = "already sent, not improved"
-            else:
+            elif not isinstance(ev, (int, float)) or ev < floor:
                 why = f"below the {floor}% floor"
+            else:
+                # REACHED BY ELIMINATION BEFORE, AND MISLABELLED AS "below the floor".
+                # Torreense's 5+ printed that at +9.8% against a 5% floor, which is how a
+                # diagnostic stops being evidence: the one rung being asked about was the
+                # one it described wrongly. A rung that clears the floor and is still
+                # absent was cut by a cap, and that is a different problem with a
+                # different fix.
+                why = "clears the floor, cut by a cap"
             rungs.append({"group": m.get("group"),
                           "plus": bot_cards.plus_line(m.get("line")),
                           "book": m.get("book_odds"), "fair": m.get("fair_odds"),

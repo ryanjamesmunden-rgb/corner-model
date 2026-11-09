@@ -337,8 +337,12 @@ class TestTheFormSheet:
         cam = next(r for r in rows if r["team"] == "Cambridge United")
         # 6,7,5,8,6 -> 5+ in all five, and the run is alive to the most recent game.
         assert cam["hit5_of5"] == "5" and cam["run5"] == "5"
-        # 6+ in 6,7,8,6 = four of five, but the run stops at the 5.
-        assert cam["hit6_of5"] == "4" and cam["run6"] == "1"
+        # 6+ in 6,7,8,6 = four of five, and the run is TWO: counting back from the most
+        # recent game it clears on the 6 and the 8 and stops at the 5, which leaves two
+        # games standing, not one. This is the case the pairing exists for — four hits
+        # with a run of two is form rather than a live streak, and the two numbers have
+        # to be read together to see that.
+        assert cam["hit6_of5"] == "4" and cam["run6"] == "2"
         # 7+ only twice, and the most recent game was a 6, so no run at all.
         assert cam["hit7_of5"] == "2" and cam["run7"] == "0"
 

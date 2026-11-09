@@ -115,6 +115,10 @@ export const api = {
     axios.get(`${API}/export/projections.csv`, { params: { days }, responseType: "text" }).then((r) => r.data),
   // One row per graded claim, for the questions that need a season: CLV, claims per
   // fixture, day concentration, calibration by band.
+  // Per team, per line: hits in the window, hits in ten, and the current run. Members
+  // only — these are the streak board's own numbers.
+  exportForm: (window = 5) =>
+    axios.get(`${API}/export/form.csv`, { params: { window }, responseType: "text" }).then((r) => r.data),
   exportTracking: (weeks = 52) =>
     axios.get(`${API}/export/tracking.csv`, { params: { weeks }, responseType: "text" }).then((r) => r.data),
   // Token-gated, unconditional. The scheduled workflow uses /sync/if-stale instead,

@@ -296,3 +296,75 @@ class TestTheTrackingExportIsGatedLikeTheRecord:
             os.path.abspath(__file__))), "server.py")).read()
         body = src.split("async def export_tracking_csv", 1)[1].split("@api_router")[0]
         assert "max(1, min(weeks, 400))" in body
+
+
+# --- the form sheet: has this side actually been reaching the line? -----------------
+
+class TestTheFormSheet:
+    def rows(self, monkeypatch, member=True, window=5):
+        teams = [{"team_id": "t1", "name": "Cambridge United", "league_id": "eng-l1"},
+                 {"team_id": "t2", "name": "Luton", "league_id": "eng-l1"}]
+
+        async def fake_base():
+            return {"by_id": {t["team_id"]: t for t in teams},
+                    "leagues": {"eng-l1": {"name": "League One"}}}
+        monkeypatch.setattr(server, "_browse_base", fake_base)
+        # Cambridge: 6,7,5,8,6 — clears 5+ in all five, 6+ in four, 7+ in two.
+        # Luton: 4,3,9,2,3 — one big night inside a poor run.
+        blocks = {"t1": [6, 7, 5, 8, 6], "t2": [4, 3, 9, 2, 3]}
+
+        def fake_form_block(t, venue, w):
+            vals = blocks[t["team_id"]][-w:]
+            return {"games": len(vals), "avg": round(sum(vals) / len(vals), 2),
+                    "values": vals, "low": min(vals), "high": max(vals),
+                    "against_avg": 5.0, "n": len(vals),
+                    "matches": [{"corners_for": v} for v in vals]}
+        monkeypatch.setattr(server, "_form_block", fake_form_block)
+        user = {"member": True, "user_id": "u1"} if member else {"user_id": "u2"}
+        return parse(run(server.export_form_csv(window=window, user=user)))
+
+    def test_a_rate_and_a_run_sit_side_by_side_at_every_line(self, monkeypatch):
+        # They are different claims: 9 of 10 with a run of 2 means the miss was the
+        # second-most-recent game — still form, no longer a live streak.
+        head, rows = self.rows(monkeypatch)
+        for line in (5, 6, 7, 8):
+            assert f"hit{line}_of5" in head
+            assert f"hit{line}_of10" in head
+            assert f"run{line}" in head
+
+    def test_it_counts_the_hits_and_the_run_correctly(self, monkeypatch):
+        _head, rows = self.rows(monkeypatch)
+        cam = next(r for r in rows if r["team"] == "Cambridge United")
+        # 6,7,5,8,6 -> 5+ in all five, and the run is alive to the most recent game.
+        assert cam["hit5_of5"] == "5" and cam["run5"] == "5"
+        # 6+ in 6,7,8,6 = four of five, but the run stops at the 5.
+        assert cam["hit6_of5"] == "4" and cam["run6"] == "1"
+        # 7+ only twice, and the most recent game was a 6, so no run at all.
+        assert cam["hit7_of5"] == "2" and cam["run7"] == "0"
+
+    def test_one_big_night_does_not_read_as_a_run(self, monkeypatch):
+        # Luton 4,3,9,2,3 — a 9 in there, and nothing clearing 5+ since.
+        _head, rows = self.rows(monkeypatch)
+        lut = next(r for r in rows if r["team"] == "Luton")
+        assert lut["hit5_of5"] == "1"
+        assert lut["run5"] == "0", "the 9 was three games ago — that is not a streak"
+
+    def test_the_best_recent_attack_is_first(self, monkeypatch):
+        _head, rows = self.rows(monkeypatch)
+        assert rows[0]["team"] == "Cambridge United"
+
+    def test_a_visitor_is_refused_because_this_is_the_paid_board(self, monkeypatch):
+        # Same reason /tools/sheet.csv was token-gated: these are the recent-form numbers
+        # the streak screen is built from, and that screen is the product.
+        import fastapi
+        with pytest.raises(fastapi.HTTPException) as e:
+            self.rows(monkeypatch, member=False)
+        assert e.value.status_code == 402
+
+    def test_one_implementation_feeds_both_the_tool_and_the_export(self):
+        # Two copies of a hit count would eventually disagree, and the disagreement would
+        # be between the sheet somebody prices from and the sheet they check it against.
+        src = open(os.path.join(os.path.dirname(os.path.dirname(
+            os.path.abspath(__file__))), "server.py")).read()
+        assert src.count("def _form_rows(") == 1
+        assert src.count("_form_rows(teams, leagues, window, min_games)") == 2

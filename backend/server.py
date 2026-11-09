@@ -10384,36 +10384,41 @@ async def telegram_value(token: Optional[str] = None, to: str = "owner",
 
     rows = await value_board(within_days=window, min_ev=floor, limit=60,
                              response=None, user={})
-    live = [r for r in (rows or [])
-            if isinstance(r, dict) and r.get("status") == "ok"
-            and isinstance((r.get("best") or {}).get("ev"), (int, float))]
+    # EVERY ANGLE THAT CLEARS THE FLOOR, not one per fixture. A game can be value at 6+
+    # and at 7+, and sending only the single biggest edge hid the safer line on the same
+    # match — which is the whole reason somebody would want the ladder rather than a tip.
+    angles = bot_cards.value_rows(rows, min_ev=floor)
     out["priced"] = len(rows or [])
-    out["clearing_floor"] = len(live)
+    out["clearing_floor"] = len(angles)
+    out["games"] = len({a["match"] for a in angles})
 
-    # WHAT HAS ALREADY BEEN SAID, read in one query rather than one per row.
-    keys = {f"{r.get('fixture_id')}:{(r.get('best') or {}).get('key')}" for r in live}
+    # WHAT HAS ALREADY BEEN SAID, read in one query rather than one per angle. Keyed per
+    # MARKET, so two angles on the same fixture are remembered — and suppressed —
+    # independently: a 6+ already sent does not silence a 7+ that has just become value.
+    keys = {a["dedup_key"] for a in angles}
     seen = {}
     if keys and not force:
         seen = {d["_id"]: d for d in
-                await db.bot_value_sent.find({"_id": {"$in": sorted(keys)}}).to_list(200)}
+                await db.bot_value_sent.find({"_id": {"$in": sorted(keys)}}).to_list(400)}
 
-    fresh, keyed = [], []
-    for r in live:
-        key = f"{r.get('fixture_id')}:{(r.get('best') or {}).get('key')}"
-        ev = (r.get("best") or {}).get("ev")
-        if bot_cards.worth_sending(ev, (seen.get(key) or {}).get("ev"),
-                                   VALUE_RESEND_EV_GAIN):
-            fresh.append(r)
-            keyed.append((key, ev))
+    fresh = [a for a in angles
+             if bot_cards.worth_sending(a.get("ev"),
+                                        (seen.get(a["dedup_key"]) or {}).get("ev"),
+                                        VALUE_RESEND_EV_GAIN)]
     out["new"] = len(fresh)
-    out["repeats_suppressed"] = len(live) - len(fresh)
+    out["repeats_suppressed"] = len(angles) - len(fresh)
 
     if not fresh:
-        out["note"] = ("nothing new — either no price clears the floor, or every bet "
+        out["note"] = ("nothing new — either no price clears the floor, or every angle "
                        "that does has already been sent and has not improved since")
         return out
 
-    text = bot_cards.value_card(bot_cards.value_rows(fresh))
+    text = bot_cards.value_card(fresh)
+    # EXACTLY WHAT THE MESSAGE CARRIES, which is not always everything that cleared the
+    # floor — the card caps angles per game and in total. Recording more than it printed
+    # would suppress an angle nobody was ever shown. See bot_cards.value_plan.
+    went_out = bot_cards.value_sent(fresh)
+    out["in_message"] = len(went_out)
     out["chars"] = len(text)
     if dry_run:
         out["text"] = text
@@ -10433,10 +10438,10 @@ async def telegram_value(token: Optional[str] = None, to: str = "owner",
     # duplicate, because it is silent and permanent.
     if out["sent"]:
         now = datetime.now(timezone.utc).isoformat()
-        for key, ev in keyed:
+        for a in went_out:
             await db.bot_value_sent.update_one(
-                {"_id": key}, {"$set": {"ev": ev, "sent_at": now, "to": to}},
-                upsert=True)
+                {"_id": a["dedup_key"]},
+                {"$set": {"ev": a.get("ev"), "sent_at": now, "to": to}}, upsert=True)
     return out
 
 

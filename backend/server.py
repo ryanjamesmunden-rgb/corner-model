@@ -10354,6 +10354,50 @@ async def telegram_digest(token: Optional[str] = None, to: str = "owner",
     return out
 
 
+def _value_ladders(rows, fresh, seen, floor):
+    """Every rung of every qualifying fixture, and which of four reasons applies.
+
+    WHY THIS EXISTS. "The 5+ is not showing" was diagnosed three times from reading the
+    code and was wrong three times, because a rung can be absent for four unrelated
+    reasons and all four look identical from outside this function:
+
+      no price fetched            there is no market row at all, so no line and no note
+      a price that fails the floor not a bet, and not a reference rung either BECAUSE it
+                                  has a price — it falls between the two filters
+      already sent, not improved  suppressed on purpose, by VALUE_RESEND_EV_GAIN
+      dropped by a cap            four angles a game, ten a message
+
+    Only the stored prices separate those, and nothing exposed them. Guessing between
+    them cost more time than the feature took to build.
+    """
+    picked = {a["dedup_key"] for a in fresh}
+    out = []
+    for r in (rows or []):
+        if r.get("status") != "ok":
+            continue
+        rungs = []
+        for m in (r.get("ladder") or []):
+            if not isinstance(m, dict):
+                continue
+            key = f"{r.get('fixture_id')}:{m.get('key')}"
+            if m.get("book_odds") is None:
+                why = "no price fetched"
+            elif key in picked:
+                why = "in this message"
+            elif key in seen:
+                why = "already sent, not improved"
+            else:
+                why = f"below the {floor}% floor"
+            rungs.append({"group": m.get("group"),
+                          "plus": bot_cards.plus_line(m.get("line")),
+                          "book": m.get("book_odds"), "fair": m.get("fair_odds"),
+                          "prob": m.get("prob"), "ev": m.get("ev"), "why": why})
+        rungs.sort(key=lambda x: (str(x["group"]), x["plus"] or 0))
+        out.append({"match": f"{r.get('home_name')} v {r.get('away_name')}",
+                    "fixture_id": r.get("fixture_id"), "rungs": rungs})
+    return out
+
+
 @api_router.post("/telegram/value")
 async def telegram_value(token: Optional[str] = None, to: str = "owner",
                          min_ev: Optional[float] = None, days: Optional[int] = None,
@@ -10430,6 +10474,13 @@ async def telegram_value(token: Optional[str] = None, to: str = "owner",
     out["new"] = len(fresh)
     out["repeats_suppressed"] = len(bets) - len(fresh)
 
+    # BEFORE THE QUIET-RUN RETURN, NOT AFTER IT. Built after, this answered only the one
+    # case that needs no explaining — a run with something new to send — and returned
+    # nothing at all for "why is that rung not here", which is the only question it exists
+    # to answer. The first preview printed a header and no ladder for exactly that reason.
+    if dry_run:
+        out["ladders"] = _value_ladders(rows, fresh, seen, floor)
+
     if not fresh:
         out["note"] = ("nothing new — either no price clears the floor, or every angle "
                        "that does has already been sent and has not improved since")
@@ -10450,30 +10501,6 @@ async def telegram_value(token: Optional[str] = None, to: str = "owner",
     out["chars"] = len(text)
     if dry_run:
         out["text"] = text
-        # EVERY RUNG AND WHY IT IS OR IS NOT IN THE MESSAGE.
-        #
-        # WHY THIS EXISTS: "the 5+ is not showing" was diagnosed three times from reading
-        # the code and was wrong every time, because a rung can be absent for four
-        # unrelated reasons and all four look identical from outside — no price fetched,
-        # a price that fails the EV floor, already sent and not improved, or dropped by a
-        # cap. Guessing between them wasted more time than the feature took to build.
-        out["ladders"] = [
-            {"match": f"{r.get('home_name')} v {r.get('away_name')}",
-             "fixture_id": r.get("fixture_id"),
-             "rungs": sorted(
-                 ({"group": m.get("group"),
-                   "plus": bot_cards.plus_line(m.get("line")),
-                   "book": m.get("book_odds"), "fair": m.get("fair_odds"),
-                   "prob": m.get("prob"), "ev": m.get("ev"),
-                   "why": ("no price fetched" if m.get("book_odds") is None else
-                           "sent" if f"{r.get('fixture_id')}:{m.get('key')}"
-                           in {a["dedup_key"] for a in fresh} else
-                           "already sent, not improved"
-                           if f"{r.get('fixture_id')}:{m.get('key')}" in seen else
-                           f"below the {floor}% floor")}
-                  for m in (r.get("ladder") or [])),
-                 key=lambda x: (x["group"], x["plus"] or 0))}
-            for r in (rows or []) if r.get("status") == "ok"]
         out["note"] = "dry run — built and not sent, and nothing recorded"
         return out
 

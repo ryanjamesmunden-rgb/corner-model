@@ -75,6 +75,12 @@ export default function ExportMenu() {
       ? `${days}-day projections downloaded — with prices and EV`
       : `${days}-day projections downloaded — fair odds only`);
   });
+  // HAS THIS SIDE ACTUALLY BEEN REACHING THE LINE. The question asked before pricing
+  // anything, and the answer existed only behind the tools token until now.
+  const dlForm = () => run(async () => {
+    download(await api.exportForm(), "corner-model-form.csv", "text/csv");
+    toast.success("Form sheet downloaded — hits and runs at every line");
+  });
   const dlTracking = () => run(async () => {
     download(await api.exportTracking(), "corner-model-tracking.csv", "text/csv");
     toast.success("Tracking log downloaded");
@@ -125,6 +131,11 @@ export default function ExportMenu() {
         <DropdownMenuItem data-testid="export-projections-3" onClick={() => dlProjections(3)} className="text-sm gap-2 cursor-pointer">
           <Table className="h-4 w-4" /> Projections CSV — 3 days
         </DropdownMenuItem>
+        {member && (
+          <DropdownMenuItem data-testid="export-form" onClick={dlForm} className="text-sm gap-2 cursor-pointer">
+            <Flame className="h-4 w-4" /> Form sheet CSV (hits + runs at every line)
+          </DropdownMenuItem>
+        )}
         {member && (
           <DropdownMenuItem data-testid="export-tracking" onClick={dlTracking} className="text-sm gap-2 cursor-pointer">
             <FileText className="h-4 w-4" /> Tracking log CSV (every graded claim)

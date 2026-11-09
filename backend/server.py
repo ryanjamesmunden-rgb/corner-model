@@ -1488,6 +1488,41 @@ def _add_discipline_columns(rows: List[dict]) -> List[dict]:
     return rows
 
 
+@api_router.get("/export/form.csv")
+async def export_form_csv(window: int = 5, min_games: int = 5,
+                          user: dict = Depends(get_current_user)):
+    """Every team, and whether it has actually been reaching each corner line.
+
+    THE QUESTION THIS ANSWERS, which the site could not answer from a page: before
+    pricing a 5+ claim, has this side been winning 5+? The data has existed since
+    /tools/sheet.csv was written and has only ever been reachable with the tools token,
+    so the one view that says "yes, 9 of the last 10, and 4 in a row" was the one view
+    nobody could open.
+
+    A RATE AND A RUN AT EVERY LINE, side by side, because they are different claims and
+    the difference is the whole point. 9 of 10 with a run of 2 means the miss was the
+    second-most-recent game: still good form, no longer a live streak. A sheet that
+    printed only the rate would have hidden that, and only the run would have hidden
+    the 9/10.
+
+    MEMBERS ONLY, and for the reason /tools/sheet.csv was gated in the first place: these
+    are the recent-form numbers the streak screen is built from, and that screen is the
+    paid product. The projections export draws the same line — model numbers for
+    everyone, the finished article for members.
+    """
+    if not user.get("member"):
+        raise HTTPException(status_code=402,
+                            detail="The form sheet is the streak board's own numbers — "
+                                   "members only")
+    window = max(2, min(window, 20))
+    min_games = max(0, min(min_games, 30))
+    base = await _browse_base()
+    teams = list(base["by_id"].values())
+    leagues = {lid: l.get("name", "") for lid, l in base["leagues"].items()}
+    return _csv_response(_form_rows(teams, leagues, window, min_games),
+                         "corner-model-form.csv")
+
+
 #: How far back the tracking export reads snapshots. Long, because the whole point of it
 #: is the questions that need a season rather than a week — and it reads frozen rows, so
 #: a wide window costs a query and not an API call.
@@ -3780,6 +3815,50 @@ def _hits_and_run(matches, line):
     return hits, run
 
 
+def _form_rows(teams, leagues, window: int, min_games: int) -> List[dict]:
+    """One row per team: what it wins, and whether it has been clearing each line.
+
+    EXTRACTED SO THERE IS ONE IMPLEMENTATION. /tools/sheet.csv built this inline and
+    /export/form.csv needs the identical thing behind a different gate. Two copies of a
+    hit count would eventually disagree, and the disagreement would be between the sheet
+    somebody prices from and the sheet they check it against.
+
+    BOTH A RATE AND A RUN AT EVERY LINE, which _hits_and_run exists to keep apart: "9 of
+    the last 10" tolerates one bad night and "9 in a row" does not, and a team can be
+    9/10 with a run of 2. Reporting one without the other hides the difference between
+    form and a live streak.
+    """
+    rows: List[dict] = []
+    for t in teams:
+        overall = _form_block(t, None, window)
+        if overall["games"] < min_games or overall["avg"] is None:
+            continue
+        ten = _form_block(t, None, 10)
+        home = _form_block(t, "home", window)
+        away = _form_block(t, "away", window)
+        row = {
+            "team": t.get("name"), "team_id": t.get("team_id"),
+            "league": leagues.get(t.get("league_id")) or t.get("league_id"),
+            "games": overall["games"],
+            f"last{window}_avg": overall["avg"],
+            f"last{window}": "-".join(str(v) for v in overall["values"]),
+            f"last{window}_low": overall["low"], f"last{window}_high": overall["high"],
+            "last10_avg": ten["avg"], "conceded_last10": ten["against_avg"],
+            "home_avg": home["avg"], "home_games": home["n"],
+            "away_avg": away["avg"], "away_games": away["n"],
+        }
+        for line in SHEET_LINES:
+            h5, run = _hits_and_run(overall["matches"][-window:], line)
+            h10, _ = _hits_and_run(overall["matches"][-10:], line)
+            row[f"hit{line}_of{window}"] = h5
+            row[f"hit{line}_of10"] = h10
+            row[f"run{line}"] = run
+        rows.append(row)
+    # Best recent attack first, which is the question the sheet gets opened to answer.
+    rows.sort(key=lambda r: r.get(f"last{window}_avg") or 0, reverse=True)
+    return rows
+
+
 @api_router.get("/tools/sheet.csv")
 async def tools_sheet_csv(kind: str = "form", days: int = 7, window: int = 5,
                           min_games: int = 5, token: Optional[str] = None,
@@ -3822,33 +3901,7 @@ async def tools_sheet_csv(kind: str = "form", days: int = 7, window: int = 5,
     rows = []
 
     if kind == "form":
-        for t in teams:
-            overall = _form_block(t, None, window)
-            if overall["games"] < min_games or overall["avg"] is None:
-                continue
-            ten = _form_block(t, None, 10)
-            home = _form_block(t, "home", window)
-            away = _form_block(t, "away", window)
-            row = {
-                "team": t.get("name"), "team_id": t.get("team_id"),
-                "league": leagues.get(t.get("league_id")) or t.get("league_id"),
-                "games": overall["games"],
-                f"last{window}_avg": overall["avg"],
-                f"last{window}": "-".join(str(v) for v in overall["values"]),
-                f"last{window}_low": overall["low"], f"last{window}_high": overall["high"],
-                "last10_avg": ten["avg"], "conceded_last10": ten["against_avg"],
-                "home_avg": home["avg"], "home_games": home["n"],
-                "away_avg": away["avg"], "away_games": away["n"],
-            }
-            for line in SHEET_LINES:
-                h5, run = _hits_and_run(overall["matches"][-window:], line)
-                h10, _ = _hits_and_run(overall["matches"][-10:], line)
-                row[f"hit{line}_of{window}"] = h5
-                row[f"hit{line}_of10"] = h10
-                row[f"run{line}"] = run
-            rows.append(row)
-        # Best recent attack first, which is the question the sheet was asked.
-        rows.sort(key=lambda r: r.get(f"last{window}_avg") or 0, reverse=True)
+        rows = _form_rows(teams, leagues, window, min_games)
     else:
         proj = await _fixture_projections(days)
         by_id = base["by_id"]

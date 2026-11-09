@@ -122,7 +122,11 @@ jobs:
             mode="closing"
             [ "$HOUR" = "window" ] && mode="both"
           fi
-          minutes="${MINUTES:-90}"; days="${DAYS:-2}"; limit="${LIMIT:-60}"
+          # THE FALLBACK A SCHEDULED RUN ACTUALLY USES. A cron passes no inputs, so DAYS
+          # is empty here and this number — not the dispatch input's default — is what
+          # every scheduled window pass asks for. Setting the input to 1 and leaving this
+          # at 2 changed nothing on a schedule, which is the only place it runs unattended.
+          minutes="${MINUTES:-90}"; days="${DAYS:-1}"; limit="${LIMIT:-60}"
 
           {
             echo "## Corner odds — $(date -u '+%Y-%m-%d %H:%M UTC')"

@@ -46,8 +46,15 @@ from sync_real import af_get
 ROOT = Path(__file__).parent
 load_dotenv(ROOT / ".env")
 
-#: Small on purpose — see the cost note above. Raise it deliberately, not by default.
-DEFAULT_DAYS = 2
+#: ONE DAY, BECAUSE THE MARKETS DO NOT EXIST BEFORE THEN. Measured: a window pass over
+#: 62 fixtures spanning seven days came back `priced: 2, unpriced: 60` with no errors —
+#: the books simply had not opened a corner market yet. The two that priced kicked off
+#: that evening. Série B settles it as timing rather than coverage: its fixtures priced
+#: fine when sampled on the day and returned nothing when asked about four days ahead.
+#:
+#: So a wider window does not buy earlier prices, it buys empty answers at one API call
+#: each. Sixty of them, in the run that produced this comment.
+DEFAULT_DAYS = 1
 DEFAULT_LIMIT = 40
 
 #: A price older than this is a memory of a price. The board should age it out rather than

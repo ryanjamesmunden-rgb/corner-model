@@ -2883,6 +2883,9 @@ def _backtest_summary(stats: dict, lines: List[int]) -> dict:
 TOOLS_TOKEN = os.environ.get("TOOLS_TOKEN")
 TOOL_SCRIPTS = {"backfill_shots": "backfill_shots.py", "measure_features": "measure_features.py",
                 "measure_chase_board": "measure_chase_board.py",
+                # Whether the trailing bias measure_game_state found can be predicted
+                # before kick-off rather than only observed afterwards.
+                "measure_chase_predictor": "measure_chase_predictor.py",
                 "measure_mismatch_board": "measure_mismatch_board.py",
                 "night_results": "night_results.py",
                 "measure_calibration": "measure_calibration.py",
@@ -2920,6 +2923,11 @@ TOOL_COOLDOWN = {"backfill_shots": 600, "measure_features": 120,
                  "measure_chase_board": 300,
                  # Same shape of replay as the chase board, single pass (no null).
                  "measure_mismatch_board": 300,
+                 # One pass over fixture_stats keeping five short histories per team, no
+                 # null replay — measured at ~3s, the same shape as measure_game_state.
+                 # Paced with the other read-only measures rather than the replays: the
+                 # answer only moves when the sync adds finished games.
+                 "measure_chase_predictor": 120,
                  # One window query and two name lookups; the answer only moves
                  # when a game finishes and the sync catches up.
                  "night_results": 120,
@@ -2970,6 +2978,13 @@ MEASURE_MODES = {
     "sweep": ("measure_features", ["--sweep"], True),
     "game_state": ("measure_features", ["--game-state"], True),
     "chase_board": ("measure_chase_board", [], True),
+    # CAN THE CHASE BE PREDICTED, as opposed to observed. game_state above found the
+    # trailing bias and cannot be acted on: its buckets are decided by what happened in
+    # the match being priced. This buckets on rates knowable BEFORE kick-off — how often
+    # the opponent scores at all, how often this side concedes — and carries the falsified
+    # first-half feature plus a random split as controls, so a gap can be told apart from
+    # the harness inventing one.
+    "chase_predictor": ("measure_chase_predictor", [], False),
     # IS THE PRINTED PROBABILITY HONEST. Distinct from `chase_board` above, which asks
     # whether the ORDER finds better spots; this asks whether the NUMBER is true. It
     # scores the published ledger against the model_prob frozen into each pick before

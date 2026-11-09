@@ -2883,6 +2883,9 @@ def _backtest_summary(stats: dict, lines: List[int]) -> dict:
 TOOLS_TOKEN = os.environ.get("TOOLS_TOKEN")
 TOOL_SCRIPTS = {"backfill_shots": "backfill_shots.py", "measure_features": "measure_features.py",
                 "measure_chase_board": "measure_chase_board.py",
+                # Whether the trailing bias measure_game_state found can be predicted
+                # before kick-off rather than only observed afterwards.
+                "measure_chase_predictor": "measure_chase_predictor.py",
                 "measure_mismatch_board": "measure_mismatch_board.py",
                 "night_results": "night_results.py",
                 "measure_calibration": "measure_calibration.py",

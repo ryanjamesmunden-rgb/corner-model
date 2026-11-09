@@ -10450,6 +10450,30 @@ async def telegram_value(token: Optional[str] = None, to: str = "owner",
     out["chars"] = len(text)
     if dry_run:
         out["text"] = text
+        # EVERY RUNG AND WHY IT IS OR IS NOT IN THE MESSAGE.
+        #
+        # WHY THIS EXISTS: "the 5+ is not showing" was diagnosed three times from reading
+        # the code and was wrong every time, because a rung can be absent for four
+        # unrelated reasons and all four look identical from outside — no price fetched,
+        # a price that fails the EV floor, already sent and not improved, or dropped by a
+        # cap. Guessing between them wasted more time than the feature took to build.
+        out["ladders"] = [
+            {"match": f"{r.get('home_name')} v {r.get('away_name')}",
+             "fixture_id": r.get("fixture_id"),
+             "rungs": sorted(
+                 ({"group": m.get("group"),
+                   "plus": bot_cards.plus_line(m.get("line")),
+                   "book": m.get("book_odds"), "fair": m.get("fair_odds"),
+                   "prob": m.get("prob"), "ev": m.get("ev"),
+                   "why": ("no price fetched" if m.get("book_odds") is None else
+                           "sent" if f"{r.get('fixture_id')}:{m.get('key')}"
+                           in {a["dedup_key"] for a in fresh} else
+                           "already sent, not improved"
+                           if f"{r.get('fixture_id')}:{m.get('key')}" in seen else
+                           f"below the {floor}% floor")}
+                  for m in (r.get("ladder") or [])),
+                 key=lambda x: (x["group"], x["plus"] or 0))}
+            for r in (rows or []) if r.get("status") == "ok"]
         out["note"] = "dry run — built and not sent, and nothing recorded"
         return out
 

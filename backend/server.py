@@ -9746,7 +9746,23 @@ async def _log_menu_pick(item: dict, pick: dict) -> str:
 # prints it anyway invites exactly the wrong conclusion.
 BOT_RESULT_WEEKS = 26
 BOT_PERFECT_DAYS = 2
-BOT_VALUE_DAYS = 3
+#: How far ahead the bot's value message looks.
+#:
+#: WAS 3, AND THAT HID A WHOLE WEEKEND. A window fetch on 10 November reached 50 fixtures
+#: and priced 19 of them, storing 143 rungs — and the value message reported `games: 0`,
+#: because at three days it could not see past Friday morning and every one of Saturday's
+#: 46 fixtures sat outside it. The prices were fetched, stored and modelled, and the one
+#: thing that reads them was not allowed to look that far.
+#:
+#: SEVEN, TO MATCH WHAT THE FETCHER CAN ACTUALLY REACH rather than a number chosen before
+#: there was a feed at all.
+#:
+#: THIS IS NOT A LICENCE TO BET A WEEK OUT, and FEED_PRICE_STALE_HOURS is why it does not
+#: become one: a fetched price goes stale after twelve hours and drops out of the merge.
+#: So a wide window shows early value while the price behind it is fresh and empties again
+#: when it is not, which is the correct behaviour — the alternative is ranking Saturday on
+#: Tuesday's number.
+BOT_VALUE_DAYS = 7
 #: The same floor the value board's own default screen uses. A row that clears nothing is
 #: not an edge, and a card listing every priced row would be a card of noise.
 BOT_VALUE_MIN_EV = 5.0

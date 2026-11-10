@@ -99,6 +99,15 @@ on:
         required: false
         default: false
         type: boolean
+      value_days:
+        # SEPARATE FROM `days`, which is how far the FETCH reaches. This is how far the
+        # value message READS, and the two were silently different: a 5-day fetch stored
+        # 143 rungs and the message reported `games: 0` because it only looked three days
+        # ahead. Blank uses BOT_VALUE_DAYS.
+        description: "How far ahead the EV message reads (blank = the backend's default)"
+        required: false
+        default: ""
+        type: string
 
 concurrency:
   # Never two of these at once. Two overlapping runs would each pay for the same fixtures,
@@ -244,10 +253,15 @@ jobs:
           BACKEND: ${{ vars.BACKEND_URL || 'https://corner-model.onrender.com' }}
           TOOLS_TOKEN: ${{ secrets.TOOLS_TOKEN }}
           DRY: ${{ inputs.preview && 'true' || 'false' }}
+          VALUE_DAYS: ${{ inputs.value_days }}
         run: |
           set -uo pipefail
+          # Empty means "do not send the parameter at all", so the backend's own default
+          # applies rather than this shell inventing one.
+          q=""
+          [ -n "${VALUE_DAYS:-}" ] && q="&days=$VALUE_DAYS"
           code=$(curl -sS -o value.json -w '%{http_code}' --max-time 120 \
-            -X POST "$BACKEND/api/telegram/value?token=$TOOLS_TOKEN&dry_run=$DRY" \
+            -X POST "$BACKEND/api/telegram/value?token=$TOOLS_TOKEN&dry_run=$DRY$q" \
             || echo 000)
           # A PREVIEW IS READ FROM THE LOG, so it is printed readably rather than as one
           # line of JSON with a 24-rung ladder inside it.

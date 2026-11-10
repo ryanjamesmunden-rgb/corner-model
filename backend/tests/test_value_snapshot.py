@@ -54,10 +54,10 @@ def _shaper():
     end = src.index("class ValueSnapshotBody")
     ns = {"bot_cards": bot_cards, "Optional": __import__("typing").Optional}
     exec(compile(src[start:end], "sliced", "exec"), ns)
-    return ns["value_snapshot_entry"], ns["VALUE_GROUP_SUBJECT"]
+    return ns["value_snapshot_entry"], ns["VALUE_GROUP_SUBJECT"], ns["value_entry_id"]
 
 
-SHAPE, GROUPS = _shaper()
+SHAPE, GROUPS, ENTRY_ID = _shaper()
 
 
 # --- which team the claim settles against -------------------------------------------
@@ -160,6 +160,52 @@ def test_a_claim_with_no_fixture_is_refused():
 def test_the_market_key_rides_along():
     """So a frozen claim can be traced back to the exact stored price it was made against."""
     assert SHAPE(angle("home", 5))["market_key"] == "home_over_4.5"
+
+
+# --- the identity a frozen claim is remembered by -----------------------------------
+#
+# WHY THIS EXISTS AT ALL. This board accumulates through the day rather than freezing
+# once, because it is a function of PRICES and they arrive hourly — corner markets open
+# through matchday, so a fetch at noon routinely prices fixtures that had no market that
+# morning. A date-tagged once-only freeze would have recorded whatever the first run of
+# the day saw; on the hourly odds cron that is the 00:17 pass, before any book is open.
+#
+# So every repeat call compares what the board is claiming now against what is already
+# stored, and this id is the whole of that comparison. Too coarse and a real second claim
+# on the same game is thrown away; too fine and the same claim is frozen hourly, twelve
+# times, each at a different price, and the record counts one bet as twelve.
+
+def test_two_angles_on_one_game_are_different_claims():
+    """The reason this is keyed per market and not per fixture. A game legitimately
+    carries a 5+ claim and a match-total claim, and they win and lose separately."""
+    a = ENTRY_ID(SHAPE(angle("home", 5)))
+    b = ENTRY_ID(SHAPE(angle("total", 11)))
+    assert a != b
+
+
+def test_the_same_market_on_two_games_is_two_claims():
+    one = SHAPE(angle("home", 5))
+    two = SHAPE(angle("home", 5, fixture_id="eng-l1-2"))
+    assert ENTRY_ID(one) != ENTRY_ID(two)
+
+
+def test_the_same_claim_seen_again_at_a_new_price_is_the_same_claim():
+    """THE ONE THAT KEEPS THE RECORD HONEST. The hourly pass re-reads the same fixture and
+    the price has moved. If the id moved with it, the same bet would be frozen every hour
+    at whatever it drifted to, and the tally would count one claim a dozen times."""
+    first = SHAPE(angle("home", 5, book_odds=1.80, ev=12.0))
+    later = SHAPE(angle("home", 5, book_odds=2.10, ev=30.6))
+    assert ENTRY_ID(first) == ENTRY_ID(later)
+
+
+def test_home_and_away_on_the_same_line_are_different_claims():
+    """They share a fixture and a line and differ only in whose corners settle them, so a
+    key built from fixture and line alone would silently keep one of the two."""
+    assert ENTRY_ID(SHAPE(angle("home", 5))) != ENTRY_ID(SHAPE(angle("away", 5)))
+
+
+def test_two_lines_on_the_same_team_are_different_claims():
+    assert ENTRY_ID(SHAPE(angle("home", 5))) != ENTRY_ID(SHAPE(angle("home", 6)))
 
 
 # --- the join with value_rows -------------------------------------------------------

@@ -10658,11 +10658,29 @@ def _value_ladders(rows, fresh, seen, floor):
             rungs.append({"group": m.get("group"),
                           "plus": bot_cards.plus_line(m.get("line")),
                           "book": m.get("book_odds"), "fair": m.get("fair_odds"),
-                          "prob": m.get("prob"), "ev": m.get("ev"), "why": why})
+                          "prob": m.get("prob"), "ev": m.get("ev"), "why": why,
+                          # WHO CHOSE THIS NUMBER, per market, which was the one thing
+                          # this diagnostic could not answer. "Where did the site get
+                          # these odds? I cannot find them at any bookmaker" is a
+                          # question about provenance, and every field here described
+                          # the price's VALUE instead of its ORIGIN — so the ladder could
+                          # show a +119% edge and say nothing about whether a human typed
+                          # it, a feed fetched it, or a seeder generated it from the
+                          # model's own fair price. _merged_prices has carried
+                          # `price_sources` per key all along and shape() already copies
+                          # it onto every market as `price_source`; it simply never
+                          # reached here. "demo" in this field means the number came from
+                          # fair_odds * uniform(0.90, 1.15) and the EV beside it is the
+                          # model reading its own noise.
+                          "src": m.get("price_source")})
         rungs.sort(key=lambda x: (str(x["group"]), x["plus"] or 0))
         out.append({"match": f"{r.get('home_name')} v {r.get('away_name')}",
                     "fixture_id": r.get("fixture_id"), "kickoff": r.get("date"),
-                    "status": r.get("status"), "rungs": rungs})
+                    "status": r.get("status"), "rungs": rungs,
+                    # The fixture-level flag answers a different question from the
+                    # per-rung one: "did a human touch this fixture at all".
+                    "odds_source": r.get("odds_source"),
+                    "priced_at": r.get("priced_at")})
     # Kick-off order, so the list reads as a night's football rather than as whatever
     # order the price documents happened to come back in.
     out.sort(key=lambda d: (d.get("kickoff") or "9999"))

@@ -327,6 +327,16 @@ def value_rows(rows: List[dict], min_ev: Optional[float] = None,
                 # The identity a send is remembered by. Per MARKET, not per fixture, so
                 # two angles on the same game are tracked — and suppressed — separately.
                 "dedup_key": f"{r.get('fixture_id')}:{m.get('key')}",
+                # WHAT A SNAPSHOT NEEDS TO GRADE THIS LATER, carried here so the freezing
+                # endpoint does not re-derive it from the display strings. `group` says
+                # which side the claim is about, and settlement is team-keyed.
+                "group": group, "key": m.get("key"),
+                "fixture_id": r.get("fixture_id"), "kickoff": r.get("date"),
+                "home_name": home, "away_name": away,
+                "home_team_id": r.get("home_team_id"),
+                "away_team_id": r.get("away_team_id"),
+                "prob": m.get("prob"), "league_id": r.get("league_id"),
+                "league_name": r.get("league_name"),
             })
         if with_ladder and picks:
             # THE SAFER RUNGS NOBODY QUOTED, per side that produced a bet. Keyed off the

@@ -9013,10 +9013,19 @@ def value_snapshot_entry(a: dict) -> Optional[dict]:
 
 
 class ValueSnapshotBody(BaseModel):
-    """Which positive-EV angles the board was showing, so they can be graded later."""
+    """Which positive-EV angles the board was showing, so they can be graded later.
+
+    `days` AND `min_ev` DEFAULT TO None AND ARE RESOLVED IN THE ENDPOINT, not written here
+    as BOT_VALUE_DAYS and BOT_VALUE_MIN_EV. A Pydantic class-body default is evaluated at
+    IMPORT time, and both constants are defined several hundred lines below this — so
+    naming them here is a NameError on module load, which takes the whole backend down on
+    deploy rather than failing the one endpoint. CI caught exactly that: 90 collection
+    errors and every server-importing test gone. Resolving at call time also keeps one
+    source of truth for the numbers, which hardcoding them here would not.
+    """
     tag: Optional[str] = None
-    days: int = BOT_VALUE_DAYS
-    min_ev: float = BOT_VALUE_MIN_EV
+    days: Optional[int] = None
+    min_ev: Optional[float] = None
     limit: int = 60
 
 
@@ -9062,8 +9071,9 @@ async def snapshot_value(body: ValueSnapshotBody, token: Optional[str] = None,
         return {"status": "stale", "tag": tag, "data_age_hours": age_h,
                 "max_age_hours": SNAPSHOT_MAX_AGE_HOURS, "entries": 0}
 
-    floor = float(body.min_ev)
-    rows = await value_board(within_days=max(1, int(body.days)), min_ev=floor,
+    floor = BOT_VALUE_MIN_EV if body.min_ev is None else float(body.min_ev)
+    window = BOT_VALUE_DAYS if body.days is None else max(1, int(body.days))
+    rows = await value_board(within_days=window, min_ev=floor,
                              limit=max(1, min(body.limit, 200)), ladder=True,
                              response=None, user={})
     angles = [a for a in bot_cards.value_rows(rows, min_ev=floor)
@@ -9078,7 +9088,7 @@ async def snapshot_value(body: ValueSnapshotBody, token: Optional[str] = None,
     priced = sum(1 for e in entries if isinstance(e.get("price"), (int, float)))
     await db.value_snapshots.insert_one(
         {"_id": tag, "tag": tag, "created_at": now_.isoformat(),
-         "days": body.days, "min_ev": floor, "entries": entries})
+         "days": window, "min_ev": floor, "entries": entries})
     return {"status": "created", "tag": tag, "entries": len(entries),
             "priced": priced, "games": len({e["fixture_id"] for e in entries}),
             # A claim that could not be shaped for settlement is reported, not swallowed:

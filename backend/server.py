@@ -5511,6 +5511,12 @@ async def value_board(within_days: Optional[int] = 7, min_ev: float = 0.0,
         row.update({"league_id": fx["league_id"], "league_name": lg.get("name", ""),
                     "tier": (LEAGUE_META.get(fx["league_id"]) or {}).get("tier"),
                     "home_name": fx["home_name"], "away_name": fx["away_name"],
+                    # THE IDS, because settlement is team-keyed. _grade_entries finds the
+                    # played game in a TEAM's real_matches, so a frozen value claim has to
+                    # name which team to look in — and the names alone cannot be resolved
+                    # back to one without a lookup that could match two clubs.
+                    "home_team_id": fx.get("home_team_id"),
+                    "away_team_id": fx.get("away_team_id"),
                     "date": fx.get("date"), "round": fx.get("round")})
 
         try:
@@ -8951,6 +8957,160 @@ async def snapshot_mismatches(body: MismatchSnapshotBody, token: Optional[str] =
            "entries": entries}
     await db.mismatch_snapshots.insert_one({"_id": tag, **doc})
     return {"status": "created", "tag": tag, "entries": len(entries)}
+
+
+#: Which side of a fixture a value-board group is a claim about, and how to settle it.
+#:
+#: `total` SETTLES AS subject "match" ANCHORED ON THE HOME TEAM. _grade_entries finds the
+#: played game inside one team's real_matches, so a match total still needs a team to look
+#: in — and streak_value(m, "match") reads corners_for + corners_against off that row, so
+#: either side gives the same number. Home is picked so the choice is not arbitrary per row.
+VALUE_GROUP_SUBJECT = {"home": "team", "away": "team", "total": "match"}
+
+
+def value_snapshot_entry(a: dict) -> Optional[dict]:
+    """One qualifying value angle, frozen in the shape _grade_entries settles.
+
+    THE PRICE IS FROZEN HERE AND NOWHERE ELSE IN THIS FAMILY. Every other snapshot stores
+    the model's claim — a line, a probability, a fair price — and _tally reports `units`
+    as unavailable because a win at an unknown price has no computable return. A value
+    claim is different in kind: it is "this price is wrong", so the price IS the claim.
+    Freezing it is what makes this the one board whose record can honestly carry units,
+    and omitting it would leave a board whose entire premise could never be graded.
+
+    THE LINE IS ALREADY THE PLUS-LINE AND MUST NOT BE CONVERTED AGAIN. build_markets holds
+    4.5 and prices P(X >= 5), value_rows has already run plus_line over it, and
+    settle_streak_leg compares `value >= line` — so 5 arrives here and 5 is what settles.
+    Converting a second time would grade every claim one corner adrift, in the direction
+    that flatters it. Hence the isinstance check: a float reaching this is the un-converted
+    market line and is refused rather than rounded into a plausible-looking answer.
+    """
+    group = a.get("group")
+    subject = VALUE_GROUP_SUBJECT.get(group)
+    line = a.get("line")
+    if subject is None or not isinstance(line, int) or isinstance(line, bool):
+        return None
+    home_id, away_id = a.get("home_team_id"), a.get("away_team_id")
+    if group == "away":
+        team_id, opponent, is_home = away_id, a.get("home_name"), False
+    else:
+        team_id, opponent, is_home = home_id, a.get("away_name"), True
+    if not team_id or not a.get("fixture_id"):
+        return None
+    return {
+        "team_id": team_id, "name": a.get("subject"),
+        "league_id": a.get("league_id"), "league_name": a.get("league_name"),
+        "line": line, "direction": "over", "subject": subject,
+        "group": group, "market_key": a.get("key"),
+        # the claim, as it stood
+        "prob": a.get("prob"), "fair_odds": a.get("fair_odds"),
+        "price": a.get("book_odds"), "ev": a.get("ev"),
+        "price_source": a.get("odds_source"), "stake": 1.0,
+        "fixture_id": a.get("fixture_id"), "kickoff": a.get("kickoff"),
+        "opponent": opponent, "is_home": is_home,
+        "match": a.get("match"),
+    }
+
+
+class ValueSnapshotBody(BaseModel):
+    """Which positive-EV angles the board was showing, so they can be graded later.
+
+    `days` AND `min_ev` DEFAULT TO None AND ARE RESOLVED IN THE ENDPOINT, not written here
+    as BOT_VALUE_DAYS and BOT_VALUE_MIN_EV. A Pydantic class-body default is evaluated at
+    IMPORT time, and both constants are defined several hundred lines below this — so
+    naming them here is a NameError on module load, which takes the whole backend down on
+    deploy rather than failing the one endpoint. CI caught exactly that: 90 collection
+    errors and every server-importing test gone. Resolving at call time also keeps one
+    source of truth for the numbers, which hardcoding them here would not.
+    """
+    tag: Optional[str] = None
+    days: Optional[int] = None
+    min_ev: Optional[float] = None
+    limit: int = 60
+
+
+@api_router.post("/value/snapshot")
+async def snapshot_value(body: ValueSnapshotBody, token: Optional[str] = None,
+                         user: dict = Depends(get_current_user)):
+    """Freeze the positive-EV board — the fourth of four, and the one that most needed it.
+
+    WHY THIS WAS THE GAP. Streaks, mismatches, perfect games and projections all freeze
+    their claims before kick-off and are graded afterwards, which is what lets
+    /results/boards say whether a kind of reasoning pays. The value board had none of it,
+    so no positive-EV claim this site has ever made has been graded as a board claim —
+    and it is the board whose output is about to be published.
+
+    A RECORD THAT DEPENDS ON SOMEBODY REMEMBERING TO LOG EACH BET IS NOT A RECORD. That
+    is what /angles/posted is for and it is the right tool for a bet actually placed, but
+    it is a manual act: miss a loser and the published rate is wrong in the flattering
+    direction, and no reader can tell that from discipline. Freezing the board removes the
+    question — what was claimed is what was stored, before the games.
+
+    IT CANNOT BE REPLAYED, and less so than any of the others. A value row exists only
+    while the price does: prices move, FEED_PRICE_STALE_HOURS drops them after twelve
+    hours, and the provider serves pre-match markets only — so once a game kicks off the
+    number the claim was made against is gone for good. Written down now or not knowable.
+
+    ONE ENTRY PER ANGLE, NOT PER FIXTURE, because a value claim is about a market and a
+    game can carry several. The other boards freeze one row per team per fixture; here
+    the same fixture legitimately produces a 5+ claim and a match-total claim, and they
+    win and lose separately.
+
+    Idempotent per tag and stale-refusing, for the reasons on snapshot_streaks.
+    """
+    _check_tools_token(token)
+    tag = body.tag or datetime.now(timezone.utc).date().isoformat()
+    existing = await db.value_snapshots.find_one({"_id": tag}, {"_id": 0})
+    if existing:
+        return {"status": "exists", "tag": tag,
+                "entries": len(existing.get("entries") or [])}
+
+    now_ = datetime.now(timezone.utc)
+    age_h = await _data_age_hours()
+    if age_h is None or age_h > SNAPSHOT_MAX_AGE_HOURS:
+        return {"status": "stale", "tag": tag, "data_age_hours": age_h,
+                "max_age_hours": SNAPSHOT_MAX_AGE_HOURS, "entries": 0}
+
+    floor = BOT_VALUE_MIN_EV if body.min_ev is None else float(body.min_ev)
+    window = BOT_VALUE_DAYS if body.days is None else max(1, int(body.days))
+    rows = await value_board(within_days=window, min_ev=floor,
+                             limit=max(1, min(body.limit, 200)), ladder=True,
+                             response=None, user={})
+    angles = [a for a in bot_cards.value_rows(rows, min_ev=floor)
+              if not a.get("reference")]
+    entries, dropped = [], 0
+    for a in angles:
+        e = value_snapshot_entry(a)
+        if e is None:
+            dropped += 1
+            continue
+        entries.append(e)
+    priced = sum(1 for e in entries if isinstance(e.get("price"), (int, float)))
+    await db.value_snapshots.insert_one(
+        {"_id": tag, "tag": tag, "created_at": now_.isoformat(),
+         "days": window, "min_ev": floor, "entries": entries})
+    return {"status": "created", "tag": tag, "entries": len(entries),
+            "priced": priced, "games": len({e["fixture_id"] for e in entries}),
+            # A claim that could not be shaped for settlement is reported, not swallowed:
+            # it would otherwise look identical to a board that found nothing there.
+            "unshapeable": dropped}
+
+
+@api_router.get("/value/snapshot/{tag}/results")
+async def value_snapshot_results(tag: str, token: Optional[str] = None,
+                                 user: dict = Depends(get_current_user)):
+    """How the positive-EV claims in a snapshot actually landed.
+
+    Same settlement as the rest, and the one tally in this family that can report `units`
+    for every settled row, because the price was frozen with the claim.
+    """
+    _check_tools_token(token)
+    snap = await db.value_snapshots.find_one({"_id": tag}, {"_id": 0})
+    if not snap:
+        raise HTTPException(status_code=404, detail=f"no value snapshot tagged {tag}")
+    out = _grade_entries(snap["entries"], await _teams_for(snap["entries"]))
+    return {"tag": tag, "created_at": snap.get("created_at"), "days": snap.get("days"),
+            "min_ev": snap.get("min_ev"), "results": out, **_tally(out)}
 
 
 class PerfectSnapshotBody(BaseModel):

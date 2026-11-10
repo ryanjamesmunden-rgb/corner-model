@@ -322,3 +322,72 @@ jobs:
                     f"({n} clearing the {d.get('min_ev')}% floor, "
                     f"{d.get('priced', 0)} priced) |")
           PY
+
+      - name: Freeze what the board claimed
+        # WHY THE RECORD HANGS OFF THE FETCH TOO. The other four boards snapshot on the
+        # back of the twice-daily sync, because they are a function of synced data and the
+        # same at 07:00 as at 19:00. This one is a function of PRICES, which land here —
+        # so it freezes where they land, and accumulates: each call adds the claims that
+        # are new since the last and never rewrites one already stored.
+        #
+        # A CLAIM FROZEN AFTER THE FACT IS NOT A CLAIM, which is the whole point. A value
+        # row exists only while its price does: prices move, the feed drops them after
+        # twelve hours, and the provider serves pre-match markets only. Once a game kicks
+        # off the number the claim was made against is gone, so there is no later run that
+        # could fill this in.
+        #
+        # RUNS EVEN ON A PREVIEW, and runs whether or not anything was SENT. The record is
+        # what the board showed, not what Telegram happened to receive — a bet suppressed
+        # as already-mentioned is still a live claim, and gating the record on delivery
+        # would quietly drop it.
+        #
+        # if: always() — unlike the send. A failed closing pass means no NEW prices, not
+        # that the stored ones vanished, and the board those prices feed is still making
+        # claims about games that kick off today. The one run that must not be skipped is
+        # the one where something went wrong.
+        if: always() && (github.event_name == 'schedule' || inputs.notify || inputs.preview)
+        env:
+          BACKEND: ${{ vars.BACKEND_URL || 'https://corner-model.onrender.com' }}
+          TOOLS_TOKEN: ${{ secrets.TOOLS_TOKEN }}
+          VALUE_DAYS: ${{ inputs.value_days }}
+        run: |
+          set -uo pipefail
+          body='{}'
+          [ -n "${VALUE_DAYS:-}" ] && body="{\"days\": $VALUE_DAYS}"
+          code=$(curl -sS -o snap.json -w '%{http_code}' --max-time 180 \
+            -X POST -H 'Content-Type: application/json' -d "$body" \
+            "$BACKEND/api/value/snapshot?token=$TOOLS_TOKEN" || echo 000)
+          cat snap.json; echo
+          python3 - "$code" <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import json, sys
+          code = sys.argv[1]
+          try:
+              d = json.load(open("snap.json"))
+          except Exception:
+              print(f"| Frozen record | ⚠️ HTTP {code}, and the body was not JSON |")
+              raise SystemExit(0)
+          if code != "200":
+              print(f"| Frozen record | ⚠️ HTTP {code} — {str(d.get('detail'))[:120]} |")
+              raise SystemExit(0)
+          s, tag = d.get("status"), d.get("tag")
+          held = f"{d.get('entries', 0)} claim(s) on {d.get('games', 0)} game(s)"
+          if s in ("created", "extended"):
+              print(f"| Frozen record | ✅ +{d.get('added', 0)} new — `{tag}` now holds "
+                    f"{held} |")
+          elif s == "unchanged":
+              # The normal quiet case once a day's prices have settled: every claim the
+              # board is making is already on record. Not a failure, and not a no-op
+              # either — it is the confirmation that nothing went unrecorded.
+              print(f"| Frozen record | ✅ nothing new — `{tag}` already holds {held} |")
+          elif s == "stale":
+              # UNRECOVERABLE, so it is a warning rather than a note: today's claims
+              # cannot be graded if nothing wrote them down before kick-off.
+              print(f"| Frozen record | ⚠️ data {d.get('data_age_hours')}h old — "
+                    f"refused to freeze, so today cannot be graded |")
+          elif s == "floor_mismatch":
+              print(f"| Frozen record | ⚠️ `{tag}` was stored at "
+                    f"{d.get('stored_min_ev')}% and this run asked for "
+                    f"{d.get('min_ev')}% — nothing added |")
+          else:
+              print(f"| Frozen record | ⚠️ unexpected status `{s}` |")
+          PY

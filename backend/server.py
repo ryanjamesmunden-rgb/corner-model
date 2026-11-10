@@ -9012,6 +9012,17 @@ def value_snapshot_entry(a: dict) -> Optional[dict]:
     }
 
 
+def value_entry_id(e: dict) -> str:
+    """The identity a frozen claim is remembered by: one market on one fixture.
+
+    Per MARKET, not per fixture, for the same reason `dedup_key` is: a game can carry a
+    5+ claim and a match-total claim, and they win and lose separately. Keyed on
+    `market_key` rather than on group and line because that is the string the price was
+    actually read under, so a claim and the quote behind it cannot drift apart.
+    """
+    return f"{e.get('fixture_id')}:{e.get('market_key')}"
+
+
 class ValueSnapshotBody(BaseModel):
     """Which positive-EV angles the board was showing, so they can be graded later.
 
@@ -9056,40 +9067,102 @@ async def snapshot_value(body: ValueSnapshotBody, token: Optional[str] = None,
     the same fixture legitimately produces a 5+ claim and a match-total claim, and they
     win and lose separately.
 
-    Idempotent per tag and stale-refusing, for the reasons on snapshot_streaks.
+    IT ACCUMULATES THROUGH THE DAY RATHER THAN FREEZING ONCE, and this is the one place
+    this family of endpoints deliberately differs. The other four freeze a model that is a
+    function of synced data: it is the same board at 07:00 and at 19:00, so taking it twice
+    would add nothing and the second call is correctly refused. This board is a function of
+    PRICES, which arrive hourly — corner markets open through matchday, and a fetch at noon
+    routinely prices fixtures that had no market at all that morning. A once-a-day freeze
+    on a date tag would therefore have recorded whatever the first run of the day happened
+    to see and locked the rest out: on the hourly odds cron that is the 00:17 pass, before
+    a single book has opened.
+
+    So a repeat call ADDS the claims that are new since the last one and never touches one
+    already stored. Each claim is frozen at the price it was FIRST claimable at, which is
+    the number somebody reading the message could have taken. Re-freezing at a better price
+    later would flatter the record, and at a worse one would misreport the claim, so a
+    stored entry is immutable — `VALUE_RESEND_EV_GAIN` governs whether an improved edge is
+    worth MENTIONING again, not whether the record gets rewritten.
+
+    A claim is never added for a game already under way: value_board marks those
+    `kicked_off` and value_rows keeps only `ok`, so what accumulates is always pre-match.
+
+    Stale-refusing for the reasons on snapshot_streaks. Not safe against two concurrent
+    calls on a tag that does not exist yet — the odds workflow's `concurrency` group is
+    what prevents that, as it does for the fetch it hangs off.
     """
     _check_tools_token(token)
     tag = body.tag or datetime.now(timezone.utc).date().isoformat()
-    existing = await db.value_snapshots.find_one({"_id": tag}, {"_id": 0})
-    if existing:
-        return {"status": "exists", "tag": tag,
-                "entries": len(existing.get("entries") or [])}
-
     now_ = datetime.now(timezone.utc)
+    existing = await db.value_snapshots.find_one({"_id": tag}, {"_id": 0})
+    kept = list((existing or {}).get("entries") or [])
+    seen = {value_entry_id(e) for e in kept}
+
     age_h = await _data_age_hours()
     if age_h is None or age_h > SNAPSHOT_MAX_AGE_HOURS:
         return {"status": "stale", "tag": tag, "data_age_hours": age_h,
-                "max_age_hours": SNAPSHOT_MAX_AGE_HOURS, "entries": 0}
+                "max_age_hours": SNAPSHOT_MAX_AGE_HOURS,
+                "entries": len(kept), "added": 0}
 
     floor = BOT_VALUE_MIN_EV if body.min_ev is None else float(body.min_ev)
     window = BOT_VALUE_DAYS if body.days is None else max(1, int(body.days))
+    # A SNAPSHOT STATES ONE FLOOR, so it cannot be extended at another. The results
+    # endpoint reports `min_ev` as the bar every claim in the tag cleared; adding rows at
+    # 2% to a board stored as 5% would make that sentence false about half of them, and
+    # nothing in the output would show it. Refused rather than blended or silently
+    # restated — use a different tag for a different floor.
+    if existing is not None and float(existing.get("min_ev", floor)) != floor:
+        return {"status": "floor_mismatch", "tag": tag,
+                "stored_min_ev": existing.get("min_ev"), "min_ev": floor,
+                "entries": len(kept), "added": 0}
+
     rows = await value_board(within_days=window, min_ev=floor,
                              limit=max(1, min(body.limit, 200)), ladder=True,
                              response=None, user={})
     angles = [a for a in bot_cards.value_rows(rows, min_ev=floor)
               if not a.get("reference")]
-    entries, dropped = [], 0
+    added, dropped, repeats = [], 0, 0
     for a in angles:
         e = value_snapshot_entry(a)
         if e is None:
             dropped += 1
             continue
-        entries.append(e)
+        eid = value_entry_id(e)
+        if eid in seen:
+            repeats += 1
+            continue
+        seen.add(eid)
+        # WHEN, not just what. On a board that fills up over a day, a claim frozen at
+        # 07:00 and one frozen at 14:00 are different claims about different prices, and
+        # the doc's single `created_at` cannot say which is which.
+        e["seen_at"] = now_.isoformat()
+        added.append(e)
+
+    entries = kept + added
+    if existing is None:
+        await db.value_snapshots.insert_one(
+            {"_id": tag, "tag": tag, "created_at": now_.isoformat(),
+             "updated_at": now_.isoformat(),
+             "days": window, "min_ev": floor, "entries": entries})
+        status = "created"
+    elif added:
+        # $push rather than writing `entries` back wholesale: the stored claims are never
+        # the thing being changed, and a full rewrite could lose one to a read that raced.
+        await db.value_snapshots.update_one(
+            {"_id": tag}, {"$push": {"entries": {"$each": added}},
+                           # The WIDEST window any pass read, not the first one's: `days`
+                           # describes how far ahead the stored claims can reach, and a
+                           # later pass looking further makes the first number too small.
+                           # (Unlike the floor, a wider reach adds games rather than
+                           # lowering the bar, so it cannot make a stored claim untrue.)
+                           "$set": {"updated_at": now_.isoformat(),
+                                    "days": max(int(existing.get("days") or 0), window)}})
+        status = "extended"
+    else:
+        status = "unchanged"
     priced = sum(1 for e in entries if isinstance(e.get("price"), (int, float)))
-    await db.value_snapshots.insert_one(
-        {"_id": tag, "tag": tag, "created_at": now_.isoformat(),
-         "days": window, "min_ev": floor, "entries": entries})
-    return {"status": "created", "tag": tag, "entries": len(entries),
+    return {"status": status, "tag": tag, "entries": len(entries),
+            "added": len(added), "already_frozen": repeats,
             "priced": priced, "games": len({e["fixture_id"] for e in entries}),
             # A claim that could not be shaped for settlement is reported, not swallowed:
             # it would otherwise look identical to a board that found nothing there.

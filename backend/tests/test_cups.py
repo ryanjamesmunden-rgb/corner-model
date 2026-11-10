@@ -101,6 +101,12 @@ class TestTheThreeEuropeanCupsCannotBeMistakenForEachOther:
         "uel": ["UEFA Europa League", "Europa League"],
         "uecl": ["UEFA Europa Conference League", "UEFA Conference League",
                  "Conference League"],
+        # ONLY the name the provider actually returns, confirmed by probe_leagues on
+        # 2026-11-10. The competition's sponsor names (Bristol Street Motors Trophy,
+        # Papa John's Trophy, Checkatrade Trophy) are deliberately NOT here: the provider
+        # does not use them, and verify_identity would — correctly — refuse them, so
+        # listing one would assert that a rename we want to fail loudly should pass.
+        "eflt": ["EFL Trophy"],
     }
 
     def test_each_competition_passes_under_its_own_entry_whatever_it_is_called(self):
@@ -127,6 +133,25 @@ class TestTheThreeEuropeanCupsCannotBeMistakenForEachOther:
         entry = {"league": {"name": "UEFA Europa Conference League", "type": "Cup"}}
         assert cups.verify_identity(entry, CUP_META["uel"])
         assert cups.verify_identity(entry, CUP_META["uecl"]) == ""
+
+    def test_the_fa_trophy_is_not_read_as_the_efl_trophy(self):
+        """The domestic near miss, and the reason the check is not just "trophy".
+
+        England files FA Trophy as id 47, one along from the EFL Trophy's 46 — so a
+        transposed digit is the realistic mistake here, and a looser check would sync a
+        non-league competition under a League One and Two name without complaining.
+        """
+        entry = {"league": {"name": "FA Trophy", "type": "Cup"}}
+        assert cups.verify_identity(entry, CUP_META["eflt"])
+        entry = {"league": {"name": "EFL Trophy", "type": "Cup"}}
+        assert cups.verify_identity(entry, CUP_META["eflt"]) == ""
+
+    def test_the_fa_cup_and_league_cup_are_not_read_as_the_efl_trophy(self):
+        """The other two English cups the provider files, for the same reason."""
+        for name in ("FA Cup", "League Cup", "Community Shield"):
+            entry = {"league": {"name": name, "type": "Cup"}}
+            assert cups.verify_identity(entry, CUP_META["eflt"]), \
+                f"'{name}' passed as the EFL Trophy"
 
     def test_every_cup_is_checked_against_a_distinct_name(self):
         names = [m["verify_name"] for m in CUP_META.values()]

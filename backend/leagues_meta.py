@@ -210,6 +210,44 @@ CUP_META = {
     # Europa in 2024, and the shorter name is also what fits a fixture row on a phone.
     "uecl": {"api": 848, "name": "Conference League", "country": "Europe",
              "verify_name": "conference league", "verify_type": "cup"},
+    # THE PROBE SAYS SKIP AND IT IS STILL IN, which needs saying because every other
+    # competition here was added or refused on that verdict.
+    #
+    # probe_leagues.py, 2026-11-10, raw id 46: provider confirms England / EFL Trophy,
+    # type Cup, season 2026. FT=55, upcoming=23, corners=4/4 shots=4/4 blocked=4/4 —
+    # SKIP, "only ~2 games a team, too thin to price".
+    #
+    # That verdict is calibrated for a LEAGUE, where a team's own fixtures in the
+    # competition ARE its form. It is the wrong test for a cup, and the Champions League
+    # would fail it just as hard — six to eight games a side. What a cup needs from the
+    # provider is corner data on the fixtures so they can be priced and graded, and that
+    # came back 4/4. The thinness is exactly what CUP_META exists to route around.
+    #
+    # WHAT IS DIFFERENT HERE, AND IT IS NOT SMALL. The other three cups are played by
+    # clubs this app syncs on both sides. The EFL Trophy is 64 teams: 48 League One and
+    # League Two clubs, which resolve, and 16 Premier League and Championship UNDER-21
+    # academy sides, which have no team document anywhere because they are in no synced
+    # league. resolve_tie returns "unknown_side" for those and drops the tie — both sides
+    # or neither — so roughly half the group stage will not be stored. That is the design
+    # working, not failing: the alternative is pricing a side with no record. The count
+    # comes back in sync_cup's `skipped`, so a short round is visible rather than guessed.
+    # The 61 teams implied by the probe's FT=55 at ~1.8 games a team matches a 64-team
+    # field, which is the arithmetic behind that split.
+    #
+    # AND THE ROTATION CAVEAT IS STRONGER THAN ANYWHERE ELSE IN THIS DICT. cups.py warns
+    # that cup weeks bring rotation; in this competition rotation is the format — clubs
+    # field reserves by design. A side's League Two corner rate is being used to price a
+    # game its League Two team may not play in. Labelled on the row by transfer_note, not
+    # modelled away, and the frozen value snapshot is what will eventually say whether it
+    # prices at all.
+    #
+    # "efl trophy" AS THE CHECK, NOT "trophy". England also files FA Trophy (id 47) one
+    # id along, and "trophy" alone would accept it. The competition is sponsor-named in
+    # real life (Bristol Street Motors Trophy, formerly Papa John's, formerly
+    # Checkatrade); the provider does not use those, and if it ever starts, this refuses
+    # the sync loudly instead of storing some other tournament under the name.
+    "eflt": {"api": 46, "name": "EFL Trophy", "country": "England",
+             "verify_name": "efl trophy", "verify_type": "cup"},
 }
 
 # Leagues the app owns. Anything else in the DB is a leftover and gets cleaned up on

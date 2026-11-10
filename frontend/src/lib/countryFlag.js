@@ -54,14 +54,32 @@ const CODES = {
 // Matched whole, and checked FIRST, so a cup id can never be read as a country prefix by
 // accident — a future "usa-cup" must flag as the United States, not as a cup.
 //
-// ALL THREE GET THE SAME BADGE, on purpose. A trophy says "this is a European tie, not a
-// league game", which is the thing a reader needs to know at a glance; three different
-// emoji would be three things to learn and would imply a ranking between the competitions
-// that the marker is not making. The name is right next to it and says which one it is.
+// THE THREE EUROPEAN TIES GET THE SAME BADGE, on purpose. A trophy says "this is a
+// European tie, not a league game", which is the thing a reader needs to know at a
+// glance; three different emoji would be three things to learn and would imply a ranking
+// between the competitions that the marker is not making. The name is right next to it
+// and says which one it is.
 const COMPETITIONS = {
   ucl: "\u{1F3C6}",      // trophy: a European tie has no one country to fly
   uel: "\u{1F3C6}",
   uecl: "\u{1F3C6}",
+  // A CUP CAN HAVE A COUNTRY, which the three above do not and this one does. The EFL
+  // Trophy is League One and League Two sides playing in England, so the England flag is
+  // both the honest badge and the useful one — a trophy here would announce "European
+  // tie" about a Tuesday night in Accrington, which is the opposite of what the marker
+  // is for. It lives in this map rather than CODES because the lookup slices three
+  // characters off a league id and "efl" is not a country; matched whole, it cannot be.
+  //
+  // Written as escapes, not by calling subdivision(): that helper is a const declared
+  // below this object, so calling it here would be a temporal-dead-zone ReferenceError
+  // at module load. Same sequence it would build for "gb-eng".
+  eflt: "\u{1F3F4}\u{E0067}\u{E0062}\u{E0065}\u{E006E}\u{E0067}\u{E007F}",
+};
+
+// The short text code for a cup that HAS a country, for the image path that cannot trust
+// flag glyphs. A cup absent from here has no honest code — see countryCodeFor.
+const COMPETITION_CODES = {
+  eflt: "ENG",
 };
 
 // Two letters -> the pair of regional indicator symbols the platform draws as a flag.
@@ -84,9 +102,11 @@ const subdivision = (code) =>
  */
 export const countryCodeFor = (leagueId) => {
   const id = String(leagueId || "").toLowerCase();
-  // A cup has no country, and there is no honest short code for "twenty of them". The
-  // caller falls back to plain text, which is the right answer rather than a made-up one.
-  if (COMPETITIONS[id]) return "";
+  // A EUROPEAN cup has no country, and there is no honest short code for "twenty of
+  // them", so the caller falls back to plain text rather than a made-up one. A domestic
+  // cup does have one, and withholding it would lose the England that a Windows reader
+  // of a generated image gets instead of a flag they cannot see.
+  if (COMPETITIONS[id]) return COMPETITION_CODES[id] || "";
   const code = CODES[id.slice(0, 3)];
   if (!code) return "";
   return code.includes("-") ? code.split("-")[1].toUpperCase() : code.toUpperCase();

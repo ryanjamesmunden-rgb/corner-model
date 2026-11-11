@@ -1,0 +1,196 @@
+# How the positive-EV claims frozen on a given day actually landed.
+#
+# WHY THIS EXISTS AT ALL. /value/snapshot freezes the board before kick-off and
+# /value/snapshot/{tag}/results grades it afterwards — and nothing could call the second
+# one. The record was being written every hour and was unreadable, which is the same
+# position as not having it: "how did the model do last night" had no answer that did not
+# involve reading a database by hand.
+#
+# IT PRINTS THE PRICE SOURCE PER CLAIM, and that is not decoration. value_board takes
+# every db.odds document that has odds with no test on `source`, while seed_team_odds and
+# reseed_odds both write `source: "demo"` prices as fair_odds * uniform(0.90, 1.15). An EV
+# computed against one of those is the model reading its own noise, and it is
+# indistinguishable from an edge on screen. The frozen entry carries the source, so this
+# is the one place the question can be settled.
+#
+# IT BREAKS THE TALLY DOWN BY COMPETITION, because a cup claim and a league claim do not
+# settle the same way. _grade_entries finds the played game inside a team's `real_matches`,
+# and `real_matches` is built only from that team's own LEAGUE fixture list — sync_cup
+# writes no team data at all. So a cup claim has nothing to settle against and reads
+# `pending` for ever, which looks identical to a game that has not kicked off yet. Split
+# by competition, a board that cannot be graded is visible instead of quietly absent.
+#
+# FREE. One GET against the database. No provider calls, so it is safe to run as often as
+# you like.
+name: Value record
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Which frozen board to grade — blank is today (UTC)"
+        required: false
+        type: string
+        default: ""
+      file_issue:
+        description: "Keep the result as a GitHub issue"
+        required: false
+        type: boolean
+        default: false
+
+concurrency:
+  group: corner-value-record
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  record:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Wake the backend
+        # Render sleeps the free instance, and the first request pays the cold start.
+        env:
+          BACKEND: ${{ vars.BACKEND_URL || 'https://corner-model.onrender.com' }}
+        run: |
+          for i in 1 2 3 4 5 6; do
+            code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 60 "$BACKEND/api/" || true)
+            echo "attempt $i: HTTP $code"
+            [ "$code" = "200" ] && break
+            sleep 10
+          done
+
+      - name: Grade the frozen board
+        env:
+          BACKEND: ${{ vars.BACKEND_URL || 'https://corner-model.onrender.com' }}
+          TOOLS_TOKEN: ${{ secrets.TOOLS_TOKEN }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -uo pipefail
+          : "${TOOLS_TOKEN:?TOOLS_TOKEN is not set — add it in Settings > Secrets}"
+          tag="${TAG:-}"
+          [ -z "$tag" ] && tag=$(date -u '+%Y-%m-%d')
+          # The token is in the query string, so never echo the URL.
+          code=$(curl -sS -o rec.json -w '%{http_code}' --max-time 120 \
+            "$BACKEND/api/value/snapshot/$tag/results?token=$TOOLS_TOKEN" || echo 000)
+          echo "HTTP $code for tag $tag"
+          if [ "$code" = "404" ]; then
+            echo "::warning::no board was frozen on $tag — nothing to grade"
+            cat rec.json; exit 0
+          fi
+          if [ "$code" != "200" ]; then
+            echo "::error::could not read the record (HTTP $code)"; cat rec.json; exit 1
+          fi
+          python3 - "$tag" <<'PY' | tee report.md
+          import json, sys
+          from collections import Counter, defaultdict
+          tag = sys.argv[1]
+          d = json.load(open("rec.json"))
+          rows = d.get("results") or []
+          print(f"## Frozen positive-EV board — `{tag}`\n")
+          print(f"Frozen {d.get('created_at')}, floor {d.get('min_ev')}%, "
+                f"window {d.get('days')}d, {len(rows)} claim(s).\n")
+          if not rows:
+              print("No claims in this snapshot."); raise SystemExit(0)
+
+          # WHERE THE PRICES CAME FROM, FIRST, because every number below is computed
+          # against them. A "demo" price is the model's own fair odds with noise on it.
+          src = Counter(str(r.get("price_source") or "unknown") for r in rows)
+          print("### Price source\n")
+          for s, n in src.most_common():
+              flag = "  <- GENERATED FROM THE MODEL, not a real quote" if s == "demo" else ""
+              print(f"- `{s}`: {n} claim(s){flag}")
+          print()
+
+          def comp(r):
+              # The frozen entry carries league_id outright. The fixture id is the
+              # fallback, split on the LAST hyphen because the id is
+              # "{league_id}-{provider fixture id}" and league ids contain hyphens of
+              # their own — splitting on the first one turns eng-l1 and eng-l2 into one
+              # "eng" row and hides which tier a claim came from.
+              lid = r.get("league_id")
+              if lid:
+                  return str(lid)
+              fid = str(r.get("fixture_id") or "")
+              return fid.rsplit("-", 1)[0] if "-" in fid else "?"
+
+          # BY COMPETITION, so a board that cannot settle is visible rather than absent.
+          print("### By competition\n")
+          print("| competition | claims | won | lost | void | pending | units |")
+          print("|---|---|---|---|---|---|---|")
+          by = defaultdict(list)
+          for r in rows:
+              by[comp(r)].append(r)
+          for c in sorted(by, key=lambda k: -len(by[k])):
+              rs = by[c]
+              res = Counter(str(r.get("result") or "pending") for r in rs)
+              # Units only over the rows that actually settled AND carried a price.
+              u = 0.0
+              counted = 0
+              for r in rs:
+                  st, price = r.get("result"), r.get("price")
+                  stake = r.get("stake") or 1.0
+                  if st not in ("win", "loss") or not isinstance(price, (int, float)):
+                      continue
+                  counted += 1
+                  u += (price - 1) * stake if st == "win" else -stake
+              units = f"{u:+.2f}u over {counted}" if counted else "nothing settled"
+              print(f"| {c} | {len(rs)} | {res.get('win',0)} | {res.get('loss',0)} "
+                    f"| {res.get('void',0)} | {res.get('pending',0)} | {units} |")
+          print()
+
+          settled = [r for r in rows if r.get("result") in ("win", "loss")]
+          pending = [r for r in rows if (r.get("result") or "pending") == "pending"]
+          print(f"**{len(settled)} of {len(rows)} claims settled.** "
+                f"{len(pending)} still pending.\n")
+
+          if settled:
+              # THE RESIDUAL IS THE RESULT. The hit rate alone only says which games got
+              # picked; the gap against what was claimed is whether the model was right.
+              hit = sum(1 for r in settled if r["result"] == "win") / len(settled) * 100
+              claimed = [r.get("prob") for r in settled
+                         if isinstance(r.get("prob"), (int, float))]
+              mean_claimed = sum(claimed) / len(claimed) if claimed else None
+              line = f"Landed {hit:.0f}% of {len(settled)}"
+              if mean_claimed is not None:
+                  line += (f", against {mean_claimed:.0f}% claimed "
+                           f"— residual {hit - mean_claimed:+.0f} points")
+              print(line + "\n")
+              print("| result | market | fixture | price | claimed | actual |")
+              print("|---|---|---|---|---|---|")
+              mark = {"win": "WON", "loss": "LOST", "void": "void"}
+              for r in sorted(settled, key=lambda x: str(x.get("result"))):
+                  p = r.get("prob")
+                  print(f"| {mark.get(r['result'], r['result'])} "
+                        f"| {r.get('name')} {r.get('line')}+ ({r.get('subject')}) "
+                        f"| {r.get('match')} | {r.get('price')} "
+                        f"| {p:.0f}% | {r.get('value')} |"
+                        if isinstance(p, (int, float)) else
+                        f"| {mark.get(r['result'], r['result'])} "
+                        f"| {r.get('name')} {r.get('line')}+ | {r.get('match')} "
+                        f"| {r.get('price')} | ? | {r.get('value')} |")
+
+          if pending:
+              print("\n### Still pending\n")
+              pc = Counter(comp(r) for r in pending)
+              for c, n in pc.most_common():
+                  print(f"- `{c}`: {n}")
+              print("\nA claim reads pending until the played game appears in one of its "
+                    "teams' `real_matches`. That list is built only from a team's own "
+                    "league fixtures, so a CUP claim never settles this way.")
+          PY
+          cat report.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Keep it as an issue
+        if: inputs.file_issue
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          tag="${TAG:-}"
+          [ -z "$tag" ] && tag=$(date -u '+%Y-%m-%d')
+          gh issue create --title "Value record — $tag" --body-file report.md

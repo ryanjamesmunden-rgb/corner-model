@@ -75,6 +75,10 @@ export const api = {
   addTrackedTeam: (teamId) => axios.post(`${API}/tracking/teams/${teamId}`).then((r) => r.data),
   removeTrackedTeam: (teamId) => axios.delete(`${API}/tracking/teams/${teamId}`).then((r) => r.data),
   promoteTrackedTeam: (teamId) => axios.post(`${API}/tracking/teams/${teamId}/promote`).then((r) => r.data),
+  // Teams in form with soft fixtures ahead (worth tracking), and a fixtures-ahead flag for
+  // the teams you already track or follow.
+  trackingSuggestions: (withinDays = 21) =>
+    axios.get(`${API}/tracking/suggestions`, { params: { within_days: withinDays } }).then((r) => r.data),
   // Last-20 corner form for many teams at once (source: favourites | tracking | league).
   teamForm: (source, leagueId) =>
     axios.get(`${API}/team-form`, { params: { source, league_id: leagueId || undefined } }).then((r) => r.data),

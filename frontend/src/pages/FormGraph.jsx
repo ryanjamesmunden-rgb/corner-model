@@ -10,7 +10,8 @@ import { useAuth } from "@/context/AuthContext";
 import { useLeague } from "@/context/LeagueContext";
 import { withFlag } from "@/lib/countryFlag";
 import { METRICS, VENUES, WINDOWS } from "@/lib/teamForm";
-import { SERIES_COLOURS, chartRows, pages, teamSummary } from "@/lib/formLines";
+import { SERIES_COLOURS, chartRows, pages, teamSummary, PAGE_SIZE } from "@/lib/formLines";
+import TrackingAdvice, { FLAGS, NextFixtures } from "@/components/TrackingAdvice";
 
 // FORM — every team you care about on one line chart, ten at a time.
 //
@@ -105,6 +106,16 @@ export default function FormGraph() {
   const [focus, setFocus] = useState(null);
   const [reload, setReload] = useState(0);
   const [hoverAgo, setHoverAgo] = useState(null);
+  const [advice, setAdvice] = useState(null);
+  const [pendingFocus, setPendingFocus] = useState(null);
+
+  // Start / stop tracking prompts. Loaded once per change to the lists, not per toggle.
+  useEffect(() => {
+    if (!ready) return;
+    let alive = true;
+    api.trackingSuggestions().then((d) => alive && setAdvice(d)).catch(() => alive && setAdvice(null));
+    return () => { alive = false; };
+  }, [ready, user, reload]);
 
   // Signed out, the personal lists are empty, so start them on a league instead.
   useEffect(() => { if (ready && !user) setSource("league"); }, [ready, user]);
@@ -121,6 +132,19 @@ export default function FormGraph() {
   }, [ready, source, leagueId, reload]);
 
   const teams = useMemo(() => data?.teams || [], [data]);
+
+  // A "heads up" row was tapped: once its list has loaded, page to the team and focus it.
+  useEffect(() => {
+    if (!pendingFocus || !teams.length) return;
+    const i = teams.findIndex((t) => t.team_id === pendingFocus);
+    if (i >= 0) { setPage(Math.floor(i / PAGE_SIZE)); setFocus(pendingFocus); }
+    setPendingFocus(null);
+  }, [pendingFocus, teams]);
+  const focusFromAdvice = (o) => {
+    if (o.list && o.list !== source) setSource(o.list);
+    setPendingFocus(o.team_id);
+  };
+  const outlookOf = (tid) => advice?.watched?.[tid] || (advice?.suggestions || []).find((o) => o.team_id === tid);
   const pageList = useMemo(() => pages(teams), [teams]);
   const onPage = useMemo(() => pageList[page] || [], [pageList, page]);
   const opts = useMemo(() => ({ venue, window: win, metric, mode }), [venue, win, metric, mode]);
@@ -228,6 +252,12 @@ export default function FormGraph() {
                   <span className="h-2.5 w-2.5 rounded-full" style={{ background: colourOf(i) }} />
                   <span className="text-foreground">{t.name}</span>
                   {t.tracked_at && <Eye className="h-3 w-3 text-amber-400" />}
+                  {(() => {
+                    const f = FLAGS[advice?.watched?.[t.team_id]?.flag];
+                    if (!f) return null;
+                    const I = f.icon;
+                    return <I className={`h-3 w-3 ${f.tone}`} aria-label={f.text} />;
+                  })()}
                 </button>
               ))}
             </div>
@@ -345,6 +375,23 @@ export default function FormGraph() {
             ) : <div />}
           </div>
 
+          {(() => {
+            const o = outlookOf(focused.team_id);
+            if (!o) return null;
+            const f = FLAGS[o.flag];
+            return (
+              <div className="mt-3" data-testid="fg-outlook">
+                {f && (
+                  <p className={`text-[12px] mb-1 ${f.tone}`}>
+                    <b>{f.text}.</b> <span className="text-muted-foreground">{f.say}</span>
+                  </p>
+                )}
+                <p className="text-[10px] text-muted-foreground uppercase tracking-wider mb-0.5">Next fixtures</p>
+                <NextFixtures games={o.next} />
+              </div>
+            );
+          })()}
+
           <div className="mt-3 space-y-1 text-[12px]">
             {summary.best && (
               <p>
@@ -365,6 +412,7 @@ export default function FormGraph() {
           </div>
         </section>
       )}
+      <TrackingAdvice data={advice} onFocus={focusFromAdvice} />
     </div>
   );
 }

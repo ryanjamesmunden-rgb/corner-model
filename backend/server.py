@@ -4152,6 +4152,61 @@ def _form_rows(teams, leagues, window: int, min_games: int) -> List[dict]:
     return rows
 
 
+@api_router.get("/tools/streaks.csv")
+async def tools_streaks_csv(subject: str = "shots", direction: str = "over",
+                            window: int = 5, min_hits: int = 5, side: str = "overall",
+                            within_days: Optional[int] = 7,
+                            league_id: Optional[str] = None,
+                            threshold: Optional[int] = None, limit: int = 200,
+                            token: Optional[str] = None,
+                            user: dict = Depends(get_current_user)):
+    """The live streak board as CSV, for any subject — including the shot ones.
+
+    WHY THIS EXISTS. /streaks is members-only and answers over HTTP, so there was no way
+    to read the board from a workflow, and `tools/sheet.csv` deliberately does not use it
+    (its kind=form gives every team and every line, which is the right shape for a
+    spreadsheet and the wrong one for "what is running this week"). kind=form also only
+    ladders CORNERS 5+ to 8+, so no existing export can show a shots run at all.
+
+    CALLED INTERNALLY WITH response=None, which is what returns the whole board rather
+    than a non-member's taste — see _preview, where `response is None` is the documented
+    internal path that perfect_games and best_bets already use. Token-gated like the rest
+    of /tools, because this reaches the paid board.
+
+    `min_line` IS TAKEN FROM THE SUBJECT'S OWN FLOOR, not left at the endpoint's default
+    of 3. Three is a corner line; on a shots subject it would wave through "3+ shots",
+    which every side in every division clears every week.
+    """
+    _check_tools_token(token)
+    if subject not in STREAK_LADDERS:
+        raise HTTPException(400, f"subject must be one of {sorted(STREAK_LADDERS)}")
+    rows = await streaks(
+        league_id=league_id, side=side, window=max(2, min(window, 20)),
+        min_hits=min_hits, threshold=threshold,
+        min_line=OVER_LINE_FLOOR.get(subject, 3),
+        within_days=within_days, direction=direction, subject=subject,
+        response=None, user={})
+    out = []
+    for r in rows[:max(1, min(limit, 500))]:
+        nf = r.get("next_fixture") or {}
+        cur = r.get("streak") or {}
+        out.append({
+            "team": r.get("name"), "league": r.get("league_name"),
+            "line": r.get("line_label"), "direction": r.get("direction"),
+            "run": cur.get("length"), "since": cur.get("start_date"),
+            "hits": r.get("hits"), "settled": r.get("settled"),
+            "voids": r.get("voids"), "window": r.get("window"),
+            "hit_rate": r.get("hit_rate"), "avg": r.get("avg"),
+            "lowest": r.get("min_won"), "highest": r.get("max_won"),
+            # An average over three of five games is not the evidence five is, and on a
+            # shot subject the gap is the provider's rather than the team's.
+            "covered": r.get("covered"), "games_on_file": r.get("real_samples"),
+            "opponent": nf.get("opponent"), "venue": "H" if nf.get("is_home") else "A",
+            "kickoff": nf.get("date"), "fixture_id": nf.get("fixture_id"),
+        })
+    return _csv_response(out, f"streaks-{subject}-{direction}.csv")
+
+
 @api_router.get("/tools/sheet.csv")
 async def tools_sheet_csv(kind: str = "form", days: int = 7, window: int = 5,
                           min_games: int = 5, token: Optional[str] = None,
@@ -6401,6 +6456,33 @@ def streak_qualifies(hits: int, voids: int, run_length: int, min_hits: int, floo
     return hits >= floor and hits + voids >= min_hits and run_length >= floor
 
 
+def streak_spread(values: List[Optional[int]]) -> dict:
+    """What the side actually produced over the window: the average and the range.
+
+    OVER THE COVERED GAMES ONLY, and this is not a nicety. A shot subject answers None for
+    a game the provider filed no shots for, and `sum()`, `min()` and `max()` all raise on
+    a list containing one — so the row builder in /streaks would 500 the entire board, for
+    every reader, the moment a single side in any league had a gap inside its last five.
+    At 99.7% coverage over five-game windows that is roughly fifteen sides out of a
+    thousand, which in practice means always.
+
+    `covered` is returned beside the figures because an average over three of five games
+    is not the same evidence as one over five, and the row has to be able to say so —
+    the same rule team_features already applies to every shot average on the site.
+
+    A qualifying row always has at least one covered game (pick_streak_line needs a win,
+    and a win needs a value), so `avg` is only None on a pool that could not have produced
+    a row. It is still returned rather than assumed, because the caller sorts on it.
+    """
+    covered = [v for v in values if v is not None]
+    if not covered:
+        return {"avg": None, "min": None, "max": None,
+                "covered": 0, "games": len(values)}
+    return {"avg": round(sum(covered) / len(covered), 2),
+            "min": min(covered), "max": max(covered),
+            "covered": len(covered), "games": len(values)}
+
+
 def streak_line_label(line: int, direction: str, subject: str = "team") -> str:
     """The line as a chip.
 
@@ -6909,6 +6991,7 @@ async def streaks(league_id: Optional[str] = None, side: str = "overall", window
         runs = streak_runs(streak_legs(history, line, direction, subject))
         if not streak_qualifies(hits, voids, runs["current"]["length"], min_hits, floor):
             continue
+        spread = streak_spread(values)
         recent = [{"corners": lg["value"], "value": lg["value"], "result": lg["result"],
                    "opponent": m["opponent"], "home": m["home"], "date": m["date"]}
                   for m, lg in zip(reversed(pool), reversed(legs))]
@@ -6945,16 +7028,19 @@ async def streaks(league_id: Optional[str] = None, side: str = "overall", window
             "settled": hits + misses, "line": line,
             "line_label": streak_line_label(line, direction, subject),
             "hit_rate": round(hits / (hits + misses) * 100, 1) if (hits + misses) else 0.0,
-            "avg": round(sum(values) / len(values), 2), "min_won": min(values), "max_won": max(values),
+            # OVER THE COVERED GAMES, via streak_spread — summing a list that holds a
+            # None for an uncovered shots game raises and takes the whole board with it.
+            "avg": spread["avg"], "min_won": spread["min"], "max_won": spread["max"],
+            "covered": spread["covered"],
             "streak": runs["current"], "longest": runs["longest"],
             "real_samples": t.get("real_samples", 0), "recent": recent,
             "next_fixture": nf, "projection": projection,
         })
     # tightest under / highest over first, then the most reliable and longest runs
     if direction == "under":
-        results.sort(key=lambda x: (-x["line"], x["hits"], x["streak"]["length"], -x["avg"]), reverse=True)
+        results.sort(key=lambda x: (-x["line"], x["hits"], x["streak"]["length"], -(x["avg"] or 0)), reverse=True)
     else:
-        results.sort(key=lambda x: (x["line"], x["hits"], x["streak"]["length"], x["avg"]), reverse=True)
+        results.sort(key=lambda x: (x["line"], x["hits"], x["streak"]["length"], x["avg"] or 0), reverse=True)
     return _preview(results, user, response)
 
 

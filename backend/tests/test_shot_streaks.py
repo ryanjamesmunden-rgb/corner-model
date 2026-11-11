@@ -214,3 +214,56 @@ def test_shots_are_not_added_to_the_browse_board():
     line = next(l for l in src.splitlines() if l.startswith("BROWSE_SUBJECTS = "))
     for s in SHOT_KEYS:
         assert s not in line, f"{s} must not reach the browse margin test"
+
+
+# --- the aggregate the row is built from, which a None would have crashed -------------
+
+spread = NS["streak_spread"]
+
+
+def test_the_average_skips_an_uncovered_game():
+    """THE BUG THIS CAUGHT, and it was in the consumer rather than the helpers. The row
+    builder in /streaks did sum(values)/len(values) with min() and max() beside it, and
+    all three raise on a list holding a None — so one side anywhere with a gap inside its
+    last five would have returned a 500 for the whole board, for every reader. At 99.7%
+    coverage over five-game windows that is about fifteen sides in a thousand."""
+    out = spread([14, 15, None, 16, 15])
+    assert out["avg"] == 15.0
+    assert out["min"] == 14 and out["max"] == 16
+    assert out["covered"] == 4 and out["games"] == 5
+
+
+def test_a_fully_covered_window_is_unchanged():
+    out = spread([6, 4, 5])
+    assert out["avg"] == 5.0 and out["min"] == 4 and out["max"] == 6
+    assert out["covered"] == 3 and out["games"] == 3
+
+
+def test_a_window_with_nothing_covered_answers_none_rather_than_raising():
+    """Cannot reach a qualifying row — pick_streak_line needs a win and a win needs a
+    value — but it is returned rather than assumed, because the caller sorts on avg."""
+    out = spread([None, None])
+    assert out["avg"] is None and out["min"] is None and out["max"] is None
+    assert out["covered"] == 0 and out["games"] == 2
+
+
+def test_an_empty_window_is_safe():
+    assert spread([])["avg"] is None
+
+
+def test_a_genuine_zero_is_counted_not_skipped():
+    """Corners can genuinely be 0 and must stay in the average; only None is absence."""
+    out = spread([0, 4, 2])
+    assert out["avg"] == 2.0 and out["min"] == 0 and out["covered"] == 3
+
+
+def test_the_row_builder_uses_the_spread_and_not_raw_values():
+    src = _src()
+    loop = src[src.index("spread = streak_spread(values)"):]
+    loop = loop[:loop.index('"next_fixture": nf')]
+    assert '"avg": spread["avg"]' in loop
+    assert "sum(values)" not in loop and "min(values)" not in loop
+    # The sorts read avg, so a None there would raise on comparison too.
+    tail = src[src.index('results.sort(key=lambda x: (-x["line"]'):]
+    tail = tail[:tail.index("return _preview(results")]
+    assert 'x["avg"] or 0' in tail

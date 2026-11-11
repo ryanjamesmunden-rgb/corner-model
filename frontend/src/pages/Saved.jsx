@@ -6,6 +6,7 @@ import { withFlag } from "@/lib/countryFlag";
 import { useAuth } from "@/context/AuthContext";
 import StarButton from "@/components/StarButton";
 import TeamStar from "@/components/TeamStar";
+import TeamFormChart from "@/components/TeamFormChart";
 
 // The games you starred, to come back to once prices are up.
 //
@@ -92,12 +93,14 @@ export default function Saved() {
                 </span>
                 <TeamStar teamId={t.team_id} teamName={t.name} className="ml-auto" />
               </div>
+              {/* Their corner form, last 20 real games, flickable by venue / window / metric. */}
+              <TeamFormChart form={t.form} teamName={t.name} />
               {t.fixtures.length === 0 ? (
-                <p className="mt-2 text-xs text-muted-foreground">
+                <p className="mt-3 text-xs text-muted-foreground">
                   Nothing scheduled in the next 30 days.
                 </p>
               ) : (
-                <div className="mt-2 divide-y divide-border/50">
+                <div className="mt-3 pt-1 border-t border-border/50 divide-y divide-border/50">
                   {t.fixtures.slice(0, 5).map((f) => {
                     const k = kickoff(f.date);
                     return (

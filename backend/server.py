@@ -1223,6 +1223,36 @@ async def remove_favourite(fixture_id: str, user: dict = Depends(require_user)):
 # fixture star is spent once the game kicks off, a team star is meant to outlive seasons.
 
 
+#: How many games the followed-team form graph draws. The sync keeps twenty real games per
+#: side (sync_real: `real_matches = ...[-20:]`), so this is "everything on file".
+FAVOURITE_FORM_GAMES = 20
+
+
+def _favourite_team_form(team, limit: int = FAVOURITE_FORM_GAMES):
+    """A followed side's last `limit` REAL games, OLDEST FIRST — the order a graph reads.
+
+    Real matches only, never `matches`: sync_real pads a thin side with synthetic games,
+    and a bar on a form graph that no scoreline can back up is worse than a shorter graph.
+    Sorted on the date rather than trusting the stored order. Home/away and last-5/10
+    slicing is left to the page, because the toggle should not cost a round trip.
+
+    The same per-game numbers the fixture page already shows to everyone, so following a
+    team gives no member-only data away.
+    """
+    rms = [m for m in ((team or {}).get("real_matches") or [])
+           if m.get("corners_for") is not None]
+    rms = sorted(rms, key=lambda m: str(m.get("date") or ""))[-limit:]
+    out = []
+    for m in rms:
+        ca = m.get("corners_against")
+        out.append({"date": m.get("date"), "opponent": m.get("opponent"),
+                    "home": bool(m.get("home")), "season": m.get("season"),
+                    "won": m["corners_for"], "conceded": ca,
+                    "total": (m["corners_for"] + ca) if ca is not None else None,
+                    "gf": m.get("goals_for"), "ga": m.get("goals_against")})
+    return out
+
+
 @api_router.get("/favourites/teams")
 async def list_favourite_teams(user: dict = Depends(require_user), within_days: int = 30):
     """Followed teams with their upcoming fixtures — the point of following one.
@@ -1278,6 +1308,7 @@ async def list_favourite_teams(user: dict = Depends(require_user), within_days: 
                     "league_name": leagues.get(t["league_id"], ""),
                     "starred_at": starred_at.get(tid),
                     "real_samples": t.get("real_samples", 0),
+                    "form": _favourite_team_form(t),
                     "fixtures": upcoming.get(tid, [])})
     # Teams with a game soonest first; those with nothing scheduled fall to the bottom
     # rather than being hidden, because "no fixture found" is information too.

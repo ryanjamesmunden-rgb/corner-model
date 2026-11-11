@@ -5655,6 +5655,66 @@ def _real_avg(team, side, field):
 #: sync_real keeps UPCOMING_FIXTURES (80) per competition, and there are 36 of them, so
 #: the worst case is 2880 documents. The old value was a flat 2000, which silently sat
 #: BELOW that from the moment the Swedish and second-tier leagues went in.
+PLAYED_SCAN = 3000
+
+# MUST MATCH sync_real.PLAYED_KEEP_DAYS, and it cannot simply import it: sync_real reads
+# API_FOOTBALL_KEY at module scope, so server.py importing it would make the backend
+# refuse to start without a provider key. That is the same constraint that put the league
+# list in leagues_meta.py. Duplicated deliberately and pinned by test_played_fixtures,
+# which parses both files and fails if the two numbers ever drift — the sync is what
+# actually enforces the window, so a disagreement here would have the API stating a
+# retention period the data does not have.
+PLAYED_KEEP_DAYS = 30
+
+
+@api_router.get("/fixtures/played")
+async def fixtures_played(days: Optional[int] = None, league_id: Optional[str] = None,
+                          limit: int = 200, user: dict = Depends(get_current_user)):
+    """Games that have been played, with the score and the corner count.
+
+    WHY THIS IS A SEPARATE STORE AND NOT A STATUS ON db.fixtures. Twenty-two call sites
+    read db.fixtures and only five of them test `status`: the one that sorts ascending on
+    date to find each team's NEXT game would have returned a game from last week, the
+    boards that walk every row would have handed a finished fixture a projection, and the
+    league yardsticks would have counted it twice. Keeping results in their own collection
+    means a results view cannot leak into a board that means "what is on" — the same
+    reasoning that keeps db.odds_feed out of db.odds.
+
+    THE RETENTION WINDOW LIVES IN THE SYNC, not here. sync_real rebuilds this collection
+    from the provider's own fixture list on every run and simply does not re-insert a game
+    older than PLAYED_KEEP_DAYS, so there is nothing to prune and no way for the store and
+    the stated window to disagree. `days` here only narrows what a caller wants to see
+    inside that window; asking for more than the sync keeps cannot conjure older games.
+
+    `corners_known` IS NOT DECORATION. A fixture whose statistics were never fetched comes
+    back with null corners rather than zero, because 0-0 corners is a real result and
+    "nobody asked the provider" is not. A caller must not render the second as the first.
+    """
+    # Annotated `dict` and not Dict[str, Any]: `Any` is not in this file's typing import,
+    # and naming it there is a NameError at import time that takes the whole backend down
+    # on deploy rather than failing this one endpoint. That has happened twice here.
+    q: dict = {}
+    if league_id and league_id != "all":
+        q["league_id"] = league_id
+    if days:
+        cutoff = datetime.now(timezone.utc) - timedelta(days=max(1, int(days)))
+        q["date"] = {"$gte": cutoff.isoformat()}
+    rows = await db.fixtures_played.find(q, {"_id": 0}).to_list(PLAYED_SCAN)
+    # Newest first: a results view is read from the top, and the most recent round is the
+    # one anybody opening it is looking for.
+    rows.sort(key=lambda r: str(r.get("date") or ""), reverse=True)
+    rows = rows[:max(1, min(limit, 500))]
+    leagues = {l["league_id"]: l.get("name", "")
+               for l in await db.leagues.find({}, {"_id": 0}).to_list(200)}
+    for r in rows:
+        r["league_name"] = leagues.get(r.get("league_id"), "")
+    return {"fixtures": rows, "count": len(rows),
+            # Stated rather than assumed, so a caller can say "last 30 days" without
+            # hardcoding a number that only the sync actually controls.
+            "keep_days": PLAYED_KEEP_DAYS,
+            "with_corners": sum(1 for r in rows if r.get("corners_known"))}
+
+
 NEXT_FIXTURE_SCAN = 6000
 
 
@@ -12028,6 +12088,11 @@ async def on_startup():
         await db.leagues.delete_many({"league_id": {"$in": stale_ids}})
         await db.teams.delete_many({"league_id": {"$in": stale_ids}})
         await db.fixtures.delete_many({"league_id": {"$in": stale_ids}})
+        # The played-fixture store is keyed by league_id the same way, so a competition
+        # removed from CUP_META or LEAGUE_META has to lose its results too. Leaving them
+        # would keep a deleted competition visible on the site for up to a month, with
+        # no teams behind it to label the rows.
+        await db.fixtures_played.delete_many({"league_id": {"$in": stale_ids}})
         logger.info("Removed stale leagues: %s", stale_ids)
     # Prices left pointing at fixtures that no longer exist. Harmless-looking, and they
     # silently starved the value board of every real price for a week — see the helper.

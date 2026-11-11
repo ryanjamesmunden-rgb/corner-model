@@ -2,7 +2,7 @@ import { useState, useEffect } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import MobileNav from "@/components/MobileNav";
 import { CornerDownRight, LayoutDashboard, Radar, Flame, Zap, Star, Sparkles, Receipt, Trophy,
-         TrendingUp, Globe, ShieldCheck, Activity } from "lucide-react";
+         TrendingUp, Globe, ShieldCheck, Activity, Bell } from "lucide-react";
 import { LeagueContext } from "@/context/LeagueContext";
 import ExportMenu from "@/components/ExportMenu";
 import { api } from "@/lib/api";
@@ -61,6 +61,9 @@ export default function Layout({ children }) {
     // item that always leads to a wall teaches people the nav is lying.
     ...(user ? [{ to: "/projections", label: "Projected", icon: TrendingUp }] : []),
     { to: "/saved", label: "Saved", icon: Star },
+    // Signed-in only: the page is both lists ranked, and an empty one would be a
+    // nav entry that can only explain why it is empty.
+    ...(user ? [{ to: "/my-teams", label: "My Teams", icon: Bell }] : []),
     // Corner form line chart: favourites, tracked teams, or a whole league, ten a page.
     { to: "/form", label: "Form", icon: Activity },
     { to: "/bets", label: "Bets", icon: Receipt },

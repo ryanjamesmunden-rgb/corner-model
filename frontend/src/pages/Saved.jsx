@@ -93,8 +93,12 @@ export default function Saved() {
                 </span>
                 <TeamStar teamId={t.team_id} teamName={t.name} className="ml-auto" />
               </div>
-              {/* Their corner form, last 20 real games, flickable by venue / window / metric. */}
-              <TeamFormChart form={t.form} teamName={t.name} />
+              {/* THE FIXTURES COME FIRST, and that is a correction rather than a preference.
+                  Following a side has always answered "what have they got coming up" —
+                  the favourites endpoint returns the next few games precisely because
+                  one game would just be a slower fixture star — and putting a
+                  twenty-game chart above that list replaced the answer with the
+                  evidence for it. The form is still here, one tap down. */}
               {t.fixtures.length === 0 ? (
                 <p className="mt-3 text-xs text-muted-foreground">
                   Nothing scheduled in the next 30 days.
@@ -122,6 +126,14 @@ export default function Saved() {
                   })}
                 </div>
               )}
+              <details className="mt-3 group">
+                <summary className="text-[11px] text-muted-foreground cursor-pointer
+                  list-none flex items-center gap-1 hover:text-foreground transition-colors">
+                  <ChevronRight className="h-3 w-3 transition-transform group-open:rotate-90" />
+                  Corner form — last 20 games
+                </summary>
+                <TeamFormChart form={t.form} teamName={t.name} />
+              </details>
             </div>
           ))}
         </section>

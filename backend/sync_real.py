@@ -601,6 +601,12 @@ async def sync_league(hc, my_lid):
     # rather than fatal today only because the leagues are failing earlier than this.
     print(f"[{my_lid}] DONE teams={len(team_docs)} fixtures={len(fixture_docs)}")
     return {"teams": len(team_docs), "fixtures": len(fixture_docs),
+            # The results half, reported for the same reason the fixture count is: a
+            # store that quietly stays empty is indistinguishable from one that is
+            # working, and the report is where that gets noticed. No `stat_calls` here —
+            # the league path spends nothing, because the stats loop above has already
+            # fetched and cached everything it reads.
+            "played": len(played_docs), "played_with_corners": known,
             "cache_hit": len(cached), "api_fetched": fetched, "feature_coverage": coverage}
 
 

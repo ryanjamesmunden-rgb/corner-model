@@ -342,3 +342,49 @@ def test_cups_are_not_reported_twice():
     assert "8 fixture(s) stored" in out
     assert "stored 0 teams" not in out
     assert "::warning::" not in out
+
+
+class TestPlayedFixturesInTheReport:
+    """The results half of a sync, said on the line the sync is read from.
+
+    A sync that keeps played games for a month is invisible in a report that counts only
+    upcoming ones, and "is the results view filling up" is exactly what this line gets
+    asked. The gap between kept and with-corners is the part worth seeing: a result with
+    no corner count is a row the corner model cannot be judged on.
+    """
+
+    def test_a_league_says_how_many_results_it_kept(self):
+        code, out = _run([_run_doc(status="ok", targets=["eng-l1"], leagues=[{"league_id": "eng-l1", "status": "ok", "teams": 24,
+                                    "fixtures": 10, "played": 31,
+                                    "played_with_corners": 31}])])
+        assert "kept 31 played" in out
+        assert "with corners" not in out, "no gap, so nothing to qualify"
+
+    def test_a_gap_in_corner_coverage_is_shown(self):
+        code, out = _run([_run_doc(status="ok", targets=["eng-l1"], leagues=[{"league_id": "eng-l1", "status": "ok", "teams": 24,
+                                    "fixtures": 10, "played": 31,
+                                    "played_with_corners": 28}])])
+        assert "kept 31 played (28 with corners)" in out
+
+    def test_an_older_run_record_says_nothing_rather_than_zero(self):
+        """A run from before the store existed has no `played` key, and printing 0 for it
+        would read as "kept none" — a claim about the data rather than about the record."""
+        code, out = _run([_run_doc(status="ok", targets=["eng-l1"], leagues=[{"league_id": "eng-l1", "status": "ok", "teams": 24,
+                                    "fixtures": 10}])])
+        assert "kept" not in out
+
+    def test_a_cup_shows_what_its_results_cost(self):
+        """The cup path is the only one that spends to keep results — one statistics call
+        per uncached tie. It should be zero on every run after the first for a round, so a
+        figure that keeps climbing is a bill, not a detail."""
+        code, out = _run([_run_doc(status="ok", leagues=[{"league_id": "eflt", "status": "ok", "teams": 0,
+                                    "fixtures": 3, "played": 14,
+                                    "played_with_corners": 14, "stat_calls": 14}])])
+        assert "kept 14 played" in out and "14 stat call(s)" in out
+
+    def test_a_cached_cup_round_reports_no_calls(self):
+        code, out = _run([_run_doc(status="ok", leagues=[{"league_id": "eflt", "status": "ok", "teams": 0,
+                                    "fixtures": 3, "played": 14,
+                                    "played_with_corners": 14, "stat_calls": 0}])])
+        assert "kept 14 played" in out
+        assert "stat call" not in out, "zero is the normal case and needs no words"

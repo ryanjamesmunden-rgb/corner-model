@@ -7,7 +7,7 @@ import os
 import sys
 import asyncio
 import random
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import httpx
 from dotenv import load_dotenv
@@ -121,6 +121,86 @@ def is_upcoming(f, now=None) -> bool:
         return False
     dt = fixture_dt(f)
     return dt is not None and dt > (now or datetime.now(timezone.utc))
+
+
+# A GAME CAN FINISH THREE WAYS AND ONLY ONE OF THEM IS "FT".
+#
+# The league syncs filter on `status == "FT"` and that is correct for a league, where
+# nothing goes to extra time. It is wrong for a cup: an EFL Trophy tie level after ninety
+# minutes is settled on penalties, and the provider marks those AET and PEN. Filtering FT
+# alone would drop exactly the ties that went the distance — a biased hole in the record
+# rather than a random one, since a drawn game is a different game from a decided one.
+#
+# The corner statistics for an AET fixture cover the whole match, which is also what the
+# corner lines were priced on, so no adjustment belongs here.
+FINISHED_STATUSES = ("FT", "AET", "PEN")
+
+# HOW LONG A PLAYED FIXTURE STAYS ON THE SITE.
+#
+# Rebuilt from the provider's own fixture list on every sync, so nothing accumulates and
+# there is no pruning job to forget: a game simply stops being re-inserted once it falls
+# outside the window. That also means the window can be changed by editing this number,
+# with the next sync applying it in both directions.
+PLAYED_KEEP_DAYS = 30
+
+# Cup statistics cost ONE CALL PER FIXTURE and league statistics cost nothing — the league
+# syncs already fetch and permanently cache them to build team history, while sync_cup
+# fetches none at all. So this caps the cup path only. Newest first, because a results page
+# is read from the top and the most recent round is the one anyone is looking for.
+PLAYED_STATS_CAP = 40
+
+
+def is_recently_played(f, now=None, days=PLAYED_KEEP_DAYS) -> bool:
+    """Has this fixture been played, and recently enough to still be worth showing?
+
+    Both halves matter. Without the status test an abandoned or postponed game would be
+    kept as a result; without the date test the window would be the whole season, which
+    is a different feature and a much larger one.
+    """
+    short = (((f or {}).get("fixture") or {}).get("status") or {}).get("short")
+    if short not in FINISHED_STATUSES:
+        return False
+    dt = fixture_dt(f)
+    if dt is None:
+        return False
+    cutoff = (now or datetime.now(timezone.utc)) - timedelta(days=days)
+    return dt >= cutoff
+
+
+def _as_int(v):
+    """An integer stat, or None. Bools are refused: isinstance(True, int) is True, and a
+    True sneaking into a corner count would render as 1 corner and settle as a 1+ hit."""
+    if isinstance(v, bool) or not isinstance(v, (int, float)):
+        return None
+    return int(v)
+
+
+def result_fields(f, stats=None) -> dict:
+    """The outcome half of a played fixture: how it finished, the score, the corners.
+
+    `stats` is a db.fixture_stats document — keyed by the PROVIDER's fixture id, not ours
+    — or None when no statistics call has been made for this game yet.
+
+    CORNERS ARE None AND NEVER ZERO WHEN THEY ARE UNKNOWN. A 0-0 corner count is a real
+    result, and "nobody has fetched this yet" is not; a results page that prints 0 for the
+    second is wrong in the most believable way available to it. `corners_known` is carried
+    so a reader does not have to infer the difference from a blank.
+    """
+    fx = (f or {}).get("fixture") or {}
+    g = (f or {}).get("goals") or {}
+    s = stats or {}
+    hc, ac = _as_int(s.get("home_corners")), _as_int(s.get("away_corners"))
+    total = hc + ac if hc is not None and ac is not None else None
+    return {
+        "status": "played",
+        # FT, AET or PEN — whether a tie was decided inside ninety minutes is a fact about
+        # the game that a corner count cannot show and a reader will want.
+        "finished_as": (fx.get("status") or {}).get("short"),
+        "home_goals": _as_int(g.get("home")), "away_goals": _as_int(g.get("away")),
+        "home_corners": hc, "away_corners": ac, "total_corners": total,
+        "corners_known": total is not None,
+    }
+
 
 # Shot-volume stats pulled out of /fixtures/statistics alongside corners. The provider
 # labels these inconsistently across leagues (and "Dangerous Attacks" is only present
@@ -442,6 +522,49 @@ async def sync_league(hc, my_lid):
     if fixture_docs:
         await db.fixtures.insert_many(fixture_docs)
 
+    # PLAYED FIXTURES, KEPT SO THE SITE CAN SHOW WHAT HAPPENED.
+    #
+    # A SEPARATE COLLECTION, and that is the whole design — the same reasoning that keeps
+    # db.odds_feed out of db.odds. Twenty-two call sites read db.fixtures and only five of
+    # them test `status`, so a played row added there would be picked up as the "next
+    # fixture" by the one that sorts ascending on date, handed a projection by the boards
+    # that walk every row, and counted in the league yardsticks. Kept apart, a results
+    # view cannot leak into a board that means "what is on".
+    #
+    # FREE FOR A LEAGUE. The stats loop above has already fetched and permanently cached
+    # every recent finished game's corners to build team history, so this re-reads the
+    # cache rather than the provider. A fixture inside the window that the loop never
+    # reached — it keeps only the last STATS_CAP — comes back with corners None and says
+    # so through `corners_known`, instead of being dropped or shown as 0-0.
+    played_docs = []
+    in_window = [f for f in ft if is_recently_played(f)]
+    if in_window:
+        pstats = {}
+        async for c in db.fixture_stats.find(
+                {"_id": {"$in": [f["fixture"]["id"] for f in in_window]}}):
+            pstats[c["_id"]] = c
+        for f in in_window:
+            hid, aid = f["teams"]["home"]["id"], f["teams"]["away"]["id"]
+            played_docs.append({
+                # Same derivation as the upcoming row, so a fixture keeps its id across
+                # the moment it is played and anything keyed to it still resolves.
+                "fixture_id": f"{my_lid}-{f['fixture']['id']}", "league_id": my_lid,
+                "api_fixture_id": f["fixture"]["id"],
+                "round": _round_label((f.get("league") or {}).get("round")) or "",
+                "home_team_id": f"{my_lid}-{hid}", "away_team_id": f"{my_lid}-{aid}",
+                "home_name": f["teams"]["home"]["name"],
+                "away_name": f["teams"]["away"]["name"],
+                "date": f["fixture"]["date"],
+                **result_fields(f, pstats.get(f["fixture"]["id"])),
+            })
+    # Rebuilt, not appended: the delete is what enforces the retention window, because a
+    # game outside it is simply not in `played_docs` to be re-inserted.
+    await db.fixtures_played.delete_many({"league_id": my_lid})
+    if played_docs:
+        await db.fixtures_played.insert_many(played_docs)
+    known = sum(1 for d in played_docs if d["corners_known"])
+    print(f"[{my_lid}] played kept={len(played_docs)} with corners={known}")
+
     # THE ODDS DELETE IS GONE, and removing it is not optional now.
     #
     # It existed to clear fabricated prices: the sync used to synthesise bookmaker odds —
@@ -481,7 +604,8 @@ async def sync_league(hc, my_lid):
             "cache_hit": len(cached), "api_fetched": fetched, "feature_coverage": coverage}
 
 
-def cup_fixture_docs(cup_id, upcoming, by_api, min_games=cups.CUP_MIN_GAMES):
+def cup_fixture_docs(cup_id, upcoming, by_api, min_games=cups.CUP_MIN_GAMES,
+                     status="upcoming"):
     """Provider fixtures -> our fixture documents, with each side resolved to its DOMESTIC
     team row. Pure, so the resolution rules are testable without a database or an API key.
 
@@ -506,10 +630,17 @@ def cup_fixture_docs(cup_id, upcoming, by_api, min_games=cups.CUP_MIN_GAMES):
             # sync_league about why these are NOT uuid4.
             "fixture_id": f"{cup_id}-{f['fixture']['id']}", "league_id": cup_id,
             "api_fixture_id": f["fixture"]["id"],
-            "round": _round_label((f.get("league") or {}).get("round")) or "Upcoming",
+            "round": (_round_label((f.get("league") or {}).get("round"))
+                      or ("Upcoming" if status == "upcoming" else "")),
             "home_team_id": home["team_id"], "away_team_id": away["team_id"],
             "home_name": f["teams"]["home"]["name"], "away_name": f["teams"]["away"]["name"],
-            "date": f["fixture"]["date"], "status": "upcoming",
+            "date": f["fixture"]["date"],
+            # SAME RESOLUTION RULES FOR A PLAYED TIE AS AN UPCOMING ONE, which is why
+            # `status` is a parameter rather than this function being copied. Both sides
+            # still have to resolve to a domestic team row: a result stored against a
+            # side the app does not know is a row no page can label and no claim can
+            # settle against, so "both sides or neither" holds after the whistle too.
+            "status": status,
             # STORED ON THE ROW so every reader downstream can see what it is holding
             # without re-deriving it from two team lookups. `cross_league` is what the
             # transfer caveat hangs off, and it is FALSE for an all-English tie in
@@ -570,6 +701,68 @@ async def sync_cup(hc, cup_id):
     if docs:
         await db.fixtures.insert_many([dict(d) for d in docs])
 
+    # PLAYED TIES, AND THE ONE PLACE IN THIS FEATURE THAT SPENDS CREDITS.
+    #
+    # A league sync fetches every recent finished game's statistics anyway, to build team
+    # history, so the league path above reads a cache. A cup sync builds no team data and
+    # fetches no statistics at all, so each uncached tie costs one /fixtures/statistics
+    # call. They are cached permanently afterwards, keyed by the provider's fixture id, so
+    # this is one call per tie EVER rather than per sync — a round of fourteen costs
+    # fourteen once and nothing on every run after.
+    #
+    # Newest first and capped: a results view is read from the top, and the cap is what
+    # stops a first run on a competition with a long season turning into a backfill
+    # nobody asked for.
+    recent_played = sorted((f for f in fixtures if is_recently_played(f)),
+                           key=lambda f: f["fixture"]["date"], reverse=True)
+    pdocs, pskip = cup_fixture_docs(cup_id, recent_played[:PLAYED_STATS_CAP], by_api,
+                                    status="played")
+    raw = {f["fixture"]["id"]: f for f in recent_played}
+    out, stat_calls = [], 0
+    for d in pdocs:
+        fid = d["api_fixture_id"]
+        f = raw.get(fid)
+        if f is None:                      # cannot happen; a missing raw row is not a result
+            continue
+        cached_stat = await db.fixture_stats.find_one({"_id": fid})
+        if cached_stat is None:
+            try:
+                st = await af_get(hc, "/fixtures/statistics", {"fixture": fid})
+            except Exception as e:
+                print(f"  [{cup_id}] stat {fid} err {e}")
+                st = []
+            per = {t["team"]["id"]: parse_team_stats(t.get("statistics")) for t in st}
+            hid, aid = f["teams"]["home"]["id"], f["teams"]["away"]["id"]
+            hf, af_ = per.get(hid), per.get(aid)
+            if hf and af_ and hf.get("corners") is not None and af_.get("corners") is not None:
+                stat_calls += 1
+                g = f.get("goals") or {}
+                hth = ((f.get("score") or {}).get("halftime") or {})
+                cached_stat = {
+                    "_id": fid, "league_id": cup_id, "date": f["fixture"]["date"],
+                    "season": (f.get("league") or {}).get("season"),
+                    "home_id": hid, "away_id": aid,
+                    "home_corners": hf["corners"], "away_corners": af_["corners"],
+                    "home_shots": hf.get("shots") or 0, "away_shots": af_.get("shots") or 0,
+                    "home_goals": g.get("home") or 0, "away_goals": g.get("away") or 0,
+                    "home_fh_goals": hth.get("home") or 0,
+                    "away_fh_goals": hth.get("away") or 0,
+                    **{f"home_{k}": hf.get(k) for k in STAT_TYPES},
+                    **{f"away_{k}": af_.get(k) for k in STAT_TYPES},
+                }
+                # THE SAME CACHE THE LEAGUE SYNCS USE, deliberately. It is keyed by the
+                # provider's fixture id with no competition in the key, so a tie fetched
+                # here is never fetched again by anything.
+                await db.fixture_stats.update_one({"_id": fid}, {"$set": cached_stat},
+                                                  upsert=True)
+        out.append({**d, **result_fields(f, cached_stat)})
+    await db.fixtures_played.delete_many({"league_id": cup_id})
+    if out:
+        await db.fixtures_played.insert_many([dict(d) for d in out])
+    known = sum(1 for d in out if d["corners_known"])
+    print(f"[{cup_id}] played kept={len(out)} with corners={known} "
+          f"stat_calls={stat_calls} skipped={pskip or '{}'}")
+
     # A LEAGUE DOCUMENT WITH NO SHOT AVERAGES ON IT, on purpose. It exists so the cup has a
     # name to display and so boot cleanup recognises it; `avg_shots` and `avg_blocked` stay
     # absent because a cup has no teams to compute them from, and server.py reads those
@@ -580,7 +773,9 @@ async def sync_cup(hc, cup_id):
         "data_source": "cup", "is_cup": True, "teams_from": "domestic",
         "season": season, "synced_at": datetime.now(timezone.utc).isoformat()}}, upsert=True)
     print(f"[{cup_id}] DONE fixtures={len(docs)}")
-    return {"teams": 0, "fixtures": len(docs), "skipped": skipped}
+    return {"teams": 0, "fixtures": len(docs), "skipped": skipped,
+            "played": len(out), "played_with_corners": known,
+            "stat_calls": stat_calls}
 
 
 async def main():

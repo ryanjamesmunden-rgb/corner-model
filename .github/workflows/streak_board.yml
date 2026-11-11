@@ -1,0 +1,132 @@
+# The live streak board, printed — any subject, including the shot ones.
+#
+# WHY THIS EXISTS. /streaks is members-only and answers over HTTP, so there was no way to
+# read the board from here. tools/sheet.csv deliberately does not use it, and its
+# kind=form ladders CORNERS 5+ to 8+ only, so no existing export could show a shots run
+# at all. This is the third time a feature has shipped with the data unreachable; the
+# value record got its reader yesterday and this is the matching one.
+#
+# FREE. One GET against the database. No provider calls, so run it as often as you like.
+name: Streak board
+
+on:
+  workflow_dispatch:
+    inputs:
+      subject:
+        description: "What is counted"
+        required: true
+        default: shots
+        type: choice
+        options:
+          - shots            # a side's own shots
+          - shots_conceded   # shots it faces
+          - shots_match      # both sides added
+          - team             # corners won
+          - conceded         # corners conceded
+          - match            # match total corners
+      direction:
+        description: "Over the line, or under it"
+        required: false
+        default: over
+        type: choice
+        options: [over, under]
+      window:
+        description: "Games in the window"
+        required: false
+        default: "5"
+        type: string
+      min_hits:
+        description: "How many of them must land"
+        required: false
+        default: "5"
+        type: string
+      within_days:
+        description: "Only sides playing inside this many days — blank for any upcoming"
+        required: false
+        default: "7"
+        type: string
+      side:
+        description: "Venue split"
+        required: false
+        default: overall
+        type: choice
+        options: [overall, home, away]
+
+concurrency:
+  group: corner-streak-board
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  board:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Wake the backend
+        env:
+          BACKEND: ${{ vars.BACKEND_URL || 'https://corner-model.onrender.com' }}
+        run: |
+          for i in 1 2 3 4 5 6; do
+            code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 60 "$BACKEND/api/" || true)
+            echo "attempt $i: HTTP $code"
+            [ "$code" = "200" ] && break
+            sleep 10
+          done
+
+      - name: Read the board
+        env:
+          BACKEND: ${{ vars.BACKEND_URL || 'https://corner-model.onrender.com' }}
+          TOOLS_TOKEN: ${{ secrets.TOOLS_TOKEN }}
+          SUBJECT: ${{ inputs.subject }}
+          DIRECTION: ${{ inputs.direction }}
+          WINDOW: ${{ inputs.window }}
+          MIN_HITS: ${{ inputs.min_hits }}
+          DAYS: ${{ inputs.within_days }}
+          SIDE: ${{ inputs.side }}
+        run: |
+          set -uo pipefail
+          : "${TOOLS_TOKEN:?TOOLS_TOKEN is not set — add it in Settings > Secrets}"
+          q="subject=${SUBJECT}&direction=${DIRECTION}&window=${WINDOW:-5}"
+          q="$q&min_hits=${MIN_HITS:-5}&side=${SIDE:-overall}"
+          # Empty means "any upcoming fixture", so the parameter is omitted rather than
+          # this shell inventing a horizon the backend did not ask for.
+          [ -n "${DAYS:-}" ] && q="$q&within_days=$DAYS"
+          # The token is in the query string, so never echo the URL.
+          code=$(curl -sS -o board.csv -w '%{http_code}' --max-time 180 \
+            "$BACKEND/api/tools/streaks.csv?$q&token=$TOOLS_TOKEN" || echo 000)
+          echo "HTTP $code"
+          if [ "$code" != "200" ]; then
+            echo "::error::could not read the board (HTTP $code)"; cat board.csv; exit 1
+          fi
+          python3 - "$SUBJECT" "$DIRECTION" <<'PY' | tee report.md
+          import csv, sys
+          subject, direction = sys.argv[1], sys.argv[2]
+          rows = list(csv.DictReader(open("board.csv")))
+          print(f"## {subject} / {direction} — {len(rows)} live run(s)\n")
+          if not rows:
+              print("Nothing qualifies. On a shot subject that is a real answer rather "
+                    "than a gap: the filter wants the line held in every game of the "
+                    "window, and an uncovered game voids rather than counting.")
+              raise SystemExit(0)
+          print("| team | league | line | run | record | avg | range | covered | next |")
+          print("|---|---|---|---|---|---|---|---|---|")
+          for r in rows:
+              nxt = f"{r['venue']} v {r['opponent']}" if r.get("opponent") else "-"
+              ko = (r.get("kickoff") or "")[:16].replace("T", " ")
+              rec = f"{r['hits']}/{r['settled']}"
+              if r.get("voids") and r["voids"] not in ("0", ""):
+                  # A void is a game the provider filed no shots for, not a miss.
+                  rec += f" (+{r['voids']} void)"
+              cov = f"{r['covered']}/{r['window']}"
+              print(f"| {r['team']} | {r['league']} | {r['line']} | {r['run']} "
+                    f"| {rec} | {r['avg']} | {r['lowest']}-{r['highest']} "
+                    f"| {cov} | {nxt} {ko} |")
+          gaps = [r for r in rows if r.get("covered") != r.get("window")]
+          if gaps:
+              print(f"\n{len(gaps)} row(s) have a game the provider filed no shots for. "
+                    f"The run reads through it — streak_runs skips voids — and `covered` "
+                    f"says how many games the average actually rests on.")
+          PY
+          cat report.md >> "$GITHUB_STEP_SUMMARY"

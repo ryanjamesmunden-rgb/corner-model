@@ -79,6 +79,15 @@ export const api = {
   // the teams you already track or follow.
   trackingSuggestions: (withinDays = 21) =>
     axios.get(`${API}/tracking/suggestions`, { params: { within_days: withinDays } }).then((r) => r.data),
+  // BOTH LISTS AT ONCE, ranked, with each side's next games. Favourites and tracking are
+  // separate stores on purpose — promoting a team is a decision, not a side effect — but
+  // "which of mine is in the best shape" is a question about all of them together.
+  // Returns `teams` (one row per side, ranked) and `fixtures` (the same games flattened
+  // into kick-off order), so the page can switch views without a second request.
+  myTeams: ({ sort = "form", source = "all", withinDays = 21, fixtures = 4 } = {}) =>
+    axios.get(`${API}/my-teams`, {
+      params: { sort, source, within_days: withinDays, fixtures },
+    }).then((r) => r.data),
   // Last-20 corner form for many teams at once (source: favourites | tracking | league).
   teamForm: (source, leagueId) =>
     axios.get(`${API}/team-form`, { params: { source, league_id: leagueId || undefined } }).then((r) => r.data),

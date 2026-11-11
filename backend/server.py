@@ -1480,6 +1480,205 @@ async def tracking_suggestions(within_days: int = 21, limit: int = 10,
                            "fixtures": OUTLOOK_FIXTURES, "min_games": OUTLOOK_MIN_GAMES}}
 
 
+# How far ahead "my teams" looks, and how many games each side brings. Wider than
+# OUTLOOK_FIXTURES because this is the screen somebody plans a weekend from, not a
+# should-I-track prompt: four games is the run a follower expects to see, which is what
+# the favourites list has always shown.
+MY_TEAMS_FIXTURES = 4
+MY_TEAMS_DAYS = 21
+
+# Sorts, each named for the question it answers rather than the field it reads.
+MY_TEAMS_SORTS = ("form", "run", "schedule", "next", "average")
+
+
+def _my_teams_sort_key(o: dict, sort: str):
+    """Rank one team's outlook. Descending for everything except `next`.
+
+    EVERY KEY ENDS WITH A TIE-BREAK ON form_delta AND THEN THE NAME, so the order is
+    stable: without it a list of teams all on the same run reshuffles between requests
+    and the thing you were about to tap moves.
+    """
+    delta = o.get("form_delta")
+    delta = delta if isinstance(delta, (int, float)) else -99.0
+    name = str(o.get("name") or "")
+    if sort == "next":
+        # Ascending on kick-off, so the soonest game is first. The sort below reverses,
+        # so this is negated to come back out the right way round.
+        nxt = (o.get("next") or [{}])[0].get("date") or "9999"
+        return (-_date_rank(nxt), delta, name)
+    if sort == "run":
+        return (o.get("run") or 0, delta, name)
+    if sort == "schedule":
+        # Softest run of opponents first: a high ratio means they concede more corners
+        # than their division does.
+        return (o.get("schedule") or 0, delta, name)
+    if sort == "average":
+        return (o.get("l5") or 0, delta, name)
+    return (delta, o.get("run") or 0, name)
+
+
+def _date_rank(iso: str) -> float:
+    """An ISO date as a sortable number, and a huge one when it cannot be read — so an
+    unreadable date sorts last instead of raising mid-sort."""
+    try:
+        dt = datetime.fromisoformat(str(iso).replace("Z", "+00:00"))
+    except Exception:
+        return 9e18
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.timestamp()
+
+
+@api_router.get("/my-teams")
+async def my_teams(sort: str = "form", source: str = "all",
+                   within_days: int = MY_TEAMS_DAYS,
+                   fixtures: int = MY_TEAMS_FIXTURES,
+                   user: dict = Depends(require_user)):
+    """The teams you follow and the teams you are trialling, ranked, with their next games.
+
+    WHY THE TWO LISTS ARE SHOWN TOGETHER. Favourites and tracking are deliberately
+    separate stores — tracking is a trial list, so promoting a team is a decision rather
+    than a side effect — but "which of my teams is in the best shape" is a question about
+    all of them at once. Keeping them apart in the data and together on one screen is the
+    arrangement that serves both. Every row says which list it came from.
+
+    TWO SHAPES OF THE SAME DATA, because they answer different questions:
+
+      `teams`     one row per side, ranked by `sort`. Which of mine is performing best.
+      `fixtures`  every one of those sides' next games, flattened and in kick-off order.
+                  What is actually coming up, which is the thing a bet gets placed on.
+
+    Both are returned from one request rather than two endpoints: they share the whole
+    computation, and a page that can switch between them instantly is the point.
+
+    THE PRICE AND THE PROBABILITY COME FROM _streak_projection — the same function the
+    streak board prices with, at the team's own usual line. So a number here and a number
+    there cannot disagree, and `ev` is only present where a real price is stored to
+    measure against. A fixture with no stored price carries the model's side and says
+    nothing about value, which is the honest half of the answer rather than a blank row.
+    """
+    sort = sort if sort in MY_TEAMS_SORTS else "form"
+    source = source if source in ("all", "favourites", "tracking") else "all"
+    within_days = max(1, min(within_days, 60))
+    fixtures = max(1, min(fixtures, 10))
+
+    fav_ids = {r["team_id"] for r in await db.favourite_teams.find(
+        {"user_id": user["user_id"]}, {"_id": 0}).to_list(500)}
+    trk_ids = {r["team_id"] for r in await db.tracked_teams.find(
+        {"user_id": user["user_id"]}, {"_id": 0}).to_list(500)}
+    # A TEAM ON BOTH LISTS COUNTS AS A FAVOURITE. The promote endpoint untracks as it
+    # follows, so this should not happen — but if it ever does, showing the side twice
+    # would double it in every count and in the fixture list.
+    wanted = {tid: "favourites" for tid in fav_ids}
+    for tid in trk_ids:
+        wanted.setdefault(tid, "tracking")
+    if source != "all":
+        wanted = {tid: lst for tid, lst in wanted.items() if lst == source}
+    counts = {"favourites": len(fav_ids), "tracking": len(trk_ids - fav_ids)}
+    if not wanted:
+        return {"teams": [], "fixtures": [], "sort": sort, "source": source,
+                "within_days": within_days, "counts": counts}
+
+    all_teams = await db.teams.find({}, {"_id": 0}).to_list(5000)
+    by_id = {t["team_id"]: t for t in all_teams}
+    leagues = {l["league_id"]: l.get("name", "") for l in
+               await db.leagues.find({}, {"_id": 0}).to_list(200)}
+    per_league = {}
+    for t in all_teams:
+        per_league.setdefault(t["league_id"], []).extend(
+            m["corners_for"] for m in _real_sorted(t))
+    league_avg = {lid: sum(v) / len(v) for lid, v in per_league.items() if v}
+    ls_map, bl_map = _league_shots_map(all_teams), _league_blocked_map(all_teams)
+
+    now = datetime.now(timezone.utc)
+    horizon = now + timedelta(days=within_days)
+    ahead = {}
+    for fx in await db.fixtures.find(
+            {"$or": [{"home_team_id": {"$in": list(wanted)}},
+                     {"away_team_id": {"$in": list(wanted)}}]}, {"_id": 0}).to_list(20000):
+        try:
+            dt = datetime.fromisoformat((fx.get("date") or "").replace("Z", "+00:00"))
+        except Exception:
+            continue
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        if not (now <= dt <= horizon):
+            continue
+        for tid in (fx.get("home_team_id"), fx.get("away_team_id")):
+            if tid in wanted:
+                ahead.setdefault(tid, []).append(fx)
+    for v in ahead.values():
+        v.sort(key=lambda f: f.get("date") or "")
+
+    # Prices for every fixture in view, both stores merged with a hand-typed price winning.
+    fx_ids = list({fx["fixture_id"] for v in ahead.values() for fx in v[:fixtures]})
+    priced = await _odds_for_many(fx_ids)
+
+    rows, flat = [], []
+    for tid, which in wanted.items():
+        t = by_id.get(tid)
+        if not t:
+            # A follow pointing at a team that has stopped syncing. Reported rather than
+            # dropped, so a list that has gone quiet is visible instead of looking empty.
+            rows.append({"team_id": tid, "list": which, "name": None, "missing": True,
+                         "next": []})
+            continue
+        fxs = ahead.get(tid) or []
+        o = _team_outlook(t, fxs, by_id, league_avg)
+        o["list"] = which
+        o["league_name"] = leagues.get(t["league_id"], "")
+        o["next"] = o["next"][:fixtures]
+        # OUTLOOK_FIXTURES caps _team_outlook's own list at three; this screen wants four,
+        # so the extra games are rated here with the same helper rather than a second rule.
+        if len(o["next"]) < min(fixtures, len(fxs)):
+            o["next"] = []
+            for fx in fxs[:fixtures]:
+                is_home = fx["home_team_id"] == tid
+                opp = by_id.get(fx["away_team_id"] if is_home else fx["home_team_id"])
+                conc, n = _conceded_at(opp, home=not is_home) if opp else (None, 0)
+                lg = league_avg.get(fx.get("league_id") or t.get("league_id"))
+                ratio = round(conc / lg, 2) if (conc is not None and lg) else None
+                o["next"].append({
+                    "fixture_id": fx.get("fixture_id"), "date": fx.get("date"),
+                    "opponent": fx["away_name"] if is_home else fx["home_name"],
+                    "is_home": is_home,
+                    "opp_conceded": round(conc, 2) if conc is not None else None,
+                    "opp_games": n, "league_avg": round(lg, 2) if lg else None,
+                    "ratio": ratio, "label": _schedule_label(ratio)})
+
+        for g in o["next"]:
+            fx = next((f for f in fxs if f["fixture_id"] == g["fixture_id"]), None)
+            proj = None
+            if fx is not None and o.get("line"):
+                opp_id = fx["away_team_id"] if g["is_home"] else fx["home_team_id"]
+                row = priced.get(g["fixture_id"]) or {}
+                proj = _streak_projection(
+                    t, by_id.get(opp_id),
+                    "home" if g["is_home"] else "away",
+                    "away" if g["is_home"] else "home",
+                    o["line"], "over", "team",
+                    ls_map.get(t["league_id"], REF_SHOTS), row.get("odds") or {},
+                    bl_map.get(t["league_id"], 0.0))
+                if proj is not None:
+                    proj["odds_source"] = row.get("source")
+            g["line"] = o.get("line")
+            g["projection"] = proj
+            flat.append({**g, "team_id": tid, "team": o.get("name"),
+                         "league_name": o.get("league_name"), "list": which,
+                         "form_delta": o.get("form_delta"), "run": o.get("run"),
+                         "l5": o.get("l5"), "l20": o.get("l20")})
+        rows.append(o)
+
+    live = [r for r in rows if not r.get("missing")]
+    live.sort(key=lambda o: _my_teams_sort_key(o, sort), reverse=True)
+    # Missing follows go last: they are a maintenance note, not a ranking.
+    rows = live + [r for r in rows if r.get("missing")]
+    flat.sort(key=lambda g: _date_rank(g.get("date") or ""))
+    return {"teams": rows, "fixtures": flat, "sort": sort, "source": source,
+            "within_days": within_days, "counts": counts,
+            "thresholds": {"soft": SOFT_RATIO, "tough": TOUGH_RATIO}}
+
+
 @api_router.get("/tracking/teams")
 async def list_tracked_teams(user: dict = Depends(require_user)):
     """Just the ids and when each was tracked — enough for the eye icons. The form graph

@@ -6092,7 +6092,22 @@ WIN, VOID, LOSS = "win", "void", "loss"
 STREAK_LADDERS = {"team": list(range(1, 16)), "match": list(range(1, 31)),
                   # Corners CONCEDED runs on the same scale as corners won — it is the
                   # same count, measured from the other end of the same match.
-                  "conceded": list(range(1, 16))}
+                  "conceded": list(range(1, 16)),
+                  # SHOTS, ON THEIR OWN SCALE, which is three times the corner one.
+                  # measure_features, run 11 Nov over 20,664 team-sides: total shots are
+                  # 99.7% covered at a league average of 13.17 a side — so a shots board
+                  # rests on as much data as the corner one, which is why it is here and
+                  # shots_on_target (69.9% covered) is not. A run filter needs the stat in
+                  # EVERY game of the window, and a third of them missing turns a 5-of-5
+                  # question into one the data cannot answer.
+                  #
+                  # Shots also correlate with corners harder than anything else measured
+                  # (r=+0.221, against +0.182 for shots on target), which is why they are
+                  # already in the production lambda. A shots run is a related signal
+                  # rather than a separate sport.
+                  "shots": list(range(1, 31)),
+                  "shots_conceded": list(range(1, 31)),
+                  "shots_match": list(range(1, 61))}
 # A run of one game is a result, not a streak. Two things could put one on the board:
 #   - a line carried by VOIDS — four exact-line pushes and a single win cleared the old
 #     `hits >= 1 and hits + voids >= min_hits` test, and showed as "streak: 1"
@@ -6263,16 +6278,42 @@ def _preview(rows, user: dict, response, limit: Optional[int] = None):
     response.headers["X-Readable-Rows"] = str(min(keep, total))
     return list(rows[:keep]) + [_blur(r) for r in rows[keep:]]
 # Default ceiling for under streaks: above these a line is true so often it says nothing.
-UNDER_LINE_CAP = {"team": 8, "match": 12, "conceded": 8}
+UNDER_LINE_CAP = {"team": 8, "match": 12, "conceded": 8,
+                  # Scaled off the measured averages rather than guessed: 13.17 shots a
+                  # side, so about 26 in a match. The per-team average yardstick in
+                  # live_streak_candidates still does the real work — an under may sit no
+                  # more than one rung above what the side itself produces — so these caps
+                  # only stop the obviously meaningless end of the ladder.
+                  "shots": 16, "shots_conceded": 16, "shots_match": 30}
 # The mirror of the cap: below these, an OVER is not a claim worth making. Every side
 # clears "1+ corners" most weeks, so the ladder's bottom rungs manufacture long runs that
 # say nothing — a suggested line of "1+ corners, 3 in a row" is technically true and reads
 # as a joke. The streak board already refuses them via min_line; this is the same floor.
-OVER_LINE_FLOOR = {"team": 3, "match": 7, "conceded": 3}
+OVER_LINE_FLOOR = {"team": 3, "match": 7, "conceded": 3,
+                   # A side averages 13.17 shots, so an over below about 9 describes the
+                   # sport rather than the team — the same reasoning that puts the corner
+                   # floor at 3 against an average near 5.
+                   "shots": 9, "shots_conceded": 9, "shots_match": 20}
+
+# WHICH real_matches KEYS EACH SHOT SUBJECT ADDS UP. Separate from the corner subjects
+# because the lookup is the thing that differs; the run logic is identical.
+STREAK_SHOT_KEYS = {"shots": ("shots_for",),
+                    "shots_conceded": ("shots_against",),
+                    "shots_match": ("shots_for", "shots_against")}
 
 
-def settle_streak_leg(value: int, line: int, direction: str) -> str:
-    """Settle one game against a streak line. Exact-line results void on unders."""
+def settle_streak_leg(value: Optional[int], line: int, direction: str) -> str:
+    """Settle one game against a streak line. Exact-line results void on unders.
+
+    A VALUE OF None IS A VOID, not a loss. It means the stat was not recorded for that
+    game, and streak_runs already skips voids — so a run reads through an uncovered match
+    instead of being broken by one. Scoring it as a loss would end runs on a gap in the
+    provider's coverage; scoring it as a win would invent them. Only shot subjects can
+    produce None: a corner count is always present and a genuine 0 corners is a real
+    result.
+    """
+    if value is None:
+        return VOID
     if direction == "under":
         if value < line:
             return WIN
@@ -6280,7 +6321,7 @@ def settle_streak_leg(value: int, line: int, direction: str) -> str:
     return WIN if value >= line else LOSS
 
 
-def streak_value(match: dict, subject: str) -> int:
+def streak_value(match: dict, subject: str) -> Optional[int]:
     """The number a streak line is measured against for one played match.
 
     `conceded` IS A PROPERTY OF THE DEFENCE, not the inverse of somebody's attack, and
@@ -6288,7 +6329,26 @@ def streak_value(match: dict, subject: str) -> int:
     5+ corners in six straight games did it against six different opponents — that is a
     statement about them, and it is the one that finds a leaky defence before its next
     opponent's own numbers say anything.
+
+    A SHOT SUBJECT CAN ANSWER None, AND ZERO IS WHAT THAT LOOKS LIKE IN THE DATA.
+    sync_real's _match_features coerces shots with `mine or 0` — deliberately, because the
+    production lambda consumes them and must not start seeing None — so a game the
+    provider filed no shots for is stored as 0 rather than as missing. A team does not
+    take zero shots in a professional match, and coverage is 99.7%, so a 0 here is the
+    absence and not the number. Reading it literally would break every over run on a gap
+    and hand every under run a free win, which is the worst of both directions.
+    Returning None sends it to settle_streak_leg as a VOID, which streak_runs skips.
     """
+    keys = STREAK_SHOT_KEYS.get(subject)
+    if keys:
+        vals = [match.get(k) for k in keys]
+        # BOTH SIDES REQUIRED ON A MATCH TOTAL. One side covered and the other absent
+        # would total to roughly half the shots in the game and read as a real, quiet
+        # match — a plausible wrong number, which is worse than no number.
+        if any(not isinstance(v, (int, float)) or isinstance(v, bool) or v <= 0
+               for v in vals):
+            return None
+        return int(sum(vals))
     if subject == "match":
         return match["corners_for"] + match["corners_against"]
     if subject == "conceded":
@@ -6341,8 +6401,16 @@ def streak_qualifies(hits: int, voids: int, run_length: int, min_hits: int, floo
     return hits >= floor and hits + voids >= min_hits and run_length >= floor
 
 
-def streak_line_label(line: int, direction: str) -> str:
-    return f"under {line}" if direction == "under" else f"{line}+"
+def streak_line_label(line: int, direction: str, subject: str = "team") -> str:
+    """The line as a chip.
+
+    THE UNIT HAS TO BE ON A SHOTS CHIP. "13+" beside a team's name reads as corners
+    everywhere else on this site, and 13 is a perfectly ordinary corner line for a match
+    total — so an unmarked shots chip is the same two characters meaning a different bet.
+    Same reasoning as the `conc` prefix on a conceded row, and the same fix.
+    """
+    base = f"under {line}" if direction == "under" else f"{line}+"
+    return f"{base} shots" if subject in STREAK_SHOT_KEYS else base
 
 
 def live_streak_candidates(team: dict, venue: str, subject: str, direction: str,
@@ -6400,7 +6468,10 @@ def live_streak_candidates(team: dict, venue: str, subject: str, direction: str,
     # below par is beaten only on the line and still wins on LENGTH. Cutting those turned
     # "over 10 in the match, 4 straight" into "over 11, 3 straight" — a shorter run for a
     # marginally harder line, which is not the trade a reader wants made for them.
-    vals = [streak_value(m, subject) for m in history]
+    # OVER THE COVERED GAMES ONLY. A shot subject answers None for a game the provider
+    # filed no shots for, and summing those as zero would drag the side's par down and
+    # then let the under test wave through lines the team never actually stays below.
+    vals = [v for v in (streak_value(m, subject) for m in history) if v is not None]
     par = (sum(vals) / len(vals)) if vals else 0.0
     out = []
     for line in STREAK_LADDERS.get(subject, STREAK_LADDERS["team"]):
@@ -6415,7 +6486,7 @@ def live_streak_candidates(team: dict, venue: str, subject: str, direction: str,
             continue
         out.append({
             "subject": subject, "direction": direction, "line": line,
-            "line_label": streak_line_label(line, direction),
+            "line_label": streak_line_label(line, direction, subject),
             "run": cur["length"], "since": cur["start_date"],
             "venue": venue, "games": len(history),
         })
@@ -6656,7 +6727,22 @@ def _streak_projection(team: dict, opp: Optional[dict], team_venue: str, opp_ven
     """Price the streak's own market on the team's next fixture.
 
     A whole-line under can push, so the fair price is taken over SETTLED outcomes
-    (p_win / (p_win + p_loss)) and EV credits the void back at stake."""
+    (p_win / (p_win + p_loss)) and EV credits the void back at stake.
+
+    NO PRICE FOR A SHOT SUBJECT, AND THAT IS NOT A GAP TO FILL LATER. Everything below
+    this line is corners: _real_avg reads corners_for and corners_against, live_lambda is
+    the corner lambda, nb_ge prices a corner count, and the market key looked up for the
+    book price is `home_over_4.5` — a corner market. Handed a shots line of 13 it would
+    return a confident fair price for "13+ corners" and an EV measured against a corner
+    quote, which is the precise failure the `conceded` note below describes: a plausible
+    number, a wrong fair price, and an edge computed against a different market entirely.
+    There is also nothing to price it with — measure_features shows shots are an INPUT to
+    the corner lambda, not something this app models an outcome for, and no shots market
+    is fetched. So a shots row carries its run and its record and no projection, which is
+    what it can honestly carry.
+    """
+    if subject in STREAK_SHOT_KEYS:
+        return None
     t_for = _real_avg(team, team_venue, "corners_for")
     o_against = _real_avg(opp, opp_venue, "corners_against") if opp else None
     if t_for is None or o_against is None:
@@ -6857,7 +6943,7 @@ async def streaks(league_id: Optional[str] = None, side: str = "overall", window
             "direction": direction, "subject": subject,
             "min_hits": min_hits, "hits": hits, "voids": voids, "misses": misses,
             "settled": hits + misses, "line": line,
-            "line_label": streak_line_label(line, direction),
+            "line_label": streak_line_label(line, direction, subject),
             "hit_rate": round(hits / (hits + misses) * 100, 1) if (hits + misses) else 0.0,
             "avg": round(sum(values) / len(values), 2), "min_won": min(values), "max_won": max(values),
             "streak": runs["current"], "longest": runs["longest"],
@@ -8957,6 +9043,15 @@ def _streak_line_label(row: dict) -> str:
     over and an under total — each true of a different side — and read as the model
     contradicting itself."""
     line = f"under {row['line']}" if row["direction"] == "under" else f"{row['line']}+"
+    # A SHOTS RUN IS NOT A SLIP, so it does not get slip wording. Nothing here fetches a
+    # shots market and _streak_projection refuses to price one, so naming a bet would
+    # promise a wager this app cannot stand behind. It reads as the observation it is.
+    if row["subject"] in STREAK_SHOT_KEYS:
+        who = row.get("name") or "the side"
+        if row["subject"] == "shots_match":
+            return f"match total {line} shots (via {who}'s games)"
+        faced = " faced" if row["subject"] == "shots_conceded" else ""
+        return f"{who} {line} shots{faced}"
     if row["subject"] == "match":
         return f"match total {line} (via {row['name']}'s games)"
     if row["subject"] == "conceded":
@@ -9905,7 +10000,8 @@ async def public_results(weeks: int = RESULTS_WEEKS, token: Optional[str] = None
             "line": r["line"], "direction": r["direction"],
             # Built here rather than in the browser so the page cannot label an under
             # as an over — the same rule the share text follows.
-            "line_label": streak_line_label(r["line"], r["direction"]),
+            "line_label": streak_line_label(r["line"], r["direction"],
+                                             r.get("subject") or "team"),
             "subject": r["subject"], "opponent": r.get("opponent"),
             "is_home": r.get("is_home"), "kickoff": r.get("kickoff"),
             "result": r["result"], "value": r.get("value"),
@@ -9983,7 +10079,8 @@ async def public_results(weeks: int = RESULTS_WEEKS, token: Optional[str] = None
         return {
             "name": r["name"], "league_id": r["league_id"],
             "line": r["line"], "direction": r["direction"],
-            "line_label": streak_line_label(r["line"], r["direction"]),
+            "line_label": streak_line_label(r["line"], r["direction"],
+                                             r.get("subject") or "team"),
             "subject": r["subject"], "opponent": r.get("opponent"),
             "is_home": r.get("is_home"), "kickoff": r.get("kickoff"),
             "result": r["result"], "value": r.get("value"),

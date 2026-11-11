@@ -69,6 +69,15 @@ export const api = {
     axios.get(`${API}/favourites/teams`, { params: { within_days: withinDays } }).then((r) => r.data),
   addFavouriteTeam: (teamId) => axios.post(`${API}/favourites/teams/${teamId}`).then((r) => r.data),
   removeFavouriteTeam: (teamId) => axios.delete(`${API}/favourites/teams/${teamId}`).then((r) => r.data),
+  // TRACKED teams: a trial list. Keep an eye on a side without following it; promote it
+  // to favourites once it has proven itself.
+  trackedTeams: () => axios.get(`${API}/tracking/teams`).then((r) => r.data),
+  addTrackedTeam: (teamId) => axios.post(`${API}/tracking/teams/${teamId}`).then((r) => r.data),
+  removeTrackedTeam: (teamId) => axios.delete(`${API}/tracking/teams/${teamId}`).then((r) => r.data),
+  promoteTrackedTeam: (teamId) => axios.post(`${API}/tracking/teams/${teamId}/promote`).then((r) => r.data),
+  // Last-20 corner form for many teams at once (source: favourites | tracking | league).
+  teamForm: (source, leagueId) =>
+    axios.get(`${API}/team-form`, { params: { source, league_id: leagueId || undefined } }).then((r) => r.data),
   leagues: () => axios.get(`${API}/leagues`).then((r) => r.data),
   // The front door: countries, their competitions and the games coming up, in one tree.
   // One request because the page expands in place — a reader comparing two countries

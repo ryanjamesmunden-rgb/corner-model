@@ -1253,6 +1253,113 @@ def _favourite_team_form(team, limit: int = FAVOURITE_FORM_GAMES):
     return out
 
 
+#: Most teams one /team-form call returns. The page draws ten at a time; this is a whole
+#: league plus room, and a ceiling so a long starred list cannot become a huge payload.
+TEAM_FORM_MAX = 40
+TEAM_FORM_SOURCES = ("favourites", "tracking", "league")
+
+
+async def _team_form_ids(source: str, user: dict, league_id: Optional[str]) -> Optional[list]:
+    """The team ids a /team-form source names, in the order the page should show them.
+
+    favourites  the teams you follow (the bell), oldest follow first
+    tracking    teams you are keeping an eye on (the eye icon), oldest first — a trial
+                list, separate from favourites until a side has proven itself
+    league      every team in one league — handled by the caller, returns None
+
+    Favourites and tracking are per-person, so a signed-out visitor gets an empty list
+    rather than a 401: the page says "sign in" instead of breaking.
+    """
+    if source == "league":
+        return None
+    if not user or user.get("user_id") == PUBLIC_USER_ID:
+        return []
+    if source == "favourites":
+        favs = await db.favourite_teams.find({"user_id": user["user_id"]}, {"_id": 0}).to_list(500)
+        favs.sort(key=lambda f: str(f.get("created_at") or ""))
+        return [f["team_id"] for f in favs]
+    tracked = await db.tracked_teams.find({"user_id": user["user_id"]}, {"_id": 0}).to_list(500)
+    tracked.sort(key=lambda f: str(f.get("created_at") or ""))
+    return [f["team_id"] for f in tracked]
+
+
+@api_router.get("/team-form")
+async def multi_team_form(source: str = "favourites", league_id: Optional[str] = None,
+                    user: dict = Depends(get_current_user)):
+    """Several teams' last-20 corner form at once, for the multi-line form page.
+
+    Same per-game numbers the fixture page already shows everyone, so no gate beyond
+    favourites/tracking being someone's own lists. Slicing (venue, window, metric,
+    vs-average) is done on the page so every toggle is instant.
+    """
+    if source not in TEAM_FORM_SOURCES:
+        raise HTTPException(status_code=400, detail=f"source must be one of {TEAM_FORM_SOURCES}")
+    signed_in = bool(user) and user.get("user_id") != PUBLIC_USER_ID
+    leagues = {l["league_id"]: l.get("name", "") for l in
+               await db.leagues.find({}, {"_id": 0}).to_list(200)}
+    if source == "league":
+        if not league_id:
+            raise HTTPException(status_code=400, detail="league_id is required for source=league")
+        docs = await db.teams.find({"league_id": league_id}, {"_id": 0}).to_list(TEAM_FORM_MAX)
+    else:
+        ids = (await _team_form_ids(source, user, league_id))[:TEAM_FORM_MAX]
+        found = {t["team_id"]: t for t in
+                 await db.teams.find({"team_id": {"$in": ids}}, {"_id": 0}).to_list(TEAM_FORM_MAX)}
+        docs = [found[i] for i in ids if i in found]
+    since = {}
+    if source == "tracking" and signed_in:
+        since = {r["team_id"]: r.get("created_at") for r in
+                 await db.tracked_teams.find({"user_id": user["user_id"]}, {"_id": 0}).to_list(500)}
+    teams = [{"team_id": t["team_id"], "name": t["name"], "league_id": t["league_id"],
+              "league_name": leagues.get(t["league_id"], ""),
+              # When tracking started, so the page can mark it and compare before/after.
+              "tracked_at": since.get(t["team_id"]),
+              "form": _favourite_team_form(t)} for t in docs]
+    if source == "league":
+        # Best corner side first, so the first ten on the page are the ones worth seeing.
+        def won_avg(t):
+            f = t["form"]
+            return sum(g["won"] for g in f) / len(f) if f else 0
+        teams.sort(key=won_avg, reverse=True)
+    return {"source": source, "league_id": league_id, "signed_in": signed_in,
+            "teams": [t for t in teams if t["form"]]}
+
+
+@api_router.get("/tracking/teams")
+async def list_tracked_teams(user: dict = Depends(require_user)):
+    """Just the ids and when each was tracked — enough for the eye icons. The form graph
+    comes from /team-form?source=tracking."""
+    rows = await db.tracked_teams.find({"user_id": user["user_id"]}, {"_id": 0}).to_list(500)
+    return {"teams": [{"team_id": r["team_id"], "tracked_at": r.get("created_at")} for r in rows]}
+
+
+@api_router.post("/tracking/teams/{team_id}")
+async def add_tracked_team(team_id: str, user: dict = Depends(require_user)):
+    """Keep an eye on a side without following it. Idempotent, like the bell."""
+    if not await db.teams.find_one({"team_id": team_id}, {"_id": 1}):
+        raise HTTPException(status_code=404, detail="No such team")
+    await db.tracked_teams.update_one(
+        {"user_id": user["user_id"], "team_id": team_id},
+        {"$setOnInsert": {"user_id": user["user_id"], "team_id": team_id,
+                          "created_at": datetime.now(timezone.utc).isoformat()}},
+        upsert=True)
+    return {"team_id": team_id, "tracked": True}
+
+
+@api_router.delete("/tracking/teams/{team_id}")
+async def remove_tracked_team(team_id: str, user: dict = Depends(require_user)):
+    await db.tracked_teams.delete_one({"user_id": user["user_id"], "team_id": team_id})
+    return {"team_id": team_id, "tracked": False}
+
+
+@api_router.post("/tracking/teams/{team_id}/promote")
+async def promote_tracked_team(team_id: str, user: dict = Depends(require_user)):
+    """It has proven itself: follow it, and take it off the trial list, in one step."""
+    await add_favourite_team(team_id, user)
+    await db.tracked_teams.delete_one({"user_id": user["user_id"], "team_id": team_id})
+    return {"team_id": team_id, "starred": True, "tracked": False}
+
+
 @api_router.get("/favourites/teams")
 async def list_favourite_teams(user: dict = Depends(require_user), within_days: int = 30):
     """Followed teams with their upcoming fixtures — the point of following one.

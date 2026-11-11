@@ -13,6 +13,9 @@ import PreviewWall from "@/components/PreviewWall";
 import { lockClass, lockCounts } from "@/lib/locked";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import {
+  METRICS, SUBJECTS, wireSubject, SUBJECT_LABEL, LADDERS, MIN_LINE, lineLabel,
+} from "@/lib/streakMetrics";
 
 const SIDES = [{ v: "home", l: "Home" }, { v: "away", l: "Away" }, { v: "overall", l: "Overall" }];
 // One model, two directions: overs clear the line, unders stay below it (exact line = void).
@@ -24,13 +27,6 @@ const DIRECTIONS = [{ v: "over", l: "Over" }, { v: "under", l: "Under" }];
 //
 // THE BET IS THE OTHER TEAM'S. The run belongs to the defence; the slip is the opponent's
 // team corners, which is why every label for this subject names both sides.
-const SUBJECTS = [{ v: "team", l: "Team corners" },
-                  { v: "conceded", l: "Corners conceded" },
-                  { v: "match", l: "Match total" }];
-const SUBJECT_LABEL = { team: "Team corners", conceded: "Corners conceded", match: "Match total" };
-// Ordered loosest-first: the looser presets surface more teams (good for a wide
-// screenshot), the longer windows demand more history and return fewer but
-// better-evidenced runs. A team needs at least `window` real games to appear at all.
 const PRESETS = [
   { v: "4-5", l: "4 / 5", window: 5, min_hits: 4 },
   { v: "5-5", l: "5 / 5", window: 5, min_hits: 5 },
@@ -41,6 +37,7 @@ const PRESETS = [
   { v: "11-15", l: "11 / 15", window: 15, min_hits: 11 },
   { v: "15-20", l: "15 / 20", window: 20, min_hits: 15 },
 ];
+
 const TIMEFRAMES = [
   { v: "all", l: "Any upcoming" },
   { v: "3", l: "Next 3 days" },
@@ -49,27 +46,7 @@ const TIMEFRAMES = [
   { v: "21", l: "Next 21 days" },
   { v: "30", l: "Next 30 days" },
 ];
-// Laddered lines per direction/subject — team corners run far lower than match totals.
-const LADDERS = {
-  "over-team": [3, 4, 5, 6, 7],
-  "over-match": [8, 9, 10, 11, 12, 13],
-  "under-team": [3, 4, 5, 6, 7, 8],
-  "under-match": [8, 9, 10, 11, 12],
-  // Same scale as a team's own corners: it is the same count, from the other end of the
-  // same match.
-  "over-conceded": [3, 4, 5, 6, 7],
-  "under-conceded": [3, 4, 5, 6, 7, 8],
-};
-const MIN_LINE = { team: 3, match: 7, conceded: 3 };
 
-// THE CHIP HAS TO CARRY THE SUBJECT ON A CONCEDED ROW. "5+" beside a team's name reads
-// as that team's own corners everywhere else on this site, so an unmarked chip on a
-// conceded run is the same two characters meaning the opposite bet. "conc 5+" is the
-// smallest thing that cannot be misread at a glance.
-const lineLabel = (line, direction, subject) => {
-  const base = direction === "under" ? `U ${line}` : `${line}+`;
-  return subject === "conceded" ? `conc ${base}` : base;
-};
 const presetLabelOf = (v) => PRESETS.find((p) => p.v === v)?.l || v;
 const fmtDate = (d) => (d ? new Date(d).toLocaleDateString(undefined, { month: "short", day: "numeric" }) : "");
 
@@ -79,6 +56,7 @@ export default function StreakFinder({ leagueId }) {
   const [scope, setScope] = useState("all");
   const [side, setSide] = useState("home");
   const [direction, setDirection] = useState("over");
+  const [metric, setMetric] = useState("corners");
   const [subject, setSubject] = useState("team");
   const [preset, setPreset] = useState("5-5");
   const [threshold, setThreshold] = useState("auto");
@@ -96,7 +74,10 @@ export default function StreakFinder({ leagueId }) {
   // Set by the API when the server trimmed the board for a non-member.
   const [preview, setPreview] = useState(null);
 
-  const ladder = LADDERS[`${direction}-${subject}`] || [];
+  // THE API SUBJECT, composed from the two controls. Every ladder, floor and cap —
+  // here and on the server — is keyed on this one string.
+  const wire = wireSubject(metric, subject);
+  const ladder = LADDERS[`${direction}-${wire}`] || [];
   const isUnder = direction === "under";
 
   // a line from the previous ladder is meaningless on the new one
@@ -106,9 +87,9 @@ export default function StreakFinder({ leagueId }) {
     const p = PRESETS.find((x) => x.v === preset);
     const params = {
       league_id: scope === "current" ? leagueId : "all",
-      side, window: p.window, min_hits: p.min_hits, direction, subject,
+      side, window: p.window, min_hits: p.min_hits, direction, subject: wire,
     };
-    if (!isUnder) params.min_line = MIN_LINE[subject];
+    if (!isUnder) params.min_line = MIN_LINE[wire];
     if (threshold !== "auto") params.threshold = threshold;
     if (days !== "all") params.within_days = days;
     setLoading(true);
@@ -116,7 +97,7 @@ export default function StreakFinder({ leagueId }) {
       .then((d) => { setRows(d); setPreview(d?.preview ? { total: d.total } : null); })
       .catch(() => { setRows([]); setPreview(null); })
       .finally(() => setLoading(false));
-  }, [scope, side, direction, subject, preset, threshold, days, leagueId, isUnder]);
+  }, [scope, side, direction, wire, preset, threshold, days, leagueId, isUnder]);
 
   // COLOUR MEANS QUALITY, NOT DIRECTION — matching the fixture board and Best Bets.
   // Every row used to be the same colour whether it was 5/5 or 5/10, because the colour
@@ -150,7 +131,7 @@ export default function StreakFinder({ leagueId }) {
   ].filter(Boolean).length;
   const filterSummary = [
     isUnder ? "Under" : "Over",
-    SUBJECT_LABEL[subject] || SUBJECT_LABEL.team,
+    SUBJECT_LABEL[wire] || SUBJECT_LABEL.team,
     SIDES.find((x) => x.v === side)?.l,
     presetLabelOf(preset),
   ].filter(Boolean).join(" · ") + (extras ? ` · +${extras}` : "");
@@ -158,7 +139,7 @@ export default function StreakFinder({ leagueId }) {
   // A postable summary of what's on screen — the same builder tools/social_draft.mjs
   // uses for the scheduled post, so the two can't drift. See lib/shareText.
   const SHARE_ROWS = 6;
-  const buildShare = streakShare({ rows: shown, subject, side });
+  const buildShare = streakShare({ rows: shown, subject: wire, side });
 
   return (
     <section className="bg-card border border-border rounded-lg" data-testid="streak-finder">
@@ -204,6 +185,12 @@ export default function StreakFinder({ leagueId }) {
               ))}
             </TabsList>
           </Tabs>
+          <Select value={metric} onValueChange={switchTo(setMetric)}>
+            <SelectTrigger data-testid="streak-metric" className="w-full sm:w-[110px] bg-[#121212] border-border text-xs h-8"><SelectValue /></SelectTrigger>
+            <SelectContent className="bg-[#121212] border-border">
+              {METRICS.map((o) => <SelectItem key={o.v} value={o.v} className="text-xs">{o.l}</SelectItem>)}
+            </SelectContent>
+          </Select>
           <Select value={subject} onValueChange={switchTo(setSubject)}>
             <SelectTrigger data-testid="streak-subject" className="w-full sm:w-[140px] bg-[#121212] border-border text-xs h-8"><SelectValue /></SelectTrigger>
             <SelectContent className="bg-[#121212] border-border">
@@ -326,7 +313,7 @@ export default function StreakFinder({ leagueId }) {
                              : subject === "match" ? "Match total corners" : "Team corners"} — ${
                       isSolid(r) ? "solid: landed in 4 of every 5 settled games"
                                  : "thin: under 4 in 5, so treat it as a lead rather than a signal"}`}>
-                    {isUnder ? <TrendingDown className="h-3 w-3" /> : <Target className="h-3 w-3" />} {lineLabel(r.line, r.direction, subject)}
+                    {isUnder ? <TrendingDown className="h-3 w-3" /> : <Target className="h-3 w-3" />} {lineLabel(r.line, r.direction, wire)}
                   </span>
                 </td>
                 <td className="px-2 py-1.5 sm:px-4 sm:py-2.5 whitespace-nowrap">
@@ -427,7 +414,7 @@ export default function StreakFinder({ leagueId }) {
                 <td className="px-2 py-1.5 sm:px-4 sm:py-2.5 text-right whitespace-nowrap">
                   {r.projection && r.projection.fair_odds ? (
                     <span className="text-foreground font-semibold"
-                      title={`Model: ${r.projection.prob.toFixed(1)}% to land ${lineLabel(r.line, r.direction, subject)} (λ ${r.projection.lambda})`
+                      title={`Model: ${r.projection.prob.toFixed(1)}% to land ${lineLabel(r.line, r.direction, wire)} (λ ${r.projection.lambda})`
                         + (r.projection.void_prob ? ` · ${r.projection.void_prob.toFixed(1)}% void` : "")}>
                       {r.projection.fair_odds.toFixed(2)}
                     </span>

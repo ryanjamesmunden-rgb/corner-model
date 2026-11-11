@@ -2,7 +2,7 @@ import { useState, useEffect } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import MobileNav from "@/components/MobileNav";
 import { CornerDownRight, LayoutDashboard, Radar, Flame, Zap, Star, Sparkles, Receipt, Trophy,
-         TrendingUp, Globe, ShieldCheck } from "lucide-react";
+         TrendingUp, Globe, ShieldCheck, Activity } from "lucide-react";
 import { LeagueContext } from "@/context/LeagueContext";
 import ExportMenu from "@/components/ExportMenu";
 import { api } from "@/lib/api";
@@ -61,6 +61,8 @@ export default function Layout({ children }) {
     // item that always leads to a wall teaches people the nav is lying.
     ...(user ? [{ to: "/projections", label: "Projected", icon: TrendingUp }] : []),
     { to: "/saved", label: "Saved", icon: Star },
+    // Corner form line chart: favourites, tracked teams, or a whole league, ten a page.
+    { to: "/form", label: "Form", icon: Activity },
     { to: "/bets", label: "Bets", icon: Receipt },
     // WAS the one page shown to signed-out visitors, on the reasoning that it argues for
     // all the others and cannot do that from behind a login. That reasoning still holds;

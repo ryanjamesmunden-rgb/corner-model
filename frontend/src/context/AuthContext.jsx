@@ -15,6 +15,7 @@ import { api, getToken, setToken } from "@/lib/api";
 const AuthContext = createContext({
   user: null, ready: false, member: false, clientId: "", starred: new Set(),
   starredTeams: new Set(), setStarredTeam: () => {},
+  trackedTeams: new Set(), setTrackedTeam: () => {},
   setStarred: () => {}, setMember: () => {}, signOut: () => {}, renderButton: () => {},
 });
 
@@ -51,6 +52,8 @@ export function AuthProvider({ children }) {
   // Followed teams, held alongside starred fixtures and for the same reason: without it
   // every team star renders empty on load, so following looks like it did nothing.
   const [starredTeams, setStarredTeamsSet] = useState(() => new Set());
+  // Tracked teams (the eye): a trial list kept apart from followed ones.
+  const [trackedTeams, setTrackedTeamsSet] = useState(() => new Set());
   const initialised = useRef(false);
 
   // Resume an existing session, and pick up the client id. Both failures are silent on
@@ -78,7 +81,7 @@ export function AuthProvider({ children }) {
   // Load the starred set whenever we learn who the user is, and clear it on sign-out so
   // the next person to use this browser does not inherit the last one's stars.
   useEffect(() => {
-    if (!user) { setStarredSet(new Set()); setStarredTeamsSet(new Set()); return; }
+    if (!user) { setStarredSet(new Set()); setStarredTeamsSet(new Set()); setTrackedTeamsSet(new Set()); return; }
     let alive = true;
     api.favourites()
       .then((d) => alive && setStarredSet(new Set((d.favourites || []).map((f) => f.fixture_id))))
@@ -86,6 +89,9 @@ export function AuthProvider({ children }) {
     api.favouriteTeams()
       .then((d) => alive && setStarredTeamsSet(new Set((d.teams || []).map((t) => t.team_id))))
       .catch(() => { /* same — a failed load leaves stars hollow, not the page broken */ });
+    api.trackedTeams()
+      .then((d) => alive && setTrackedTeamsSet(new Set((d.teams || []).map((t) => t.team_id))))
+      .catch(() => { /* eyes render open-empty; nothing else breaks */ });
     return () => { alive = false; };
   }, [user]);
 
@@ -97,6 +103,14 @@ export function AuthProvider({ children }) {
 
   const setStarredTeam = useCallback((teamId, on) => {
     setStarredTeamsSet((prev) => {
+      const next = new Set(prev);
+      on ? next.add(teamId) : next.delete(teamId);
+      return next;
+    });
+  }, []);
+
+  const setTrackedTeam = useCallback((teamId, on) => {
+    setTrackedTeamsSet((prev) => {
       const next = new Set(prev);
       on ? next.add(teamId) : next.delete(teamId);
       return next;
@@ -156,7 +170,7 @@ export function AuthProvider({ children }) {
   }, []);
 
   return (
-    <AuthContext.Provider value={{ user, ready, member: !!user?.member, clientId, starred, setStarred, starredTeams, setStarredTeam, setMember, signOut, renderButton }}>
+    <AuthContext.Provider value={{ user, ready, member: !!user?.member, clientId, starred, setStarred, starredTeams, setStarredTeam, trackedTeams, setTrackedTeam, setMember, signOut, renderButton }}>
       {children}
     </AuthContext.Provider>
   );

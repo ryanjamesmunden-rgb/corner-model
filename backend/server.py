@@ -1223,6 +1223,298 @@ async def remove_favourite(fixture_id: str, user: dict = Depends(require_user)):
 # fixture star is spent once the game kicks off, a team star is meant to outlive seasons.
 
 
+#: How many games the followed-team form graph draws. The sync keeps twenty real games per
+#: side (sync_real: `real_matches = ...[-20:]`), so this is "everything on file".
+FAVOURITE_FORM_GAMES = 20
+
+
+def _favourite_team_form(team, limit: int = FAVOURITE_FORM_GAMES):
+    """A followed side's last `limit` REAL games, OLDEST FIRST — the order a graph reads.
+
+    Real matches only, never `matches`: sync_real pads a thin side with synthetic games,
+    and a bar on a form graph that no scoreline can back up is worse than a shorter graph.
+    Sorted on the date rather than trusting the stored order. Home/away and last-5/10
+    slicing is left to the page, because the toggle should not cost a round trip.
+
+    The same per-game numbers the fixture page already shows to everyone, so following a
+    team gives no member-only data away.
+    """
+    rms = [m for m in ((team or {}).get("real_matches") or [])
+           if m.get("corners_for") is not None]
+    rms = sorted(rms, key=lambda m: str(m.get("date") or ""))[-limit:]
+    out = []
+    for m in rms:
+        ca = m.get("corners_against")
+        out.append({"date": m.get("date"), "opponent": m.get("opponent"),
+                    "home": bool(m.get("home")), "season": m.get("season"),
+                    "won": m["corners_for"], "conceded": ca,
+                    "total": (m["corners_for"] + ca) if ca is not None else None,
+                    "gf": m.get("goals_for"), "ga": m.get("goals_against")})
+    return out
+
+
+#: Most teams one /team-form call returns. The page draws ten at a time; this is a whole
+#: league plus room, and a ceiling so a long starred list cannot become a huge payload.
+TEAM_FORM_MAX = 40
+TEAM_FORM_SOURCES = ("favourites", "tracking", "league")
+
+
+async def _team_form_ids(source: str, user: dict, league_id: Optional[str]) -> Optional[list]:
+    """The team ids a /team-form source names, in the order the page should show them.
+
+    favourites  the teams you follow (the bell), oldest follow first
+    tracking    teams you are keeping an eye on (the eye icon), oldest first — a trial
+                list, separate from favourites until a side has proven itself
+    league      every team in one league — handled by the caller, returns None
+
+    Favourites and tracking are per-person, so a signed-out visitor gets an empty list
+    rather than a 401: the page says "sign in" instead of breaking.
+    """
+    if source == "league":
+        return None
+    if not user or user.get("user_id") == PUBLIC_USER_ID:
+        return []
+    if source == "favourites":
+        favs = await db.favourite_teams.find({"user_id": user["user_id"]}, {"_id": 0}).to_list(500)
+        favs.sort(key=lambda f: str(f.get("created_at") or ""))
+        return [f["team_id"] for f in favs]
+    tracked = await db.tracked_teams.find({"user_id": user["user_id"]}, {"_id": 0}).to_list(500)
+    tracked.sort(key=lambda f: str(f.get("created_at") or ""))
+    return [f["team_id"] for f in tracked]
+
+
+@api_router.get("/team-form")
+async def multi_team_form(source: str = "favourites", league_id: Optional[str] = None,
+                    user: dict = Depends(get_current_user)):
+    """Several teams' last-20 corner form at once, for the multi-line form page.
+
+    Same per-game numbers the fixture page already shows everyone, so no gate beyond
+    favourites/tracking being someone's own lists. Slicing (venue, window, metric,
+    vs-average) is done on the page so every toggle is instant.
+    """
+    if source not in TEAM_FORM_SOURCES:
+        raise HTTPException(status_code=400, detail=f"source must be one of {TEAM_FORM_SOURCES}")
+    signed_in = bool(user) and user.get("user_id") != PUBLIC_USER_ID
+    leagues = {l["league_id"]: l.get("name", "") for l in
+               await db.leagues.find({}, {"_id": 0}).to_list(200)}
+    if source == "league":
+        if not league_id:
+            raise HTTPException(status_code=400, detail="league_id is required for source=league")
+        docs = await db.teams.find({"league_id": league_id}, {"_id": 0}).to_list(TEAM_FORM_MAX)
+    else:
+        ids = (await _team_form_ids(source, user, league_id))[:TEAM_FORM_MAX]
+        found = {t["team_id"]: t for t in
+                 await db.teams.find({"team_id": {"$in": ids}}, {"_id": 0}).to_list(TEAM_FORM_MAX)}
+        docs = [found[i] for i in ids if i in found]
+    since = {}
+    if source == "tracking" and signed_in:
+        since = {r["team_id"]: r.get("created_at") for r in
+                 await db.tracked_teams.find({"user_id": user["user_id"]}, {"_id": 0}).to_list(500)}
+    teams = [{"team_id": t["team_id"], "name": t["name"], "league_id": t["league_id"],
+              "league_name": leagues.get(t["league_id"], ""),
+              # When tracking started, so the page can mark it and compare before/after.
+              "tracked_at": since.get(t["team_id"]),
+              "form": _favourite_team_form(t)} for t in docs]
+    if source == "league":
+        # Best corner side first, so the first ten on the page are the ones worth seeing.
+        def won_avg(t):
+            f = t["form"]
+            return sum(g["won"] for g in f) / len(f) if f else 0
+        teams.sort(key=won_avg, reverse=True)
+    return {"source": source, "league_id": league_id, "signed_in": signed_in,
+            "teams": [t for t in teams if t["form"]]}
+
+
+# --- When to start or stop tracking: fixtures ahead + current form ---------------------
+#
+# PROMPTS, NOT PREDICTIONS. measure_chase_board.py could not separate four board orderings
+# from a shuffled control, so nothing here claims these teams WILL win corners. It flags
+# the two situations worth a human look: a side in form with soft opponents coming up
+# (start tracking), and a side you watch with stingy opponents coming up (consider pausing).
+#
+# FIXTURE DIFFICULTY is the opponent's corners CONCEDED AT THAT VENUE over the league's
+# average corners per team per game. 1.25 = the next opponent gives away a quarter more
+# corners than a typical side. Venue-split because conceding at home and away differ, and
+# the opponent plays at the opposite venue to the team. Fewer than OUTLOOK_MIN_GAMES at
+# that venue falls back to all their games; fewer than that overall is left unrated.
+
+OUTLOOK_FIXTURES = 3
+OUTLOOK_MIN_GAMES = 5
+SOFT_RATIO, TOUGH_RATIO = 1.10, 0.90
+
+
+def _real_sorted(team):
+    return sorted([m for m in ((team or {}).get("real_matches") or [])
+                   if m.get("corners_for") is not None],
+                  key=lambda m: str(m.get("date") or ""))
+
+
+def _conceded_at(team, home: bool):
+    """(average corners conceded, games) at a venue, falling back to all games."""
+    rms = [m for m in _real_sorted(team) if m.get("corners_against") is not None]
+    venue = [m for m in rms if bool(m.get("home")) == home]
+    pool = venue if len(venue) >= OUTLOOK_MIN_GAMES else rms
+    if len(pool) < OUTLOOK_MIN_GAMES:
+        return None, len(pool)
+    return sum(m["corners_against"] for m in pool) / len(pool), len(pool)
+
+
+def _schedule_label(ratio):
+    if ratio is None:
+        return "unknown"
+    return "soft" if ratio >= SOFT_RATIO else "tough" if ratio <= TOUGH_RATIO else "normal"
+
+
+def _team_outlook(team, upcoming, teams_by_id, league_avg):
+    """Form now, and how corner-friendly the next few opponents are."""
+    rms = _real_sorted(team)
+    won = [m["corners_for"] for m in rms]
+    l20 = won[-20:]
+    l5 = won[-5:]
+    avg20 = sum(l20) / len(l20) if l20 else None
+    avg5 = sum(l5) / len(l5) if l5 else None
+    line = max(1, int(avg20)) if avg20 is not None else None
+    run = 0
+    if line is not None:
+        for v in reversed(won):
+            if v < line:
+                break
+            run += 1
+    games = []
+    for fx in upcoming[:OUTLOOK_FIXTURES]:
+        is_home = fx["home_team_id"] == team["team_id"]
+        opp_id = fx["away_team_id"] if is_home else fx["home_team_id"]
+        opp = teams_by_id.get(opp_id)
+        conc, n = _conceded_at(opp, home=not is_home) if opp else (None, 0)
+        lg = league_avg.get(fx.get("league_id") or team.get("league_id"))
+        ratio = round(conc / lg, 2) if (conc is not None and lg) else None
+        games.append({"fixture_id": fx.get("fixture_id"), "date": fx.get("date"),
+                      "opponent": fx["away_name"] if is_home else fx["home_name"],
+                      "is_home": is_home,
+                      "opp_conceded": round(conc, 2) if conc is not None else None,
+                      "opp_games": n, "league_avg": round(lg, 2) if lg else None,
+                      "ratio": ratio, "label": _schedule_label(ratio)})
+    rated = [g["ratio"] for g in games if g["ratio"] is not None]
+    sched = round(sum(rated) / len(rated), 2) if rated else None
+    return {"team_id": team["team_id"], "name": team.get("name"),
+            "league_id": team.get("league_id"),
+            "l5": round(avg5, 2) if avg5 is not None else None,
+            "l20": round(avg20, 2) if avg20 is not None else None,
+            "form_delta": round(avg5 - avg20, 2) if (avg5 is not None and avg20 is not None) else None,
+            "line": line, "run": run, "games_on_file": len(rms),
+            "schedule": sched, "schedule_label": _schedule_label(sched), "next": games}
+
+
+def _in_form(o):
+    """Hot enough to be worth a look: a lift over its own norm, or a live run."""
+    return ((o.get("form_delta") or 0) >= 1.0) or (o.get("run") or 0) >= 3
+
+
+def _outlook_flag(o):
+    """What, if anything, to say about a team already on one of your lists."""
+    if o["schedule_label"] == "tough":
+        return "tough_run"            # stingy opponents ahead — consider pausing
+    if o["schedule_label"] == "soft" and _in_form(o):
+        return "good_spot"            # in form, soft run — the time to watch closely
+    if (o.get("form_delta") or 0) <= -1.0:
+        return "cooling"              # recent games well under its own norm
+    return None
+
+
+@api_router.get("/tracking/suggestions")
+async def tracking_suggestions(within_days: int = 21, limit: int = 10,
+                               user: dict = Depends(get_current_user)):
+    """Teams worth starting to track, and a fixtures-ahead flag for the ones you watch."""
+    within_days = max(3, min(within_days, 45))
+    limit = max(1, min(limit, 30))
+    teams = await db.teams.find({}, {"_id": 0}).to_list(5000)
+    by_id = {t["team_id"]: t for t in teams}
+    leagues = {l["league_id"]: l.get("name", "") for l in
+               await db.leagues.find({}, {"_id": 0}).to_list(200)}
+    per_league = {}
+    for t in teams:
+        per_league.setdefault(t["league_id"], []).extend(m["corners_for"] for m in _real_sorted(t))
+    league_avg = {lid: sum(v) / len(v) for lid, v in per_league.items() if v}
+
+    now = datetime.now(timezone.utc)
+    horizon = now + timedelta(days=within_days)
+    upcoming = {}
+    for fx in await db.fixtures.find({}, {"_id": 0}).to_list(20000):
+        try:
+            dt = datetime.fromisoformat((fx.get("date") or "").replace("Z", "+00:00"))
+        except Exception:
+            continue
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        if not (now <= dt <= horizon):
+            continue
+        for tid in (fx.get("home_team_id"), fx.get("away_team_id")):
+            upcoming.setdefault(tid, []).append(fx)
+    for v in upcoming.values():
+        v.sort(key=lambda f: f.get("date") or "")
+
+    mine_t, mine_f = set(), set()
+    if user and user.get("user_id") != PUBLIC_USER_ID:
+        mine_t = {r["team_id"] for r in
+                  await db.tracked_teams.find({"user_id": user["user_id"]}, {"_id": 0}).to_list(500)}
+        mine_f = {r["team_id"] for r in
+                  await db.favourite_teams.find({"user_id": user["user_id"]}, {"_id": 0}).to_list(500)}
+
+    suggestions, watched = [], {}
+    for tid, t in by_id.items():
+        fxs = upcoming.get(tid) or []
+        if not fxs or len(_real_sorted(t)) < 10:
+            continue
+        o = _team_outlook(t, fxs, by_id, league_avg)
+        o["league_name"] = leagues.get(t["league_id"], "")
+        if tid in mine_t or tid in mine_f:
+            o["flag"] = _outlook_flag(o)
+            o["list"] = "tracking" if tid in mine_t else "favourites"
+            watched[tid] = o
+        elif o["schedule_label"] == "soft" and _in_form(o):
+            suggestions.append(o)
+    # Softest run first, then the hotter side: the two things the suggestion rests on.
+    suggestions.sort(key=lambda o: (-(o["schedule"] or 0), -(o["form_delta"] or 0)))
+    return {"within_days": within_days, "suggestions": suggestions[:limit], "watched": watched,
+            "thresholds": {"soft": SOFT_RATIO, "tough": TOUGH_RATIO,
+                           "fixtures": OUTLOOK_FIXTURES, "min_games": OUTLOOK_MIN_GAMES}}
+
+
+@api_router.get("/tracking/teams")
+async def list_tracked_teams(user: dict = Depends(require_user)):
+    """Just the ids and when each was tracked — enough for the eye icons. The form graph
+    comes from /team-form?source=tracking."""
+    rows = await db.tracked_teams.find({"user_id": user["user_id"]}, {"_id": 0}).to_list(500)
+    return {"teams": [{"team_id": r["team_id"], "tracked_at": r.get("created_at")} for r in rows]}
+
+
+@api_router.post("/tracking/teams/{team_id}")
+async def add_tracked_team(team_id: str, user: dict = Depends(require_user)):
+    """Keep an eye on a side without following it. Idempotent, like the bell."""
+    if not await db.teams.find_one({"team_id": team_id}, {"_id": 1}):
+        raise HTTPException(status_code=404, detail="No such team")
+    await db.tracked_teams.update_one(
+        {"user_id": user["user_id"], "team_id": team_id},
+        {"$setOnInsert": {"user_id": user["user_id"], "team_id": team_id,
+                          "created_at": datetime.now(timezone.utc).isoformat()}},
+        upsert=True)
+    return {"team_id": team_id, "tracked": True}
+
+
+@api_router.delete("/tracking/teams/{team_id}")
+async def remove_tracked_team(team_id: str, user: dict = Depends(require_user)):
+    await db.tracked_teams.delete_one({"user_id": user["user_id"], "team_id": team_id})
+    return {"team_id": team_id, "tracked": False}
+
+
+@api_router.post("/tracking/teams/{team_id}/promote")
+async def promote_tracked_team(team_id: str, user: dict = Depends(require_user)):
+    """It has proven itself: follow it, and take it off the trial list, in one step."""
+    await add_favourite_team(team_id, user)
+    await db.tracked_teams.delete_one({"user_id": user["user_id"], "team_id": team_id})
+    return {"team_id": team_id, "starred": True, "tracked": False}
+
+
 @api_router.get("/favourites/teams")
 async def list_favourite_teams(user: dict = Depends(require_user), within_days: int = 30):
     """Followed teams with their upcoming fixtures — the point of following one.
@@ -1278,6 +1570,7 @@ async def list_favourite_teams(user: dict = Depends(require_user), within_days: 
                     "league_name": leagues.get(t["league_id"], ""),
                     "starred_at": starred_at.get(tid),
                     "real_samples": t.get("real_samples", 0),
+                    "form": _favourite_team_form(t),
                     "fixtures": upcoming.get(tid, [])})
     # Teams with a game soonest first; those with nothing scheduled fall to the bottom
     # rather than being hidden, because "no fixture found" is information too.

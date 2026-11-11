@@ -5319,6 +5319,25 @@ ODDS_SCAN = 2000
 FEED_PRICE_STALE_HOURS = 12
 
 
+def feed_book_names(books, sources) -> Dict[str, str]:
+    """Which bookmaker quoted each FETCHED price, and only the fetched ones.
+
+    extract() takes the best price across all 33 books the aggregator carries and has
+    always recorded who gave it, in the feed document's `books` map — it just stopped
+    there and never reached the board. A price nobody can name is a price nobody can
+    check, and an edge measured against a book the reader has no account with is not an
+    edge they can take.
+
+    FILTERED BY SOURCE, WHICH IS THE WHOLE CARE HERE. merge_prices lets a hand-typed price
+    win over a fetched one on the same market and keeps the feed's figure beside it. The
+    `books` map still holds a name for that market, so copying it across unfiltered would
+    attribute a number a person typed to a bookmaker who never quoted it — a false
+    provenance, which is worse than none at all because it reads as checkable.
+    """
+    return {k: v for k, v in (books or {}).items()
+            if v and sources.get(k) == odds_feed.SOURCE}
+
+
 async def _merged_prices(manual_docs: Dict[str, dict]) -> Dict[str, dict]:
     """Hand-entered prices and fetched ones, per fixture, with the human's always winning.
 
@@ -5358,6 +5377,14 @@ async def _merged_prices(manual_docs: Dict[str, dict]) -> Dict[str, dict]:
             **m, "fixture_id": fid,
             "odds": {k: v["price"] for k, v in merged.items()},
             "price_sources": sources,
+            # WHICH BOOKMAKER QUOTED IT, per market. extract() takes the BEST price across
+            # all 33 books the aggregator carries and has always recorded who gave it, in
+            # the feed document's `books` map — it just stopped there. A price nobody can
+            # name is a price nobody can check, and an edge measured against a book the
+            # reader has no account with is not an edge they can take. Only meaningful
+            # where the price came from the feed: a hand-typed one has no book attached,
+            # because the person who typed it did not say.
+            "feed_books": feed_book_names(f.get("books"), sources),
             # Where a BETTER price was quoted elsewhere than the one a human typed, so a
             # row can say so without the board switching off somebody's own choice.
             "feed_better": {k: v["feed_price"] for k, v in merged.items()
@@ -5477,6 +5504,9 @@ async def value_board(within_days: Optional[int] = 7, min_ev: float = 0.0,
                "prob": m["prob"], "ev": m["ev"], "tier": m["tier"]}
         if doc:
             out["price_source"] = (doc.get("price_sources") or {}).get(m["key"])
+            # The bookmaker behind a fetched price, so a row can be checked against the
+            # book that actually quoted it rather than against "the market".
+            out["book"] = (doc.get("feed_books") or {}).get(m["key"])
             better = (doc.get("feed_better") or {}).get(m["key"])
             if better:
                 # Said, never acted on: a price somebody chose stands.
@@ -10732,7 +10762,12 @@ def _value_ladders(rows, fresh, seen, floor):
                           # reached here. "demo" in this field means the number came from
                           # fair_odds * uniform(0.90, 1.15) and the EV beside it is the
                           # model reading its own noise.
-                          "src": m.get("price_source")})
+                          "src": m.get("price_source"),
+                          # Which book, for the same reason `src` is here: "I cannot find
+                          # this price at my bookmaker" is answerable only if the row says
+                          # whose price it is. The feed takes the best of 33 books, so the
+                          # quote behind an edge is often not the one the reader can reach.
+                          "book": m.get("book")})
         rungs.sort(key=lambda x: (str(x["group"]), x["plus"] or 0))
         out.append({"match": f"{r.get('home_name')} v {r.get('away_name')}",
                     "fixture_id": r.get("fixture_id"), "kickoff": r.get("date"),

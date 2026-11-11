@@ -56,7 +56,9 @@ on:
     # on the hour, and GitHub's scheduler is late under load. Late matters here in a way it
     # does not elsewhere — a capture that slips past kick-off captures nothing.
     - cron: "17 * * * *"
-    # The day's prices, once, before the European cards go out at 09:00.
+    # THE DAY'S PRICES. Kept as a second cron so there is a fire aimed at the morning even
+    # if the hourly one is dropped, but it is NO LONGER WHAT DECIDES the window pass — see
+    # the note on `mode` below. It used to be the only thing that ran one, and it never ran.
     - cron: "41 6 * * *"
   workflow_dispatch:
     inputs:
@@ -133,21 +135,38 @@ jobs:
           MINUTES: ${{ inputs.minutes }}
           DAYS: ${{ inputs.days }}
           LIMIT: ${{ inputs.limit }}
-          # WHICH CRON FIRED IS NOT KNOWABLE from inside a scheduled run — GitHub does not
-          # say. daily_slip.yml's header is a post-mortem of gating on the hour and losing
-          # three of its first five runs to it. So the hour is read from the CLOCK, and the
-          # one decision it makes is whether to add the window pass to the closing one.
-          # Being wrong about that costs at most one extra cheap pass, never a missed close.
-          HOUR: ${{ github.event.schedule == '41 6 * * *' && 'window' || '' }}
+          # HOUR IS GONE AND THE WINDOW PASS NO LONGER DEPENDS ON IT. Measured on 11 Nov
+          # over the previous five days: 22 scheduled runs, not 120 — the hourly cron is
+          # actually firing about every 4.6 hours because GitHub drops the rest — and the
+          # `41 6 * * *` entry never once identified itself, so `HOUR` was empty on every
+          # run including the one at 06:16. The window pass was gated on that comparison,
+          # which means it has NEVER RUN on a schedule: every automatic fetch this app has
+          # ever done was a 90-minute closing capture.
+          #
+          # That is why prices lag the market. A corner market that opens in the morning
+          # is not looked at until 90 minutes before kick-off, and then only if a fire
+          # happens to land inside that window — roughly a third of the time at this
+          # cadence. The gap was being filled by hand.
         run: |
           set -uo pipefail
           : "${TOOLS_TOKEN:?TOOLS_TOKEN is not set — add it in Settings > Secrets}"
 
           mode="${MODE:-}"
           if [ -z "$mode" ]; then
-            # A scheduled run: the 06:41 cron does both, every other hour does the close.
-            mode="closing"
-            [ "$HOUR" = "window" ] && mode="both"
+            # EVERY SCHEDULED RUN DOES BOTH, which is the fix. Deciding it from which cron
+            # fired could not work: GitHub does not reliably tell a run which schedule
+            # started it, and the one that was supposed to carry the window pass never
+            # matched. Doing both on every fire needs no such signal — the window pass
+            # becomes ~4.6 passes a day at the measured cadence instead of zero, and a
+            # market that opens during the day is picked up within hours rather than
+            # inside the last 90 minutes or not at all.
+            #
+            # IT COSTS ONE CALL PER FIXTURE IN THE NEXT `days`, which is the whole bill
+            # and is why `days` stays at 1 here: a day holds roughly 10-15 fixtures, so
+            # this adds about 50-70 calls a day at this cadence. Read `calls` in the run
+            # summary — that is the number, measured, not estimated. Narrow `days` or
+            # `limit` if it is more than the plan allows.
+            mode="both"
           fi
           # THE FALLBACK A SCHEDULED RUN ACTUALLY USES. A cron passes no inputs, so DAYS
           # is empty here and this number — not the dispatch input's default — is what
@@ -287,7 +306,9 @@ jobs:
               for r in sorted(priced, key=lambda x: -(x["ev"] or 0)):
                   print(f"  {r['group']:<5} {str(r['plus']) + '+':<4} "
                         f"book {r['book']:<6} fair {r['fair']:<6} p {r['prob']:<5} "
-                        f"ev {r['ev']:+6.1f}%  [{r.get('src') or '?'}]  {r['why']}")
+                        f"ev {r['ev']:+6.1f}%  "
+                        f"[{r.get('src') or '?'}"
+                        f"{'/' + r['book'] if r.get('book') else ''}]  {r['why']}")
               blank = len(lad["rungs"]) - len(priced)
               if blank:
                   print(f"  ({blank} rung(s) with no fetched price)")

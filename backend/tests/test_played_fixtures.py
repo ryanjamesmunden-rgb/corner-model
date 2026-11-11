@@ -247,3 +247,42 @@ def test_the_results_endpoint_does_not_read_the_fixtures_board():
     fn = fn[:fn.index("NEXT_FIXTURE_SCAN = ")]
     assert "db.fixtures_played.find" in fn
     assert "db.fixtures.find" not in fn
+
+
+def _returned_keys(fn_name):
+    """The literal keys of the dict a sync function returns, read from SOURCE.
+
+    Parsed rather than called: both functions are async, hit a database and need an API
+    key. The report only prints what the run document holds, and the run document only
+    holds what these return.
+    """
+    tree = ast.parse(_src("sync_real.py"))
+    fn = next(n for n in tree.body
+              if isinstance(n, (ast.AsyncFunctionDef, ast.FunctionDef)) and n.name == fn_name)
+    keys = set()
+    for node in ast.walk(fn):
+        if isinstance(node, ast.Return) and isinstance(node.value, ast.Dict):
+            for k in node.value.keys:
+                if isinstance(k, ast.Constant):
+                    keys.add(k.value)
+    return keys
+
+
+def test_both_syncs_report_what_they_kept():
+    """THE GAP THIS CAUGHT. The counts went onto sync_cup's return and not sync_league's,
+    so the report printed the cup's results and silently nothing for the leagues — and a
+    store that quietly stays empty is indistinguishable from one that is working. The
+    report can only print what the run document holds, and the run document only holds
+    what these return."""
+    for fn in ("sync_league", "sync_cup"):
+        keys = _returned_keys(fn)
+        assert "played" in keys, f"{fn} does not report how many results it kept"
+        assert "played_with_corners" in keys, f"{fn} does not report corner coverage"
+
+
+def test_only_the_cup_reports_statistics_calls():
+    """The league path spends nothing — the stats loop has already fetched and cached
+    everything it reads — so a stat_calls figure there would imply a cost that is not
+    being paid. The cup path is the only one that buys anything."""
+    assert "stat_calls" in _returned_keys("sync_cup")
+    assert "stat_calls" not in _returned_keys("sync_league")

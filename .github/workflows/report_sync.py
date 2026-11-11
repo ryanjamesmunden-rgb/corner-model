@@ -154,7 +154,21 @@ def _report_stored(run):
             continue
         if not named and teams and fixtures:
             continue
-        print(f"  {lid:7} stored {teams} teams and {fixtures} upcoming fixtures")
+        # THE RESULTS HALF, said on the same line as the fixtures half. A sync that keeps
+        # played games for a month is invisible from a report that only counts upcoming
+        # ones, and "is the results view filling up" is the question this line gets asked.
+        # Absent (an older run record, before the store existed) prints nothing rather
+        # than a zero that would read as "kept none".
+        played = lg.get("played")
+        kept = ""
+        if isinstance(played, int):
+            kept = f", kept {played} played"
+            known = lg.get("played_with_corners")
+            if isinstance(known, int) and known != played:
+                # The gap is the thing worth seeing: a result with no corner count is a
+                # row the corner model cannot be judged on.
+                kept += f" ({known} with corners)"
+        print(f"  {lid:7} stored {teams} teams and {fixtures} upcoming fixtures{kept}")
         if not teams or not fixtures:
             missing = "no teams" if not teams else "no upcoming fixtures"
             print(f"::warning::{lid} reported ok and stored {missing}. The provider "
@@ -196,7 +210,21 @@ def _report_cups(run):
         skipped = lg.get("skipped") or {}
         why = ("  skipped: " + ", ".join(f"{k}={v}" for k, v in sorted(skipped.items()))
                if skipped else "")
-        print(f"  {cid:5} {n} fixture(s) stored{why}")
+        # A cup is the only path that SPENDS to keep results — one /fixtures/statistics
+        # call per uncached tie — so the call count is printed beside them. It should be
+        # zero on every run after the first for a given round; a figure that keeps
+        # climbing means the cache is not being hit and that is a bill, not a detail.
+        played = lg.get("played")
+        kept = ""
+        if isinstance(played, int):
+            kept = f", kept {played} played"
+            known = lg.get("played_with_corners")
+            if isinstance(known, int) and known != played:
+                kept += f" ({known} with corners)"
+            calls = lg.get("stat_calls")
+            if isinstance(calls, int) and calls:
+                kept += f", {calls} stat call(s)"
+        print(f"  {cid:5} {n} fixture(s) stored{kept}{why}")
         if not n:
             print(f"::warning::{cid} stored no fixtures — every tie in the window had a "
                   f"side from a league this app does not sync, or too little history. "

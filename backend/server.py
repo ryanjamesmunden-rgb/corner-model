@@ -1191,10 +1191,55 @@ async def list_favourites(user: dict = Depends(require_user)):
     fixtures = {f["fixture_id"]: f for f in
                 await db.fixtures.find({"fixture_id": {"$in": fx_ids}}, {"_id": 0}).to_list(500)}
     starred_at = {f["fixture_id"]: f.get("created_at") for f in favs}
-    out = [{**fx, "starred_at": starred_at.get(fid)}
-           for fid, fx in fixtures.items()]
+
+    # THE MODEL'S VIEW OF EACH SAVED GAME, so the list can be ranked by it rather than
+    # only by kick-off. Starring is a "come back to this once prices are up" gesture, and
+    # coming back to six games with no idea which projects highest means re-opening all
+    # six — which is the re-scanning this feature exists to avoid.
+    #
+    # ONE IMPLEMENTATION, DELIBERATELY. _fixture_projections' own header asks for this:
+    # a second projection here would be a second expected_lambdas call site to keep in
+    # step, and it would eventually disagree with the board about the same fixture. So
+    # this reuses it and looks the saved ids up in the result.
+    #
+    # THE WINDOW IS SIZED TO THE FURTHEST SAVED GAME rather than left at the default.
+    # A star can sit weeks out, and a fixed seven-day window would quietly return no
+    # projection for exactly the games somebody saved early. Capped at BOARD_MAX_DAYS,
+    # beyond which the board itself does not project; anything further out comes back
+    # with `projection: None` and says so rather than sorting as a zero.
+    now = datetime.now(timezone.utc)
+    furthest = 0
+    for fx in fixtures.values():
+        try:
+            dt = datetime.fromisoformat((fx.get("date") or "").replace("Z", "+00:00"))
+        except Exception:
+            continue
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        furthest = max(furthest, (dt - now).days + 1)
+    proj = {}
+    if furthest > 0:
+        proj = await _fixture_projections(days=min(max(furthest, 1), BOARD_MAX_DAYS))
+
+    out = []
+    for fid, fx in fixtures.items():
+        p = proj.get(fid)
+        out.append({**fx, "starred_at": starred_at.get(fid),
+                    # Trimmed to what a saved-games list ranks and reads on. The whole
+                    # projection row carries the mismatch angles and cup wording the
+                    # fixture page needs and this list does not.
+                    "projection": None if p is None else {
+                        "lambda_home": p["lambda_home"], "lambda_away": p["lambda_away"],
+                        "lambda_total": p["lambda_total"],
+                        "league_avg_total": p["league_avg_total"],
+                        "corner_edge": p["corner_edge"],
+                        "home_games": p["home_games"], "away_games": p["away_games"],
+                    }})
     out.sort(key=lambda f: f.get("date") or "")
-    return {"favourites": out, "missing": len(favs) - len(out)}
+    return {"favourites": out, "missing": len(favs) - len(out),
+            # Said out loud so the page can explain a blank projection instead of the
+            # reader assuming the model has no opinion on their game.
+            "projected_within_days": BOARD_MAX_DAYS}
 
 
 @api_router.post("/favourites/{fixture_id}")

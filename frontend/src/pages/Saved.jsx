@@ -8,6 +8,9 @@ import StarButton from "@/components/StarButton";
 import TeamStar from "@/components/TeamStar";
 import TeamFormChart from "@/components/TeamFormChart";
 import { SAVED_SORTS, VENUES, MIN_RANK_GAMES, formView, rankTeams } from "@/lib/teamForm";
+import {
+  GAME_SORTS, GAME_SORT_DEFAULT, sortSavedGames, unprojectedCount,
+} from "@/lib/savedSort";
 
 // The games you starred, to come back to once prices are up.
 //
@@ -17,6 +20,7 @@ import { SAVED_SORTS, VENUES, MIN_RANK_GAMES, formView, rankTeams } from "@/lib/
 // The sort survives a reload: someone who ranks by last 5 wants it that way next visit.
 // Storage can throw (private mode, blocked cookies), so it is best-effort only.
 const PREF_KEY = "saved-team-sort";
+const GAME_PREF_KEY = "saved-game-sort";
 const readPref = () => {
   try {
     const p = JSON.parse(window.localStorage.getItem(PREF_KEY) || "null");
@@ -26,6 +30,15 @@ const readPref = () => {
 };
 const writePref = (p) => {
   try { window.localStorage.setItem(PREF_KEY, JSON.stringify(p)); } catch { /* ignore */ }
+};
+// Same best-effort handling as the team sort: storage can throw in private mode or with
+// cookies blocked, and an unreadable preference falls back to the default rather than
+// taking the page down with it.
+const readGamePref = () => {
+  try {
+    const v = window.localStorage.getItem(GAME_PREF_KEY);
+    return GAME_SORTS.some((o) => o.key === v) ? v : GAME_SORT_DEFAULT;
+  } catch { return GAME_SORT_DEFAULT; }
 };
 
 function Chips({ options, value, onChange, testId }) {
@@ -56,19 +69,40 @@ export default function Saved() {
   const { user, ready } = useAuth();
   const [rows, setRows] = useState(null);
   const [missing, setMissing] = useState(0);
+  // The window the board projects within, reported by the endpoint so the page can
+  // explain a blank projection rather than the reader assuming the model has no
+  // opinion on their game.
+  const [projectedWithin, setProjectedWithin] = useState(null);
   // Followed teams and their upcoming games. Loaded separately from starred fixtures so
   // a failure in one leaves the other on screen.
   const [teams, setTeams] = useState([]);
   const [pref, setPref] = useState(readPref);
+  // SEPARATE FROM THE TEAM SORT, and remembered separately. Ranking teams by their
+  // last five says nothing about how somebody wants their starred games ordered, and
+  // one shared control would make choosing either change both.
+  const [gameSort, setGameSort] = useState(readGamePref);
   const setSort = (sort) => { const p = { ...pref, sort }; setPref(p); writePref(p); };
   const setVenue = (venue) => { const p = { ...pref, venue }; setPref(p); writePref(p); };
   const ranked = useMemo(() => rankTeams(teams, { sort: pref.sort, venue: pref.venue }),
     [teams, pref]);
+  const sortedGames = useMemo(() => sortSavedGames(rows || [], gameSort),
+    [rows, gameSort]);
+  // Only worth saying while a projection ranking is on: on kick-off they are not last
+  // for any reason a reader needs explained.
+  const unprojected = gameSort === "kickoff" ? 0 : unprojectedCount(rows || []);
+  const pickGameSort = (v) => {
+    setGameSort(v);
+    try { window.localStorage.setItem(GAME_PREF_KEY, v); } catch { /* ignore */ }
+  };
 
   const load = useCallback(() => {
     if (!user) { setRows([]); return; }
     api.favourites()
-      .then((d) => { setRows(d.favourites || []); setMissing(d.missing || 0); })
+      .then((d) => {
+        setRows(d.favourites || []);
+        setMissing(d.missing || 0);
+        setProjectedWithin(d.projected_within_days ?? null);
+      })
       .catch(() => setRows([]));
     api.favouriteTeams()
       .then((d) => setTeams(d.teams || []))
@@ -213,8 +247,20 @@ export default function Saved() {
           </p>
         </div>
       ) : (
+        <>
+        {/* Rank the starred games by what the model expects them to produce. Kick-off
+            stays the default: giving somebody a control and changing what they see on
+            arrival are two different decisions. */}
+        <div className="flex flex-wrap items-center gap-2" data-testid="saved-game-sort">
+          <span className="text-[11px] text-muted-foreground">Games</span>
+          <Chips options={GAME_SORTS} value={gameSort} onChange={pickGameSort}
+            testId="saved-game-order" />
+          {gameSort !== "kickoff" && (
+            <span className="text-[11px] text-muted-foreground">corners projected</span>
+          )}
+        </div>
         <div className="bg-card border border-border rounded-lg divide-y divide-border">
-          {rows.map((f) => {
+          {sortedGames.map((f) => {
             const k = kickoff(f.date);
             return (
               <div key={f.fixture_id} data-testid="saved-row" role="button" tabIndex={0}
@@ -232,12 +278,37 @@ export default function Saved() {
                   <p className="text-[10px] text-muted-foreground uppercase tracking-wider mt-0.5">
                     {withFlag(f.league_id, f.league_id)}{f.round && f.round !== "Upcoming" ? ` · ${f.round}` : ""}
                   </p>
+                  {/* THE NUMBER THE SORT IS ON, on every row. A ranking whose basis is
+                      invisible asks to be taken on trust, and this one does not have to
+                      be. The division's own average sits beside it, so a reader can tell
+                      a busy game from a busy league. */}
+                  {f.projection ? (
+                    <p className="font-mono-data text-[10px] text-muted-foreground mt-0.5">
+                      {f.projection.lambda_total.toFixed(1)} proj
+                      <span className="text-muted-foreground/60">
+                        {" "}· {f.projection.league_avg_total.toFixed(1)} lg avg
+                      </span>
+                    </p>
+                  ) : (
+                    <p className="font-mono-data text-[10px] text-muted-foreground/60 mt-0.5">
+                      not projected yet
+                    </p>
+                  )}
                 </div>
                 <ChevronRight className="h-4 w-4 text-muted-foreground shrink-0" />
               </div>
             );
           })}
         </div>
+        {unprojected > 0 && (
+          <p className="text-xs text-muted-foreground" data-testid="saved-unprojected">
+            {unprojected} saved {unprojected === 1 ? "game kicks" : "games kick"} off
+            further out than the model projects
+            {projectedWithin ? ` (${projectedWithin} days)` : ""}, so
+            {unprojected === 1 ? " it is" : " they are"} listed last either way.
+          </p>
+        )}
+        </>
       )}
 
       {/* A star can outlive its fixture: the sync rebuilds db.fixtures every run, so a

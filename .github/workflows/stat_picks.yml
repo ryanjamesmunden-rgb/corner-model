@@ -1,0 +1,149 @@
+# Corner lines that have been landing, with the price and the edge — the X post.
+#
+# WHY IT EXISTS. The account's player-prop posts work because they lead with a COUNT:
+# "Barella 1.5+ Tackles @ 1.91 (11/15)". A reader can check that. This is the same post
+# for corners, built from the site's own form tables so the count beside the price is the
+# count the fixture page would show anybody who went and looked.
+#
+# THE RULE IS IN THE POST. Every run writes the filter above the rows — how many from how
+# many, what price floor, what edge floor — because a list headed "stat picks" with no
+# rule under it is a tip sheet, and with the rule under it it is research.
+#
+# DISPATCH ONLY, AND IT NEVER SENDS. The post goes into the run summary and an artifact,
+# where it can be read before anyone decides to publish it. A post cannot be unposted.
+name: Corner stat picks
+
+on:
+  workflow_dispatch:
+    inputs:
+      days:
+        description: "How far ahead to look, in days (blank = 2)"
+        required: false
+        default: "2"
+        type: string
+      min_hit:
+        description: "Hit-rate floor as a fraction (blank = 0.7 — 7 from 10)"
+        required: false
+        default: "0.7"
+        type: string
+      min_odds:
+        description: "Price floor (blank = 1.5)"
+        required: false
+        default: "1.5"
+        type: string
+      min_ev:
+        description: "Edge floor in percent (blank = 0)"
+        required: false
+        default: "0"
+        type: string
+      per_game:
+        # THE LEDGER'S OWN NUMBER, as a default rather than a hard limit. Fixtures sent
+        # with three or more angles returned -4.4% over 112u; one or two returned +13.0%
+        # over 512.5u. Widening it is a decision somebody should have to type.
+        description: "Most lines from one fixture (blank = 2)"
+        required: false
+        default: "2"
+        type: string
+      band:
+        description: "Plus-lines to carry, comma separated (blank = 5,6)"
+        required: false
+        default: "5,6"
+        type: string
+      max:
+        description: "Most rows on the post (blank = 12)"
+        required: false
+        default: "12"
+        type: string
+      heading:
+        description: "First line (blank = the day, then CORNER STAT PICKS)"
+        required: false
+        default: ""
+        type: string
+
+concurrency:
+  group: corner-stat-picks
+
+permissions:
+  contents: read
+
+jobs:
+  picks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Wake the backend
+        env:
+          BACKEND: ${{ vars.BACKEND_URL || 'https://corner-model.onrender.com' }}
+        run: |
+          for i in 1 2 3 4 5 6; do
+            code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 60 "$BACKEND/api/" || true)
+            echo "attempt $i: HTTP $code"
+            [ "$code" = "200" ] && break
+            sleep 15
+          done
+
+      - name: Build the post
+        id: build
+        env:
+          BACKEND_URL: ${{ vars.BACKEND_URL || 'https://corner-model.onrender.com' }}
+          SITE_URL: ${{ vars.SITE_URL || 'https://thecornermodel.com' }}
+          TOOLS_TOKEN: ${{ secrets.TOOLS_TOKEN }}
+        run: |
+          set -- --days "${{ inputs.days || '2' }}" \
+                 --min-hit "${{ inputs.min_hit || '0.7' }}" \
+                 --min-odds "${{ inputs.min_odds || '1.5' }}" \
+                 --min-ev "${{ inputs.min_ev || '0' }}" \
+                 --per-game "${{ inputs.per_game || '2' }}" \
+                 --band "${{ inputs.band || '5,6' }}" \
+                 --max "${{ inputs.max || '12' }}"
+          [ -n "${{ inputs.heading }}" ] && set -- "$@" --heading "${{ inputs.heading }}"
+          node tools/stat_picks.mjs "$@" --json-out picks.json > post.txt
+          empty=$(python3 -c "import json;print('true' if json.load(open('picks.json'))['empty'] else 'false')")
+          echo "empty=$empty" >> "$GITHUB_OUTPUT"
+          if [ "$empty" = "true" ]; then
+            echo "::notice::nothing cleared the filters — no post"
+            {
+              echo "## No stat picks"
+              echo
+              echo "What the board had, by reason:"
+              echo
+              echo '```'
+              python3 -c "
+          import json
+          d = json.load(open('picks.json'))
+          for k, v in sorted(d.get('faults', {}).items(), key=lambda kv: -kv[1]):
+              print(f'{k}: {v}')
+          "
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          # THE POST, IN THE RUN. It is only readable after a download otherwise, and the
+          # whole job of a dispatch run is to let somebody read it before it goes out.
+          {
+            echo "## Corner stat picks"
+            echo
+            echo '```'
+            cat post.txt
+            echo '```'
+            echo
+            echo "\`$(wc -c < post.txt)\` characters."
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "----- post -----"
+          cat post.txt
+          echo "----- end -----"
+
+      - name: Keep it
+        if: steps.build.outputs.empty != 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: corner-stat-picks
+          path: |
+            post.txt
+            picks.json
+          retention-days: 14

@@ -11991,6 +11991,217 @@ async def share_rows(days: int = 3, limit: int = 12, token: Optional[str] = None
     return out
 
 
+# ----------------------------- Stat picks -----------------------------
+#
+# WHAT A STAT PICK IS, AND WHY IT IS NOT THE VALUE BOARD AGAIN.
+#
+# The value board answers "where is the price wrong". This answers a different and far
+# more postable question: "how often has this exact bet landed, and what is it paying".
+# One is the model's opinion; the other is a COUNT, and a count is the thing a reader can
+# check for themselves against the form table the site already publishes. The post that
+# travels is the count, with the price next to it.
+#
+# BOTH NUMBERS OR NO ROW. A hit rate with no price is a stat, not a pick; a price with no
+# hit rate is the value board. A row here carries the rate, its denominator, the price,
+# the bookmaker that quoted it and the model's edge, or it does not exist.
+#
+# THE DENOMINATOR IS TEN, AND IT IS REPORTED RATHER THAN ASSUMED. corner_counts measures
+# the last LEAK_WINDOW games. A post reading "(11/15)" over a number computed across ten
+# games is the one mistake in this format nobody can argue their way out of afterwards, so
+# `games` rides on every row and the caller prints what it is given.
+#
+# AND SO DOES THE SCOPE. corner_counts falls back from a venue pool to all games when the
+# venue holds fewer than CARD_MIN_VENUE, and reports which it used. "8/10 at home" and
+# "8/10" are different claims about different populations.
+
+#: The plus-lines a stat pick may carry. Measured: 5+/6+ team corner lines returned
+#: +48.47u over 90 settled bets, 4+ and below -12.90u over 29, and 7+ has 12 bets on it.
+#: LEAK_LINES caps what can be counted at all, so 7+ is not reachable here in any case.
+STAT_PICK_BAND = (5, 6)
+#: Seven from ten. Lower bars put rows on the card whose rate is indistinguishable from
+#: the line's own implied probability, which is not a stat pick, it is a coin toss.
+STAT_PICK_MIN_HIT = 0.70
+#: Below this the price is not worth a post whatever the rate.
+STAT_PICK_MIN_ODDS = 1.50
+STAT_PICK_MIN_EV = 0.0
+#: TWO PER FIXTURE, NOT THREE. Fixtures published with three or more angles returned
+#: -4.4% over 112u against +13.0% over 512.5u for those with one or two. The cap is a
+#: parameter so it can be widened deliberately, and it defaults to what the ledger says.
+STAT_PICK_PER_GAME = 2
+
+#: Mirrors frontend/src/lib/priceSource.js. `demo` and anything unrecognised are absent on
+#: purpose: the seeders stamp their jitter as demo, and an edge measured against that is
+#: the model finding value in its own noise.
+REAL_PRICE_SOURCES = ("manual", odds_feed.SOURCE)
+
+
+def stat_pick_fault(market: dict, hits: Optional[int], games: int, *,
+                    band=STAT_PICK_BAND, min_hit: float = STAT_PICK_MIN_HIT,
+                    min_odds: float = STAT_PICK_MIN_ODDS,
+                    min_ev: float = STAT_PICK_MIN_EV) -> str:
+    """Why this rung cannot be a stat pick, or "" when it can.
+
+    A REASON RATHER THAN A BOOLEAN, for the same purpose value_board's `status` serves: a
+    card that came back short has to be able to say whether nothing was priced, nothing
+    cleared the rate, or nothing cleared the price — three different problems with three
+    different fixes, which "no picks today" distinguishes not at all.
+    """
+    if not market:
+        return "no_market"
+    if market.get("group") not in ("home", "away"):
+        return "not_a_team_line"
+    line = market.get("line")
+    if line is None:
+        return "no_line"
+    plus = int(line) + 1
+    if plus not in band:
+        return "outside_band"
+    if market.get("price_source") not in REAL_PRICE_SOURCES:
+        return "no_real_price"
+    if not market.get("book"):
+        # The feed takes the best of 33 books. An edge at a book the reader has no account
+        # with is not a bet they can place, and quoting it unattributed implies they can.
+        return "no_book"
+    odds = market.get("book_odds")
+    if odds is None or odds < min_odds:
+        return "below_odds_floor"
+    ev = market.get("ev")
+    if ev is None or ev < min_ev:
+        return "below_ev_floor"
+    if not games:
+        return "no_games"
+    if hits is None:
+        return "line_not_counted"
+    if hits / games < min_hit:
+        return "below_hit_rate"
+    return ""
+
+
+def stat_pick_row(row: dict, market: dict, counts: dict, opp: dict) -> dict:
+    """One postable row: the bet, the count behind it, and the price in front of it."""
+    plus = int(market["line"]) + 1
+    games = counts.get("games") or 0
+    hits = (counts.get("hits") or {}).get(str(plus))
+    side = "home" if market["group"] == "home" else "away"
+    return {
+        "fixture_id": row.get("fixture_id"),
+        "league_id": row.get("league_id"), "league_name": row.get("league_name"),
+        "kickoff": row.get("date"),
+        "home_name": row.get("home_name"), "away_name": row.get("away_name"),
+        "team": row.get("home_name") if side == "home" else row.get("away_name"),
+        "side": side,
+        "line": market["line"], "plus": plus,
+        "price": market.get("book_odds"), "book": market.get("book"),
+        "price_source": market.get("price_source"),
+        "fair": market.get("fair_odds"), "prob": market.get("prob"),
+        "ev": market.get("ev"),
+        "hits": hits, "games": games,
+        # Which pool the count came from, so the caller can name the venue only when the
+        # venue is what was measured. See corner_counts.
+        "scope": counts.get("scope"), "avg": counts.get("avg"),
+        # The other half of the argument, carried but not required: how often the defence
+        # it is meeting has shipped this many. A caller may print it or ignore it.
+        "opp_hits": (opp.get("hits") or {}).get(str(plus)),
+        "opp_games": opp.get("games") or 0,
+        "opp_scope": opp.get("scope"),
+        "market_key": market.get("key"),
+    }
+
+
+@api_router.get("/share/stat-picks")
+async def share_stat_picks(token: Optional[str] = None, days: int = 2,
+                           min_hit: float = STAT_PICK_MIN_HIT,
+                           min_odds: float = STAT_PICK_MIN_ODDS,
+                           min_ev: float = STAT_PICK_MIN_EV,
+                           per_game: int = STAT_PICK_PER_GAME,
+                           band: str = "5,6", limit: int = 40):
+    """Priced corner lines that have also been landing, as rows for the X post.
+
+    ROWS, NOT TEXT, for the reason /share/rows gives: the post format lives in the
+    frontend and is used by the share buttons as well as the scheduled job, so rendering
+    it here would be a second copy of the format and the two would drift.
+
+    GATED with the tools token like every other automation endpoint. The hit rates are
+    already public on each fixture page; the PRICES and the edge are not, and this joins
+    them.
+    """
+    _check_tools_token(token)
+    try:
+        want = tuple(int(b) for b in (band or "").split(",") if b.strip())
+    except ValueError:
+        raise HTTPException(status_code=400, detail=f"band must be integers, got {band!r}")
+    if not want:
+        raise HTTPException(status_code=400, detail="band needs at least one plus-line")
+    # Lines outside what corner_counts measures can never produce a rate, and silently
+    # returning nothing for them would look like a quiet day rather than a bad request.
+    unmeasurable = [b for b in want if b not in LEAK_LINES]
+    if unmeasurable:
+        raise HTTPException(
+            status_code=400,
+            detail=f"no hit rate is measured for {unmeasurable}; "
+                   f"countable plus-lines are {list(LEAK_LINES)}")
+
+    rows = await value_board(within_days=days, min_ev=-1000.0, limit=200, user={})
+    ok = [r for r in rows if r.get("status") == "ok"]
+
+    team_ids = set()
+    fixtures = {f["fixture_id"]: f for f in
+                await db.fixtures.find({"fixture_id": {"$in": [r["fixture_id"] for r in ok]}},
+                                       {"_id": 0}).to_list(5000)}
+    for f in fixtures.values():
+        team_ids.update((f.get("home_team_id"), f.get("away_team_id")))
+    teams = {t["team_id"]: t for t in
+             await db.teams.find({"team_id": {"$in": [t for t in team_ids if t]}},
+                                 {"_id": 0}).to_list(10000)}
+
+    out, faults = [], {}
+    for r in ok:
+        fx = fixtures.get(r["fixture_id"])
+        if not fx:
+            faults["no_fixture"] = faults.get("no_fixture", 0) + 1
+            continue
+        home, away = teams.get(fx.get("home_team_id")), teams.get(fx.get("away_team_id"))
+        if not home or not away:
+            faults["no_teams"] = faults.get("no_teams", 0) + 1
+            continue
+        picks = []
+        for m in [r.get("best"), *(r.get("alternatives") or [])]:
+            if not m:
+                continue
+            side = m.get("group")
+            if side == "home":
+                team, venue, opp_t, opp_v = home, "home", away, "away"
+            elif side == "away":
+                team, venue, opp_t, opp_v = away, "away", home, "home"
+            else:
+                faults["not_a_team_line"] = faults.get("not_a_team_line", 0) + 1
+                continue
+            counts = corner_counts(team, venue, "corners_for")
+            plus = int(m["line"]) + 1
+            why = stat_pick_fault(m, (counts.get("hits") or {}).get(str(plus)),
+                                  counts.get("games") or 0, band=want, min_hit=min_hit,
+                                  min_odds=min_odds, min_ev=min_ev)
+            if why:
+                faults[why] = faults.get(why, 0) + 1
+                continue
+            picks.append(stat_pick_row(r, m, counts,
+                                       corner_counts(opp_t, opp_v, "corners_against")))
+        # BEST RATE FIRST WITHIN A FIXTURE, then edge. The rate is what the post is about;
+        # the edge decides ties, so two lines landing equally often are ordered by which
+        # is better priced rather than by which the ladder happened to list first.
+        picks.sort(key=lambda p: (-(p["hits"] / p["games"]), -(p["ev"] or 0)))
+        if len(picks) > per_game:
+            faults["over_per_game_cap"] = faults.get("over_per_game_cap", 0) \
+                + len(picks) - per_game
+        out.extend(picks[:max(0, per_game)])
+
+    out.sort(key=lambda p: ((p.get("kickoff") or ""), -(p["hits"] / p["games"])))
+    return {"picks": out[:max(1, limit)], "faults": faults,
+            "window": LEAK_WINDOW, "min_hit": min_hit, "min_odds": min_odds,
+            "min_ev": min_ev, "per_game": per_game, "band": list(want),
+            "days": days, "generated_at": datetime.now(timezone.utc).isoformat()}
+
+
 @api_router.get("/share/bets")
 async def share_bets(token: Optional[str] = None, day: Optional[str] = None,
                      min_ev: float = 0.0, freeze: bool = True,

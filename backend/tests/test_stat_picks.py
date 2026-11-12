@@ -121,6 +121,26 @@ def test_an_uncounted_rung_is_named_rather_than_treated_as_a_miss():
     assert fault(market(), None, 10) == "line_not_counted"
 
 
+def test_a_denominator_too_small_to_mean_anything_is_refused():
+    """WHAT THE FIRST LIVE RUN PUT ON THE CARD. corner_counts answers on a venue pool and
+    only widens below CARD_MIN_VENUE (5), so a side with six home games came back
+    "(5/6 H)" and one with four came back "(3/4)". Both clear a 70% bar; neither is a
+    stat pick, and both sat under a header claiming "7+ from their last 10"."""
+    assert fault(market(), 3, 4) == "too_few_games"
+    assert fault(market(), 5, 6) == "too_few_games"
+    assert fault(market(), 7, 8) == ""          # exactly the floor
+    assert fault(market(), 7, 10) == ""
+    # Widening it is a decision somebody has to type.
+    assert fault(market(), 3, 4, min_games=4) == ""
+
+
+def test_the_denominator_floor_is_checked_before_the_rate():
+    # 1 from 2 is 50% AND too few games. The post has to be able to say which problem it
+    # had, and "below_hit_rate" on a two-game sample sends somebody looking for form that
+    # was never measured.
+    assert fault(market(), 1, 2) == "too_few_games"
+
+
 def test_no_games_is_not_a_hit_rate_of_zero():
     # A side with an empty pool divides by zero. The fault is checked before the rate so
     # the endpoint cannot raise on a team the sync has not filled in yet.
@@ -212,6 +232,7 @@ def test_the_defaults_match_the_post_they_are_written_for():
     assert NS["STAT_PICK_MIN_HIT"] == 0.70
     assert NS["STAT_PICK_MIN_ODDS"] == 1.50
     assert NS["STAT_PICK_MIN_EV"] == 0.0
+    assert NS["STAT_PICK_MIN_GAMES"] == 8
 
 
 def test_only_real_price_sources_are_listed():

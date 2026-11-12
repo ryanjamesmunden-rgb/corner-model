@@ -16,7 +16,8 @@
 // artifact. A post cannot be unposted.
 //
 // Usage:  node tools/stat_picks.mjs [--days 2] [--max 12] [--min-hit 0.7]
-//                                   [--min-odds 1.5] [--min-ev 0] [--per-game 2]
+//                                   [--min-odds 1.5] [--min-ev 0] [--min-games 8]
+//                                   [--per-game 2]
 //                                   [--band 5,6] [--heading "..."] [--json-out picks.json]
 // Env:    BACKEND_URL, SITE_URL, TOOLS_TOKEN (required)
 import { writeFileSync } from "node:fs";
@@ -52,6 +53,9 @@ const qs = new URLSearchParams({
   min_hit: arg("min-hit", "0.7"),
   min_odds: arg("min-odds", "1.5"),
   min_ev: arg("min-ev", "0"),
+  // THE DENOMINATOR FLOOR. Without it the venue pool produced "(3/4)" rows under a card
+  // claiming a ten-game rate; see STAT_PICK_MIN_GAMES on the backend.
+  min_games: arg("min-games", "8"),
   per_game: arg("per-game", "2"),
   band: arg("band", "5,6"),
   limit: "60",

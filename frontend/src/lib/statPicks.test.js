@@ -17,7 +17,7 @@ const pick = (over = {}) => ({
 });
 
 const data = (picks, over = {}) => ({
-  picks, window: 10, min_hit: 0.7, min_odds: 1.5, min_ev: 0,
+  picks, window: 10, min_hit: 0.7, min_odds: 1.5, min_ev: 0, min_games: 8,
   per_game: 2, band: [5, 6], ...over,
 });
 
@@ -167,14 +167,22 @@ describe("building the post", () => {
 describe("the rule, written out", () => {
   it("turns the floors into the sentence the card is filtered by", () => {
     expect(statRule(data([]))).toBe(
-      "landing 7+ from their last 10, at 1.50 or bigger, with a positive model edge");
+      "landing 70%+ of their last 10 (8 games minimum), at 1.50 or bigger, "
+      + "with a positive model edge");
   });
 
-  it("rounds the hit floor UP to a whole number of games", () => {
-    // 0.7 of 10 is 7; 0.7 of 15 is 10.5, and "landing 10+ from 15" is 66.7%, which is
-    // below the bar it claims. Ceil keeps the sentence true.
-    expect(statRule(data([], { window: 15, min_hit: 0.7 })))
-      .toContain("landing 11+ from their last 15");
+  it("states the floor as a RATE, because the rows may not all have ten games", () => {
+    // WHAT THE FIRST LIVE RUN SHOWED. The venue pool is shallower than the window for
+    // plenty of sides, so rows came back at (5/6) and (3/4) under a card claiming
+    // "7+ from their last 10" — the rule contradicted by its own rows.
+    expect(statRule(data([]))).toContain("70%+ of their last 10");
+    expect(statRule(data([]))).not.toContain("7+ from");
+  });
+
+  it("names the denominator floor whenever it is below the window", () => {
+    expect(statRule(data([], { min_games: 8 }))).toContain("(8 games minimum)");
+    // A floor equal to the window needs no aside: every row has the full ten.
+    expect(statRule(data([], { min_games: 10 }))).not.toContain("minimum");
   });
 
   it("names a non-zero edge floor instead of calling it positive", () => {
@@ -194,8 +202,8 @@ describe("the post as text", () => {
   it("states the filter and the window before a single row", () => {
     // The format this imitates does the same, and it is why that format reads as research
     // rather than as tipping.
-    expect(text).toContain("landing 7+ from their last 10");
-    expect(text.indexOf("landing 7+")).toBeLessThan(text.indexOf("4.5+ Corners"));
+    expect(text).toContain("landing 70%+ of their last 10");
+    expect(text.indexOf("landing 70%+")).toBeLessThan(text.indexOf("4.5+ Corners"));
   });
 
   it("opens on the save prompt", () => {

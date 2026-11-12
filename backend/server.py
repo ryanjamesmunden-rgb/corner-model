@@ -12028,6 +12028,15 @@ STAT_PICK_MIN_EV = 0.0
 #: -4.4% over 112u against +13.0% over 512.5u for those with one or two. The cap is a
 #: parameter so it can be widened deliberately, and it defaults to what the ledger says.
 STAT_PICK_PER_GAME = 2
+#: THE SMALLEST DENOMINATOR THIS WILL PUBLISH, and the first live run is why it exists.
+#: corner_counts answers on a VENUE pool and only widens below CARD_MIN_VENUE, which is 5
+#: — so a side with six home games on record came back "(5/6 H)" and one with four came
+#: back "(3/4)". Both cleared a 70% bar and neither is a stat pick: the card announces
+#: itself as "landing 7+ from their last 10" and then showed a row that could not possibly
+#: have done that. Below this floor the count is retaken over ALL games, which is the
+#: deeper pool, and `scope` reports the change; a side still short of it after that has
+#: not played enough football to make a claim about.
+STAT_PICK_MIN_GAMES = 8
 
 #: Mirrors frontend/src/lib/priceSource.js. `demo` and anything unrecognised are absent on
 #: purpose: the seeders stamp their jitter as demo, and an edge measured against that is
@@ -12038,7 +12047,8 @@ REAL_PRICE_SOURCES = ("manual", odds_feed.SOURCE)
 def stat_pick_fault(market: dict, hits: Optional[int], games: int, *,
                     band=STAT_PICK_BAND, min_hit: float = STAT_PICK_MIN_HIT,
                     min_odds: float = STAT_PICK_MIN_ODDS,
-                    min_ev: float = STAT_PICK_MIN_EV) -> str:
+                    min_ev: float = STAT_PICK_MIN_EV,
+                    min_games: int = STAT_PICK_MIN_GAMES) -> str:
     """Why this rung cannot be a stat pick, or "" when it can.
 
     A REASON RATHER THAN A BOOLEAN, for the same purpose value_board's `status` serves: a
@@ -12070,6 +12080,11 @@ def stat_pick_fault(market: dict, hits: Optional[int], games: int, *,
         return "below_ev_floor"
     if not games:
         return "no_games"
+    if games < min_games:
+        # A RATE NEEDS A POPULATION. 3 from 4 clears a 70% bar and says almost nothing,
+        # and printing it under a card headed "7+ from their last 10" is the card
+        # contradicting its own rule in the same breath.
+        return "too_few_games"
     if hits is None:
         return "line_not_counted"
     if hits / games < min_hit:
@@ -12113,6 +12128,7 @@ async def share_stat_picks(token: Optional[str] = None, days: int = 2,
                            min_hit: float = STAT_PICK_MIN_HIT,
                            min_odds: float = STAT_PICK_MIN_ODDS,
                            min_ev: float = STAT_PICK_MIN_EV,
+                           min_games: int = STAT_PICK_MIN_GAMES,
                            per_game: int = STAT_PICK_PER_GAME,
                            band: str = "5,6", limit: int = 40):
     """Priced corner lines that have also been landing, as rows for the X post.
@@ -12177,15 +12193,23 @@ async def share_stat_picks(token: Optional[str] = None, days: int = 2,
                 faults["not_a_team_line"] = faults.get("not_a_team_line", 0) + 1
                 continue
             counts = corner_counts(team, venue, "corners_for")
+            # THE VENUE POOL IS PREFERRED AND NOT INSISTED ON. corner_counts widens below
+            # CARD_MIN_VENUE (5), which still leaves "(5/6 H)" publishable; this widens
+            # again at the floor this card actually needs. `scope` changes with it, so the
+            # post says "8/10" rather than "8/10 H" and the claim follows the population.
+            if (counts.get("games") or 0) < min_games:
+                counts = corner_counts(team, "overall", "corners_for")
             plus = int(m["line"]) + 1
             why = stat_pick_fault(m, (counts.get("hits") or {}).get(str(plus)),
                                   counts.get("games") or 0, band=want, min_hit=min_hit,
-                                  min_odds=min_odds, min_ev=min_ev)
+                                  min_odds=min_odds, min_ev=min_ev, min_games=min_games)
             if why:
                 faults[why] = faults.get(why, 0) + 1
                 continue
-            picks.append(stat_pick_row(r, m, counts,
-                                       corner_counts(opp_t, opp_v, "corners_against")))
+            opp_counts = corner_counts(opp_t, opp_v, "corners_against")
+            if (opp_counts.get("games") or 0) < min_games:
+                opp_counts = corner_counts(opp_t, "overall", "corners_against")
+            picks.append(stat_pick_row(r, m, counts, opp_counts))
         # BEST RATE FIRST WITHIN A FIXTURE, then edge. The rate is what the post is about;
         # the edge decides ties, so two lines landing equally often are ordered by which
         # is better priced rather than by which the ladder happened to list first.
@@ -12198,7 +12222,8 @@ async def share_stat_picks(token: Optional[str] = None, days: int = 2,
     out.sort(key=lambda p: ((p.get("kickoff") or ""), -(p["hits"] / p["games"])))
     return {"picks": out[:max(1, limit)], "faults": faults,
             "window": LEAK_WINDOW, "min_hit": min_hit, "min_odds": min_odds,
-            "min_ev": min_ev, "per_game": per_game, "band": list(want),
+            "min_ev": min_ev, "min_games": min_games,
+            "per_game": per_game, "band": list(want),
             "days": days, "generated_at": datetime.now(timezone.utc).isoformat()}
 
 

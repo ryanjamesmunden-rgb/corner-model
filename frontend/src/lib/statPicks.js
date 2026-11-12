@@ -144,14 +144,30 @@ export const picksFrom = (data = {}, { max = MAX_PICK_ROWS } = {}) => {
   };
 };
 
-/** "landing 7+ from their last 10 at 1.50 or bigger, with a positive model edge" */
+/**
+ * "landing 70%+ of their last 10 (8 games minimum), at 1.50 or bigger, …"
+ *
+ * A PERCENTAGE HERE AND A FRACTION ON EVERY ROW, which looks inconsistent and is not.
+ * This sentence describes a FILTER, and the filter is a rate; the rows report RESULTS,
+ * and a result needs its denominator.
+ *
+ * The first live run is why this is not "landing 7+ from their last 10". Rows came back
+ * at (5/6) and (3/4) — the venue pool is shallower than the window for plenty of sides —
+ * so the card stated a rule its own rows could not satisfy. The backend now floors the
+ * denominator; this says what that floor is instead of implying every row has ten games
+ * behind it.
+ */
 export const statRule = (data = {}) => {
   const games = num(data.window);
   const minHit = num(data.min_hit);
   const minOdds = num(data.min_odds);
-  const need = games && minHit ? Math.ceil(minHit * games) : null;
+  const minGames = num(data.min_games);
   const bits = [];
-  if (need && games) bits.push(`landing ${need}+ from their last ${games}`);
+  if (minHit && games) {
+    const pct = Math.round(minHit * 100);
+    bits.push(`landing ${pct}%+ of their last ${games}`
+              + (minGames && minGames < games ? ` (${minGames} games minimum)` : ""));
+  }
   if (minOdds) bits.push(`at ${minOdds.toFixed(2)} or bigger`);
   const ev = num(data.min_ev);
   if (ev !== null) {

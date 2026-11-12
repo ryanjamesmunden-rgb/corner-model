@@ -36,6 +36,14 @@ on:
         required: false
         default: "0"
         type: string
+      min_games:
+        # Added after the first live run put "(3/4)" and "(5/6 H)" on the card: the venue
+        # pool is shallower than the ten-game window for plenty of sides, and a rate over
+        # four games is not a stat pick. Below this the count is retaken over all games.
+        description: "Smallest denominator a row may carry (blank = 8)"
+        required: false
+        default: "8"
+        type: string
       per_game:
         # THE LEDGER'S OWN NUMBER, as a default rather than a hard limit. Fixtures sent
         # with three or more angles returned -4.4% over 112u; one or two returned +13.0%
@@ -98,6 +106,7 @@ jobs:
                  --min-hit "${{ inputs.min_hit || '0.7' }}" \
                  --min-odds "${{ inputs.min_odds || '1.5' }}" \
                  --min-ev "${{ inputs.min_ev || '0' }}" \
+                 --min-games "${{ inputs.min_games || '8' }}" \
                  --per-game "${{ inputs.per_game || '2' }}" \
                  --band "${{ inputs.band || '5,6' }}" \
                  --max "${{ inputs.max || '12' }}"

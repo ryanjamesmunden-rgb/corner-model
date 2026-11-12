@@ -179,6 +179,54 @@ def plus_line(line) -> Optional[int]:
 GROUP_NAME = {"home": "home", "away": "away", "total": "total"}
 
 
+#: THE POSTING RULE, the one the channel has always been run on by hand: per side, take the
+#: LOWEST line whose price is at least POST_MIN_ODDS, and post it only if that line clears
+#: the EV floor. Never climb the ladder looking for a bigger edge.
+#:
+#: WHY NOT "BEST EV". A book's margin on a long corner count is where this model most often
+#: disagrees with it, so the highest EV is nearly always the longest price. Reading's 5+ was
+#: 1.73 and the bot sent 8+ at 10.00 — a line nobody running this channel would back. The
+#: question a post answers is "is the safe line worth it", and 8+ is not that line.
+#:
+#: POST_MAX_ODDS is a backstop for a ladder whose lower rungs nobody quoted: if the lowest
+#: PRICED line is already a long shot, there is no safe line to post, so nothing is.
+POST_MIN_ODDS = 1.80
+POST_MAX_ODDS = 4.00
+
+
+def posting_rungs(markets: List[dict], min_ev: Optional[float] = None,
+                  min_odds: float = POST_MIN_ODDS,
+                  max_odds: float = POST_MAX_ODDS) -> List[dict]:
+    """At most one market per side (home / away / total) under the posting rule.
+
+    For each group: priced rungs in line order, the first one priced >= `min_odds` is THE
+    line; it is returned only if its price is <= `max_odds` and its EV >= `min_ev`
+    (0 when None). A higher rung with a bigger EV never replaces it.
+    """
+    floor = _pct(min_ev)
+    floor = 0.0 if floor is None else floor
+    by_group = {}
+    for m in markets or []:
+        if not isinstance(m, dict):
+            continue
+        odds, line = _pct(m.get("book_odds")), _pct(m.get("line"))
+        if odds is None or line is None:
+            continue
+        by_group.setdefault(m.get("group"), []).append(m)
+    out = []
+    for rungs in by_group.values():
+        rungs.sort(key=lambda m: _pct(m["line"]))
+        anchor = next((m for m in rungs if _pct(m["book_odds"]) >= min_odds), None)
+        if anchor is None or _pct(anchor["book_odds"]) > max_odds:
+            continue
+        ev = _pct(anchor.get("ev"))
+        if ev is None or ev < floor:
+            continue
+        out.append(anchor)
+    out.sort(key=lambda m: -_pct(m["ev"]))
+    return out
+
+
 def worth_sending(ev, previous_ev=None, gain: float = 0.0) -> bool:
     """Should this bet go in a message, given what was already said about it?
 
@@ -262,19 +310,11 @@ def value_rows(rows: List[dict], min_ev: Optional[float] = None,
     row that did not clear the floor is not a pick, and one whose game has kicked off is
     not a bet at all.
 
-    `min_ev` TURNS ON EVERY ANGLE, NOT JUST THE BEST ONE. Each board row carries `best`
-    plus up to three `alternatives` — the same fixture's other priced markets, already
-    computed and, until this existed, thrown away. One game can be value at 6+ AND at 7+,
-    and a card showing only the single highest EV hides the safer line on the same match.
-    Left as None only `best` is emitted, which is what the digest's section has always
-    shown.
-
-    THE ALTERNATIVES ARE NOT PRE-FILTERED. The board keeps the next three by EV whatever
-    they are, so they reach here including negative ones — the floor has to be applied
-    here or a +12% bet would arrive with a -4% bet printed underneath it as though both
-    were picks.
+    ONE BET PER SIDE, CHOSEN BY THE POSTING RULE (posting_rungs): the lowest line priced
+    at POST_MIN_ODDS or more, sent only if it clears `min_ev` (0 when None). This used to
+    send every rung over the floor, ranked by EV — which in practice meant the longest
+    price on the ladder, e.g. Reading 8+ at 10.00 when their 5+ was 1.73.
     """
-    floor = _pct(min_ev)
     out = []
     for r in (rows or []):
         if not isinstance(r, dict) or r.get("status") != "ok":
@@ -287,24 +327,16 @@ def value_rows(rows: List[dict], min_ev: Optional[float] = None,
         # the card was written. Torreense's 5+ at +9.8% ranked sixth on its own fixture
         # and never reached here at all. The ladder carries the lot; the per-game cap
         # below decides what fits, and _pick_per_game decides WHICH, by more than EV.
-        lad = [m for m in (r.get("ladder") or []) if isinstance(m, dict)]
-        picks = []
-        if floor is not None and lad:
-            picks = [m for m in lad
-                     if _pct(m.get("ev")) is not None and _pct(m.get("ev")) >= floor]
-            picks.sort(key=lambda m: -_pct(m["ev"]))
-        # FALLS BACK RATHER THAN RETURNING NOTHING. A `status == "ok"` row has a `best`
-        # that already cleared the floor, so a ladder yielding no qualifying rung is a
-        # broken ladder, not a fixture without value — and preferring it would drop a
-        # real bet to silence. Caught by the junk-ladder test: `[None, 3, {}]` survives
-        # the isinstance filter as one empty dict, qualifies nothing, and took the bet
-        # with it.
-        if not picks:
-            picks = [r.get("best") or {}]
-            if floor is not None:
-                picks += [m for m in (r.get("alternatives") or [])
-                          if isinstance(m, dict) and _pct(m.get("ev")) is not None
-                          and _pct(m.get("ev")) >= floor]
+        # ONE LINE PER SIDE, BY THE POSTING RULE — see posting_rungs. The whole priced
+        # ladder is the candidate set when it is there, because the board's `best` +
+        # `alternatives` are the top four by EV and the safe line is often not among them.
+        # No ladder, or a junk one with nothing priced, falls back to those four.
+        lad = [m for m in (r.get("ladder") or []) if isinstance(m, dict)
+               and _pct(m.get("book_odds")) is not None]
+        if not lad:
+            lad = [m for m in [r.get("best")] + list(r.get("alternatives") or [])
+                   if isinstance(m, dict)]
+        picks = posting_rungs(lad, min_ev)
         for m in picks:
             group = m.get("group")
             if group == "home":

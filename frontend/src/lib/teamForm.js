@@ -64,3 +64,45 @@ export function defaultLine(avgValue) {
   if (avgValue == null) return null;
   return Math.max(1, Math.floor(avgValue));
 }
+
+// ---------------------------------------------------------------------------------------
+// Ranking the followed teams on Saved.
+//
+// Same slicing as the graph (venue first, then the window), so the number a card shows
+// next to the team is the number its chart would show with the same toggles. Done on the
+// page from the twenty games /favourites/teams already sends: no new endpoint, no request.
+
+export const SAVED_SORTS = [
+  { key: "next", label: "Kick-off" },
+  { key: 5, label: "Last 5" },
+  { key: 10, label: "Last 10" },
+  { key: 20, label: "Last 20" },
+];
+
+// Under three games an average is an anecdote: a side with one 9-corner game must not sit
+// above a side averaging 7 over five. Thin samples still show, below the rest.
+export const MIN_RANK_GAMES = 3;
+
+const nextKick = (t) => (t?.fixtures?.length ? String(t.fixtures[0].date) : "9999");
+
+/**
+ * Followed teams in the order the chosen sort asks for. Never mutates the input.
+ *
+ * "next" keeps the server's order (soonest game first). A window sorts by the average of
+ * `metric` over the last N games at `venue`, highest first; ties go to the bigger sample,
+ * then the sooner kick-off. Teams with fewer than MIN_RANK_GAMES games fall to the bottom.
+ */
+export function rankTeams(teams, { sort = "next", venue = "all", metric = "won" } = {}) {
+  const list = Array.isArray(teams) ? teams : [];
+  if (sort === "next") {
+    return [...list].sort((a, b) => nextKick(a).localeCompare(nextKick(b)));
+  }
+  const scored = list.map((t) => ({ t, v: formView(t.form, { venue, window: sort, metric }) }));
+  const thin = (s) => s.v.avg == null || s.v.n < MIN_RANK_GAMES;
+  scored.sort((a, b) =>
+    (thin(a) - thin(b))
+    || ((b.v.avg ?? -1) - (a.v.avg ?? -1))
+    || (b.v.n - a.v.n)
+    || nextKick(a.t).localeCompare(nextKick(b.t)));
+  return scored.map((s) => s.t);
+}

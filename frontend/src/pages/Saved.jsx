@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useMemo } from "react";
 import { useNavigate } from "react-router-dom";
 import { Star, ChevronRight, BellRing } from "lucide-react";
 import { api } from "@/lib/api";
@@ -7,11 +7,41 @@ import { useAuth } from "@/context/AuthContext";
 import StarButton from "@/components/StarButton";
 import TeamStar from "@/components/TeamStar";
 import TeamFormChart from "@/components/TeamFormChart";
+import { SAVED_SORTS, VENUES, MIN_RANK_GAMES, formView, rankTeams } from "@/lib/teamForm";
 
 // The games you starred, to come back to once prices are up.
 //
 // The whole point of the feature: scan the week ahead when there is time, then return
 // later and go straight to the handful that mattered instead of re-scanning everything.
+
+// The sort survives a reload: someone who ranks by last 5 wants it that way next visit.
+// Storage can throw (private mode, blocked cookies), so it is best-effort only.
+const PREF_KEY = "saved-team-sort";
+const readPref = () => {
+  try {
+    const p = JSON.parse(window.localStorage.getItem(PREF_KEY) || "null");
+    const ok = p && SAVED_SORTS.some((o) => o.key === p.sort) && VENUES.some((o) => o.key === p.venue);
+    return ok ? p : { sort: "next", venue: "all" };
+  } catch { return { sort: "next", venue: "all" }; }
+};
+const writePref = (p) => {
+  try { window.localStorage.setItem(PREF_KEY, JSON.stringify(p)); } catch { /* ignore */ }
+};
+
+function Chips({ options, value, onChange, testId }) {
+  return (
+    <div className="flex rounded-md bg-secondary p-0.5" data-testid={testId}>
+      {options.map((o) => (
+        <button key={o.key} type="button" onClick={() => onChange(o.key)}
+          data-testid={`${testId}-${o.key}`} aria-pressed={value === o.key}
+          className={`text-[11px] px-2 py-1 rounded transition-colors whitespace-nowrap ${
+            value === o.key ? "bg-primary text-primary-foreground font-medium" : "text-muted-foreground"}`}>
+          {o.label}
+        </button>
+      ))}
+    </div>
+  );
+}
 
 const kickoff = (iso) => {
   const d = new Date(iso);
@@ -29,6 +59,11 @@ export default function Saved() {
   // Followed teams and their upcoming games. Loaded separately from starred fixtures so
   // a failure in one leaves the other on screen.
   const [teams, setTeams] = useState([]);
+  const [pref, setPref] = useState(readPref);
+  const setSort = (sort) => { const p = { ...pref, sort }; setPref(p); writePref(p); };
+  const setVenue = (venue) => { const p = { ...pref, venue }; setPref(p); writePref(p); };
+  const ranked = useMemo(() => rankTeams(teams, { sort: pref.sort, venue: pref.venue }),
+    [teams, pref]);
 
   const load = useCallback(() => {
     if (!user) { setRows([]); return; }
@@ -83,7 +118,19 @@ export default function Saved() {
             <h2 className="font-head font-semibold text-lg">Teams you follow</h2>
             <span className="font-mono-data text-[10px] text-muted-foreground">{teams.length}</span>
           </div>
-          {teams.map((t) => (
+          {/* Rank by recent corners won. Kick-off is the default because following a
+              side is first about what they have coming up. */}
+          <div className="flex flex-wrap items-center gap-2" data-testid="saved-team-sort">
+            <span className="text-[11px] text-muted-foreground">Sort</span>
+            <Chips options={SAVED_SORTS} value={pref.sort} onChange={setSort} testId="saved-sort" />
+            {pref.sort !== "next" && (
+              <Chips options={VENUES} value={pref.venue} onChange={setVenue} testId="saved-venue" />
+            )}
+          </div>
+          {ranked.map((t, i) => {
+            const v = pref.sort === "next" ? null
+              : formView(t.form, { venue: pref.venue, window: pref.sort, metric: "won" });
+            return (
             <div key={t.team_id} className="bg-card border border-border rounded-lg p-3"
               data-testid="saved-team">
               <div className="flex items-center gap-2">
@@ -93,6 +140,21 @@ export default function Saved() {
                 </span>
                 <TeamStar teamId={t.team_id} teamName={t.name} className="ml-auto" />
               </div>
+              {v && (
+                <p className="mt-1 font-mono-data text-[11px]" data-testid="saved-team-score">
+                  <span className="text-muted-foreground">#{i + 1} · </span>
+                  {v.avg == null ? (
+                    <span className="text-muted-foreground">no {pref.venue !== "all" ? `${pref.venue} ` : ""}games on file</span>
+                  ) : (
+                    <>
+                      <span className="text-primary font-semibold">{v.avg.toFixed(1)}</span>
+                      <span className="text-muted-foreground"> corners won a game · last {v.n}
+                        {pref.venue !== "all" ? ` ${pref.venue}` : ""}
+                        {v.n < MIN_RANK_GAMES ? " (too few to rank)" : ""}</span>
+                    </>
+                  )}
+                </p>
+              )}
               {/* THE FIXTURES COME FIRST, and that is a correction rather than a preference.
                   Following a side has always answered "what have they got coming up" —
                   the favourites endpoint returns the next few games precisely because
@@ -135,7 +197,8 @@ export default function Saved() {
                 <TeamFormChart form={t.form} teamName={t.name} />
               </details>
             </div>
-          ))}
+            );
+          })}
         </section>
       )}
 

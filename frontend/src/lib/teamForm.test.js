@@ -1,4 +1,4 @@
-import { defaultLine, formView } from "./teamForm";
+import { defaultLine, formView, rankTeams } from "./teamForm";
 
 // Oldest first, as /favourites/teams sends it.
 const g = (won, home = true, over = {}) => ({
@@ -59,5 +59,45 @@ describe("form graph slicing", () => {
     expect(defaultLine(5.8)).toBe(5);
     expect(defaultLine(0.4)).toBe(1);
     expect(defaultLine(null)).toBeNull();
+  });
+});
+
+describe("ranking followed teams on Saved", () => {
+  const team = (id, wons, next = "2026-11-20", homes = null) => ({
+    team_id: id,
+    form: wons.map((w, i) => g(w, homes ? homes[i] : true)),
+    fixtures: next ? [{ date: next }] : [],
+  });
+
+  test("kick-off sort puts the soonest game first and no fixture last", () => {
+    const out = rankTeams([team("a", [5], "2026-11-22"), team("b", [5], null), team("c", [5], "2026-11-15")]);
+    expect(out.map((t) => t.team_id)).toEqual(["c", "a", "b"]);
+  });
+
+  test("last 5 ranks on the newest five only", () => {
+    // a: old games huge, recent five poor. b: steady 6s.
+    const a = team("a", [12, 12, 12, 2, 2, 2, 2, 2]);
+    const b = team("b", [6, 6, 6, 6, 6, 6, 6, 6]);
+    expect(rankTeams([a, b], { sort: 5 }).map((t) => t.team_id)).toEqual(["b", "a"]);
+    expect(rankTeams([a, b], { sort: 20 }).map((t) => t.team_id)).toEqual(["b", "a"]);
+  });
+
+  test("a thin sample cannot top the list", () => {
+    const one = team("one", [11]);
+    const five = team("five", [7, 7, 7, 7, 7]);
+    expect(rankTeams([one, five], { sort: 5 }).map((t) => t.team_id)).toEqual(["five", "one"]);
+  });
+
+  test("venue filter applies before ranking", () => {
+    const a = team("a", [9, 1, 9, 1, 9, 1], "2026-11-20", [true, false, true, false, true, false]);
+    const b = team("b", [5, 5, 5, 5, 5, 5], "2026-11-20", [true, false, true, false, true, false]);
+    expect(rankTeams([a, b], { sort: 5, venue: "home" }).map((t) => t.team_id)).toEqual(["a", "b"]);
+    expect(rankTeams([a, b], { sort: 5, venue: "away" }).map((t) => t.team_id)).toEqual(["b", "a"]);
+  });
+
+  test("does not mutate the list it was given", () => {
+    const list = [team("a", [1, 1, 1]), team("b", [9, 9, 9])];
+    rankTeams(list, { sort: 5 });
+    expect(list.map((t) => t.team_id)).toEqual(["a", "b"]);
   });
 });

@@ -306,12 +306,12 @@ class TestTheStoredLineIsNotTheLineWeSay:
 
     def test_the_away_side_gets_the_away_name(self):
         out = value_rows([{"status": "ok", "home_name": "H", "away_name": "A",
-                           "best": {"group": "away", "line": 3.5, "ev": 2.0}}])
+                           "best": {"group": "away", "line": 3.5, "ev": 2.0, "book_odds": 2.0}}])
         assert out[0]["team"] == "A" and out[0]["line"] == 4
 
     def test_a_match_total_is_named_as_the_fixture_not_a_team(self):
         out = value_rows([{"status": "ok", "home_name": "H", "away_name": "A",
-                           "best": {"group": "total", "line": 9.5, "ev": 2.0}}])
+                           "best": {"group": "total", "line": 9.5, "ev": 2.0, "book_odds": 2.0}}])
         assert out[0]["team"] == "H v A total" and out[0]["line"] == 10
 
     @pytest.mark.parametrize("status", ["kicked_off", "no_fixture", "below_floor",
@@ -384,3 +384,41 @@ class TestNothingHereTouchesTheDatabase:
                 names.append(node.module or "")
         for n in names:
             assert not any(b in n for b in ("motor", "pymongo", "httpx", "server")), n
+
+
+class TestThePostingRule:
+    """Lowest line priced 1.80+, sent only if THAT line clears the floor. Never the
+    biggest EV further up the ladder — Reading 8+ at 10.00 with 5+ at 1.73 was the bug."""
+
+    def ladder(self, *rungs, group="home"):
+        return [{"group": group, "key": f"{group}_over_{l}", "line": l,
+                 "book_odds": o, "ev": ev} for l, o, ev in rungs]
+
+    def rows(self, ladder):
+        return [{"status": "ok", "home_name": "Reading", "away_name": "X",
+                 "best": max(ladder, key=lambda m: m["ev"] or -99), "ladder": ladder}]
+
+    def test_reading_8_plus_at_10_is_not_sent(self):
+        # 5+ 1.73 (too short), 6+ 2.40 is THE line but only +2%, 8+ 10.00 is +30%.
+        lad = self.ladder((4.5, 1.73, 8.0), (5.5, 2.40, 2.0), (6.5, 4.5, 15.0), (7.5, 10.0, 30.0))
+        assert value_rows(self.rows(lad), min_ev=5.0) == []
+
+    def test_the_first_line_over_1_80_is_sent_when_it_clears(self):
+        lad = self.ladder((4.5, 1.73, 8.0), (5.5, 2.40, 9.0), (7.5, 10.0, 30.0))
+        out = value_rows(self.rows(lad), min_ev=5.0)
+        assert [(r["line"], r["book_odds"]) for r in out] == [(6, 2.40)]
+
+    def test_one_bet_per_side(self):
+        lad = (self.ladder((4.5, 1.90, 6.0), (5.5, 2.6, 12.0))
+               + self.ladder((3.5, 2.1, 7.0), group="away"))
+        out = value_rows(self.rows(lad), min_ev=5.0)
+        assert sorted((r["group"], r["line"]) for r in out) == [("away", 4), ("home", 5)]
+
+    def test_a_long_shot_with_no_lower_price_is_not_a_safe_line(self):
+        lad = self.ladder((7.5, 6.0, 25.0))
+        assert value_rows(self.rows(lad), min_ev=5.0) == []
+
+    def test_unpriced_rungs_are_skipped_not_anchors(self):
+        lad = self.ladder((4.5, None, None), (5.5, 1.95, 6.0))
+        out = value_rows(self.rows(lad), min_ev=5.0)
+        assert [r["line"] for r in out] == [6]

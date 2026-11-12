@@ -2840,7 +2840,8 @@ async def _value_rows(days: set, min_ev: float = 0.0,
     itself was rewritten to end, where five ways for a price to vanish all rendered as the
     same empty screen.
     """
-    board = await value_board(within_days=within_days, min_ev=min_ev, limit=200, user={})
+    board = await value_board(within_days=within_days, min_ev=min_ev, limit=200,
+                              ladder=True, response=None, user={})
     now = datetime.now(timezone.utc)
     out: List[dict] = []
     drops: Dict[str, int] = {}
@@ -2859,6 +2860,16 @@ async def _value_rows(days: set, min_ev: float = 0.0,
         if best.get("ev") is None or best["ev"] < min_ev or not best.get("book_odds"):
             drop("below the floor")
             continue
+        # THE POSTING RULE, not the biggest EV: the lowest line priced at 1.80+, if THAT
+        # line clears the floor. The board's own `best` is the top EV, which is usually
+        # the longest price on the ladder. See bot_cards.posting_rungs.
+        rule = bot_cards.posting_rungs(
+            [m for m in (row.get("ladder") or []) if isinstance(m, dict)]
+            or [best] + list(row.get("alternatives") or []), min_ev)
+        if not rule:
+            drop("no safe line clears the floor")
+            continue
+        best = rule[0]
         try:
             kick = datetime.fromisoformat((row.get("date") or "").replace("Z", "+00:00"))
         except Exception:
@@ -10850,9 +10861,9 @@ async def _bot_stats_reply(update: dict, name: str) -> Optional[str]:
                                     response=None, user={}))
         elif name == "value":
             rows = await value_board(within_days=BOT_VALUE_DAYS,
-                                     min_ev=BOT_VALUE_MIN_EV, limit=60,
+                                     min_ev=BOT_VALUE_MIN_EV, limit=60, ladder=True,
                                      response=None, user={})
-            text = bot_cards.value_card(bot_cards.value_rows(rows))
+            text = bot_cards.value_card(bot_cards.value_rows(rows, min_ev=BOT_VALUE_MIN_EV))
         elif name == "week":
             text = bot_cards.week_card(
                 await _fixture_board(days=BOT_WEEK_DAYS, user={}))
@@ -11340,8 +11351,8 @@ async def telegram_digest(token: Optional[str] = None, to: str = "owner",
         logger.exception("digest: perfect games failed")
     try:
         rows = await value_board(within_days=BOT_VALUE_DAYS, min_ev=BOT_VALUE_MIN_EV,
-                                 limit=60, response=None, user={})
-        sections.append(bot_cards.value_card(bot_cards.value_rows(rows)))
+                                 limit=60, ladder=True, response=None, user={})
+        sections.append(bot_cards.value_card(bot_cards.value_rows(rows, min_ev=BOT_VALUE_MIN_EV)))
     except Exception:
         logger.exception("digest: value board failed")
     try:

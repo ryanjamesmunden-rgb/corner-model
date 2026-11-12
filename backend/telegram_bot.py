@@ -60,7 +60,25 @@ OWNER_CHAT_ID = os.environ.get("TELEGRAM_OWNER_CHAT_ID", "").strip()
 # THE FREE CHANNEL: every EV+ bet of the day, posted and settled in public. Separate from
 # VIP_CHAT_ID on purpose — nothing that gates membership (invites, joins, the paid tips)
 # ever reads this id, so a free channel can never be mistaken for the paid one.
-FREE_CHAT_ID = os.environ.get("TELEGRAM_FREE_CHAT_ID", "").strip()
+def _chat_ref(raw: str) -> str:
+    """A chat id as typed into a settings box -> what the Bot API accepts.
+
+    A numeric id ("-100123...", "12345") passes through. Anything else is a public
+    channel's username, which the API takes as "@name": the @ is added if it is missing
+    (some phone keyboards will not type it into Render), and a pasted t.me link is
+    reduced to its name."""
+    v = (raw or "").strip()
+    if not v or v.lstrip("-").isdigit() or v.startswith("@"):
+        return v
+    for prefix in ("https://", "http://"):
+        if v.startswith(prefix):
+            v = v[len(prefix):]
+    if v.startswith("t.me/"):
+        v = v[len("t.me/"):]
+    return "@" + v.strip("/")
+
+
+FREE_CHAT_ID = _chat_ref(os.environ.get("TELEGRAM_FREE_CHAT_ID", ""))
 
 # Telegram caps a message at 4096 characters and answers a longer one with HTTP 400 and
 # nothing else. Same limit that silently ate the weekend card twice.

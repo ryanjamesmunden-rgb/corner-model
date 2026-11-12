@@ -157,3 +157,14 @@ def test_a_day_with_no_bets_posts_nothing(env):
 def test_an_unknown_destination_is_refused(env):
     with pytest.raises(server.HTTPException):
         run(server.telegram_value(token="t", to="everyone"))
+
+
+def test_the_channel_can_be_set_without_typing_the_at():
+    ref = telegram_bot._chat_ref
+    assert ref("TCMevPLUS") == "@TCMevPLUS"
+    assert ref("@TCMevPLUS") == "@TCMevPLUS"
+    assert ref("https://t.me/TCMevPLUS") == "@TCMevPLUS"
+    assert ref("t.me/TCMevPLUS/") == "@TCMevPLUS"
+    assert ref(" -1001234567890 ") == "-1001234567890"
+    assert ref("987654321") == "987654321"
+    assert ref("") == ""

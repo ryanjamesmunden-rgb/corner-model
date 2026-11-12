@@ -11503,7 +11503,18 @@ def _value_ladders(rows, fresh, seen, floor):
                           # this price at my bookmaker" is answerable only if the row says
                           # whose price it is. The feed takes the best of 33 books, so the
                           # quote behind an edge is often not the one the reader can reach.
-                          "book": m.get("book")})
+                          #
+                          # NAMED book_name AND NOT book, WHICH IS HOW THIS BROKE. It was
+                          # added as `book`, and `book` was already in this same dict
+                          # literal holding book_odds — the PRICE. Python takes the last
+                          # key silently, so every rung lost its price and carried a
+                          # bookmaker name in the field named for the number. Nothing
+                          # raised: the preview's `r["book"] is not None` filter passes on
+                          # a string, and its `{...:<6}` format accepts one, so the column
+                          # simply printed "1xBet" where "2.17" belonged and the price —
+                          # the thing every EV is measured against, and the one figure a
+                          # post has to quote — was unreadable from the diagnostic.
+                          "book_name": m.get("book")})
         rungs.sort(key=lambda x: (str(x["group"]), x["plus"] or 0))
         out.append({"match": f"{r.get('home_name')} v {r.get('away_name')}",
                     "fixture_id": r.get("fixture_id"), "kickoff": r.get("date"),

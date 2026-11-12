@@ -315,7 +315,8 @@ jobs:
                         f"book {r['book']:<6} fair {r['fair']:<6} p {r['prob']:<5} "
                         f"ev {r['ev']:+6.1f}%  "
                         f"[{r.get('src') or '?'}"
-                        f"{'/' + r['book'] if r.get('book') else ''}]  {r['why']}")
+                        f"{'/' + r['book_name'] if r.get('book_name') else ''}]"
+                        f"  {r['why']}")
               blank = len(lad["rungs"]) - len(priced)
               if blank:
                   print(f"  ({blank} rung(s) with no fetched price)")

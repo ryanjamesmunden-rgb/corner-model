@@ -57,6 +57,11 @@ VIP_CHAT_ID = os.environ.get("TELEGRAM_VIP_CHAT_ID", "").strip()
 # rather than falling back to the channel.
 OWNER_CHAT_ID = os.environ.get("TELEGRAM_OWNER_CHAT_ID", "").strip()
 
+# THE FREE CHANNEL: every EV+ bet of the day, posted and settled in public. Separate from
+# VIP_CHAT_ID on purpose — nothing that gates membership (invites, joins, the paid tips)
+# ever reads this id, so a free channel can never be mistaken for the paid one.
+FREE_CHAT_ID = os.environ.get("TELEGRAM_FREE_CHAT_ID", "").strip()
+
 # Telegram caps a message at 4096 characters and answers a longer one with HTTP 400 and
 # nothing else. Same limit that silently ate the weekend card twice.
 MAX_MESSAGE = 4096

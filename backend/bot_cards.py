@@ -301,7 +301,8 @@ def reference_rungs(ladder: List[dict], group: str, below: Optional[int]) -> Lis
 
 
 def value_rows(rows: List[dict], min_ev: Optional[float] = None,
-               with_ladder: bool = False) -> List[dict]:
+               with_ladder: bool = False,
+               min_odds: float = POST_MIN_ODDS) -> List[dict]:
     """Value-board rows -> what value_card prints.
 
     ONLY `status == "ok"` ROWS. The board deliberately returns everything it looked at,
@@ -336,7 +337,7 @@ def value_rows(rows: List[dict], min_ev: Optional[float] = None,
         if not lad:
             lad = [m for m in [r.get("best")] + list(r.get("alternatives") or [])
                    if isinstance(m, dict)]
-        picks = posting_rungs(lad, min_ev)
+        picks = posting_rungs(lad, min_ev, min_odds=min_odds)
         for m in picks:
             group = m.get("group")
             if group == "home":
@@ -507,6 +508,9 @@ def _value_line(r: dict, subject: bool = False) -> str:
     if isinstance(fair, (int, float)):
         head += f" (fair {fair:.2f})"
     head += f" — EV {r['ev']:+.1f}%"
+    stake = _pct(r.get("stake"))
+    if stake is not None:
+        head += f" 💸 {stake:g}u"
     src = r.get("odds_source")
     if src and src != "manual":
         head += f" [{src} price]"
@@ -751,3 +755,100 @@ def stale_warning(hours, threshold) -> Optional[str]:
         return None
     return (f"⚠️ The data is {h:.0f}h old (stale after {t:.0f}h). Today's boards are "
             f"built on it, so treat them as yesterday's until the next sync lands.")
+
+
+# ---------------------------------------------------------------------------------------
+# The free channel: every EV+ bet, staked by the size of the edge, settled in public.
+
+#: An eighth of Kelly against a 100u bank, in quarter units, between 0.25u and 2u.
+#:
+#: WHY STAKE BY THE EDGE AT ALL. A flat 1u on a 1.65 and on a 3.50 asks the long price to
+#: carry the same weight with roughly half the chance of landing, so a run of long-price
+#: losers can sink a record the model was right about. Kelly sizes each bet to its edge and
+#: its price; an eighth of it, capped, keeps one bad week from mattering. (A quarter put
+#: almost every bet at the 2u cap, which is a flat stake again by another name.)
+FREE_STAKE_MIN, FREE_STAKE_MAX = 0.25, 2.0
+
+
+def free_stake(ev, odds) -> Optional[float]:
+    """Units to stake: an eighth of Kelly on a 100u bank, rounded to 0.25u, clamped.
+
+    Kelly fraction = EV / (odds - 1), with EV as a fraction. +10% at 2.20 is 8.3% Kelly,
+    an eighth of that on 100u is 1.04u, so 1u. Returns None when either number is missing
+    or the bet has no edge — no stake is better than a made-up one."""
+    e, o = _pct(ev), _pct(odds)
+    if e is None or o is None or o <= 1 or e <= 0:
+        return None
+    u = (e / 100.0) / (o - 1) * 100 / 8
+    u = round(u * 4) / 4
+    return max(FREE_STAKE_MIN, min(FREE_STAKE_MAX, u))
+
+
+def _units(x: float) -> str:
+    return f"{x:+.2f}u".replace(".00u", "u")
+
+
+def free_results_card(day_label: str, graded: List[dict], all_time: dict) -> str:
+    """Yesterday's free-channel bets, in the channel's results layout, plus the running
+    record. `graded` rows carry result (win/loss/void/pending), price, stake, name, line.
+
+    PENDING IS SAID, NOT HIDDEN. A game whose corners have not synced yet is neither a
+    winner nor a loser, and leaving it out would make the day's P/L look final when it
+    is not."""
+    won = [r for r in graded if r.get("result") == "win"]
+    lost = [r for r in graded if r.get("result") == "loss"]
+    void = [r for r in graded if r.get("result") == "void"]
+    pending = [r for r in graded if r.get("result") == "pending"]
+
+    def pl(r):
+        st = _pct(r.get("stake")) or 1.0
+        if r.get("result") == "win":
+            pr = _pct(r.get("price"))
+            return (pr - 1) * st if pr else 0.0
+        if r.get("result") == "loss":
+            return -st
+        return 0.0
+
+    def sel(r):
+        if r.get("subject") == "team":
+            side, tail = r.get("name") or "?", " team"
+        else:
+            side, tail = r.get("match") or r.get("name") or "?", " match corners"
+        pr = _pct(r.get("price"))
+        return f"{side} {r.get('line')}+{tail}" + (f" @ {pr:.2f}" if pr else "")
+
+    staked = sum(_pct(r.get("stake")) or 1.0 for r in won + lost)
+    total = sum(pl(r) for r in won + lost)
+    if not graded:
+        return f"📅 {day_label} results\n\nNo bets went out that day."
+    out = [f"📅 {day_label} results",
+           f"{'📈 PROFIT' if total >= 0 else '📉 LOSS'}: {_units(total)} ({staked:g}u staked)"]
+    if won:
+        out += ["", f"🤑 Winners ({_units(sum(pl(r) for r in won))})"]
+        out += [f"✅ {sel(r)}: {_units(pl(r))}" for r in won]
+    if lost:
+        out += ["", f"👎 Losers ({_units(sum(pl(r) for r in lost))})"]
+        for r in lost:
+            out.append(f"❌ {sel(r)}: {_units(pl(r))}")
+            v, ln = r.get("value"), r.get("line")
+            if isinstance(v, (int, float)) and isinstance(ln, int) and ln - v == 1:
+                out.append("🚩 (ONE CORNER AWAY)")
+    if void:
+        out += ["", "↩️ Void: " + ", ".join(sel(r) for r in void)]
+    if pending:
+        out += ["", f"⏳ {len(pending)} still to settle: " + ", ".join(sel(r) for r in pending)]
+    s = all_time or {}
+    if s.get("settled"):
+        hr = s.get("hit_rate")
+        units = s.get("units")
+        roi = s.get("roi")
+        bits = [f"{s.get('landed', 0)}W-{s.get('missed', 0)}L"]
+        if hr is not None:
+            bits.append(f"{hr:g}% hit")
+        if units is not None:
+            bits.append(_units(units))
+        if roi is not None:
+            bits.append(f"ROI {roi:+.1f}%")
+        out += ["", "📊 Running total: " + " · ".join(bits)]
+    out += ["", "Not every EV+ bet lands. The edge shows over hundreds of bets, not one day."]
+    return "\n".join(out)

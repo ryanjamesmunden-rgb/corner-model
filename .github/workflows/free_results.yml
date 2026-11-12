@@ -1,0 +1,55 @@
+# The free channel's results: yesterday's bets, settled from the synced corner counts,
+# posted with the day's P/L at the stakes they went out with and the running total.
+#
+# 10:00 UTC, after the backend's 07:00 refresh has pulled in last night's corners. A game
+# that still has not synced is listed as "still to settle" rather than left out. A day
+# with no free bets posts nothing.
+name: Free channel results
+
+on:
+  schedule:
+    - cron: "0 10 * * *"
+  workflow_dispatch:
+    inputs:
+      day:
+        description: "Kick-off date to settle, YYYY-MM-DD (blank = yesterday)"
+        required: false
+        default: ""
+        type: string
+      preview:
+        description: "Build the message and show it here without sending"
+        required: false
+        default: false
+        type: boolean
+
+jobs:
+  results:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Settle and post
+        env:
+          BACKEND: ${{ vars.BACKEND_URL || 'https://corner-model.onrender.com' }}
+          TOOLS_TOKEN: ${{ secrets.TOOLS_TOKEN }}
+          DAY: ${{ inputs.day }}
+          DRY: ${{ inputs.preview && 'true' || 'false' }}
+        run: |
+          set -uo pipefail
+          q="token=$TOOLS_TOKEN&dry_run=$DRY"
+          [ -n "${DAY:-}" ] && q="$q&day=$DAY"
+          # The backend sleeps between requests; give a cold start time to wake.
+          code=$(curl -sS -o res.json -w '%{http_code}' --max-time 180 \
+            -X POST "$BACKEND/api/telegram/free-results?$q" || echo 000)
+          cat res.json; echo
+          python3 - "$code" <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import json, sys
+          code = sys.argv[1]
+          try:
+              d = json.load(open("res.json"))
+          except Exception:
+              print(f"## Free channel results\n\n⚠️ HTTP {code}"); raise SystemExit(1)
+          print(f"## Free channel results — {d.get('day')}\n")
+          print(f"bets: {d.get('bets')} · sent: {d.get('sent')} · {d.get('note') or ''}\n")
+          if d.get("text"):
+              print("```\n" + d["text"] + "\n```")
+          raise SystemExit(0 if code == "200" else 1)
+          PY

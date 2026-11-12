@@ -422,3 +422,38 @@ class TestThePostingRule:
         lad = self.ladder((4.5, None, None), (5.5, 1.95, 6.0))
         out = value_rows(self.rows(lad), min_ev=5.0)
         assert [r["line"] for r in out] == [6]
+
+
+class TestTheFreeChannel:
+    def test_the_free_floor_is_1_60_and_nothing_below(self):
+        lad = [{"group": "home", "key": "home_over_3.5", "line": 3.5, "book_odds": 1.55, "ev": 9.0},
+               {"group": "home", "key": "home_over_4.5", "line": 4.5, "book_odds": 1.65, "ev": 7.0},
+               {"group": "home", "key": "home_over_5.5", "line": 5.5, "book_odds": 2.30, "ev": 15.0}]
+        rows = [{"status": "ok", "home_name": "H", "away_name": "A", "best": lad[2], "ladder": lad}]
+        free = value_rows(rows, min_ev=5.0, min_odds=1.60)
+        assert [(r["line"], r["book_odds"]) for r in free] == [(5, 1.65)]
+        paid = value_rows(rows, min_ev=5.0)
+        assert [(r["line"], r["book_odds"]) for r in paid] == [(6, 2.30)]
+
+    def test_stakes_follow_the_edge_and_the_price(self):
+        from bot_cards import free_stake
+        assert free_stake(10, 2.20) == 1.0
+        assert free_stake(30, 10.0) == 0.5, "a long price gets less, even at a big edge"
+        assert free_stake(40, 1.70) == 2.0, "capped"
+        assert free_stake(1, 4.0) == 0.25, "floored"
+        assert free_stake(-3, 2.0) is None and free_stake(5, None) is None
+
+    def test_results_card_reads_like_the_channel(self):
+        from bot_cards import free_results_card
+        rows = [
+            {"result": "win", "price": 1.80, "stake": 1.0, "name": "Reading", "subject": "team", "line": 5},
+            {"result": "loss", "price": 2.10, "stake": 0.5, "name": "Hull", "subject": "team", "line": 6, "value": 5},
+            {"result": "pending", "price": 1.9, "stake": 1.0, "match": "A v B", "subject": "match", "line": 11},
+        ]
+        card = free_results_card("Wed 11 Nov", rows, {"settled": 2, "landed": 1, "missed": 1,
+                                                       "hit_rate": 50.0, "units": 0.3, "roi": 20.0})
+        assert "📈 PROFIT: +0.30u (1.5u staked)" in card
+        assert "✅ Reading 5+ team @ 1.80: +0.80u" in card
+        assert "❌ Hull 6+ team @ 2.10: -0.50u" in card and "ONE CORNER AWAY" in card
+        assert "still to settle: A v B 11+ match corners" in card
+        assert "1W-1L" in card and "ROI +20.0%" in card

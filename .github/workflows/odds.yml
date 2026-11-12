@@ -93,6 +93,13 @@ on:
         required: false
         default: false
         type: boolean
+      free_resend:
+        # Re-send to the free channel bets it has already recorded as sent — for when a
+        # send went to the wrong chat. Needs `notify` too. Off on every schedule.
+        description: "Free channel: send again even if already sent"
+        required: false
+        default: false
+        type: boolean
       preview:
         # READ THE LADDER WITHOUT SENDING ANYTHING. dry_run is enforced on the BACKEND, so
         # this cannot post whatever the workflow does — the lesson from gating a send in
@@ -362,10 +369,11 @@ jobs:
           BACKEND: ${{ vars.BACKEND_URL || 'https://corner-model.onrender.com' }}
           TOOLS_TOKEN: ${{ secrets.TOOLS_TOKEN }}
           DRY: ${{ inputs.preview && 'true' || 'false' }}
+          FORCE: ${{ inputs.free_resend && 'true' || 'false' }}
         run: |
           set -uo pipefail
           code=$(curl -sS -o free.json -w '%{http_code}' --max-time 120 \
-            -X POST "$BACKEND/api/telegram/value?token=$TOOLS_TOKEN&to=free&dry_run=$DRY" || echo 000)
+            -X POST "$BACKEND/api/telegram/value?token=$TOOLS_TOKEN&to=free&dry_run=$DRY&force=$FORCE" || echo 000)
           if [ "$DRY" = "true" ]; then
             python3 -c 'import json; print("--- free channel message as it would read ---"); print(json.load(open("free.json")).get("text") or "(nothing new to send)")'
           fi

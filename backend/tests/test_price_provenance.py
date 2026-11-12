@@ -127,6 +127,61 @@ def test_both_crons_are_still_there():
 
 def test_the_preview_prints_the_bookmaker_beside_the_source():
     """The preview is how "where did this price come from" gets answered, and the source
-    alone does not answer it — `api` does not say which of 33 books."""
+    alone does not answer it — `api` does not say which of 33 books.
+
+    THIS TEST USED TO ASSERT `r.get('book')` AND THAT IS WHY THE BUG SHIPPED. `book` was
+    already the rung's PRICE, so the assertion passed on the very collision that deleted
+    it. A test naming the field it expects is only a guard if that name is the right one.
+    """
     wf = _odds_workflow()
-    assert "r.get('book')" in wf
+    assert "r.get('book_name')" in wf
+    assert "r.get('book')" not in wf, \
+        "reading the bookmaker out of `book` is the collision that lost the price"
+
+
+# --- the rung must carry the price AND the book, under different names -----------------
+
+def _rung_literal():
+    """The dict literal each ladder rung is built from, as an AST node.
+
+    Parsed rather than called because _value_ladders needs a board. The bug this guards
+    was invisible to every other kind of test: a duplicate key in a dict literal is legal
+    Python, the later one silently wins, and nothing raises.
+    """
+    import ast
+    src = _src("server.py")
+    fn = src[src.index("def _value_ladders("):]
+    fn = fn[:fn.index("@api_router.post(\"/telegram/value\")")]
+    tree = ast.parse(fn.strip())
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Dict):
+            keys = [k.value for k in node.keys if isinstance(k, ast.Constant)]
+            if "plus" in keys and "ev" in keys:
+                return keys
+    raise AssertionError("could not find the rung dict literal")
+
+
+def test_the_rung_has_no_duplicate_keys():
+    """HOW THIS ACTUALLY BROKE, and the only shape of test that would have caught it.
+    The bookmaker name was added as `book`, and `book` was already in the same literal
+    holding book_odds — the PRICE. Python takes the last key, so every rung lost its price
+    and carried a name in the field named for the number. The preview's `is not None`
+    filter passes on a string and its `{...:<6}` format accepts one, so it printed
+    "1xBet" where "2.17" belonged and raised nothing.
+    """
+    keys = _rung_literal()
+    assert len(keys) == len(set(keys)), \
+        f"duplicate key in the rung literal: {[k for k in keys if keys.count(k) > 1]}"
+
+
+def test_the_price_and_the_book_are_separate_fields():
+    keys = _rung_literal()
+    assert "book" in keys, "the price must still be there"
+    assert "book_name" in keys, "and the bookmaker under its own name"
+
+
+def test_the_preview_reads_the_book_under_its_new_name():
+    wf = _odds_workflow()
+    assert "r['book_name']" in wf
+    # The price column must still read the price.
+    assert "book {r['book']" in wf

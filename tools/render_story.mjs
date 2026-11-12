@@ -47,6 +47,9 @@ const KINDS = {
   bets: "renderBetsCard",
   review: "renderReviewCard",
   results: "renderResultsReel",
+  // The forward-looking twin of the results reel: the weekend's EV+ calls, stepped
+  // through one at a time. Animates for the same reason — the sequence IS the content.
+  tips: "renderTipsReel",
   // The 16:9 cut of a team's record, for X. Reachable here so it can be rendered and read
   // back the way every other card in this repo is, rather than being shipped on the word
   // of a build that compiled.
@@ -54,11 +57,11 @@ const KINDS = {
   // The daily fact as a picture. No tease on this one — see renderStatCard.
   stat: "renderStatCard",
 };
-// WHICH KINDS ANIMATE. The fixture story draws a curve that can grow; the results reel
-// steps through a week of picks one at a time, which is the one case where the SEQUENCE is
-// the content rather than decoration. The slate and the cards are tables, and a table that
-// assembles itself is motion for its own sake.
-const ANIMATES = KIND === "fixture" || KIND === "results";
+// WHICH KINDS ANIMATE. The fixture story draws a curve that can grow; the two reels step
+// through picks one at a time, which is the case where the SEQUENCE is the content rather
+// than decoration. The slate and the cards are tables, and a table that assembles itself
+// is motion for its own sake.
+const ANIMATES = KIND === "fixture" || KIND === "results" || KIND === "tips";
 // With --video, the same drawing is rendered frame by frame and encoded instead of
 // snapshotted. Timings match recordStoryVideo's defaults so the automated clip and the one
 // the Share button makes are the same length and the same pace.

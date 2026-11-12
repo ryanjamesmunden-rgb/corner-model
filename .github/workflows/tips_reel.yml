@@ -1,0 +1,247 @@
+# The weekend's best corner prices as one clip.
+#
+# WHY IT IS A VIDEO AND NOT SIX MESSAGES. The shop window was being typed out by hand, one
+# fixture at a time, which is slow enough that it only happens on the weekends there is
+# time for it. One clip off one list goes out in a minute, and because the list is built by
+# a tested function the quiet weekend gets published the same way the good one does.
+#
+# WHAT IS ON IT, AND WHAT STAYS BEHIND THE SUBSCRIPTION. This is the one public card in
+# this repo that shows a line AND a price — on the owner's explicit instruction and
+# standing practice: "just posting the best EV+ ahead of the weekend", no stake, because it
+# is not a tip. What it does NOT carry is the reasoning: the ladder, the opponent's
+# defending and the game-state case stay in the channel, which is what shareText's own note
+# argues is the half actually worth paying for.
+#
+# DISPATCH ONLY. A cron would post on the weekends that had nothing to say as well as the
+# ones that did, and the honest version of that is no post — which a schedule cannot
+# decide. tools/tips_reel.mjs already refuses a window with fewer than two publishable
+# picks; the rest is a judgement about whether this weekend is worth a clip, and that is a
+# person's.
+#
+# AND IT DOES NOT SEND BY DEFAULT. A clip cannot be unposted. An ordinary run builds it,
+# writes the caption into the run summary and keeps the file as an artifact, where it can
+# be watched before anyone decides to send it.
+name: The weekend in prices
+
+on:
+  workflow_dispatch:
+    inputs:
+      days:
+        description: "How far ahead to look, in days (blank = 4)"
+        required: false
+        default: "4"
+        type: string
+      max:
+        description: "How many picks on the clip (blank = 8)"
+        required: false
+        default: "8"
+        type: string
+      min_ev:
+        description: "Edge floor, in percent (blank = 5)"
+        required: false
+        default: "5"
+        type: string
+      band:
+        # THE FILTER, AS AN INPUT AND NOT A HARDCODED CONSTANT — but it defaults to the
+        # band the ledger measured: 5+/6+ team lines are +48.47u over 90 settled bets,
+        # 4+ and below are -12.90u over 29, and 7+ has 12 bets on it, which is not a
+        # sample. Widening it is a decision somebody should have to type.
+        description: "Plus-lines to carry, comma separated (blank = 5,6)"
+        required: false
+        default: "5,6"
+        type: string
+      heading:
+        description: "Card heading (blank = BEST PRICES)"
+        required: false
+        default: ""
+        type: string
+      join:
+        description: "Sign-up link on the end card (blank = <site>/join)"
+        required: false
+        default: ""
+        type: string
+      send:
+        description: "Also post it to Telegram"
+        required: false
+        default: false
+        type: boolean
+
+concurrency:
+  group: corner-tips-reel
+
+permissions:
+  contents: read
+
+jobs:
+  reel:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Wake the backend
+        env:
+          BACKEND: ${{ vars.BACKEND_URL || 'https://corner-model.onrender.com' }}
+        run: |
+          for i in 1 2 3 4 5 6; do
+            code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 60 "$BACKEND/api/" || true)
+            echo "attempt $i: HTTP $code"
+            [ "$code" = "200" ] && break
+            sleep 15
+          done
+
+      - name: Build the reel
+        id: build
+        env:
+          BACKEND_URL: ${{ vars.BACKEND_URL || 'https://corner-model.onrender.com' }}
+          SITE_URL: ${{ vars.SITE_URL || 'https://thecornermodel.com' }}
+          TOOLS_TOKEN: ${{ secrets.TOOLS_TOKEN }}
+        run: |
+          set -- --days "${{ inputs.days || '4' }}" --max "${{ inputs.max || '8' }}" \
+                 --min-ev "${{ inputs.min_ev || '5' }}" --band "${{ inputs.band || '5,6' }}"
+          [ -n "${{ inputs.heading }}" ] && set -- "$@" --heading "${{ inputs.heading }}"
+          [ -n "${{ inputs.join }}" ] && set -- "$@" --join "${{ inputs.join }}"
+          node tools/tips_reel.mjs "$@" --json-out tips.json --args-out tips_args.json
+          empty=$(python3 -c "import json;print('true' if json.load(open('tips.json'))['empty'] else 'false')")
+          echo "empty=$empty" >> "$GITHUB_OUTPUT"
+          if [ "$empty" = "true" ]; then
+            echo "::notice::fewer than two publishable picks in the window — no clip"
+            {
+              echo "## No clip this weekend"
+              echo
+              echo "Nothing cleared the band and the floor. What the board had, by reason:"
+              echo
+              echo '```'
+              python3 -c "
+          import json
+          d = json.load(open('tips.json'))
+          print(f\"eligible: {d['eligible']}\")
+          for k, v in sorted(d.get('faults', {}).items(), key=lambda kv: -kv[1]):
+              print(f'{k}: {v}')
+          "
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          # THE CAPTION, IN THE RUN. The clip is only watchable after a download, so on a
+          # run that sends nothing the claim would otherwise be readable nowhere.
+          {
+            echo "## The weekend in prices"
+            echo
+            echo '```'
+            python3 -c "import json;print(json.load(open('tips.json'))['post'])"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "----- caption -----"
+          python3 -c "import json;print(json.load(open('tips.json'))['post'])"
+          echo "----- end -----"
+
+      - name: Draw it
+        id: draw
+        if: steps.build.outputs.empty != 'true'
+        # A STILL IS MOST OF THE VALUE AND NONE OF THE ENCODING RISK, so a failed video
+        # falls back to the final frame rather than costing the post entirely. The caption
+        # carries every row on its own either way.
+        run: |
+          can=$(bash tools/install_render.sh | tail -1)
+          echo "renderer: $can"
+          if [ "$can" = "none" ]; then
+            echo "::warning::no renderer available — caption only"; exit 0
+          fi
+          if command -v ffmpeg >/dev/null 2>&1 \
+             && node tools/render_story.mjs --kind tips --args tips_args.json \
+                     --video tips.mp4 --duration 11000 --hold 2000; then
+            echo "file=tips.mp4" >> "$GITHUB_OUTPUT"
+            echo "kind=video" >> "$GITHUB_OUTPUT"
+          elif node tools/render_story.mjs --kind tips --args tips_args.json --out tips.png; then
+            echo "::warning::could not encode the clip — sending the final frame instead"
+            echo "file=tips.png" >> "$GITHUB_OUTPUT"
+            echo "kind=image" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::the render failed — caption only"
+          fi
+
+      # THE RENDER INPUT, IN THE LOG — the same reasoning results_reel.yml sets out. An
+      # artifact is the only copy of the clip and it is served from a storage host plenty
+      # of things cannot reach: a locked-down network, a phone, an agent in a sandbox. All
+      # of them can read a run log.
+      #
+      # These few kilobytes are what render_story.mjs was handed, so the identical clip can
+      # be rebuilt anywhere ffmpeg and a browser exist, with no second request to the
+      # backend and no retyping of a price off a caption.
+      #
+      # Nothing secret rides in here: it is prices the site already serves to its own
+      # automation and the caption repeats. The token stays in the step above.
+      - name: Print the render input
+        if: steps.build.outputs.empty != 'true'
+        run: |
+          echo "----- tips_args.json (base64) -----"
+          base64 -w0 tips_args.json
+          echo
+          echo "----- end -----"
+
+      # KEPT WHETHER OR NOT IT IS SENT, so an ordinary run hands you the clip to watch
+      # rather than a description of one.
+      - name: Keep it
+        if: steps.draw.outputs.file != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: tips-reel
+          path: ${{ steps.draw.outputs.file }}
+          retention-days: 14
+
+      - name: Send it
+        if: steps.build.outputs.empty != 'true' && inputs.send && env.TG_TOKEN != ''
+        env:
+          TG_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TG_CHAT: ${{ secrets.TELEGRAM_FREE_CHAT_ID || secrets.TELEGRAM_CHAT_ID }}
+          FILE: ${{ steps.draw.outputs.file }}
+          KIND: ${{ steps.draw.outputs.kind }}
+        run: |
+          python3 - <<'PY'
+          import json
+          d = json.load(open("tips.json"))
+          open("caption.txt", "w").write(d["post"])
+          open("shape.txt", "w").write("long" if len(d["post"]) > 1024 else "short")
+          PY
+          SHAPE=$(cat shape.txt)
+          echo "caption is $(wc -c < caption.txt) bytes — sending $SHAPE"
+
+          sent=0
+          if [ -n "$FILE" ] && [ -s "$FILE" ]; then
+            # sendVideo, not sendAnimation: an animation is muted and loops, which suits a
+            # three-second curve and not a list somebody needs to read to the end.
+            METHOD=sendVideo; FIELD=video
+            [ "$KIND" = "image" ] && { METHOD=sendPhoto; FIELD=photo; }
+            set -- -F "chat_id=$TG_CHAT" -F "$FIELD=@$FILE"
+            [ "$SHAPE" = "short" ] && set -- "$@" -F "caption=$(cat caption.txt)"
+            code=$(curl -s -o tg.json -w '%{http_code}' --max-time 180 \
+              -X POST "https://api.telegram.org/bot$TG_TOKEN/$METHOD" "$@" || true)
+            echo "$METHOD HTTP $code"
+            if [ "$code" = "200" ]; then
+              sent=1
+            else
+              echo "::warning::$METHOD failed (HTTP $code) — falling back to text"
+              head -c 300 tg.json || true
+            fi
+          fi
+
+          # THE CAPTION GOES EITHER WAY. A Telegram media caption caps at 1024 bytes and
+          # this one carries six picks at six lines each, so the usual outcome is a clip
+          # with no caption followed by the text — not a post that silently lost its rows.
+          if [ "$sent" = "0" ] || [ "$SHAPE" = "long" ]; then
+            python3 - <<'PY' > text.json
+          import json, os
+          print(json.dumps({"chat_id": os.environ["TG_CHAT"],
+                            "text": open("caption.txt").read(),
+                            "disable_web_page_preview": True}))
+          PY
+            code=$(curl -s -o tg2.json -w '%{http_code}' --max-time 120 \
+              -H 'Content-Type: application/json' -d @text.json \
+              -X POST "https://api.telegram.org/bot$TG_TOKEN/sendMessage" || true)
+            echo "sendMessage HTTP $code"
+            [ "$code" = "200" ] || { head -c 300 tg2.json || true; exit 1; }
+          fi

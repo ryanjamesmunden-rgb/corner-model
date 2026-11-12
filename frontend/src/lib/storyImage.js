@@ -38,6 +38,10 @@ import { recordLine, reasonFor } from "./chaseSlate.js";
 // clip may say AND when each part of it is on screen, so the still at progress 1 and
 // the frames before it cannot disagree about either.
 import { reelAt } from "./resultsReel.js";
+// Same arrangement for the forward-looking clip: tipsReel decides what the card may claim
+// AND when each beat is on screen, so the still at progress 1 and the frames before it
+// cannot disagree about either. See renderTipsReel at the foot of this file.
+import { tipsAt } from "./tipsReel.js";
 
 export const STORY_W = 1080;
 export const STORY_H = 1920;
@@ -4006,4 +4010,318 @@ export const renderStatCard = (canvas, {
   ctx.textAlign = "left";
 
   return canvas;
+};
+
+/**
+ * The weekend's EV+ calls as one clip — the forward-looking twin of renderResultsReel.
+ *
+ * THE STRUCTURAL DIFFERENCE IS THAT THERE IS NO TALLY. A results reel earns a number at
+ * the end; nothing on this card has happened yet, and a figure in that slot would have to
+ * be a projection drawn in the shape of a result. So the beats are the rows arriving and
+ * then the end card, and the number the end card carries is the SETTLED record — a fact
+ * about the past, drawn as the past.
+ *
+ * WHAT IS DELIBERATELY ON IT, against this file's usual policy. Every other public card
+ * here blurs the line or withholds the price, because the calls are what the channel
+ * sells. This one shows both, on its owner's explicit instruction and repeated practice:
+ * these are the best prices on the board published ahead of the weekend, free, as the shop
+ * window. The thing still held back is the REASONING — the ladder, the opponent's
+ * defending, the game-state case — which is what telegramPick's own note argues is the
+ * half actually worth paying for.
+ *
+ * THREE THINGS THAT CANNOT COME OFF A ROW, because without any of them the row is a
+ * number somebody cannot act on:
+ *
+ *   the BOOK, because the feed takes the best of 33 and an edge at a book the viewer has
+ *   no account with is not a bet they can place;
+ *
+ *   the MODEL'S PRICE, because the edge is a comparison and one side of a comparison is
+ *   not evidence of anything;
+ *
+ *   the TIME THE PRICES WERE READ, which sits under the rows on every frame rather than
+ *   only on the end card — a clip gets screenshotted mid-play and the still has to carry
+ *   its own expiry.
+ *
+ * `reel` is whatever lib/tipsReel.tipsFrom returned. Null draws nothing and returns false:
+ * below two picks there is no clip, and tipsReel decides that, not this.
+ */
+export const renderTipsReel = (canvas, {
+  reel = null, progress = 1, site = "thecornermodel.com", brand = "CORNER MODEL",
+  heading = "BEST PRICES",
+} = {}) => {
+  if (!reel || !reel.rows?.length) return false;
+  const W = STORY_W;
+  const H = STORY_H;
+  canvas.width = W;
+  canvas.height = H;
+  const ctx = canvas.getContext("2d");
+  const pad = 72;
+  const inner = W - pad * 2;
+  const { shown, end, growth } = tipsAt(reel, progress);
+  const useFlags = flagsRender(ctx);
+
+  ctx.fillStyle = C.bg;
+  ctx.fillRect(0, 0, W, H);
+  const glow = ctx.createRadialGradient(W / 2, 300, 100, W / 2, 300, 900);
+  glow.addColorStop(0, `${C.primary}22`);
+  glow.addColorStop(1, `${C.primary}00`);
+  ctx.fillStyle = glow;
+  ctx.fillRect(0, 0, W, 900);
+  ctx.textBaseline = "middle";
+
+  // ---- the band across the top
+  ctx.fillStyle = C.text;
+  ctx.font = `700 40px ${FONT_HEAD}`;
+  ctx.letterSpacing = "2px";
+  ctx.fillText(brand, pad, 96);
+  ctx.letterSpacing = "0px";
+  ctx.textAlign = "right";
+  ctx.fillStyle = C.muted;
+  ctx.font = `600 28px ${FONT_BODY}`;
+  if (reel.period) ctx.fillText(reel.period, W - pad, 96);
+  ctx.textAlign = "left";
+
+  // 104, NOT THE REEL'S 118. The results reel has nothing under its heading; this one has
+  // the filter line, and at 118 the descenders of the heading sat on top of it — two
+  // pieces of text occupying the same band, which is how a card ends up unreadable in the
+  // one place it is making its narrowest claim.
+  ctx.fillStyle = C.text;
+  ctx.font = fitFont(ctx, heading, { size: 104, max: inner, weight: 700,
+                                     family: FONT_HEAD, min: 60 });
+  ctx.fillText(heading, pad, 194);
+
+  // THE FILTER, UNDER THE HEADING AND NOT IN A FOOTNOTE. Eight rows under the word
+  // "best" reads as "the eight best bets on the board". They are the best of ONE BAND of
+  // lines, chosen because that band is the only one with a profitable sample behind it,
+  // and a card that does not say so is making a wider claim than the data supports.
+  ctx.fillStyle = C.primary;
+  ctx.font = fitFont(ctx, reel.basis, { size: 27, max: inner, weight: 600,
+                                        family: FONT_BODY, min: 20 });
+  ctx.fillText(reel.basis, pad, 268);
+
+  const RULE_Y = 312;
+  ctx.strokeStyle = C.border;
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(pad, RULE_Y);
+  ctx.lineTo(W - pad, RULE_Y);
+  ctx.stroke();
+
+  // ---- the rows, revealed in turn
+  //
+  // THE BLOCK IS CENTRED IN WHAT IS LEFT, which matters more here than on the results reel
+  // because this card's length is not fixed: two band prices is a normal weekend and eight
+  // is a good one. Pinned to the top with a ceiling on the row height, a three-row clip
+  // left eight hundred pixels of empty card under it — the hole renderBetsCard's own
+  // layout note is about, which reads as a card that failed to finish drawing.
+  const reserve = 200;                  // the price stamp and the footer
+  const gap = 12;
+  const region = H - (RULE_Y + 40) - reserve;
+  // Capped so three rows do not become three banners; floored so eight stay legible.
+  const rowH = Math.max(96, Math.min(206, (region - (reel.n - 1) * gap) / reel.n));
+  const blockH = reel.n * rowH + (reel.n - 1) * gap;
+  const top = RULE_Y + 40 + Math.max(0, (region - blockH) / 2);
+  const nameX = pad + 22;
+  const evW = 172;
+  const evX = W - pad - 22 - evW;
+  const priceW = 172;
+  const priceX = evX - priceW - 22;
+  const nameW = priceX - nameX - 22;
+  // The edge bar's full scale. Fixed rather than relative to the biggest row, so the same
+  // edge is the same length of bar on every clip this ever renders — a bar normalised to
+  // whatever happened to be on this card would make a +8% week look like a +25% one.
+  const EV_FULL = 25;
+
+  reel.rows.forEach((r, i) => {
+    if (i >= shown) return;
+    const y = top + i * (rowH + gap);
+    const mid = y + rowH / 2;
+    const fresh = i === shown - 1;
+    const fill = fresh ? growth : 1;
+    const tone = C.solid;
+
+    ctx.fillStyle = C.card;
+    roundRect(ctx, pad, y, inner, rowH, 14);
+    ctx.fill();
+    ctx.strokeStyle = fresh ? `${C.primary}99` : C.border;
+    ctx.lineWidth = fresh ? 2.5 : 1.5;
+    ctx.stroke();
+    ctx.fillStyle = C.primary;
+    roundRect(ctx, pad, y + 14, 5, rowH - 28, 3);
+    ctx.fill();
+
+    // ONE RHYTHM ACROSS ALL THREE COLUMNS. The bet, the book and the edge each sit on the
+    // same three baselines, so the row reads across as well as down — and because the step
+    // is derived from the row height, an eight-row clip and a three-row one are the same
+    // card at two sizes rather than two different layouts.
+    const step = Math.min(44, rowH * 0.22);
+
+    // THE BET, biggest thing on the row. "Tondela Over 4.5 corners" — the team and the
+    // line in the form the channel posts them, not the "5+" the ledger splits on.
+    ctx.fillStyle = C.text;
+    ctx.font = fitFont(ctx, r.bet, { size: Math.min(46, rowH * 0.26), max: nameW,
+                                     weight: 600, family: FONT_BODY, min: 24 });
+    ctx.fillText(ellipsize(ctx, r.bet, nameW), nameX, mid - step);
+
+    ctx.fillStyle = C.muted;
+    ctx.font = `500 25px ${FONT_BODY}`;
+    ctx.fillText(ellipsize(ctx, r.fixture, nameW), nameX, mid);
+
+    // THE COMPETITION AS A FLAG OR AS A CODE, never as a tofu box: see this file's note on
+    // why the glyph is probed rather than assumed. Windows has no flag glyphs at all, and
+    // whatever the rendering machine draws is baked into the file everyone then sees.
+    const code = countryCodeFor(r.leagueId);
+    const mark = useFlags ? flagFor(r.leagueId) : "";
+    const when = [mark || code, r.league, r.time].filter(Boolean).join("  ·  ");
+    ctx.font = `500 24px ${FONT_BODY}`;
+    ctx.fillText(ellipsize(ctx, when, nameW), nameX, mid + step);
+
+    // THE PRICE AND THE BOOK THAT QUOTED IT, one above the other. Drawn with the shared
+    // price box so this card and the fixture story cannot disagree about what a book price
+    // looks like.
+    const boxH = Math.min(62, rowH * 0.36);
+    drawPriceBox(ctx, { x: priceX, y: mid - step - boxH / 2, w: priceW, h: boxH,
+                        price: r.price == null ? null : r.price.toFixed(2), kind: "book" });
+    ctx.textAlign = "center";
+    ctx.fillStyle = C.text;
+    ctx.font = fitFont(ctx, r.book || "—", { size: 26, max: priceW, weight: 600,
+                                             family: FONT_BODY, min: 17 });
+    ctx.fillText(r.book || "—", priceX + priceW / 2, mid);
+    ctx.fillStyle = C.muted;
+    ctx.font = `500 22px ${FONT_DATA}`;
+    const model = [r.fair == null ? "" : `fair ${r.fair.toFixed(2)}`,
+                   r.prob == null ? "" : `${Math.round(r.prob)}%`].filter(Boolean).join("  ");
+    if (model) ctx.fillText(model, priceX + priceW / 2, mid + step);
+
+    // THE EDGE, and the bar it is measured on. The number runs out with the row rather
+    // than arriving full: the point of the bar is watching how far past the book price
+    // the model is, and a bar that was already there would show the claim and never the
+    // size of it.
+    ctx.fillStyle = C.muted;
+    ctx.font = `600 18px ${FONT_BODY}`;
+    ctx.letterSpacing = "3px";
+    ctx.fillText("EDGE", evX + evW / 2, mid - step - 4);
+    ctx.letterSpacing = "0px";
+    ctx.fillStyle = tone;
+    ctx.font = `700 44px ${FONT_DATA}`;
+    ctx.globalAlpha = clamp01(fill);
+    ctx.fillText(`+${(r.ev || 0).toFixed(1)}%`, evX + evW / 2, mid + 2);
+    ctx.globalAlpha = 1;
+    ctx.textAlign = "left";
+
+    const barW = evW - 20;
+    const barX = evX + 10;
+    const barY = mid + step - 5;
+    ctx.fillStyle = C.secondary;
+    roundRect(ctx, barX, barY, barW, 10, 5);
+    ctx.fill();
+    ctx.fillStyle = tone;
+    const run = Math.max(0, Math.min(1, (r.ev || 0) / EV_FULL)) * barW * clamp01(fill);
+    if (run > 2) {
+      roundRect(ctx, barX, barY, run, 10, 5);
+      ctx.fill();
+    }
+  });
+
+  // ---- what the rows do NOT say, on every frame
+  //
+  // THE EXPIRY IS NOT ON THE END CARD. A clip gets paused, screenshotted and reposted, and
+  // the frame that travels is rarely the last one — so the stamp that makes these prices
+  // checkable rides under the rows, where any single frame carries it.
+  const stampY = H - 168;
+  ctx.fillStyle = C.muted;
+  ctx.font = `500 26px ${FONT_BODY}`;
+  const stamp = [reel.pricedNote, reel.more ? `+${reel.more} more on the board` : ""]
+    .filter(Boolean).join("  ·  ");
+  ctx.fillText(ellipsize(ctx, stamp, inner), pad, stampY);
+
+  // ---- the end card: the record, and the ask
+  //
+  // IT COVERS THE ROWS, for the reason renderResultsReel's own end card does: there is no
+  // room for a fourth panel under eight rows, and a clip that scrolls its own picks off
+  // the top to make an ask loses the thing that earned the ask.
+  if (end > 0 && (reel.join || reel.context)) {
+    const a = Math.min(1, end * 1.6);
+    ctx.globalAlpha = a * 0.96;
+    ctx.fillStyle = C.bg;
+    ctx.fillRect(0, RULE_Y, W, H - RULE_Y);
+    ctx.globalAlpha = a;
+
+    // CENTRED, FOR THE SAME REASON THE ROWS ARE. The record block and the button are both
+    // optional, so the end card is four heights depending on what the run could fetch —
+    // and a fixed start put the whole of it in the top half with six hundred pixels of
+    // nothing under the ask.
+    const endH = 100 + 86 + (reel.context ? 178 : 0) + 104 + (reel.join ? 250 : 0);
+    let y = RULE_Y + Math.max(40, (H - RULE_Y - 150 - endH) / 2);
+    ctx.textAlign = "center";
+    ctx.fillStyle = C.primary;
+    ctx.font = `600 34px ${FONT_BODY}`;
+    ctx.letterSpacing = "8px";
+    ctx.fillText("ON THE BOARD", W / 2, y);
+    ctx.letterSpacing = "0px";
+
+    y += 100;
+    ctx.fillStyle = C.text;
+    ctx.font = `700 118px ${FONT_HEAD}`;
+    ctx.fillText(String(reel.n + reel.more), W / 2, y);
+    y += 86;
+    ctx.fillStyle = C.muted;
+    ctx.font = `500 32px ${FONT_BODY}`;
+    ctx.fillText(`priced calls over ${reel.minEv}% across ${reel.leagues} `
+                 + `competition${reel.leagues === 1 ? "" : "s"}`, W / 2, y);
+
+    // THE SETTLED RECORD, AT THE SAME WEIGHT AS THE ASK. This is the only number on the
+    // card that is a fact about the past, and it is the one that decides whether the eight
+    // rows above were worth watching — so it is not a disclaimer at the bottom.
+    if (reel.context) {
+      y += 118;
+      ctx.fillStyle = C.text;
+      ctx.font = `700 64px ${FONT_HEAD}`;
+      ctx.fillText(reel.context, W / 2, y);
+      y += 60;
+      ctx.fillStyle = C.muted;
+      ctx.font = `500 27px ${FONT_BODY}`;
+      ctx.fillText("settled and published on the site", W / 2, y);
+    }
+
+    // WHAT IS STILL BEHIND THE SUBSCRIPTION, named rather than implied. Without this line
+    // the clip has given away the product and asked for money for nothing; with it, the
+    // prices are the sample and the reasoning is the thing being sold.
+    y += 104;
+    ctx.fillStyle = C.muted;
+    ctx.font = `500 29px ${FONT_BODY}`;
+    ctx.fillText("The case for each call goes out in the channel", W / 2, y);
+
+    if (reel.join) {
+      y += 90;
+      ctx.fillStyle = C.primary;
+      roundRect(ctx, pad + 40, y, inner - 80, 104, 52);
+      ctx.fill();
+      ctx.fillStyle = C.bg;
+      ctx.font = fitFont(ctx, reel.join, { size: 40, max: inner - 160, weight: 700,
+                                           family: FONT_HEAD, min: 26 });
+      ctx.fillText(reel.join, W / 2, y + 54);
+      y += 160;
+    }
+
+    ctx.fillStyle = C.muted;
+    ctx.font = `500 25px ${FONT_BODY}`;
+    ctx.fillText(ellipsize(ctx, reel.pricedNote, inner), W / 2, y);
+    ctx.textAlign = "left";
+    ctx.globalAlpha = 1;
+  }
+
+  // THE FOOTER IS TWO LINES, not one. The legal notice on this card is longer than the
+  // reel's — it has to say "not advice" as well, because this card carries live prices —
+  // and right-aligned on the same baseline as the domain the two ran straight through each
+  // other. Stacked, both are readable and neither has to be cut.
+  ctx.fillStyle = C.muted;
+  ctx.font = `500 23px ${FONT_BODY}`;
+  ctx.fillText(ellipsize(ctx, reel.legal || "18+ · begambleaware.org", inner),
+               pad, H - 108);
+  ctx.fillStyle = C.text;
+  ctx.font = `700 36px ${FONT_HEAD}`;
+  ctx.fillText(site, pad, H - 58);
+  ctx.textAlign = "left";
+  return true;
 };

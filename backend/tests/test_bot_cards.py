@@ -457,3 +457,11 @@ class TestTheFreeChannel:
         assert "❌ Hull 6+ team @ 2.10: -0.50u" in card and "ONE CORNER AWAY" in card
         assert "still to settle: A v B 11+ match corners" in card
         assert "1W-1L" in card and "ROI +20.0%" in card
+
+
+def test_the_unit_note_appears_only_when_a_stake_does():
+    from bot_cards import value_card, STAKE_NOTE
+    row = {"team": "H", "subject": "H", "match": "H v A", "line": 5, "ev": 8.0,
+           "book_odds": 1.9, "dedup_key": "f:1"}
+    assert STAKE_NOTE not in value_card([row])
+    assert STAKE_NOTE in value_card([{**row, "stake": 1.0}])

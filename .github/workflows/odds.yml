@@ -355,15 +355,20 @@ jobs:
         # and remembers what it has sent separately from the owner/VIP sends. Until
         # TELEGRAM_FREE_CHAT_ID is set on Render the backend answers "not set" and sends
         # nothing, so this is safe to run before the channel exists.
-        if: github.event_name == 'schedule' || inputs.notify
+        # A PREVIEW builds the free message and prints it here without sending or recording.
+        if: github.event_name == 'schedule' || inputs.notify || inputs.preview
         continue-on-error: true
         env:
           BACKEND: ${{ vars.BACKEND_URL || 'https://corner-model.onrender.com' }}
           TOOLS_TOKEN: ${{ secrets.TOOLS_TOKEN }}
+          DRY: ${{ inputs.preview && 'true' || 'false' }}
         run: |
           set -uo pipefail
           code=$(curl -sS -o free.json -w '%{http_code}' --max-time 120 \
-            -X POST "$BACKEND/api/telegram/value?token=$TOOLS_TOKEN&to=free" || echo 000)
+            -X POST "$BACKEND/api/telegram/value?token=$TOOLS_TOKEN&to=free&dry_run=$DRY" || echo 000)
+          if [ "$DRY" = "true" ]; then
+            python3 -c 'import json; print("--- free channel message as it would read ---"); print(json.load(open("free.json")).get("text") or "(nothing new to send)")'
+          fi
           cat free.json; echo
           python3 - "$code" <<'PY' >> "$GITHUB_STEP_SUMMARY"
           import json, sys

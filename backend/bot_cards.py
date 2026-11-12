@@ -510,7 +510,7 @@ def _value_line(r: dict, subject: bool = False) -> str:
     head += f" — EV {r['ev']:+.1f}%"
     stake = _pct(r.get("stake"))
     if stake is not None:
-        head += f" 💸 {stake:g}u"
+        head += f" 💸 suggested stake {stake:g}u"
     src = r.get("odds_source")
     if src and src != "manual":
         head += f" [{src} price]"
@@ -574,6 +574,10 @@ def value_card(rows: List[dict]) -> str:
         out.pop()
     if dropped:
         out.append(f"\n…and {dropped} more angle(s) on the site.")
+    # A BARE "1.25u" GETS BACKED AS £1.25 OR 1.25 OF WHATEVER THE READER THINKS A UNIT IS.
+    # Said once per message, under the bets, whenever any of them carries a stake.
+    if any(_pct(r.get("stake")) is not None for _m, angles in plan for r in angles):
+        out.append("\n" + STAKE_NOTE)
     return "\n".join(out)
 
 
@@ -768,6 +772,10 @@ def stale_warning(hours, threshold) -> Optional[str]:
 #: its price; an eighth of it, capped, keeps one bad week from mattering. (A quarter put
 #: almost every bet at the 2u cap, which is a flat stake again by another name.)
 FREE_STAKE_MIN, FREE_STAKE_MAX = 0.25, 2.0
+
+#: What a unit is, printed under every message that suggests a stake.
+STAKE_NOTE = ("💸 Suggested stakes are in units, not pounds: 1u = 1% of your betting "
+              "bank. On a £100 bank, 1.25u is £1.25. Only bet what you can afford to lose.")
 
 
 def free_stake(ev, odds) -> Optional[float]:

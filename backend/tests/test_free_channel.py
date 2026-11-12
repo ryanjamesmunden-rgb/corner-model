@@ -114,7 +114,8 @@ def test_free_send_posts_the_lowest_line_at_1_60_with_a_stake(env):
     out = run(server.telegram_value(token="t", to="free"))
     assert out["sent"] and sent[0][0] == "-100free"
     text = sent[0][1]
-    assert "Reading 5+ @ 1.70" in text and "💸 1.25u" in text
+    assert "Reading 5+ @ 1.70" in text and "💸 suggested stake 1.25u" in text
+    assert "1u = 1% of your betting bank" in text
     assert "4+" not in text and "6+" not in text and "8+" not in text
     assert list(fake.free_picks.docs) == ["fx1:home_over_4.5"]
     assert list(fake.bot_value_sent.docs) == ["free:fx1:home_over_4.5"]

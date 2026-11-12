@@ -156,17 +156,13 @@ BOARD = [board_row(
           mark("away", 7, -4.0, 3.60, 3.75)])]
 
 
-def test_without_a_floor_only_the_best_angle_comes_back():
-    """The digest's long-standing shape, unchanged by this."""
-    got = bot_cards.value_rows(BOARD)
-    assert len(got) == 1
-    assert got[0]["line"] == 6 and got[0]["ev"] == 12.4
-
-
-def test_with_a_floor_every_qualifying_angle_comes_back():
+def test_one_angle_per_side_the_lowest_line_priced_1_80_or_more():
+    """THE POSTING RULE. Valerenga 6+ at 1.80 is their line; 7+ at +9.2% is a longer
+    price on the same side and is not a second bet. The total is its own side."""
     got = bot_cards.value_rows(BOARD, min_ev=5.0)
-    assert [r["ev"] for r in got] == [12.4, 9.2, 6.1]
-    assert [r["line"] for r in got] == [6, 7, 11], "line N prices N+1 and the post says so"
+    assert [r["ev"] for r in got] == [12.4, 6.1]
+    assert [r["line"] for r in got] == [6, 11], "line N prices N+1 and the post says so"
+    assert bot_cards.value_rows(BOARD) == got, "no floor still means one per side"
 
 
 def test_a_negative_alternative_is_not_sent_as_a_pick():
@@ -181,7 +177,7 @@ def test_each_angle_is_remembered_separately():
     game that has only just become value."""
     got = bot_cards.value_rows(BOARD, min_ev=5.0)
     keys = [r["dedup_key"] for r in got]
-    assert len(set(keys)) == 3
+    assert len(set(keys)) == 2
     assert keys[0] == "nor-el-1:away_over_5"
 
 
@@ -198,7 +194,7 @@ def test_angles_on_one_game_group_under_it():
     # The side is named per line; the fixture is not repeated on each one.
     assert card.count("Kristiansund BK v Valerenga") == 1
     assert "• Valerenga 6+ @ 1.80" in card
-    assert "• Valerenga 7+ @ 2.50" in card
+    assert "7+ @ 2.50" not in card, "a longer line on the same side is not a second bet"
     assert "• Match total 11+ @ 2.10" in card
 
 
@@ -216,12 +212,13 @@ def test_rows_with_no_match_still_render_flat():
 # --- the caps, and the record agreeing with them ------------------------------------
 
 def test_one_game_cannot_fill_the_whole_message():
-    many = [board_row("f1", "H", "A", best=mark("home", 5, 20.0),
-                      alts=[mark("home", 6, 19.0), mark("home", 7, 18.0),
-                            mark("home", 8, 17.0), mark("total", 10, 16.0),
-                            mark("total", 11, 15.0)]),
-            board_row("f2", "C", "D", best=mark("away", 5, 10.0))]
-    plan, dropped = bot_cards.value_plan(bot_cards.value_rows(many, min_ev=5.0))
+    """value_rows now gives at most one angle per side, but value_plan still holds the
+    per-game cap for any caller that hands it more."""
+    many = [{"team": "H", "subject": "H", "match": "H v A", "line": n, "ev": 20.0 - n,
+             "book_odds": 2.0, "dedup_key": f"f1:{n}"} for n in range(5, 11)]
+    many.append({"team": "C", "subject": "C", "match": "C v D", "line": 5, "ev": 10.0,
+                 "book_odds": 2.0, "dedup_key": "f2:5"})
+    plan, dropped = bot_cards.value_plan(many)
     first = dict((m, a) for m, a in plan)
     assert len(first["H v A"]) == bot_cards.MAX_ANGLES_PER_GAME
     assert len(first["C v D"]) == 1, "the second game must still get in"
@@ -232,7 +229,7 @@ def test_the_total_cap_holds():
     boards = [board_row(f"f{i}", f"H{i}", f"A{i}",
                         best=mark("home", 5, 20.0 - i),
                         alts=[mark("home", 6, 19.0 - i)])
-              for i in range(8)]
+              for i in range(14)]
     rows = bot_cards.value_rows(boards, min_ev=5.0)
     plan, dropped = bot_cards.value_plan(rows)
     shown = sum(len(a) for _m, a in plan)
@@ -246,7 +243,7 @@ def test_what_is_recorded_is_exactly_what_was_printed():
     angle the card dropped loses it silently and permanently."""
     boards = [board_row(f"f{i}", f"H{i}", f"A{i}", best=mark("home", 5, 20.0 - i),
                         alts=[mark("home", 6, 19.0 - i), mark("home", 7, 18.0 - i)])
-              for i in range(6)]
+              for i in range(14)]
     rows = bot_cards.value_rows(boards, min_ev=5.0)
     sent = bot_cards.value_sent(rows)
     card = bot_cards.value_card(rows)
@@ -344,10 +341,9 @@ def test_a_reference_rung_is_never_recorded_as_sent():
     finally arrived for it — the silent, permanent loss value_plan exists to prevent."""
     rows = bot_cards.value_rows(LADDER_BOARD, min_ev=5.0, with_ladder=True)
     sent = bot_cards.value_sent(rows)
-    assert len(sent) == 2
+    assert len(sent) == 1
     assert all(not r.get("reference") for r in sent)
-    assert sorted(r["dedup_key"] for r in sent) == [
-        "nor-el-1494798:away_over_5.5", "nor-el-1494798:away_over_6.5"]
+    assert [r["dedup_key"] for r in sent] == ["nor-el-1494798:away_over_5.5"]
 
 
 def test_a_reference_rung_carries_no_dedup_key():
@@ -411,11 +407,13 @@ def test_the_safest_qualifying_rung_survives_the_cap():
     assert ("Torreense", 5) in lines, "the safest home rung must be in the message"
 
 
-def test_the_biggest_edge_also_survives():
-    """Both are wanted. Keeping only the safe line would be the same mistake mirrored."""
+def test_the_long_shot_is_not_sent_alongside_it():
+    """THE POSTING RULE. One line per side: 5+ at 1.80 is Torreense's line, and 8+ at
+    5.50 on +29.6% is the longest price on the ladder, not a second bet. (Changed from
+    "both are wanted" after the bot sent Reading 8+ at 10.00 when their 5+ was 1.73.)"""
     sent = bot_cards.value_sent(
         bot_cards.value_rows(TORREENSE_BOARD, min_ev=5.0, with_ladder=True))
-    assert ("Torreense", 8) in {(r["subject"], r["line"]) for r in sent}
+    assert [r["line"] for r in sent if r["subject"] == "Torreense"] == [5]
 
 
 def test_every_subject_gets_its_safest_rung():
@@ -433,7 +431,9 @@ def test_the_ladder_beats_the_boards_top_four():
     is unreachable however the card is written."""
     rows = [r for r in bot_cards.value_rows(TORREENSE_BOARD, min_ev=5.0, with_ladder=True)
             if not r.get("reference")]
-    assert len(rows) == 6, "six rungs clear +5%, not the four the board carries"
+    # The safe home line (4.5 -> 5+, +9.8%) ranks sixth by EV, so it is only reachable
+    # through the ladder; the total's first 1.80+ line is 9.5 -> 10+.
+    assert {(r["subject"], r["line"]) for r in rows} == {("Torreense", 5), ("Match total", 10)}
 
 
 def test_rungs_are_shown_in_ladder_order():

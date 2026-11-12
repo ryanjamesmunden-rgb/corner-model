@@ -218,7 +218,7 @@ def test_value_rows_emits_everything_the_shaper_needs():
               "home_team_id": "eng-l2-colch", "away_team_id": "eng-l2-gill",
               "league_id": "eng-l2", "league_name": "League Two",
               "date": "2026-11-14T15:00:00+00:00", "odds_source": "api",
-              "best": {"group": "home", "line": 4.5, "ev": 27.6, "book_odds": 1.73,
+              "best": {"group": "home", "line": 4.5, "ev": 27.6, "book_odds": 1.85,
                        "fair_odds": 1.36, "prob": 73.8, "key": "home_over_4.5"},
               "alternatives": [], "ladder": []}]
     rows = bot_cards.value_rows(board, min_ev=5.0)
@@ -226,5 +226,5 @@ def test_value_rows_emits_everything_the_shaper_needs():
     e = SHAPE(rows[0])
     assert e is not None, "value_rows output must be shapeable without translation"
     assert e["line"] == 5 and e["team_id"] == "eng-l2-colch"
-    assert e["price"] == 1.73 and e["subject"] == "team"
+    assert e["price"] == 1.85 and e["subject"] == "team"
     assert e["market_key"] == "home_over_4.5"

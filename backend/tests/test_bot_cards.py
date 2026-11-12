@@ -306,12 +306,12 @@ class TestTheStoredLineIsNotTheLineWeSay:
 
     def test_the_away_side_gets_the_away_name(self):
         out = value_rows([{"status": "ok", "home_name": "H", "away_name": "A",
-                           "best": {"group": "away", "line": 3.5, "ev": 2.0}}])
+                           "best": {"group": "away", "line": 3.5, "ev": 2.0, "book_odds": 2.0}}])
         assert out[0]["team"] == "A" and out[0]["line"] == 4
 
     def test_a_match_total_is_named_as_the_fixture_not_a_team(self):
         out = value_rows([{"status": "ok", "home_name": "H", "away_name": "A",
-                           "best": {"group": "total", "line": 9.5, "ev": 2.0}}])
+                           "best": {"group": "total", "line": 9.5, "ev": 2.0, "book_odds": 2.0}}])
         assert out[0]["team"] == "H v A total" and out[0]["line"] == 10
 
     @pytest.mark.parametrize("status", ["kicked_off", "no_fixture", "below_floor",
@@ -384,3 +384,76 @@ class TestNothingHereTouchesTheDatabase:
                 names.append(node.module or "")
         for n in names:
             assert not any(b in n for b in ("motor", "pymongo", "httpx", "server")), n
+
+
+class TestThePostingRule:
+    """Lowest line priced 1.80+, sent only if THAT line clears the floor. Never the
+    biggest EV further up the ladder — Reading 8+ at 10.00 with 5+ at 1.73 was the bug."""
+
+    def ladder(self, *rungs, group="home"):
+        return [{"group": group, "key": f"{group}_over_{l}", "line": l,
+                 "book_odds": o, "ev": ev} for l, o, ev in rungs]
+
+    def rows(self, ladder):
+        return [{"status": "ok", "home_name": "Reading", "away_name": "X",
+                 "best": max(ladder, key=lambda m: m["ev"] or -99), "ladder": ladder}]
+
+    def test_reading_8_plus_at_10_is_not_sent(self):
+        # 5+ 1.73 (too short), 6+ 2.40 is THE line but only +2%, 8+ 10.00 is +30%.
+        lad = self.ladder((4.5, 1.73, 8.0), (5.5, 2.40, 2.0), (6.5, 4.5, 15.0), (7.5, 10.0, 30.0))
+        assert value_rows(self.rows(lad), min_ev=5.0) == []
+
+    def test_the_first_line_over_1_80_is_sent_when_it_clears(self):
+        lad = self.ladder((4.5, 1.73, 8.0), (5.5, 2.40, 9.0), (7.5, 10.0, 30.0))
+        out = value_rows(self.rows(lad), min_ev=5.0)
+        assert [(r["line"], r["book_odds"]) for r in out] == [(6, 2.40)]
+
+    def test_one_bet_per_side(self):
+        lad = (self.ladder((4.5, 1.90, 6.0), (5.5, 2.6, 12.0))
+               + self.ladder((3.5, 2.1, 7.0), group="away"))
+        out = value_rows(self.rows(lad), min_ev=5.0)
+        assert sorted((r["group"], r["line"]) for r in out) == [("away", 4), ("home", 5)]
+
+    def test_a_long_shot_with_no_lower_price_is_not_a_safe_line(self):
+        lad = self.ladder((7.5, 6.0, 25.0))
+        assert value_rows(self.rows(lad), min_ev=5.0) == []
+
+    def test_unpriced_rungs_are_skipped_not_anchors(self):
+        lad = self.ladder((4.5, None, None), (5.5, 1.95, 6.0))
+        out = value_rows(self.rows(lad), min_ev=5.0)
+        assert [r["line"] for r in out] == [6]
+
+
+class TestTheFreeChannel:
+    def test_the_free_floor_is_1_60_and_nothing_below(self):
+        lad = [{"group": "home", "key": "home_over_3.5", "line": 3.5, "book_odds": 1.55, "ev": 9.0},
+               {"group": "home", "key": "home_over_4.5", "line": 4.5, "book_odds": 1.65, "ev": 7.0},
+               {"group": "home", "key": "home_over_5.5", "line": 5.5, "book_odds": 2.30, "ev": 15.0}]
+        rows = [{"status": "ok", "home_name": "H", "away_name": "A", "best": lad[2], "ladder": lad}]
+        free = value_rows(rows, min_ev=5.0, min_odds=1.60)
+        assert [(r["line"], r["book_odds"]) for r in free] == [(5, 1.65)]
+        paid = value_rows(rows, min_ev=5.0)
+        assert [(r["line"], r["book_odds"]) for r in paid] == [(6, 2.30)]
+
+    def test_stakes_follow_the_edge_and_the_price(self):
+        from bot_cards import free_stake
+        assert free_stake(10, 2.20) == 1.0
+        assert free_stake(30, 10.0) == 0.5, "a long price gets less, even at a big edge"
+        assert free_stake(40, 1.70) == 2.0, "capped"
+        assert free_stake(1, 4.0) == 0.25, "floored"
+        assert free_stake(-3, 2.0) is None and free_stake(5, None) is None
+
+    def test_results_card_reads_like_the_channel(self):
+        from bot_cards import free_results_card
+        rows = [
+            {"result": "win", "price": 1.80, "stake": 1.0, "name": "Reading", "subject": "team", "line": 5},
+            {"result": "loss", "price": 2.10, "stake": 0.5, "name": "Hull", "subject": "team", "line": 6, "value": 5},
+            {"result": "pending", "price": 1.9, "stake": 1.0, "match": "A v B", "subject": "match", "line": 11},
+        ]
+        card = free_results_card("Wed 11 Nov", rows, {"settled": 2, "landed": 1, "missed": 1,
+                                                       "hit_rate": 50.0, "units": 0.3, "roi": 20.0})
+        assert "📈 PROFIT: +0.30u (1.5u staked)" in card
+        assert "✅ Reading 5+ team @ 1.80: +0.80u" in card
+        assert "❌ Hull 6+ team @ 2.10: -0.50u" in card and "ONE CORNER AWAY" in card
+        assert "still to settle: A v B 11+ match corners" in card
+        assert "1W-1L" in card and "ROI +20.0%" in card

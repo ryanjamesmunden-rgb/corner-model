@@ -179,6 +179,54 @@ def plus_line(line) -> Optional[int]:
 GROUP_NAME = {"home": "home", "away": "away", "total": "total"}
 
 
+#: THE POSTING RULE, the one the channel has always been run on by hand: per side, take the
+#: LOWEST line whose price is at least POST_MIN_ODDS, and post it only if that line clears
+#: the EV floor. Never climb the ladder looking for a bigger edge.
+#:
+#: WHY NOT "BEST EV". A book's margin on a long corner count is where this model most often
+#: disagrees with it, so the highest EV is nearly always the longest price. Reading's 5+ was
+#: 1.73 and the bot sent 8+ at 10.00 — a line nobody running this channel would back. The
+#: question a post answers is "is the safe line worth it", and 8+ is not that line.
+#:
+#: POST_MAX_ODDS is a backstop for a ladder whose lower rungs nobody quoted: if the lowest
+#: PRICED line is already a long shot, there is no safe line to post, so nothing is.
+POST_MIN_ODDS = 1.80
+POST_MAX_ODDS = 4.00
+
+
+def posting_rungs(markets: List[dict], min_ev: Optional[float] = None,
+                  min_odds: float = POST_MIN_ODDS,
+                  max_odds: float = POST_MAX_ODDS) -> List[dict]:
+    """At most one market per side (home / away / total) under the posting rule.
+
+    For each group: priced rungs in line order, the first one priced >= `min_odds` is THE
+    line; it is returned only if its price is <= `max_odds` and its EV >= `min_ev`
+    (0 when None). A higher rung with a bigger EV never replaces it.
+    """
+    floor = _pct(min_ev)
+    floor = 0.0 if floor is None else floor
+    by_group = {}
+    for m in markets or []:
+        if not isinstance(m, dict):
+            continue
+        odds, line = _pct(m.get("book_odds")), _pct(m.get("line"))
+        if odds is None or line is None:
+            continue
+        by_group.setdefault(m.get("group"), []).append(m)
+    out = []
+    for rungs in by_group.values():
+        rungs.sort(key=lambda m: _pct(m["line"]))
+        anchor = next((m for m in rungs if _pct(m["book_odds"]) >= min_odds), None)
+        if anchor is None or _pct(anchor["book_odds"]) > max_odds:
+            continue
+        ev = _pct(anchor.get("ev"))
+        if ev is None or ev < floor:
+            continue
+        out.append(anchor)
+    out.sort(key=lambda m: -_pct(m["ev"]))
+    return out
+
+
 def worth_sending(ev, previous_ev=None, gain: float = 0.0) -> bool:
     """Should this bet go in a message, given what was already said about it?
 
@@ -253,7 +301,8 @@ def reference_rungs(ladder: List[dict], group: str, below: Optional[int]) -> Lis
 
 
 def value_rows(rows: List[dict], min_ev: Optional[float] = None,
-               with_ladder: bool = False) -> List[dict]:
+               with_ladder: bool = False,
+               min_odds: float = POST_MIN_ODDS) -> List[dict]:
     """Value-board rows -> what value_card prints.
 
     ONLY `status == "ok"` ROWS. The board deliberately returns everything it looked at,
@@ -262,19 +311,11 @@ def value_rows(rows: List[dict], min_ev: Optional[float] = None,
     row that did not clear the floor is not a pick, and one whose game has kicked off is
     not a bet at all.
 
-    `min_ev` TURNS ON EVERY ANGLE, NOT JUST THE BEST ONE. Each board row carries `best`
-    plus up to three `alternatives` — the same fixture's other priced markets, already
-    computed and, until this existed, thrown away. One game can be value at 6+ AND at 7+,
-    and a card showing only the single highest EV hides the safer line on the same match.
-    Left as None only `best` is emitted, which is what the digest's section has always
-    shown.
-
-    THE ALTERNATIVES ARE NOT PRE-FILTERED. The board keeps the next three by EV whatever
-    they are, so they reach here including negative ones — the floor has to be applied
-    here or a +12% bet would arrive with a -4% bet printed underneath it as though both
-    were picks.
+    ONE BET PER SIDE, CHOSEN BY THE POSTING RULE (posting_rungs): the lowest line priced
+    at POST_MIN_ODDS or more, sent only if it clears `min_ev` (0 when None). This used to
+    send every rung over the floor, ranked by EV — which in practice meant the longest
+    price on the ladder, e.g. Reading 8+ at 10.00 when their 5+ was 1.73.
     """
-    floor = _pct(min_ev)
     out = []
     for r in (rows or []):
         if not isinstance(r, dict) or r.get("status") != "ok":
@@ -287,24 +328,16 @@ def value_rows(rows: List[dict], min_ev: Optional[float] = None,
         # the card was written. Torreense's 5+ at +9.8% ranked sixth on its own fixture
         # and never reached here at all. The ladder carries the lot; the per-game cap
         # below decides what fits, and _pick_per_game decides WHICH, by more than EV.
-        lad = [m for m in (r.get("ladder") or []) if isinstance(m, dict)]
-        picks = []
-        if floor is not None and lad:
-            picks = [m for m in lad
-                     if _pct(m.get("ev")) is not None and _pct(m.get("ev")) >= floor]
-            picks.sort(key=lambda m: -_pct(m["ev"]))
-        # FALLS BACK RATHER THAN RETURNING NOTHING. A `status == "ok"` row has a `best`
-        # that already cleared the floor, so a ladder yielding no qualifying rung is a
-        # broken ladder, not a fixture without value — and preferring it would drop a
-        # real bet to silence. Caught by the junk-ladder test: `[None, 3, {}]` survives
-        # the isinstance filter as one empty dict, qualifies nothing, and took the bet
-        # with it.
-        if not picks:
-            picks = [r.get("best") or {}]
-            if floor is not None:
-                picks += [m for m in (r.get("alternatives") or [])
-                          if isinstance(m, dict) and _pct(m.get("ev")) is not None
-                          and _pct(m.get("ev")) >= floor]
+        # ONE LINE PER SIDE, BY THE POSTING RULE — see posting_rungs. The whole priced
+        # ladder is the candidate set when it is there, because the board's `best` +
+        # `alternatives` are the top four by EV and the safe line is often not among them.
+        # No ladder, or a junk one with nothing priced, falls back to those four.
+        lad = [m for m in (r.get("ladder") or []) if isinstance(m, dict)
+               and _pct(m.get("book_odds")) is not None]
+        if not lad:
+            lad = [m for m in [r.get("best")] + list(r.get("alternatives") or [])
+                   if isinstance(m, dict)]
+        picks = posting_rungs(lad, min_ev, min_odds=min_odds)
         for m in picks:
             group = m.get("group")
             if group == "home":
@@ -475,6 +508,9 @@ def _value_line(r: dict, subject: bool = False) -> str:
     if isinstance(fair, (int, float)):
         head += f" (fair {fair:.2f})"
     head += f" — EV {r['ev']:+.1f}%"
+    stake = _pct(r.get("stake"))
+    if stake is not None:
+        head += f" 💸 {stake:g}u"
     src = r.get("odds_source")
     if src and src != "manual":
         head += f" [{src} price]"
@@ -719,3 +755,100 @@ def stale_warning(hours, threshold) -> Optional[str]:
         return None
     return (f"⚠️ The data is {h:.0f}h old (stale after {t:.0f}h). Today's boards are "
             f"built on it, so treat them as yesterday's until the next sync lands.")
+
+
+# ---------------------------------------------------------------------------------------
+# The free channel: every EV+ bet, staked by the size of the edge, settled in public.
+
+#: An eighth of Kelly against a 100u bank, in quarter units, between 0.25u and 2u.
+#:
+#: WHY STAKE BY THE EDGE AT ALL. A flat 1u on a 1.65 and on a 3.50 asks the long price to
+#: carry the same weight with roughly half the chance of landing, so a run of long-price
+#: losers can sink a record the model was right about. Kelly sizes each bet to its edge and
+#: its price; an eighth of it, capped, keeps one bad week from mattering. (A quarter put
+#: almost every bet at the 2u cap, which is a flat stake again by another name.)
+FREE_STAKE_MIN, FREE_STAKE_MAX = 0.25, 2.0
+
+
+def free_stake(ev, odds) -> Optional[float]:
+    """Units to stake: an eighth of Kelly on a 100u bank, rounded to 0.25u, clamped.
+
+    Kelly fraction = EV / (odds - 1), with EV as a fraction. +10% at 2.20 is 8.3% Kelly,
+    an eighth of that on 100u is 1.04u, so 1u. Returns None when either number is missing
+    or the bet has no edge — no stake is better than a made-up one."""
+    e, o = _pct(ev), _pct(odds)
+    if e is None or o is None or o <= 1 or e <= 0:
+        return None
+    u = (e / 100.0) / (o - 1) * 100 / 8
+    u = round(u * 4) / 4
+    return max(FREE_STAKE_MIN, min(FREE_STAKE_MAX, u))
+
+
+def _units(x: float) -> str:
+    return f"{x:+.2f}u".replace(".00u", "u")
+
+
+def free_results_card(day_label: str, graded: List[dict], all_time: dict) -> str:
+    """Yesterday's free-channel bets, in the channel's results layout, plus the running
+    record. `graded` rows carry result (win/loss/void/pending), price, stake, name, line.
+
+    PENDING IS SAID, NOT HIDDEN. A game whose corners have not synced yet is neither a
+    winner nor a loser, and leaving it out would make the day's P/L look final when it
+    is not."""
+    won = [r for r in graded if r.get("result") == "win"]
+    lost = [r for r in graded if r.get("result") == "loss"]
+    void = [r for r in graded if r.get("result") == "void"]
+    pending = [r for r in graded if r.get("result") == "pending"]
+
+    def pl(r):
+        st = _pct(r.get("stake")) or 1.0
+        if r.get("result") == "win":
+            pr = _pct(r.get("price"))
+            return (pr - 1) * st if pr else 0.0
+        if r.get("result") == "loss":
+            return -st
+        return 0.0
+
+    def sel(r):
+        if r.get("subject") == "team":
+            side, tail = r.get("name") or "?", " team"
+        else:
+            side, tail = r.get("match") or r.get("name") or "?", " match corners"
+        pr = _pct(r.get("price"))
+        return f"{side} {r.get('line')}+{tail}" + (f" @ {pr:.2f}" if pr else "")
+
+    staked = sum(_pct(r.get("stake")) or 1.0 for r in won + lost)
+    total = sum(pl(r) for r in won + lost)
+    if not graded:
+        return f"📅 {day_label} results\n\nNo bets went out that day."
+    out = [f"📅 {day_label} results",
+           f"{'📈 PROFIT' if total >= 0 else '📉 LOSS'}: {_units(total)} ({staked:g}u staked)"]
+    if won:
+        out += ["", f"🤑 Winners ({_units(sum(pl(r) for r in won))})"]
+        out += [f"✅ {sel(r)}: {_units(pl(r))}" for r in won]
+    if lost:
+        out += ["", f"👎 Losers ({_units(sum(pl(r) for r in lost))})"]
+        for r in lost:
+            out.append(f"❌ {sel(r)}: {_units(pl(r))}")
+            v, ln = r.get("value"), r.get("line")
+            if isinstance(v, (int, float)) and isinstance(ln, int) and ln - v == 1:
+                out.append("🚩 (ONE CORNER AWAY)")
+    if void:
+        out += ["", "↩️ Void: " + ", ".join(sel(r) for r in void)]
+    if pending:
+        out += ["", f"⏳ {len(pending)} still to settle: " + ", ".join(sel(r) for r in pending)]
+    s = all_time or {}
+    if s.get("settled"):
+        hr = s.get("hit_rate")
+        units = s.get("units")
+        roi = s.get("roi")
+        bits = [f"{s.get('landed', 0)}W-{s.get('missed', 0)}L"]
+        if hr is not None:
+            bits.append(f"{hr:g}% hit")
+        if units is not None:
+            bits.append(_units(units))
+        if roi is not None:
+            bits.append(f"ROI {roi:+.1f}%")
+        out += ["", "📊 Running total: " + " · ".join(bits)]
+    out += ["", "Not every EV+ bet lands. The edge shows over hundreds of bets, not one day."]
+    return "\n".join(out)

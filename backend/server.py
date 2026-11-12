@@ -2840,7 +2840,8 @@ async def _value_rows(days: set, min_ev: float = 0.0,
     itself was rewritten to end, where five ways for a price to vanish all rendered as the
     same empty screen.
     """
-    board = await value_board(within_days=within_days, min_ev=min_ev, limit=200, user={})
+    board = await value_board(within_days=within_days, min_ev=min_ev, limit=200,
+                              ladder=True, response=None, user={})
     now = datetime.now(timezone.utc)
     out: List[dict] = []
     drops: Dict[str, int] = {}
@@ -2859,6 +2860,16 @@ async def _value_rows(days: set, min_ev: float = 0.0,
         if best.get("ev") is None or best["ev"] < min_ev or not best.get("book_odds"):
             drop("below the floor")
             continue
+        # THE POSTING RULE, not the biggest EV: the lowest line priced at 1.80+, if THAT
+        # line clears the floor. The board's own `best` is the top EV, which is usually
+        # the longest price on the ladder. See bot_cards.posting_rungs.
+        rule = bot_cards.posting_rungs(
+            [m for m in (row.get("ladder") or []) if isinstance(m, dict)]
+            or [best] + list(row.get("alternatives") or []), min_ev)
+        if not rule:
+            drop("no safe line clears the floor")
+            continue
+        best = rule[0]
         try:
             kick = datetime.fromisoformat((row.get("date") or "").replace("Z", "+00:00"))
         except Exception:
@@ -10776,6 +10787,11 @@ BOT_VALUE_MIN_EV = 5.0
 #: Four points, which is wide enough that ordinary noise on a single book's price does not
 #: clear it and narrow enough that a genuine move does.
 VALUE_RESEND_EV_GAIN = 4.0
+
+#: The free channel's price floor. Lower than the paid posts' 1.80 by the owner's call:
+#: the free feed is every EV+ bet, and 1.60 is the shortest price worth putting a stake on.
+#: Nothing below it is ever sent there.
+FREE_MIN_ODDS = 1.60
 BOT_WEEK_DAYS = 7
 #: How many days of snapshots to read back when grading a single day. A snapshot freezes
 #: daily over a seven-day horizon, so one day's claims appear in several of them.
@@ -10850,9 +10866,9 @@ async def _bot_stats_reply(update: dict, name: str) -> Optional[str]:
                                     response=None, user={}))
         elif name == "value":
             rows = await value_board(within_days=BOT_VALUE_DAYS,
-                                     min_ev=BOT_VALUE_MIN_EV, limit=60,
+                                     min_ev=BOT_VALUE_MIN_EV, limit=60, ladder=True,
                                      response=None, user={})
-            text = bot_cards.value_card(bot_cards.value_rows(rows))
+            text = bot_cards.value_card(bot_cards.value_rows(rows, min_ev=BOT_VALUE_MIN_EV))
         elif name == "week":
             text = bot_cards.week_card(
                 await _fixture_board(days=BOT_WEEK_DAYS, user={}))
@@ -11340,8 +11356,8 @@ async def telegram_digest(token: Optional[str] = None, to: str = "owner",
         logger.exception("digest: perfect games failed")
     try:
         rows = await value_board(within_days=BOT_VALUE_DAYS, min_ev=BOT_VALUE_MIN_EV,
-                                 limit=60, response=None, user={})
-        sections.append(bot_cards.value_card(bot_cards.value_rows(rows)))
+                                 limit=60, ladder=True, response=None, user={})
+        sections.append(bot_cards.value_card(bot_cards.value_rows(rows, min_ev=BOT_VALUE_MIN_EV)))
     except Exception:
         logger.exception("digest: value board failed")
     try:
@@ -11493,6 +11509,9 @@ async def telegram_value(token: Optional[str] = None, to: str = "owner",
     that record with claims nobody published.
     """
     _check_tools_token(token)
+    if to not in ("owner", "channel", "free"):
+        raise HTTPException(status_code=400, detail="to must be owner, channel or free")
+    free = to == "free"
     floor = BOT_VALUE_MIN_EV if min_ev is None else float(min_ev)
     window = BOT_VALUE_DAYS if days is None else max(1, int(days))
     out = {"to": to, "min_ev": floor, "days": window, "sent": False}
@@ -11507,7 +11526,17 @@ async def telegram_value(token: Optional[str] = None, to: str = "owner",
     # Without it the message has a silent hole where an unpriced line should be: a 5+ the
     # model had at 69.6% went unmentioned while a 6+ at +12.4% was sent, because EV needs
     # a fetched price and no book in the feed quoted that rung.
-    angles = bot_cards.value_rows(rows, min_ev=floor, with_ladder=True)
+    # THE FREE CHANNEL: 1.60 floor instead of 1.80, no unpriced reference rungs (a free
+    # feed is a list of bets, nothing else), a stake on every bet, and its OWN memory of
+    # what it has sent — keyed "free:..." — so a bet already sent to the owner or the VIP
+    # channel is still sent here, and vice versa.
+    angles = bot_cards.value_rows(
+        rows, min_ev=floor, with_ladder=not free,
+        min_odds=FREE_MIN_ODDS if free else bot_cards.POST_MIN_ODDS)
+    if free:
+        angles = [{**a, "dedup_key": f"free:{a['dedup_key']}",
+                   "stake": bot_cards.free_stake(a.get("ev"), a.get("book_odds"))}
+                  for a in angles if not a.get("reference")]
     bets = [a for a in angles if not a.get("reference")]
     out["priced"] = len(rows or [])
     out["clearing_floor"] = len(bets)
@@ -11563,11 +11592,12 @@ async def telegram_value(token: Optional[str] = None, to: str = "owner",
         out["note"] = "dry run — built and not sent, and nothing recorded"
         return out
 
-    target = (telegram_bot.VIP_CHAT_ID if to == "channel"
-              else telegram_bot.OWNER_CHAT_ID)
+    target = {"channel": telegram_bot.VIP_CHAT_ID, "free": telegram_bot.FREE_CHAT_ID}.get(
+        to, telegram_bot.OWNER_CHAT_ID)
     if not target:
-        out["note"] = ("TELEGRAM_OWNER_CHAT_ID is not set" if to != "channel"
-                       else "TELEGRAM_VIP_CHAT_ID is not set")
+        out["note"] = {"channel": "TELEGRAM_VIP_CHAT_ID is not set",
+                       "free": "TELEGRAM_FREE_CHAT_ID is not set"}.get(
+            to, "TELEGRAM_OWNER_CHAT_ID is not set")
         return out
 
     out["sent"] = await telegram_bot.send(target, text)
@@ -11580,6 +11610,61 @@ async def telegram_value(token: Optional[str] = None, to: str = "owner",
             await db.bot_value_sent.update_one(
                 {"_id": a["dedup_key"]},
                 {"$set": {"ev": a.get("ev"), "sent_at": now, "to": to}}, upsert=True)
+            # THE FREE RECORD: frozen at the price and stake it was SENT at, never
+            # rewritten. A later, better price for the same bet is not re-recorded —
+            # the record is what a reader could have taken.
+            if free:
+                e = value_snapshot_entry(a)
+                if e is not None:
+                    e.update({"stake": a.get("stake") or 1.0, "sent_at": now})
+                    await db.free_picks.update_one(
+                        {"_id": value_entry_id(e)}, {"$setOnInsert": e}, upsert=True)
+    return out
+
+
+def _free_tally(graded: List[dict]) -> dict:
+    """_tally plus ROI on units actually staked, for the free channel's running total."""
+    t = _tally(graded)
+    staked = sum(float(r.get("stake") or 1.0) for r in graded
+                 if r["result"] in (WIN, LOSS) and r.get("price"))
+    t["staked"] = round(staked, 2)
+    t["roi"] = round(t["units"] / staked * 100, 1) if staked and t["units"] is not None else None
+    return t
+
+
+@api_router.post("/telegram/free-results")
+async def telegram_free_results(token: Optional[str] = None, day: Optional[str] = None,
+                                dry_run: bool = False):
+    """Settle one day of the free channel's bets and post the results there.
+
+    `day` is the kick-off date (UTC), default yesterday. Every bet the free channel was
+    sent for that day is graded from the synced corner counts — winners, losers, the
+    day's P/L at the stakes it went out with, and the running total since the channel
+    began. A bet whose game has not synced yet is listed as still to settle, not dropped.
+    """
+    _check_tools_token(token)
+    day = day or (datetime.now(timezone.utc) - timedelta(days=1)).date().isoformat()
+    picks = await db.free_picks.find({}, {"_id": 0}).to_list(5000)
+    graded = _grade_entries(picks, await _teams_for(picks))
+    todays = [r for r in graded if str(r.get("kickoff") or "")[:10] == day]
+    todays.sort(key=lambda r: str(r.get("kickoff") or ""))
+    all_time = _free_tally(graded)
+    try:
+        label = datetime.fromisoformat(day).strftime("%a %-d %b")
+    except ValueError:
+        raise HTTPException(status_code=400, detail="day must be YYYY-MM-DD")
+    text = bot_cards.free_results_card(label, todays, all_time)
+    out = {"day": day, "bets": len(todays), "all_time": all_time, "sent": False}
+    if dry_run:
+        return {**out, "text": text}
+    if not todays:
+        # A quiet day posts nothing: "no bets" every morning is noise in a free channel.
+        out["note"] = "no free-channel bets kicked off that day"
+        return out
+    if not telegram_bot.FREE_CHAT_ID:
+        out["note"] = "TELEGRAM_FREE_CHAT_ID is not set"
+        return out
+    out["sent"] = await telegram_bot.send(telegram_bot.FREE_CHAT_ID, text)
     return out
 
 

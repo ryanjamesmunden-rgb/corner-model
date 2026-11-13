@@ -118,10 +118,17 @@ def _price(v) -> Optional[float]:
 def extract(entry: dict) -> dict:
     """One /odds response entry -> the prices this app can use, plus what was refused.
 
-    `taken` maps market key -> {"price", "book", "quotes"}: the BEST price quoted, who
-    quoted it, and how many books were seen for that key. `skipped` records every
-    market/line that was not stored and why, because a silent omission here looks
-    identical to a fixture nobody prices."""
+    `taken` maps market key -> {"price", "book", "quotes", "prices"}: the BEST price
+    quoted, who quoted it, how many books were seen for that key, and EVERY book's price
+    for it. `skipped` records every market/line that was not stored and why, because a
+    silent omission here looks identical to a fixture nobody prices.
+
+    WHY `prices` EXISTS. The response already carries all five to seven books and this
+    function was discarding them the moment one was beaten, which cost nothing to keep and
+    left two questions unanswerable afterwards: how far clear the best price actually is
+    (a 2.30 against 2.28 and 2.25 is a market, a 2.30 against 1.95 and 1.90 is an outlier
+    worth distrusting), and whether a price exists at a book the reader actually holds.
+    Keeping them is free — no second request, no extra API call."""
     taken: Dict[str, dict] = {}
     skipped: List[dict] = []
     books: set = set()
@@ -160,9 +167,17 @@ def extract(entry: dict) -> dict:
                 key = f"{group}_over_{line}"
                 cur = taken.get(key)
                 if cur is None:
-                    taken[key] = {"price": price, "book": book, "quotes": 1}
+                    taken[key] = {"price": price, "book": book, "quotes": 1,
+                                  "prices": {book: price}}
                 else:
                     cur["quotes"] += 1
+                    # ONE ENTRY PER BOOK, ITS BEST. A bookmaker can quote the same market
+                    # twice in one response — the probe saw both "Over 10.5" and "Over 10"
+                    # fold onto the same key — and a dict keyed by book collapses that the
+                    # same way the headline price does, rather than listing a book twice
+                    # at two prices as though they were two books.
+                    if price > cur["prices"].get(book, 0):
+                        cur["prices"][book] = price
                     # BEST price wins: the backer takes the highest number available.
                     if price > cur["price"]:
                         cur["price"], cur["book"] = price, book
@@ -214,6 +229,13 @@ def feed_doc(fixture_id: str, api_fixture_id, entry: dict, fetched_at: str) -> d
         "odds": {k: v["price"] for k, v in got["taken"].items()},
         "books": {k: v["book"] for k, v in got["taken"].items()},
         "quotes": {k: v["quotes"] for k, v in got["taken"].items()},
+        # EVERY BOOK'S PRICE, market by market. `odds` and `books` stay exactly as they
+        # were — the best price and who quoted it — because everything downstream reads
+        # them and a shape change there would be a migration. This rides alongside, so an
+        # older document simply has no `quoted` and every reader has to cope with that
+        # anyway.
+        "quoted": {k: dict(sorted(v["prices"].items(), key=lambda kv: -kv[1]))
+                   for k, v in got["taken"].items()},
         "bookmakers": got["books"],
         # Capped: a fixture quoted by seven books refuses the same twelve markets seven
         # times over, and the reasons repeat. Enough to diagnose, not a second copy of

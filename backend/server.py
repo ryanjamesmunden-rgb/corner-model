@@ -5922,6 +5922,48 @@ ODDS_SCAN = 2000
 FEED_PRICE_STALE_HOURS = 12
 
 
+#: How many books a market row carries. Seven is the most the aggregator has been seen to
+#: quote on one corner market, so this is a ceiling rather than a trim in normal use.
+MAX_QUOTES_SHOWN = 8
+
+
+def book_quotes(quoted, key: str, cap: int = MAX_QUOTES_SHOWN) -> List[dict]:
+    """Every book's price for one market, best first, as [{book, price}].
+
+    SORTED HERE RATHER THAN TRUSTED FROM STORAGE. feed_doc writes them in order, but a
+    document written before that did not, and a list whose first entry is not the best
+    price would put the wrong number under a heading that says "best".
+    """
+    prices = (quoted or {}).get(key) or {}
+    rows = [{"book": b, "price": p} for b, p in prices.items()
+            if isinstance(p, (int, float)) and not isinstance(p, bool)]
+    rows.sort(key=lambda r: -r["price"])
+    return rows[:max(0, cap)]
+
+
+def quote_spread(rows: List[dict]) -> Optional[dict]:
+    """How far clear the best price is, and how wide the market is.
+
+    THE NUMBER THAT SAYS WHETHER TO BELIEVE THE BEST PRICE. 2.30 against 2.28 and 2.25 is
+    a market agreeing with itself and a real edge at the top of it; 2.30 against 1.95 and
+    1.90 is one book out on its own, which is far more often a mispriced LINE — the wrong
+    half-point, a stale number — than free money. The board cannot tell those apart from
+    a single figure, and this is the figure that separates them.
+
+    None for fewer than two quotes: there is no spread in one price, and reporting 0%
+    would read as "every book agrees" when the truth is nobody else was asked.
+    """
+    if not rows or len(rows) < 2:
+        return None
+    best, second = rows[0]["price"], rows[1]["price"]
+    worst = rows[-1]["price"]
+    return {"books": len(rows), "best": best, "second": second, "worst": worst,
+            # Against the SECOND best, not the mean: the question is what you give up by
+            # not having an account at the one book on top.
+            "over_second": round((best / second - 1) * 100, 1) if second else None,
+            "over_worst": round((best / worst - 1) * 100, 1) if worst else None}
+
+
 def feed_book_names(books, sources) -> Dict[str, str]:
     """Which bookmaker quoted each FETCHED price, and only the fetched ones.
 
@@ -5988,6 +6030,12 @@ async def _merged_prices(manual_docs: Dict[str, dict]) -> Dict[str, dict]:
             # where the price came from the feed: a hand-typed one has no book attached,
             # because the person who typed it did not say.
             "feed_books": feed_book_names(f.get("books"), sources),
+            # EVERY BOOK'S PRICE for each fetched market, best first. Carried whole rather
+            # than reduced here: how far clear the best price is decides whether it is a
+            # market or an outlier, and that is a judgement for the screen reading it, not
+            # one to make on the way past. Absent on documents written before the feed
+            # started keeping it, which every reader has to tolerate.
+            "feed_quoted": f.get("quoted") or {},
             # Where a BETTER price was quoted elsewhere than the one a human typed, so a
             # row can say so without the board switching off somebody's own choice.
             "feed_better": {k: v["feed_price"] for k, v in merged.items()
@@ -6110,6 +6158,14 @@ async def value_board(within_days: Optional[int] = 7, min_ev: float = 0.0,
             # The bookmaker behind a fetched price, so a row can be checked against the
             # book that actually quoted it rather than against "the market".
             out["book"] = (doc.get("feed_books") or {}).get(m["key"])
+            # EVERY BOOK ON THE ROW, best first, and how far clear the top one is. The
+            # board quoted one price and named one book, which answers "can I take this"
+            # and not "is this a market or an outlier" — and the second question is the
+            # one that decides whether a 36% edge is real or a wrong half-point.
+            quotes = book_quotes(doc.get("feed_quoted"), m["key"])
+            if quotes:
+                out["quotes"] = quotes
+                out["spread"] = quote_spread(quotes)
             better = (doc.get("feed_better") or {}).get(m["key"])
             if better:
                 # Said, never acted on: a price somebody chose stands.
@@ -11514,7 +11570,15 @@ def _value_ladders(rows, fresh, seen, floor):
                           # simply printed "1xBet" where "2.17" belonged and the price —
                           # the thing every EV is measured against, and the one figure a
                           # post has to quote — was unreadable from the diagnostic.
-                          "book_name": m.get("book")})
+                          "book_name": m.get("book"),
+                          # EVERY BOOK'S PRICE FOR THIS RUNG, best first, and how far
+                          # clear the top one is. One price and one name answers "can I
+                          # take this"; it does not answer "is this a market or one book
+                          # out on its own", and that second question is what separates a
+                          # real edge from a stale or mis-set line. The preview prints
+                          # the spread because that is where these numbers get read.
+                          "quotes": m.get("quotes") or [],
+                          "spread": m.get("spread")})
         rungs.sort(key=lambda x: (str(x["group"]), x["plus"] or 0))
         out.append({"match": f"{r.get('home_name')} v {r.get('away_name')}",
                     "fixture_id": r.get("fixture_id"), "kickoff": r.get("date"),

@@ -317,6 +317,18 @@ jobs:
                         f"[{r.get('src') or '?'}"
                         f"{'/' + r['book_name'] if r.get('book_name') else ''}]"
                         f"  {r['why']}")
+                  # THE REST OF THE MARKET, on its own line under the rung it belongs to.
+                  # The row above is the best price and who has it; this is what everyone
+                  # else is quoting, which is the only way to tell a real edge from one
+                  # book out on its own with a stale or mis-set line. Printed only where
+                  # a second book was seen: "1 book" is not a market.
+                  sp = r.get("spread") or {}
+                  qs = r.get("quotes") or []
+                  if len(qs) > 1:
+                      shown = "  ".join(f"{q['book']} {q['price']}" for q in qs)
+                      print(f"        {len(qs)} books: {shown}")
+                      print(f"        best is +{sp.get('over_second')}% over 2nd, "
+                            f"+{sp.get('over_worst')}% over worst")
               blank = len(lad["rungs"]) - len(priced)
               if blank:
                   print(f"  ({blank} rung(s) with no fetched price)")

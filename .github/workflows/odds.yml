@@ -329,6 +329,14 @@ jobs:
                       print(f"        {len(qs)} books: {shown}")
                       print(f"        best is +{sp.get('over_second')}% over 2nd, "
                             f"+{sp.get('over_worst')}% over worst")
+                  elif len(qs) == 1:
+                      # SAID OUT LOUD, because it is the loudest signal on the ladder and
+                      # printing nothing made it look like missing output. The first run
+                      # with books on it put +27.9% and +22.1% on the two longest rungs of
+                      # one fixture, each quoted by a single book, while every rung three
+                      # or more books agreed on came in under +11%. One book alone on a
+                      # long line is far more often a stale or mis-set price than an edge.
+                      print(f"        1 book only ({qs[0]['book']}) — nothing to compare")
               blank = len(lad["rungs"]) - len(priced)
               if blank:
                   print(f"  ({blank} rung(s) with no fetched price)")

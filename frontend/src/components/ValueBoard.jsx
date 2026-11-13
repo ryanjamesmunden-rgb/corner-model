@@ -7,6 +7,7 @@ import { withFlag } from "@/lib/countryFlag";
 import { kickoffLabel } from "@/lib/kickoff";
 import { priceFreshness } from "@/lib/priceAge";
 import TierBadge from "@/components/TierBadge";
+import BookOdds from "@/components/BookOdds";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 
 // Everywhere you have found an edge, on one screen.
@@ -56,7 +57,11 @@ function Line({ m, muted = false }) {
     <>
       <span className={muted ? "text-muted-foreground" : "text-foreground"}>{m.label}</span>
       <span className="text-muted-foreground"> @ </span>
-      <span className={muted ? "text-muted-foreground" : "text-foreground"}>{m.book_odds?.toFixed(2)}</span>
+      {/* THE BEST PRICE, WITH EVERY OTHER BOOK BEHIND IT. One number and one book name
+          answers "can I take this" and not "is this a market, or one book out on its
+          own" — and the second question is what decides whether an edge is believable.
+          Falls back to plain text on rows stored before the feed kept every book. */}
+      <BookOdds m={m} muted={muted} />
       <span className="text-muted-foreground/60 text-[10px]"> (fair {m.fair_odds?.toFixed(2)})</span>
       <span className={`ml-1.5 font-semibold ${t ? t.text : "text-muted-foreground"}`}>
         {m.ev > 0 ? "+" : ""}{m.ev?.toFixed(1)}%

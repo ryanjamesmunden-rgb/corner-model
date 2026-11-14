@@ -15,7 +15,7 @@
 // removed them would be editing the argument on the way past.
 //
 // Usage:  node tools/angle_posts.mjs [--days 3] [--min-ev 0] [--min-rungs 2]
-//                                    [--max 6] [--league all]
+//                                    [--max 6] [--max-plus 6] [--league all]
 //                                    [--out-dir angles] [--json-out angles.json]
 // Env:    BACKEND_URL, SITE_URL, TOOLS_TOKEN (required)
 import { mkdirSync, writeFileSync } from "node:fs";
@@ -24,7 +24,8 @@ import { dirname, resolve, join } from "node:path";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const LIB = resolve(HERE, "..", "frontend", "src", "lib");
-const { angleThread } = await import(resolve(LIB, "anglePost.js"));
+const { angleThread, ANGLE_MAX_PLUS } =
+  await import(resolve(LIB, "anglePost.js"));
 
 const arg = (n, d = null) => {
   const i = process.argv.indexOf(`--${n}`);
@@ -36,6 +37,11 @@ const SITE = (process.env.SITE_URL || "https://thecornermodel.com").replace(/^ht
 const TOKEN = process.env.TOOLS_TOKEN;
 const DAYS = Number(arg("days", "3"));
 const MAX = Number(arg("max", "6"));
+// THE LADDER STOPS WHERE THE EVIDENCE DOES. See ANGLE_MAX_PLUS: on the first live run the
+// edge rose monotonically with the line on every thread, which is a property of the
+// model's tail rather than six bookmakers being wrong at once. Pass --max-plus 99 to post
+// the whole ladder anyway; it is a decision, so it has to be typed.
+const MAX_PLUS = Number(arg("max-plus", String(ANGLE_MAX_PLUS)));
 const OUT_DIR = arg("out-dir", "angles");
 const JSON_OUT = arg("json-out", "angles.json");
 
@@ -88,7 +94,7 @@ for (const a of angles.slice(0, Math.max(1, MAX))) {
     fixture_id: a.fixture_id, league_id: a.league_id, league_name: a.league_name,
     date: a.date, home_name: a.home_name, away_name: a.away_name,
     best: null, alternatives: [], ladder: a.ladder,
-  }, { group: a.group, site: SITE });
+  }, { group: a.group, site: SITE, maxPlus: MAX_PLUS });
   if (!thread) continue;
 
   const slug = `${a.fixture_id}-${a.group}`;
@@ -107,7 +113,8 @@ if (!built.length) {
   process.exit(0);
 }
 
-console.error(`angle_posts: ${built.length} thread(s) over ${DAYS} day(s)`);
+console.error(`angle_posts: ${built.length} thread(s) over ${DAYS} day(s)`
+              + `, ladders capped at ${MAX_PLUS}+`);
 for (const t of built) {
   console.error(`  ${t.slug}  ${t.team} — ${t.n} rung(s) to ${t.topLine}+, `
                 + `best +${t.bestEv}%`

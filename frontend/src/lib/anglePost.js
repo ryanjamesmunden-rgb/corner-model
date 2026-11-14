@@ -29,6 +29,26 @@ import { postHeader, postDate, postTime } from "./shareText.js";
 
 /** Rungs under this edge are not part of the claim. */
 export const ANGLE_MIN_EV = 0.0;
+
+/**
+ * The plus-lines worth posting, and why a cap exists at all.
+ *
+ * THE FIRST LIVE RUN IS THE ARGUMENT FOR THIS. Six threads, six fixtures, six different
+ * bookmakers — and on every single one the edge rose monotonically with the line. Plymouth
+ * went +1.8% at 3+ to +126.2% at 10+; Oviedo, the mildest of them, went +4.9% at 5+ to
+ * +28.7% at 10+. At the short rungs the model and the market agree within a few percent;
+ * at the long ones the model claims roughly twice the book's implied probability.
+ *
+ * Six independent markets disagreeing in the SAME DIRECTION by an amount that grows with
+ * the line is not six bookmakers being wrong. It is one property of the model — its tail
+ * is fatter than the market's — and every long rung inherits it.
+ *
+ * The ledger says the same thing from the other end: 5+ and 6+ team lines are +48.47u
+ * over 90 settled bets, 7+ has 12 bets on it, and nothing past that has been tested at
+ * all. So the default stops where the evidence stops, and widening it is something
+ * somebody has to type.
+ */
+export const ANGLE_MAX_PLUS = 6;
 /** Below this many books behind a price, the rung is flagged rather than dropped. */
 export const THIN_BOOKS = 2;
 
@@ -107,7 +127,8 @@ export const rungLines = (r = {}) => {
  * shows the edge widening as the line lengthens, which is the thing being claimed.
  * Sorting by edge would put 9+ on top and turn an argument into a leaderboard.
  */
-export const angleRungs = (row = {}, { group = "home", minEv = ANGLE_MIN_EV } = {}) => {
+export const angleRungs = (row = {}, { group = "home", minEv = ANGLE_MIN_EV,
+                                      minPlus = null, maxPlus = null } = {}) => {
   const home = row.home_name || "";
   const away = row.away_name || "";
   const team = teamFor(group, home, away);
@@ -123,6 +144,9 @@ export const angleRungs = (row = {}, { group = "home", minEv = ANGLE_MIN_EV } = 
     if (price === null || prob === null) continue;
     const ev = evPercent(price, prob);
     if (ev === null || ev < minEv) continue;
+    const plus = plusOf(m.line);
+    if (minPlus !== null && (plus === null || plus < minPlus)) continue;
+    if (maxPlus !== null && (plus === null || plus > maxPlus)) continue;
     seen.add(key);
     const quotes = m.quotes || [];
     rows.push({
@@ -196,8 +220,9 @@ export const ladderPost = ({ rungs = [], url = "" } = {}) => {
  * against +13.0% for one or two.
  */
 export const angleThread = (row = {}, { group = "home", site = "", minEv = ANGLE_MIN_EV,
+                                        minPlus = null, maxPlus = null,
                                         heading = "" } = {}) => {
-  const rungs = angleRungs(row, { group, minEv });
+  const rungs = angleRungs(row, { group, minEv, minPlus, maxPlus });
   if (!rungs.length) return null;
   const url = fixtureUrl(site, row.fixture_id);
   const best = rungs.reduce((a, b) => (b.ev > a.ev ? b : a), rungs[0]);

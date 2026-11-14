@@ -40,6 +40,15 @@ on:
         required: false
         default: "6"
         type: string
+      max_plus:
+        # Defaults to 6 because that is where the ledger's evidence stops: 5+/6+ team
+        # lines are +48.47u over 90 settled bets, 7+ has 12 bets on it, and the first live
+        # run showed the model's edge rising monotonically with the line on every single
+        # thread — a property of its tail, not six bookmakers erring together.
+        description: "Longest plus-line a ladder may carry (blank = 6, 99 for all)"
+        required: false
+        default: "6"
+        type: string
       league:
         description: "One competition id, or blank for all"
         required: false
@@ -88,7 +97,8 @@ jobs:
           set -- --days "${{ inputs.days || '3' }}" \
                  --min-ev "${{ inputs.min_ev || '0' }}" \
                  --min-rungs "${{ inputs.min_rungs || '2' }}" \
-                 --max "${{ inputs.max || '6' }}"
+                 --max "${{ inputs.max || '6' }}" \
+                 --max-plus "${{ inputs.max_plus || '6' }}"
           [ -n "${{ inputs.league }}" ] && set -- "$@" --league "${{ inputs.league }}"
           node tools/angle_posts.mjs "$@" --out-dir angles --json-out angles.json
           empty=$(python3 -c "import json;print('true' if json.load(open('angles.json'))['empty'] else 'false')")

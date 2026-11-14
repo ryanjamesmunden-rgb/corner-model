@@ -4325,3 +4325,171 @@ export const renderTipsReel = (canvas, {
   ctx.textAlign = "left";
   return true;
 };
+
+/**
+ * One team's EV+ corner ladder, building rung by rung — the clip that goes with the post.
+ *
+ * WHAT IT IS SUPPORTING. The post is five claims in a column: 5+ at this price against
+ * the model's, 6+, 7+, and so on. Read as text they are five numbers; drawn in order with
+ * the distribution behind them they are ONE claim, which is that the model thinks this
+ * side's corner count has a fatter tail than the book does. The curve is the reason the
+ * ladder has the shape it has, so it is the thing on screen the whole time and the rungs
+ * land against it.
+ *
+ * THE PRICE IS NOT BLURRED HERE, and that is the one place this departs from every other
+ * story in this file. renderFixtureStory blurs the model's number because the fixture
+ * story is a tease for the channel; this clip accompanies a post that quotes both prices
+ * in full, so hiding one would leave the picture claiming less than the text beside it.
+ *
+ * EVERY RUNG IS DRAWN, INCLUDING THE THIN ONES. The long lines carry the biggest edges
+ * and are most often quoted by a single book, which is a judgement for whoever posts it —
+ * `books` on the rung drives a mark, not a filter, so a reader can see which claims the
+ * market corroborates without the clip quietly editing the argument.
+ */
+export const renderAngleLadder = (canvas, {
+  thread = null, dist = [], progress = 1,
+  site = "thecornermodel.com", brand = "CORNER MODEL",
+} = {}) => {
+  if (!thread || !thread.rungs?.length) return false;
+  const W = STORY_W;
+  const H = STORY_H;
+  canvas.width = W;
+  canvas.height = H;
+  const ctx = canvas.getContext("2d");
+  const pad = 72;
+  const inner = W - pad * 2;
+  const P = clamp01(progress);
+  const useFlags = flagsRender(ctx);
+
+  ctx.fillStyle = C.bg;
+  ctx.fillRect(0, 0, W, H);
+  const glow = ctx.createRadialGradient(W / 2, 300, 100, W / 2, 300, 900);
+  glow.addColorStop(0, `${C.primary}22`);
+  glow.addColorStop(1, `${C.primary}00`);
+  ctx.fillStyle = glow;
+  ctx.fillRect(0, 0, W, 900);
+  ctx.textBaseline = "middle";
+
+  // ---- the band across the top
+  ctx.fillStyle = C.text;
+  ctx.font = `700 40px ${FONT_HEAD}`;
+  ctx.letterSpacing = "2px";
+  ctx.fillText(brand, pad, 96);
+  ctx.letterSpacing = "0px";
+  ctx.textAlign = "right";
+  ctx.fillStyle = C.muted;
+  ctx.font = `600 28px ${FONT_BODY}`;
+  const when = [thread.day, thread.time].filter(Boolean).join("  ·  ");
+  if (when) ctx.fillText(when, W - pad, 96);
+  ctx.textAlign = "left";
+
+  // THE TEAM, BIGGEST THING ON THE CLIP. The ladder is about one side's corners and every
+  // row repeats the name; saying it once at this size is what lets the rows drop it.
+  ctx.fillStyle = C.text;
+  // 96 with the label at 264, not 104 at 252: at the larger size the descenders of a name
+  // like "Leganes" sat on top of the word CORNERS, which is the one piece of text saying
+  // what the whole clip is about.
+  ctx.font = fitFont(ctx, thread.team, { size: 96, max: inner, weight: 700,
+                                         family: FONT_HEAD, min: 54 });
+  ctx.fillText(thread.team, pad, 192);
+  ctx.fillStyle = C.primary;
+  ctx.font = `600 30px ${FONT_BODY}`;
+  ctx.letterSpacing = "4px";
+  ctx.fillText("CORNERS", pad, 264);
+  ctx.letterSpacing = "0px";
+
+  ctx.fillStyle = C.muted;
+  ctx.font = fitFont(ctx, thread.match, { size: 32, max: inner, weight: 500,
+                                          family: FONT_BODY, min: 22 });
+  const mark = useFlags ? flagFor(thread.leagueId) : countryCodeFor(thread.leagueId);
+  ctx.fillText(ellipsize(ctx, [mark, thread.match, thread.league].filter(Boolean)
+    .join("  ·  "), inner), pad, 302);
+
+  // ---- the distribution, behind the whole argument
+  //
+  // DRAWN FIRST AND HELD. It is the reason the ladder has the shape it has, so it is on
+  // screen before the first rung lands rather than arriving as a flourish at the end.
+  const curveY = 372;
+  const curveH = 300;
+  if (dist?.length) {
+    drawCurve(ctx, dist, thread.rungs[0]?.line ?? null, {
+      x: pad, y: curveY, w: inner, h: curveH,
+      progress: clamp01(P / 0.22), mark: null,
+    });
+    ctx.fillStyle = C.muted;
+    ctx.font = `500 24px ${FONT_BODY}`;
+    // +58, NOT +28: drawCurve writes its own axis numbers along the baseline, and at the
+    // closer offset this caption ran straight through the "0" and the "16".
+    ctx.fillText("Corners the model expects, by count", pad, curveY + curveH + 58);
+  }
+
+  // ---- the rungs, one at a time
+  const top = dist?.length ? curveY + curveH + 98 : 372;
+  const reserve = 168;
+  const gap = 12;
+  const n = thread.rungs.length;
+  const region = H - top - reserve;
+  const rowH = Math.max(86, Math.min(150, (region - (n - 1) * gap) / n));
+  // The rungs share the clip after the curve has drawn itself.
+  const START = dist?.length ? 0.2 : 0.02;
+  const slot = (clamp01((P - START) / (1 - START))) * n;
+
+  thread.rungs.forEach((r, i) => {
+    if (i >= Math.floor(slot) + 1) return;
+    const y = top + i * (rowH + gap);
+    const mid = y + rowH / 2;
+    const fresh = i === Math.floor(slot);
+    const fill = fresh ? clamp01((slot - Math.floor(slot)) * 2.2) : 1;
+    const thin = r.books > 0 && r.books < 2;
+
+    ctx.fillStyle = C.card;
+    roundRect(ctx, pad, y, inner, rowH, 14);
+    ctx.fill();
+    ctx.strokeStyle = fresh ? `${C.primary}99` : C.border;
+    ctx.lineWidth = fresh ? 2.5 : 1.5;
+    ctx.stroke();
+    ctx.fillStyle = C.primary;
+    roundRect(ctx, pad, y + 14, 5, rowH - 28, 3);
+    ctx.fill();
+
+    const step = Math.min(30, rowH * 0.2);
+    // "5+" and the price, which is the line of the post this row is.
+    ctx.fillStyle = C.text;
+    ctx.font = `700 ${Math.round(Math.min(52, rowH * 0.36))}px ${FONT_HEAD}`;
+    ctx.fillText(`${r.plus}+`, pad + 28, mid);
+
+    ctx.font = `600 ${Math.round(Math.min(40, rowH * 0.28))}px ${FONT_DATA}`;
+    ctx.fillText(`[${r.price.toFixed(2)}]`, pad + 118, mid - step + 4);
+
+    ctx.fillStyle = C.muted;
+    ctx.font = `500 25px ${FONT_DATA}`;
+    const model = [r.fair == null ? "" : `model ${r.fair.toFixed(2)}`,
+                   r.prob == null ? "" : `${Math.round(r.prob)}%`].filter(Boolean).join("  ");
+    ctx.fillText(model, pad + 118, mid + step + 2);
+
+    // ONE BOOK IS MARKED, NOT REMOVED. See the note at the top: the clip must not quietly
+    // edit the argument the post is making.
+    if (thin) {
+      ctx.fillStyle = "#F2B04E";
+      ctx.font = `600 21px ${FONT_BODY}`;
+      ctx.fillText("1 book", pad + 118 + ctx.measureText(model).width + 150, mid + step + 2);
+    }
+
+    ctx.textAlign = "right";
+    ctx.fillStyle = C.solid;
+    ctx.font = `700 ${Math.round(Math.min(48, rowH * 0.34))}px ${FONT_DATA}`;
+    ctx.globalAlpha = clamp01(fill);
+    ctx.fillText(`+${(r.ev || 0).toFixed(1)}%`, W - pad - 28, mid);
+    ctx.globalAlpha = 1;
+    ctx.textAlign = "left";
+  });
+
+  // ---- where it can be checked
+  ctx.fillStyle = C.text;
+  ctx.font = `700 32px ${FONT_HEAD}`;
+  ctx.fillText(ellipsize(ctx, thread.url || site, inner), pad, H - 104);
+  ctx.fillStyle = C.muted;
+  ctx.font = `500 23px ${FONT_BODY}`;
+  ctx.fillText("18+ · begambleaware.org · not advice · prices move", pad, H - 60);
+  return true;
+};

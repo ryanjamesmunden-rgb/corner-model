@@ -1,0 +1,166 @@
+# One thread per fixture: the game, its whole EV+ corner ladder, and the clip.
+#
+# WHAT GOES OUT. Two tweets in the account's own format — the game and the fixture link,
+# then 5+ through 9+ with the book's price, the model's and the edge — and a vertical clip
+# that draws those rungs landing one at a time against the model's distribution. The curve
+# is the reason the ladder has the shape it has, which is what makes the picture support
+# the claim rather than decorate it.
+#
+# THE LONG RUNGS ARE PUBLISHED AND MARKED. They carry the biggest edges and are the ones a
+# single book most often has stale. Nothing here drops them: every rung says how many books
+# stand behind it, and the run prints a line naming how many of them are quoted by one.
+# Which to post is a judgement, and a job that removed them would be making it in secret.
+#
+# DISPATCH ONLY, AND IT SENDS NOTHING. Posts and clips land in the run summary and an
+# artifact, to be read before anyone publishes them. A post cannot be unposted.
+name: Corner angle threads
+
+on:
+  workflow_dispatch:
+    inputs:
+      days:
+        description: "How far ahead to look, in days (blank = 3)"
+        required: false
+        default: "3"
+        type: string
+      min_ev:
+        description: "Edge floor in percent (blank = 0 — every positive rung)"
+        required: false
+        default: "0"
+        type: string
+      min_rungs:
+        # A one-rung ladder is a pick, not an argument, and the whole point of this format
+        # is the edge widening as the line lengthens.
+        description: "Fewest rungs a ladder needs to be worth a thread (blank = 2)"
+        required: false
+        default: "2"
+        type: string
+      max:
+        description: "Most threads to build (each renders a clip — blank = 6)"
+        required: false
+        default: "6"
+        type: string
+      league:
+        description: "One competition id, or blank for all"
+        required: false
+        default: ""
+        type: string
+      clips:
+        description: "Render a clip per thread (off = text only, much faster)"
+        required: false
+        default: true
+        type: boolean
+
+concurrency:
+  group: corner-angle-posts
+
+permissions:
+  contents: read
+
+jobs:
+  angles:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Wake the backend
+        env:
+          BACKEND: ${{ vars.BACKEND_URL || 'https://corner-model.onrender.com' }}
+        run: |
+          for i in 1 2 3 4 5 6; do
+            code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 60 "$BACKEND/api/" || true)
+            echo "attempt $i: HTTP $code"
+            [ "$code" = "200" ] && break
+            sleep 15
+          done
+
+      - name: Build the threads
+        id: build
+        env:
+          BACKEND_URL: ${{ vars.BACKEND_URL || 'https://corner-model.onrender.com' }}
+          SITE_URL: ${{ vars.SITE_URL || 'https://thecornermodel.com' }}
+          TOOLS_TOKEN: ${{ secrets.TOOLS_TOKEN }}
+        run: |
+          set -- --days "${{ inputs.days || '3' }}" \
+                 --min-ev "${{ inputs.min_ev || '0' }}" \
+                 --min-rungs "${{ inputs.min_rungs || '2' }}" \
+                 --max "${{ inputs.max || '6' }}"
+          [ -n "${{ inputs.league }}" ] && set -- "$@" --league "${{ inputs.league }}"
+          node tools/angle_posts.mjs "$@" --out-dir angles --json-out angles.json
+          empty=$(python3 -c "import json;print('true' if json.load(open('angles.json'))['empty'] else 'false')")
+          echo "empty=$empty" >> "$GITHUB_OUTPUT"
+          if [ "$empty" = "true" ]; then
+            echo "::notice::no fixture had a ladder worth a thread"
+            {
+              echo "## No angle threads"
+              echo
+              echo '```'
+              python3 -c "
+          import json
+          d = json.load(open('angles.json'))
+          for k, v in sorted(d.get('faults', {}).items(), key=lambda kv: -kv[1]):
+              print(f'{k}: {v}')
+          "
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          # EVERY POST IN THE RUN. The clips are only watchable after a download, so this
+          # is where the text gets read and approved.
+          python3 - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import json
+          d = json.load(open("angles.json"))
+          print("## Corner angle threads\n")
+          for t in d["threads"]:
+              warn = ""
+              if t.get("thinRungs"):
+                  warn = f"  ⚠️ {t['thinRungs']} rung(s) quoted by one book only"
+              print(f"### {t['team']} — {t['n']} rungs to {t['topLine']}+"
+                    f", best +{t['bestEv']}%{warn}\n")
+              print("```")
+              print(t["game"])
+              print("\n----- reply -----\n")
+              print(t["ladder"])
+              print("```\n")
+          PY
+
+      - name: Draw the clips
+        id: draw
+        if: steps.build.outputs.empty != 'true' && inputs.clips
+        run: |
+          can=$(bash tools/install_render.sh | tail -1)
+          echo "renderer: $can"
+          if [ "$can" = "none" ]; then
+            echo "::warning::no renderer available — text only"; exit 0
+          fi
+          made=0
+          for f in angles/*.args.json; do
+            slug=$(basename "$f" .args.json)
+            # A STILL IF THE CLIP WILL NOT ENCODE, rather than losing the thread entirely:
+            # the post carries every number on its own either way.
+            if command -v ffmpeg >/dev/null 2>&1 \
+               && node tools/render_story.mjs --kind angle --args "$f" \
+                       --video "angles/$slug.mp4" --duration 9000 --hold 2200; then
+              made=$((made+1))
+            elif node tools/render_story.mjs --kind angle --args "$f" --out "angles/$slug.png"; then
+              echo "::warning::$slug — could not encode, kept the final frame"
+              made=$((made+1))
+            else
+              echo "::warning::$slug — the render failed, text only"
+            fi
+          done
+          echo "rendered $made file(s)"
+
+      - name: Keep them
+        if: steps.build.outputs.empty != 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: corner-angle-threads
+          path: |
+            angles/
+            angles.json
+          retention-days: 14

@@ -22,6 +22,7 @@ const FaqPage = lazy(() => import("@/pages/FaqPage"));
 const Saved = lazy(() => import("@/pages/Saved"));
 const FormGraph = lazy(() => import("@/pages/FormGraph"));
 const MyTeams = lazy(() => import("@/pages/MyTeams"));
+const Calendar = lazy(() => import("@/pages/Calendar"));
 const Bets = lazy(() => import("@/pages/Bets"));
 const Results = lazy(() => import("@/pages/Results"));
 const Projections = lazy(() => import("@/pages/Projections"));
@@ -60,6 +61,7 @@ function AppRouter() {
       <Route path="/saved" element={page(Saved)} />
       <Route path="/form" element={page(FormGraph)} />
       <Route path="/my-teams" element={page(MyTeams)} />
+      <Route path="/calendar" element={page(Calendar)} />
       <Route path="/bets" element={page(Bets)} />
       <Route path="/results" element={page(Results)} />
       {/* PUBLIC. It lists no pick and names no team — it is the model's own

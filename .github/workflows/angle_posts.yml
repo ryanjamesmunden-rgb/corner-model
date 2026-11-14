@@ -109,9 +109,12 @@ jobs:
             } >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
-          # EVERY POST IN THE RUN. The clips are only watchable after a download, so this
-          # is where the text gets read and approved.
-          python3 - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          # EVERY POST IN THE RUN, IN THE LOG AS WELL AS THE SUMMARY. An artifact and a
+          # step summary are both served from hosts plenty of things cannot reach — a
+          # locked-down network, a phone, an agent in a sandbox — and all of them can read
+          # a run log. The same reasoning results_reel.yml gives for printing its render
+          # input. `tee` so one script feeds both.
+          python3 - <<'PY' | tee -a "$GITHUB_STEP_SUMMARY"
           import json
           d = json.load(open("angles.json"))
           print("## Corner angle threads\n")

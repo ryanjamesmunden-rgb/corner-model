@@ -1,5 +1,5 @@
 import {
-  ANGLE_MIN_EV, THIN_BOOKS,
+  ANGLE_MIN_EV, ANGLE_MAX_PLUS, THIN_BOOKS,
   plusOf, evPercent, teamFor, rungLines, angleRungs, fixtureUrl,
   gamePost, ladderPost, angleThread,
 } from "./anglePost";
@@ -233,5 +233,25 @@ describe("the two tweets", () => {
   it("defaults to a floor of zero — every positive edge is part of the claim", () => {
     expect(ANGLE_MIN_EV).toBe(0);
     expect(angleThread(row(), { minEv: 20 }).n).toBe(2);
+  });
+
+  it("can be capped at a plus-line, and stops where the evidence stops", () => {
+    // WHY A CAP EXISTS. On the first live run the edge rose monotonically with the line
+    // on all six threads — Plymouth +1.8% at 3+ to +126.2% at 10+. Six markets
+    // disagreeing in the same direction by an amount that grows with the line is one
+    // model property, not six bookmaker errors. 5+/6+ is +48.47u over 90 settled; 7+ has
+    // 12 bets; past that, nothing.
+    expect(ANGLE_MAX_PLUS).toBe(6);
+    const capped = angleThread(row(), { maxPlus: 6 });
+    expect(capped.rungs.map((r) => r.plus)).toEqual([5, 6]);
+    expect(capped.topLine).toBe(6);
+  });
+
+  it("can be floored at a plus-line too", () => {
+    expect(angleRungs(row(), { minPlus: 7 }).map((r) => r.plus)).toEqual([7, 8, 9]);
+  });
+
+  it("is null when the cap leaves nothing", () => {
+    expect(angleThread(row(), { maxPlus: 2 })).toBeNull();
   });
 });

@@ -2,7 +2,7 @@ import { useState, useEffect } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import MobileNav from "@/components/MobileNav";
 import { CornerDownRight, LayoutDashboard, Radar, Flame, Zap, Star, Sparkles, Receipt, Trophy,
-         TrendingUp, Globe, ShieldCheck, Activity, Bell } from "lucide-react";
+         TrendingUp, Globe, ShieldCheck, Activity, Bell, CalendarDays } from "lucide-react";
 import { LeagueContext } from "@/context/LeagueContext";
 import ExportMenu from "@/components/ExportMenu";
 import { api } from "@/lib/api";
@@ -64,6 +64,9 @@ export default function Layout({ children }) {
     // Signed-in only: the page is both lists ranked, and an empty one would be a
     // nav entry that can only explain why it is empty.
     ...(user ? [{ to: "/my-teams", label: "My Teams", icon: Bell }] : []),
+    // Signed-in only: the month is drawn around which of YOUR teams play in it, and
+    // signed out there is no "your".
+    ...(user ? [{ to: "/calendar", label: "Calendar", icon: CalendarDays }] : []),
     // Corner form line chart: favourites, tracked teams, or a whole league, ten a page.
     { to: "/form", label: "Form", icon: Activity },
     { to: "/bets", label: "Bets", icon: Receipt },

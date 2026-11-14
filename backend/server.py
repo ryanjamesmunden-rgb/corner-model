@@ -1574,6 +1574,207 @@ def _date_rank(iso: str) -> float:
     return dt.timestamp()
 
 
+# ----------------------------- The month ahead -----------------------------
+#
+# WHAT THIS ANSWERS THAT NO OTHER SCREEN DOES. Every board here looks forward in DAYS —
+# three, seven, at most thirty — and answers "what is worth backing soon". None of them
+# answers "when do my teams actually play", which is a question about a month and about
+# six particular sides, not about a window and every side in the database.
+#
+# THE HONEST PART IS THE HORIZON, and it is the whole reason this is not a frontend-only
+# feature. The sync stores the fixtures a provider has published, and that is not a clean
+# month for every league: some are listed to the end of the season, some only a round or
+# two out. A grid that drew an empty square for both "nobody plays that day" and "we have
+# not been told yet" would be inventing a free weekend. So the endpoint reports where the
+# data actually stops and the grid greys out everything past it.
+#
+# AND THE DAY IS THE UK DAY. Fixtures are stored in UTC and a 23:00Z kick-off in summer is
+# half past midnight the NEXT day in London. Grouping on the raw ISO prefix would file it
+# under the wrong square — the same bug shareText.postDate carries a note about, one unit
+# up. Grouped here rather than in the browser so the per-day COUNTS and the squares cannot
+# disagree about which day a game belongs to.
+
+CALENDAR_TZ = ZoneInfo("Europe/London")
+#: The last day holding at least this many fixtures is where the data is said to stop. A
+#: single far-future friendly would otherwise push the horizon a month past anything
+#: usable, which is the same lie as having no horizon at all.
+CALENDAR_HORIZON_MIN = 3
+#: How many months either side of today may be asked for. The sync keeps played fixtures
+#: for PLAYED_KEEP_DAYS and upcoming ones as far as the provider lists them; beyond this
+#: there is nothing to draw in either direction.
+CALENDAR_MONTHS_BACK = 2
+CALENDAR_MONTHS_AHEAD = 3
+
+
+def _month_bounds(month: str):
+    """'2026-11' -> (first day, last day) as dates. Raises ValueError on anything else."""
+    year, mon = month.split("-")
+    y, m = int(year), int(mon)
+    if not 1 <= m <= 12:
+        raise ValueError("month must be 1-12")
+    first = date(y, m, 1)
+    last = date(y + (m == 12), (m % 12) + 1, 1) - timedelta(days=1)
+    return first, last
+
+
+def local_day(iso: Optional[str]) -> Optional[str]:
+    """The UK calendar day a kick-off belongs to, as 'YYYY-MM-DD'.
+
+    NOT THE FIRST TEN CHARACTERS OF THE TIMESTAMP. A 23:00Z game in summer is 00:30 the
+    following day in London, and filing it under the UTC date puts it in the wrong square
+    — on the wrong side of a weekend, for a reader deciding which day to be free.
+    """
+    if not iso:
+        return None
+    try:
+        dt = datetime.fromisoformat(str(iso).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(CALENDAR_TZ).date().isoformat()
+
+
+def data_horizon(days: Dict[str, int], min_fixtures: int = CALENDAR_HORIZON_MIN) -> Optional[str]:
+    """The last day the fixture list can be trusted to be complete, by count.
+
+    Walks BACK from the furthest day stored and stops at the first one carrying a real
+    card. Everything past that is days the provider has not published yet, and a grid that
+    did not say so would show an empty Saturday in three weeks as a free weekend.
+    """
+    for day in sorted(days, reverse=True):
+        if days[day] >= min_fixtures:
+            return day
+    return None
+
+
+@api_router.get("/calendar")
+async def calendar(month: Optional[str] = None, source: str = "all",
+                   league_id: Optional[str] = None,
+                   user: dict = Depends(require_user)):
+    """A month of fixtures, with the games your teams are in picked out.
+
+    MEMBERS ARE NOT REQUIRED AND THAT IS DELIBERATE. This carries no line, no price and no
+    projection — it is a fixture list and a list of which of them involve a side you
+    follow, both of which are facts about the schedule rather than the product. What it is
+    FOR is deciding which evenings to be free, and a wall in front of that sells nothing.
+    `require_user` only because "my teams" needs to know whose.
+    """
+    today = datetime.now(timezone.utc).astimezone(CALENDAR_TZ).date()
+    month = month or today.strftime("%Y-%m")
+    try:
+        first, last = _month_bounds(month)
+    except (ValueError, AttributeError):
+        raise HTTPException(status_code=400,
+                            detail=f"month must look like 2026-11, got {month!r}")
+    # Bounded so a crawler cannot walk the database a month at a time.
+    span = (first.year - today.year) * 12 + (first.month - today.month)
+    if not -CALENDAR_MONTHS_BACK <= span <= CALENDAR_MONTHS_AHEAD:
+        raise HTTPException(
+            status_code=400,
+            detail=f"{month} is outside the {CALENDAR_MONTHS_BACK} months back and "
+                   f"{CALENDAR_MONTHS_AHEAD} ahead this holds fixtures for")
+
+    source = source if source in ("all", "favourites", "tracking") else "all"
+    fav_ids = {r["team_id"] for r in await db.favourite_teams.find(
+        {"user_id": user["user_id"]}, {"_id": 0}).to_list(500)}
+    trk_ids = {r["team_id"] for r in await db.tracked_teams.find(
+        {"user_id": user["user_id"]}, {"_id": 0}).to_list(500)}
+    # A team on both lists counts once, as a favourite — the same rule /my-teams applies,
+    # so a side cannot appear twice on one square.
+    wanted = {tid: "favourites" for tid in fav_ids}
+    for tid in trk_ids:
+        wanted.setdefault(tid, "tracking")
+    if source != "all":
+        wanted = {tid: lst for tid, lst in wanted.items() if lst == source}
+
+    q: Dict[str, object] = {}
+    if league_id and league_id != "all":
+        q["league_id"] = league_id
+    fixtures = await db.fixtures.find(q, {"_id": 0}).to_list(40000)
+
+    leagues = {l["league_id"]: l.get("name", "") for l in
+               await db.leagues.find({}, {"_id": 0}).to_list(200)}
+    team_ids = {tid for tid in wanted}
+    teams = {t["team_id"]: t for t in await db.teams.find(
+        {"team_id": {"$in": list(team_ids)}}, {"_id": 0}).to_list(2000)} if team_ids else {}
+
+    # EVERY stored day, for the horizon — not just this month's. The question "has the
+    # provider published past here" is about the whole fixture list, and asking it of one
+    # month would answer "no" every time the month happens to be the last one.
+    per_day: Dict[str, int] = {}
+    days: Dict[str, dict] = {}
+    lo, hi = first.isoformat(), last.isoformat()
+
+    for fx in fixtures:
+        day = local_day(fx.get("date"))
+        if not day:
+            continue
+        per_day[day] = per_day.get(day, 0) + 1
+        if not (lo <= day <= hi):
+            continue
+        slot = days.setdefault(day, {"date": day, "fixtures": 0, "leagues": set(),
+                                     "mine": []})
+        slot["fixtures"] += 1
+        if fx.get("league_id"):
+            slot["leagues"].add(fx["league_id"])
+        for side, tid in (("home", fx.get("home_team_id")), ("away", fx.get("away_team_id"))):
+            if tid in wanted:
+                slot["mine"].append({
+                    "fixture_id": fx.get("fixture_id"),
+                    "team_id": tid,
+                    "team": (teams.get(tid) or {}).get("name") or "",
+                    "side": side,
+                    "list": wanted[tid],
+                    "home_name": fx.get("home_name"), "away_name": fx.get("away_name"),
+                    "opponent": fx.get("away_name") if side == "home" else fx.get("home_name"),
+                    "league_id": fx.get("league_id"),
+                    "league_name": leagues.get(fx.get("league_id"), ""),
+                    "kickoff": fx.get("date"),
+                    "round": fx.get("round"),
+                })
+                # ONE ROW PER TEAM, not per fixture: when two sides you follow play each
+                # other the square should say so twice, once from each of their points of
+                # view, because that is how it reads on the page — "Vila Nova (vs
+                # Fortaleza)" and "Fortaleza (vs Vila Nova)" are both true.
+
+    out = []
+    day = first
+    while day <= last:
+        key = day.isoformat()
+        slot = days.get(key)
+        if slot:
+            slot["mine"].sort(key=lambda m: (m.get("kickoff") or "", m.get("team") or ""))
+            out.append({**slot, "leagues": len(slot["leagues"])})
+        else:
+            out.append({"date": key, "fixtures": 0, "leagues": 0, "mine": []})
+        day += timedelta(days=1)
+
+    horizon = data_horizon(per_day)
+    return {
+        "month": month,
+        "from": first.isoformat(), "to": last.isoformat(),
+        "today": today.isoformat(),
+        "zone": "Europe/London",
+        "days": out,
+        # WHERE THE FIXTURE LIST STOPS. Past this the squares are empty because nobody has
+        # published them, not because nobody is playing, and the grid has to draw those
+        # two states differently or it is inventing free weekends.
+        "horizon": horizon,
+        "source": source,
+        "counts": {"favourites": len(fav_ids), "tracking": len(trk_ids - fav_ids),
+                   "mine": sum(len(d["mine"]) for d in out),
+                   "fixtures": sum(d["fixtures"] for d in out)},
+        "teams": sorted(
+            ({"team_id": tid, "name": (teams.get(tid) or {}).get("name") or "",
+              "league_id": (teams.get(tid) or {}).get("league_id"),
+              "league_name": leagues.get((teams.get(tid) or {}).get("league_id"), ""),
+              "list": lst} for tid, lst in wanted.items()),
+            key=lambda t: t["name"]),
+        "months_back": CALENDAR_MONTHS_BACK, "months_ahead": CALENDAR_MONTHS_AHEAD,
+    }
+
+
 @api_router.get("/my-teams")
 async def my_teams(sort: str = "form", source: str = "all",
                    within_days: int = MY_TEAMS_DAYS,
@@ -12185,6 +12386,125 @@ def stat_pick_row(row: dict, market: dict, counts: dict, opp: dict) -> dict:
         "opp_scope": opp.get("scope"),
         "market_key": market.get("key"),
     }
+
+
+# ----------------------------- Per-fixture angle threads -----------------------------
+#
+# WHAT THIS SERVES THAT THE VALUE BOARD DOES NOT. The board is a shortlist ACROSS games —
+# the best rung from each, ranked. This is the opposite cut: one side of one fixture, with
+# EVERY rung of its ladder that clears the floor, in line order. Five rows reading 5+
+# through 9+ with the edge widening is one argument about one team's corner distribution;
+# the same five rows scattered across a board are five unrelated claims.
+#
+# AND IT CARRIES THE DISTRIBUTION, which is the reason the ladder has the shape it has.
+# The clip that goes with the post draws it behind the rungs, so it has to come from the
+# same request and the same lambdas — a curve fetched separately could be drawn off a
+# model that had since been resynced, and the picture would disagree with the numbers in
+# front of it.
+
+#: Rungs under this are not part of the argument.
+ANGLE_MIN_EV = 0.0
+#: Below this many books behind a price, a rung is MARKED, never dropped. The long lines
+#: carry the biggest edges and are the ones a single book most often has stale; which to
+#: publish is the poster's judgement, and an endpoint that quietly removed them would be
+#: editing the argument on their behalf.
+ANGLE_THIN_BOOKS = 2
+
+
+@api_router.get("/share/angles")
+async def share_angles(token: Optional[str] = None, days: int = 3,
+                       min_ev: float = ANGLE_MIN_EV, min_rungs: int = 2,
+                       league_id: Optional[str] = None, limit: int = 20):
+    """One side of one fixture, with its whole EV+ corner ladder and the model's curve.
+
+    ROWS, NOT TEXT. The post format lives in frontend/src/lib/anglePost.js and is used by
+    the share buttons as well as the scheduled job; rendering it here would be a second
+    copy of the format, and two copies drift.
+
+    GATED with the tools token like every other automation endpoint: the hit rates and the
+    curve are public on each fixture page, but the prices and the edge are the product.
+    """
+    _check_tools_token(token)
+    days = max(1, min(int(days), 14))
+
+    rows = await value_board(within_days=days, min_ev=-1000.0, limit=200,
+                             league_id=league_id, ladder=True, user={})
+    ok = [r for r in rows if r.get("status") == "ok"]
+
+    fixtures = {f["fixture_id"]: f for f in await db.fixtures.find(
+        {"fixture_id": {"$in": [r["fixture_id"] for r in ok]}}, {"_id": 0}).to_list(5000)}
+    team_ids = {tid for f in fixtures.values()
+                for tid in (f.get("home_team_id"), f.get("away_team_id")) if tid}
+    teams = {t["team_id"]: t for t in await db.teams.find(
+        {"team_id": {"$in": list(team_ids)}}, {"_id": 0}).to_list(10000)}
+    leagues = {l["league_id"]: l for l in await db.leagues.find({}, {"_id": 0}).to_list(200)}
+
+    out, faults = [], {}
+    for r in ok:
+        fx = fixtures.get(r["fixture_id"])
+        home = teams.get((fx or {}).get("home_team_id"))
+        away = teams.get((fx or {}).get("away_team_id"))
+        if not fx or not home or not away:
+            faults["no_teams"] = faults.get("no_teams", 0) + 1
+            continue
+
+        # THE CURVE COMES FROM THE SAME CALL AS THE PRICES. Recomputed here rather than
+        # carried on the board because value_board does not ask for a distribution, and a
+        # second round trip for it is a second chance for the two to disagree.
+        lg = leagues.get(fx.get("league_id"), {})
+        doc = (await _odds_for_many([r["fixture_id"]])).get(r["fixture_id"]) or {}
+        model = fixture_model_from(home, away, lg, doc.get("odds") or {},
+                                   with_distribution=True)
+        dists = model.get("distribution") or {}
+
+        for group in ("home", "away"):
+            rungs = []
+            for m in (r.get("ladder") or []):
+                if m.get("group") != group:
+                    continue
+                price, prob = m.get("book_odds"), m.get("prob")
+                if price is None or prob is None:
+                    continue
+                if m.get("price_source") not in REAL_PRICE_SOURCES:
+                    faults["no_real_price"] = faults.get("no_real_price", 0) + 1
+                    continue
+                # ev_percent is the app's own, so a rung here and the same rung on the
+                # board cannot report two different edges.
+                ev = ev_percent(price, prob / 100.0)
+                if ev is None or ev < min_ev:
+                    continue
+                quotes = m.get("quotes") or []
+                rungs.append({**m, "ev": round(ev, 1), "books": len(quotes)})
+            if len(rungs) < max(1, min_rungs):
+                if rungs:
+                    faults["too_few_rungs"] = faults.get("too_few_rungs", 0) + 1
+                continue
+            rungs.sort(key=lambda x: x.get("line") or 0)
+            out.append({
+                "fixture_id": r["fixture_id"], "group": group,
+                "league_id": r.get("league_id"), "league_name": r.get("league_name"),
+                "date": r.get("date"),
+                "home_name": r.get("home_name"), "away_name": r.get("away_name"),
+                "lambda_total": r.get("lambda_total"),
+                "lambda": (model.get("lambdas") or {}).get(group),
+                # Only this side's curve: the clip is about one team's corner count, and
+                # shipping both doubles the payload for a picture nobody draws.
+                "dist": dists.get(group) or [],
+                "ladder": rungs,
+                "rungs": len(rungs),
+                "best_ev": max(x["ev"] for x in rungs),
+                "thin_rungs": sum(1 for x in rungs
+                                  if 0 < x["books"] < ANGLE_THIN_BOOKS),
+                "unquoted": sum(1 for x in rungs if not x["books"]),
+            })
+
+    # BIGGEST ARGUMENT FIRST, then kick-off. A thread is worth posting in proportion to
+    # how far the ladder runs, not to how soon it kicks off.
+    out.sort(key=lambda a: (-a["rungs"], -a["best_ev"], a.get("date") or ""))
+    return {"angles": out[:max(1, min(limit, 60))], "faults": faults,
+            "days": days, "min_ev": min_ev, "min_rungs": min_rungs,
+            "thin_books": ANGLE_THIN_BOOKS,
+            "generated_at": datetime.now(timezone.utc).isoformat()}
 
 
 @api_router.get("/share/stat-picks")

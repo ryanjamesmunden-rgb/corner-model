@@ -50,6 +50,9 @@ const KINDS = {
   // The forward-looking twin of the results reel: the weekend's EV+ calls, stepped
   // through one at a time. Animates for the same reason — the sequence IS the content.
   tips: "renderTipsReel",
+  // One team's EV+ corner ladder, building rung by rung against the model's
+  // distribution — the clip that goes beside the per-fixture X post.
+  angle: "renderAngleLadder",
   // The 16:9 cut of a team's record, for X. Reachable here so it can be rendered and read
   // back the way every other card in this repo is, rather than being shipped on the word
   // of a build that compiled.
@@ -61,7 +64,7 @@ const KINDS = {
 // through picks one at a time, which is the case where the SEQUENCE is the content rather
 // than decoration. The slate and the cards are tables, and a table that assembles itself
 // is motion for its own sake.
-const ANIMATES = KIND === "fixture" || KIND === "results" || KIND === "tips";
+const ANIMATES = ["fixture", "results", "tips", "angle"].includes(KIND);
 // With --video, the same drawing is rendered frame by frame and encoded instead of
 // snapshotted. Timings match recordStoryVideo's defaults so the automated clip and the one
 // the Share button makes are the same length and the same pace.

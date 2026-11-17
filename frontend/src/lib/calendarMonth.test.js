@@ -1,7 +1,7 @@
 import {
   WEEKDAYS, PAST, TODAY, UPCOMING, UNKNOWN, OUTSIDE,
   parseDay, monthGrid, squareState, buildMonth, monthLabel, shiftMonth, canShift, mineLabel,
-  dayLabel, emptyNote,
+  dayLabel, emptyNote, mineDetail,
 } from "./calendarMonth";
 
 const game = (over = {}) => ({
@@ -190,6 +190,27 @@ describe("labels", () => {
     expect(monthLabel("2026-11")).toBe("November 2026");
     expect(monthLabel("2027-01")).toBe("January 2027");
     expect(monthLabel("bad")).toBe("");
+  });
+
+  it("says why a game is on your calendar, and a saved one has no side", () => {
+    // A saved game was starred as a FIXTURE, so it has no team and no side. Sent through
+    // the team branch it rendered a stray " away" hanging off the league name.
+    expect(mineDetail({ list: "saved" })).toBe("saved game");
+    expect(mineDetail({ list: "favourites", team: "Vila Nova", side: "home" }))
+      .toBe("Vila Nova at home");
+    expect(mineDetail({ list: "favourites", team: "Fortaleza", side: "away" }))
+      .toBe("Fortaleza away");
+    expect(mineDetail({ list: "tracking", team: "Mirassol", side: "home" }))
+      .toBe("Mirassol at home · tracking");
+    expect(mineDetail({})).toBe("");
+  });
+
+  it("points at the bell, which is the control that fills this page", () => {
+    // The star saves a GAME and the bell follows a TEAM — TeamStar's own note says so.
+    // The empty state used to send people to the star, which fills the other list.
+    const note = emptyNote({ teams: [] }, "November 2026");
+    expect(note).toContain("🔔");
+    expect(note).not.toContain("☆");
   });
 
   it("says how many of my teams play, with the plural right", () => {

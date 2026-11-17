@@ -179,7 +179,11 @@ export const dayLabel = (key) => {
 export const emptyNote = (data = {}, label = "") => {
   const teams = (data?.teams || []).filter(Boolean);
   if (!teams.length) {
-    return "No teams followed yet — star a team anywhere you see the ☆ and its games show up here.";
+    // THE BELL, NOT THE STAR, and the distinction is the whole reason this page looked
+    // broken. TeamStar's own note spells it out: "a star keeps one game, a bell or an eye
+    // is about a club". Sending somebody to look for a star is sending them to the
+    // control that fills a different list from the one this page reads.
+    return "No teams followed yet — tap the 🔔 beside any team, or follow one below.";
   }
   const names = teams.map((t) => t?.name).filter(Boolean);
   const who = names.length === 0 ? ""
@@ -188,6 +192,21 @@ export const emptyNote = (data = {}, label = "") => {
   const plural = teams.length === 1 ? "" : "s";
   return `Following ${teams.length} team${plural}${who} — none of them play`
          + (label ? ` in ${label}` : "") + ".";
+};
+
+/**
+ * The small print under a game on the day panel: why it is on your calendar.
+ *
+ * A SAVED GAME HAS NO SIDE, and that is not a missing field. A followed team puts a game
+ * there from that team's point of view — "Vila Nova at home" — but a saved game was
+ * starred as a FIXTURE, with no team attached. Rendering it through the team branch gave
+ * a stray " away" hanging off the league name, which reads as a bug in the data.
+ */
+export const mineDetail = (g = {}) => {
+  if (g?.list === "saved") return "saved game";
+  const where = g?.side === "home" ? "at home" : g?.side === "away" ? "away" : "";
+  const who = [g?.team, where].filter(Boolean).join(" ");
+  return who + (g?.list === "tracking" ? `${who ? " · " : ""}tracking` : "");
 };
 
 /** The month before or after, as "YYYY-MM". */

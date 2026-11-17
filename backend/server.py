@@ -1604,6 +1604,10 @@ CALENDAR_HORIZON_MIN = 3
 #: there is nothing to draw in either direction.
 CALENDAR_MONTHS_BACK = 2
 CALENDAR_MONTHS_AHEAD = 3
+#: How many of the month's sides to offer for following. Every league in a full month runs
+#: to several hundred, and the point of the list is to put a star within reach, not to be
+#: a directory — the page filters it by typing.
+CALENDAR_PLAYING_MAX = 300
 
 
 def _month_bounds(month: str):
@@ -1675,7 +1679,7 @@ async def calendar(month: Optional[str] = None, source: str = "all",
             detail=f"{month} is outside the {CALENDAR_MONTHS_BACK} months back and "
                    f"{CALENDAR_MONTHS_AHEAD} ahead this holds fixtures for")
 
-    source = source if source in ("all", "favourites", "tracking") else "all"
+    source = source if source in ("all", "favourites", "tracking", "saved") else "all"
     fav_ids = {r["team_id"] for r in await db.favourite_teams.find(
         {"user_id": user["user_id"]}, {"_id": 0}).to_list(500)}
     trk_ids = {r["team_id"] for r in await db.tracked_teams.find(
@@ -1686,7 +1690,23 @@ async def calendar(month: Optional[str] = None, source: str = "all",
     for tid in trk_ids:
         wanted.setdefault(tid, "tracking")
     if source != "all":
+        # "saved" is not a team list, so this empties `wanted` by itself and the month
+        # comes back carrying nothing but the games that were starred.
         wanted = {tid: lst for tid, lst in wanted.items() if lst == source}
+
+    # A SAVED GAME IS ONE OF YOURS TOO, and leaving it out is why this page could look
+    # broken to somebody who had been using the site for weeks.
+    #
+    # There are two stars. StarButton saves a FIXTURE into db.favourites — the one on a
+    # game, the one the Saved page lists. TeamStar follows a TEAM into favourite_teams.
+    # They are different stores and nothing on either control says so, so a reader who
+    # had saved thirty games and followed no teams got an empty grid and a note telling
+    # them they followed nobody. True, and no use at all: they had told us exactly which
+    # games they cared about and the calendar ignored every one.
+    saved_ids = set()
+    if source in ("all", "saved"):
+        saved_ids = {r["fixture_id"] for r in await db.favourites.find(
+            {"user_id": user["user_id"]}, {"_id": 0, "fixture_id": 1}).to_list(2000)}
 
     q: Dict[str, object] = {}
     if league_id and league_id != "all":
@@ -1704,6 +1724,11 @@ async def calendar(month: Optional[str] = None, source: str = "all",
     # month would answer "no" every time the month happens to be the last one.
     per_day: Dict[str, int] = {}
     days: Dict[str, dict] = {}
+    #: Every side playing this month that you do NOT already follow, so the page can offer
+    #: them rather than sending you elsewhere to find the star. Built from the fixtures
+    #: already in hand — no second query, and the list is exactly the teams for which this
+    #: month would actually change if you followed them.
+    playing: Dict[str, dict] = {}
     lo, hi = first.isoformat(), last.isoformat()
 
     for fx in fixtures:
@@ -1738,6 +1763,35 @@ async def calendar(month: Optional[str] = None, source: str = "all",
                 # view, because that is how it reads on the page — "Vila Nova (vs
                 # Fortaleza)" and "Fortaleza (vs Vila Nova)" are both true.
 
+        # The saved game, but ONLY where neither side is already on the square. A game you
+        # saved whose home team you also follow is one game, and counting it twice would
+        # inflate every total under the grid — the counts are the thing a reader checks
+        # this page for.
+        if fx.get("fixture_id") in saved_ids and not any(
+                m["fixture_id"] == fx.get("fixture_id") for m in slot["mine"]):
+            slot["mine"].append({
+                "fixture_id": fx.get("fixture_id"),
+                # NO team_id AND NO side, because a saved game is not held from any
+                # side's point of view — it is the fixture that was starred. The page
+                # reads `list` to decide that, rather than inferring it from a blank name.
+                "team_id": None, "team": "", "side": None, "list": "saved",
+                "home_name": fx.get("home_name"), "away_name": fx.get("away_name"),
+                "opponent": None,
+                "league_id": fx.get("league_id"),
+                "league_name": leagues.get(fx.get("league_id"), ""),
+                "kickoff": fx.get("date"),
+                "round": fx.get("round"),
+            })
+
+        for tid, name in ((fx.get("home_team_id"), fx.get("home_name")),
+                          (fx.get("away_team_id"), fx.get("away_name"))):
+            if tid and tid not in wanted:
+                row = playing.setdefault(tid, {"team_id": tid, "name": name or "",
+                                               "league_id": fx.get("league_id"),
+                                               "league_name": leagues.get(fx.get("league_id"), ""),
+                                               "games": 0})
+                row["games"] += 1
+
     out = []
     day = first
     while day <= last:
@@ -1763,8 +1817,14 @@ async def calendar(month: Optional[str] = None, source: str = "all",
         "horizon": horizon,
         "source": source,
         "counts": {"favourites": len(fav_ids), "tracking": len(trk_ids - fav_ids),
+                   "saved": len(saved_ids),
                    "mine": sum(len(d["mine"]) for d in out),
                    "fixtures": sum(d["fixtures"] for d in out)},
+        # MOST GAMES FIRST, because the side worth following is the one this month would
+        # actually show. Capped: a full month across every league is several hundred
+        # sides, and the page filters by typing rather than by scrolling.
+        "playing": sorted(playing.values(),
+                          key=lambda t: (-t["games"], t["name"]))[:CALENDAR_PLAYING_MAX],
         "teams": sorted(
             ({"team_id": tid, "name": (teams.get(tid) or {}).get("name") or "",
               "league_id": (teams.get(tid) or {}).get("league_id"),

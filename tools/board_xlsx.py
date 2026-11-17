@@ -137,7 +137,11 @@ def readme(wb, data, generated):
     age = data.get("data_age_hours")
     lines = [
         "",
-        "Three sheets, one per section. They answer different questions and are kept apart:",
+        "Combined is every team-over line with whatever each board says about it, so a",
+        "line carried by more than one is visible without reading three sheets side by",
+        "side. The 'On' count is NOT three models agreeing — see the note on that sheet.",
+        "",
+        "The three source sheets answer different questions and are kept apart:",
         "   Streaks      this team keeps clearing this line — a run, nothing about the opponent",
         "   Mismatches   this attack against THIS defence — about the fixture, not the form",
         "   Chase        this team goes behind early and chases — about game state",
@@ -296,15 +300,163 @@ def chase_sheet(wb, rows):
                 "I": 8, "J": 8, "K": 7, "L": 8, "M": 9, "N": 13})
 
 
+def combine_key(row):
+    """What makes two rows from different boards the SAME bet.
+
+    The fixture, the side and the line. Not the team name alone: a team appears on three
+    boards for three different lines, and joining on the name would stack a 4+ claim onto
+    a 6+ one and present the pair as agreement.
+    """
+    nf = row.get("next_fixture") or {}
+    fid = nf.get("fixture_id") or fixture(row)[0]
+    return (fid, row.get("name") or row.get("team") or "?", row.get("line"))
+
+
+def combined_sheet(wb, data):
+    """Every team-over line, with whatever each board has to say about it in one row.
+
+    WHY THIS SHEET EXISTS. The other three answer different questions and are kept apart
+    on purpose — but a line that shows up on more than one of them is the thing somebody
+    opens a spreadsheet to find, and finding it meant reading three sheets side by side
+    and joining them by eye.
+
+    TEAM OVERS ONLY, AND THAT IS NOT A TRIM. The chase and mismatch boards produce nothing
+    else, so a match-under streak has no counterpart to be joined to; putting it here
+    would be a row with two empty thirds pretending to be a comparison. The Streaks sheet
+    still carries every kind.
+
+    THE BOARDS COLUMN IS NOT A CONFIRMATION COUNT, and this is the one thing that could
+    make the sheet worse than the three it summarises. shareText's own note on the angle
+    menu says it plainly: a streak and a mismatch are both driven partly by how many
+    corners the team wins, so a strong corner side appears on both WHOEVER it plays.
+    Reading "3" as three independent models agreeing is reading one fact three times.
+
+    What is genuinely additional is the OPPONENT half — how much this particular defence
+    concedes, measured on its own games — and the chase catalyst, which is about game
+    state rather than about either side's corner count. Those two columns are where the
+    extra information actually is, and the sheet says so next to them.
+    """
+    rows = {}
+
+    def slot(row):
+        k = combine_key(row)
+        if k not in rows:
+            fx, venue = fixture(row)
+            rows[k] = {"kickoff": kickoff(row), "league": row.get("league_name", ""),
+                       "fixture": fx, "team": row.get("name") or row.get("team"),
+                       "venue": venue, "line": row.get("line"),
+                       "boards": [], "streak": None, "run": None, "in_row": None,
+                       "opp_conceded": None, "opp_fh": None, "chase_l5": None,
+                       "lam": None, "prob": None, "fair": None, "book": None,
+                       "model_src": None}
+        return rows[k]
+
+    for row in data.get("streaks") or []:
+        # Only the cut the other two boards also produce; see the docstring.
+        if row.get("subject") == "match" or row.get("direction") == "under":
+            continue
+        r = slot(row)
+        r["boards"].append("streak")
+        settled = row.get("settled") or row.get("window") or 0
+        r["run"] = f"{row.get('hits', 0)}/{settled}" if settled else None
+        r["in_row"] = (row.get("streak") or {}).get("length")
+        proj = row.get("projection") or {}
+        if proj.get("prob") is not None and r["prob"] is None:
+            r.update(prob=proj.get("prob"), fair=proj.get("fair_odds"),
+                     lam=proj.get("lambda"), model_src="streak")
+            if proj.get("book_odds") is not None:
+                r["book"] = proj["book_odds"]
+
+    for row in data.get("mismatches") or []:
+        r = slot(row)
+        r["boards"].append("mismatch")
+        r["opp_conceded"] = row.get("opp_conceded")
+        if row.get("prob") is not None and r["prob"] is None:
+            r.update(prob=row.get("prob"), fair=row.get("fair_odds"),
+                     model_src="mismatch")
+
+    for row in data.get("chase") or []:
+        r = slot(row)
+        r["boards"].append("chase")
+        r["opp_fh"] = row.get("opp_fh_rate")
+        if row.get("consistency_of"):
+            r["chase_l5"] = f"{row.get('consistency')}/{row.get('consistency_of')}"
+        # THE CHASE BOARD'S MODEL WINS WHERE THERE IS ONE. It is the only source carrying
+        # lambda, probability, fair price AND any price already entered, so taking it last
+        # and letting it overwrite keeps the most complete row rather than the first one.
+        if row.get("prob") is not None:
+            r.update(prob=row.get("prob"), fair=row.get("fair_odds"),
+                     lam=row.get("lambda"), model_src="chase")
+        if row.get("book_odds") is not None:
+            r["book"] = row["book_odds"]
+
+    out = sorted(rows.values(),
+                 key=lambda r: (-len(r["boards"]), -(r["prob"] or 0), r["kickoff"]))
+
+    ws = wb.create_sheet("Combined", 1)
+    header(ws, ["Kick-off", "League", "Fixture", "Team", "Venue", "Line", "Boards",
+                "On", "Run", "In a row", "Opp concedes /g", "Opp 1H", "Chase L5",
+                "Lambda", "Prob", "Fair", "Book", "EV", "Verdict", "Model from"])
+    for r, row in enumerate(out, start=2):
+        for c, v in enumerate([row["kickoff"], row["league"], row["fixture"], row["team"],
+                               row["venue"], row["line"], len(row["boards"]),
+                               ", ".join(row["boards"]), row["run"], row["in_row"]],
+                              start=1):
+            cell = ws.cell(row=r, column=c, value=v)
+            cell.font = BOLD if c == 4 else BLACK
+            cell.border = BORDER
+        ws.cell(row=r, column=11, value=row["opp_conceded"]).number_format = "0.00"
+        ws.cell(row=r, column=11).font = BLACK
+        fh = row["opp_fh"]
+        ws.cell(row=r, column=12,
+                value=None if fh is None else fh / 100).number_format = "0%"
+        ws.cell(row=r, column=12).font = BLACK
+        ws.cell(row=r, column=13, value=row["chase_l5"]).font = BLACK
+        ws.cell(row=r, column=13).alignment = Alignment(horizontal="center")
+        ws.cell(row=r, column=14, value=row["lam"]).number_format = "0.00"
+        ws.cell(row=r, column=14).font = BLUE
+        prob = row["prob"]
+        ws.cell(row=r, column=15,
+                value=None if prob is None else prob / 100).number_format = "0.0%"
+        ws.cell(row=r, column=15).font = BLUE
+        ws.cell(row=r, column=16, value=row["fair"]).number_format = "0.00"
+        ws.cell(row=r, column=16).font = BLUE
+        if row["book"] is not None:
+            ws.cell(row=r, column=17, value=row["book"])
+        ws.cell(row=r, column=20, value=row["model_src"]).font = GREY
+
+    last = len(out) + 1
+    wire(ws, 2, last, "Q", "O", "R", "S")
+    ws.cell(row=last + 2, column=1,
+            value="'On' counts how many boards carry this line. It is NOT three models "
+                  "agreeing: a streak and a mismatch are both driven partly by how many "
+                  "corners the team wins, so a strong corner side appears on both "
+                  "whoever it plays. The genuinely additional columns are 'Opp concedes' "
+                  "— measured on the OPPONENT's games — and 'Opp 1H', which is about game "
+                  "state rather than either side's corner count. A row on one board with "
+                  "a leaky opponent can be a better bet than a row on three without "
+                  "one.").font = WARN
+    ws.cell(row=last + 3, column=1,
+            value="Team OVER lines only, because the chase and mismatch boards produce "
+                  "nothing else. Every other kind of streak is on the Streaks "
+                  "sheet.").font = WARN
+    widths(ws, {"A": 17, "B": 18, "C": 36, "D": 20, "E": 7, "F": 6, "G": 6, "H": 24,
+                "I": 8, "J": 9, "K": 15, "L": 8, "M": 9, "N": 8, "O": 8, "P": 7,
+                "Q": 8, "R": 9, "S": 13, "T": 11})
+    return len(out)
+
+
 def build(data, out_path, generated=None):
     generated = generated or datetime.now(timezone.utc)
     wb = Workbook()
     readme(wb, data, generated)
+    combined = combined_sheet(wb, data)
     streaks_sheet(wb, data.get("streaks") or [])
     mismatches_sheet(wb, data.get("mismatches") or [])
     chase_sheet(wb, data.get("chase") or [])
     wb.save(out_path)
-    return {"streaks": len(data.get("streaks") or []),
+    return {"combined": combined,
+            "streaks": len(data.get("streaks") or []),
             "mismatches": len(data.get("mismatches") or []),
             "chase": len(data.get("chase") or [])}
 

@@ -4,9 +4,12 @@ import { ChevronLeft, ChevronRight, CalendarDays } from "lucide-react";
 import { api } from "@/lib/api";
 import { withFlag } from "@/lib/countryFlag";
 import { kickoffTime } from "@/lib/kickoff";
+import TeamStar from "@/components/TeamStar";
+import { useAuth } from "@/context/AuthContext";
 import {
   WEEKDAYS, PAST, TODAY, UNKNOWN, OUTSIDE,
   buildMonth, monthLabel, shiftMonth, canShift, mineLabel, dayLabel, emptyNote,
+  mineDetail,
 } from "@/lib/calendarMonth";
 
 /**
@@ -39,6 +42,14 @@ export default function Calendar() {
   const [err, setErr] = useState("");
   const [loading, setLoading] = useState(true);
   const [picked, setPicked] = useState(null);
+  const [find, setFind] = useState("");
+  const { starredTeams, trackedTeams } = useAuth();
+
+  // FOLLOWING A TEAM HAS TO REDRAW THE MONTH. The bell below the grid is the whole point
+  // of this page's empty state, and a star that leaves the grid exactly as it was reads
+  // as a control that did nothing. Keyed on the ids rather than on the Set, which is
+  // mutated in place, and not on size, which is unchanged by a follow-then-unfollow.
+  const mineKey = [...starredTeams, "|", ...trackedTeams].sort().join(",");
 
   useEffect(() => {
     let live = true;
@@ -51,7 +62,7 @@ export default function Calendar() {
       .catch((e) => { if (live) setErr(e?.message || "Could not load the calendar"); })
       .finally(() => { if (live) setLoading(false); });
     return () => { live = false; };
-  }, [month, source]);
+  }, [month, source, mineKey]);
 
   const built = useMemo(() => buildMonth(data || {}), [data]);
   const day = useMemo(
@@ -96,7 +107,8 @@ export default function Calendar() {
           </button>
         </div>
         <div className="flex gap-1 text-xs">
-          {[["all", "All mine"], ["favourites", "Favourites"], ["tracking", "Tracking"]]
+          {[["all", "All mine"], ["favourites", "Favourites"], ["tracking", "Tracking"],
+            ["saved", "Saved games"]]
             .map(([v, l]) => (
               <button key={v} type="button" onClick={() => setSource(v)}
                 className={`rounded-full px-3 py-1 border transition-colors ${
@@ -181,9 +193,8 @@ export default function Calendar() {
                       {g.home_name} v {g.away_name}
                     </span>
                     <span className="block truncate text-[11px] text-muted-foreground">
-                      {withFlag(g.league_id, g.league_name)}
-                      {" · "}{g.team} {g.side === "home" ? "at home" : "away"}
-                      {g.list === "tracking" ? " · tracking" : ""}
+                      {[withFlag(g.league_id, g.league_name), mineDetail(g)]
+                        .filter(Boolean).join("  ·  ")}
                     </span>
                   </span>
                   <span className="shrink-0 text-xs text-muted-foreground">
@@ -198,6 +209,47 @@ export default function Calendar() {
             <p className="mt-4 text-xs text-muted-foreground" data-testid="cal-empty">
               {emptyNote(data, built.label)}
             </p>
+          )}
+
+          {/* THE PAGE FIXES ITS OWN EMPTY STATE. Before this, an empty calendar's only
+              advice was to go and find a bell somewhere else on the site — and the one
+              place it is NOT is the page telling you to look for it. These are the sides
+              playing this month, so following one changes the grid you are looking at. */}
+          {built.mineCount === 0 && (data?.playing?.length || 0) > 0 && (
+            <div className="mt-3 rounded-xl border border-border bg-card p-3"
+              data-testid="cal-follow">
+              <div className="mb-2 flex flex-wrap items-baseline justify-between gap-2">
+                <p className="text-xs font-semibold">Follow a team playing this month</p>
+                <input value={find} onChange={(e) => setFind(e.target.value)}
+                  placeholder="Find a team…" aria-label="Find a team"
+                  className="min-w-0 flex-1 rounded-lg border border-border bg-transparent
+                    px-2 py-1 text-xs sm:max-w-[14rem]" />
+              </div>
+              <div className="flex flex-col gap-0.5">
+                {data.playing
+                  .filter((t) => t.name.toLowerCase().includes(find.trim().toLowerCase()))
+                  .slice(0, 12)
+                  .map((t) => (
+                    <div key={t.team_id}
+                      className="flex items-baseline justify-between gap-3 py-0.5">
+                      <span className="min-w-0">
+                        <span className="truncate text-sm">{t.name}</span>
+                        <span className="ml-2 text-[11px] text-muted-foreground">
+                          {withFlag(t.league_id, t.league_name)}
+                          {"  ·  "}{t.games} game{t.games === 1 ? "" : "s"}
+                        </span>
+                      </span>
+                      <TeamStar teamId={t.team_id} teamName={t.name} />
+                    </div>
+                  ))}
+              </div>
+              {/* Twelve at a time: the list is the month's whole card and scrolling it is
+                  not the job — typing is. Said plainly so a missing side looks like a
+                  filter to use rather than a team the site does not have. */}
+              <p className="mt-2 text-[11px] text-muted-foreground">
+                Showing up to 12 — type to find any side playing this month.
+              </p>
+            </div>
           )}
         </>
       )}

@@ -17,6 +17,19 @@ than redrawn beside it. `mark.html` holds the geometry; `render.cjs` renders it.
 | `x-header-3-0.png` | X header (1500×500) |
 | `relaunch-card-3-0.png` | square relaunch card (1080×1080), for posting |
 
+## The slogan
+
+**Cornered the market.** It carries the header on its own, which is why the header's old
+explanatory subtitle came off rather than moving down: a slogan and a sentence of
+explanation in the same band are two voices, and on X the bio sits directly under the
+header to do the explaining.
+
+On the card it is muted and under the wordmark, so the four features stay the loudest
+thing below it — a relaunch card's job is what changed, not the tagline.
+
+It is not on the avatar or the channel photo. At 40px it would be the old logo's mistake
+again, and those already carry the version.
+
 ## Why 3.0 and not 7.0
 
 **There are two lineages, and only one of them is this one.** The original project was a

@@ -24,7 +24,10 @@
   #header{width:1500px;height:500px;display:flex;align-items:center;
           padding:70px 96px 70px 420px}
   #header .word{font-size:104px}
-  #header .sub{font-size:28px;margin-top:22px}
+  /* Set as a line of its own, not as small print: near-white at 40px, where the old
+     muted 28px subtitle read as a caption under the name. */
+  #header .slogan{font-size:40px;font-weight:600;letter-spacing:-.01em;margin-top:26px;
+                  color:var(--ball)}
 
   /* --- Square announcement card: 1080x1080 -------------------------------------------- */
   #card{width:1080px;height:1080px;padding:96px;display:flex;flex-direction:column;
@@ -37,13 +40,15 @@
            align-items:flex-start}
   #card li::before{content:"";width:18px;height:18px;margin-top:17px;flex:0 0 auto;
                    background:var(--accent);border-radius:3px}
+  #card .slogan{color:var(--muted);font-size:40px;font-weight:600;margin-top:26px;
+                letter-spacing:-.01em}
   #card .foot{color:var(--muted);font-size:30px;font-weight:500}
 </style>
 
 <div class="stage" id="header">
   <div>
     <div class="word">The Corner<br>Model <span class="ver">[<span class="v">7.0</span>]</span></div>
-    <div class="sub">Corner models, priced against every book — fair odds, and the edge on them.</div>
+    <div class="slogan">Cornered the market.</div>
   </div>
 </div>
 
@@ -56,6 +61,7 @@
   <div>
     <div class="kicker">Relaunch</div>
     <div class="word" style="margin-top:28px">The Corner<br>Model <span class="ver">[<span class="v">7.0</span>]</span></div>
+    <div class="slogan">Cornered the market.</div>
   </div>
   <ul>
     <li>Every book's price, best first</li>

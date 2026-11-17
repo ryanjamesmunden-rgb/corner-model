@@ -54,8 +54,25 @@ load_dotenv(ROOT / ".env")
 #:
 #: So a wider window does not buy earlier prices, it buys empty answers at one API call
 #: each. Sixty of them, in the run that produced this comment.
+#:
+#: THAT WAS TRUE WHEN IT WAS MEASURED AND IT IS NOT TRUE NOW. Re-measured on 17 Nov 2026:
+#: a window pass over 100 fixtures spanning six days came back `priced: 83, unpriced: 17`,
+#: and the fixtures that priced included Saturday's — four days out — across the
+#: Bundesliga, 2. Bundesliga, La Liga and Serie B. The books have started opening corner
+#: markets several days ahead of where they used to.
+#:
+#: DEFAULT_DAYS STAYS AT 1 ANYWAY, because this constant governs the pass that runs every
+#: hour, and widening THAT would re-pay for the same fixture a dozen times a day. Reaching
+#: further ahead is a different job with a different rule — fetch_ahead below prices only
+#: what has never been priced — and it runs once a day on its own schedule.
 DEFAULT_DAYS = 1
 DEFAULT_LIMIT = 40
+
+#: How far ahead the once-a-day pass reaches, and where it starts. It begins beyond the
+#: hourly pass's reach so the two do not pay for the same fixture on the same day.
+AHEAD_FROM_DAYS = 1
+AHEAD_DAYS = 6
+AHEAD_LIMIT = 120
 
 #: A price older than this is a memory of a price. The board should age it out rather than
 #: rank on it; this is the same reasoning as set_odds stamping `updated_at`.
@@ -102,6 +119,89 @@ async def fetch_one(hc, db, fx, api_fid, write=True):
     return {"fixture_id": fx["fixture_id"], "priced": len(doc["odds"]),
             "books": len(doc["bookmakers"]), "skipped": doc["skipped_total"],
             "keys": sorted(doc["odds"])}
+
+
+async def unpriced_ahead(db, days: int, from_days: int, leagues, limit: int):
+    """Fixtures further out than the hourly pass reaches that have NO price yet.
+
+    THE FILTER IS WHAT MAKES THIS AFFORDABLE. `upcoming` takes the soonest N whatever
+    their state, which is right for a pass that runs every hour against games about to be
+    bet — it is re-reading prices that move. Reaching six days out on that rule would
+    re-pay for every fixture once a day until it kicked off, for a price that had not
+    changed since the morning.
+
+    This asks a different question: which of these has nobody captured AT ALL. The answer
+    shrinks to nothing as a week fills in, so the first run of a week is expensive and
+    every run after it is nearly free — and a market that opens on Wednesday is picked up
+    on Wednesday rather than on Friday night.
+
+    AN EMPTY DOCUMENT COUNTS AS UNPRICED. fetch_one writes nothing when no bookmaker
+    quotes the fixture, but a quote carrying no usable corner line does write a doc with
+    an empty `odds` map. Treating that as "done" would mean never looking again at exactly
+    the fixtures whose market had not opened yet, which is the thing this exists to catch.
+    """
+    now = _now()
+    lo = (now + timedelta(days=from_days)).isoformat()
+    hi = (now + timedelta(days=days)).isoformat()
+    q = {"date": {"$gte": lo, "$lte": hi}}
+    if leagues:
+        q["league_id"] = {"$in": list(leagues)}
+    rows = await db.fixtures.find(q, {"_id": 0}).sort("date", 1).to_list(limit * 6)
+    if not rows:
+        return [], 0
+    ids = [fx["fixture_id"] for fx in rows]
+    have = set()
+    async for doc in db.odds_feed.find({"fixture_id": {"$in": ids}},
+                                       {"_id": 0, "fixture_id": 1, "odds": 1}):
+        if doc.get("odds"):
+            have.add(doc["fixture_id"])
+    out = []
+    for fx in rows:
+        if fx["fixture_id"] in have:
+            continue
+        api_fid = fx.get("api_fixture_id") or str(fx.get("fixture_id", "")).split("-")[-1]
+        if not str(api_fid).isdigit():
+            continue
+        out.append((fx, int(api_fid)))
+        if len(out) >= limit:
+            break
+    return out, len(have)
+
+
+async def fetch_ahead(db, days: int = AHEAD_DAYS, from_days: int = AHEAD_FROM_DAYS,
+                      limit: int = AHEAD_LIMIT, leagues=None) -> dict:
+    """Price the week ahead, once, as each market opens.
+
+    WHAT THIS BUYS. Until it existed the board could not show a weekend game until the
+    hourly pass reached it, about a day out — so the only prices anybody saw were the ones
+    left after the market had already moved. This reads them when they open.
+
+    `skipped_priced` is reported because it is the number that says the rule is working:
+    it should climb through the week while `calls` falls towards nothing.
+    """
+    todo, already = await unpriced_ahead(db, days, from_days, leagues, limit)
+    out = {"fixtures": len(todo), "calls": 0, "priced": 0, "unpriced": 0, "errors": 0,
+           "lines": 0, "capped": len(todo) >= limit, "skipped_priced": already,
+           "from_days": from_days, "days": days}
+    if not todo:
+        return out
+    async with httpx.AsyncClient() as hc:
+        for fx, fid in todo:
+            # Counted before the call, for the reason fetch_window's loop explains: a call
+            # that is made is a call that is charged, whatever happens to the answer.
+            out["calls"] += 1
+            try:
+                r = await fetch_one(hc, db, fx, fid)
+            except Exception as e:
+                out["errors"] += 1
+                out.setdefault("last_error", f"{type(e).__name__}: {e}"[:200])
+                continue
+            if r["priced"]:
+                out["priced"] += 1
+                out["lines"] += r["priced"]
+            else:
+                out["unpriced"] += 1
+    return out
 
 
 #: How close to kick-off a capture counts as the closing price. The real closing line is

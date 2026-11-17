@@ -11,6 +11,31 @@ than redrawn beside it. `mark.html` holds the geometry; `render.cjs` renders it.
 | `corner-model-telegram-loop.mp4` | Telegram profile or channel photo, animated (800×800, 4s) |
 | `corner-model-loop.gif` | the same loop as a GIF (480×480), for anywhere that wants one |
 | `corner-model-avatar-1000.png` | the static mark at 1000×1000, for anything else |
+| `x-header-3-0.png` | X header (1500×500) |
+| `relaunch-card-3-0.png` | square relaunch card (1080×1080), for posting |
+
+## Why 3.0 and not 7.0
+
+**There are two lineages, and only one of them is this one.** The original project was a
+spreadsheet, and it reached 6.0 on its own count before it stopped — the old black-circle
+logo reads `THE CORNER MODEL [6.0]`. The website restarted the count: 1.0, then 2.0, and
+this is 3.0. So 3.0 is a step up, not a step back, and anyone reading it against the
+spreadsheet's 6.0 is comparing two different things.
+
+Worth knowing because the mistake is easy to make from the artwork alone: the only
+surviving picture of the old project carries a HIGHER number than the current one.
+
+## Why the version is not on the avatar
+
+It is on the header and on the card, where text is read at size, and nowhere near the
+32px circle. The old logo put the whole wordmark inside the avatar, and at 32px — a reply
+row, a member list — it collapses into a dark smudge with a grey band across it. The mark
+is still a corner and a ball at that size. Render `legib.html` beside the old file to see
+the two columns side by side.
+
+The old file has a second avatar problem: it is a JPG on a white grid background with the
+black circle inscribed in the square, so a platform's circular crop leaves a white halo
+around it on any dark timeline.
 
 **Telegram's animated photo takes the MP4, not the GIF.** Setting a profile or channel
 photo, Telegram accepts a video and will not take a GIF file — upload it the way you'd

@@ -136,6 +136,25 @@ jobs:
           echo "file=$out" >> "$GITHUB_OUTPUT"
           echo "rows=$rows" >> "$GITHUB_OUTPUT"
 
+      # THE SHEET'S INPUT, IN THE LOG. The workbook only exists as an artifact, served
+      # from a storage host plenty of things cannot reach — a locked-down network, a
+      # phone, an agent in a sandbox. All of them can read a run log, which is the
+      # reasoning results_reel.yml already gives for printing its render input.
+      #
+      # GZIPPED, unlike the other two that do this. A render arg is a few kilobytes; this
+      # is three whole boards and would be a quarter of a megabyte of base64 on one line.
+      # Rebuild with:  base64 -d < x.b64 | gunzip > rows.json
+      #
+      # Nothing secret rides in it: these are the same boards the site serves, and the
+      # tables printed further down this run repeat them. The token stays in the fetch.
+      - name: Print the sheet input
+        if: steps.sheet.outputs.file != ''
+        run: |
+          echo "----- rows.json (gzip+base64) -----"
+          gzip -9 -c rows.json | base64 -w0
+          echo
+          echo "----- end -----"
+
       - name: Attach it to the run
         if: steps.sheet.outputs.file != ''
         uses: actions/upload-artifact@v4

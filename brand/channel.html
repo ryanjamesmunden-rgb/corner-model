@@ -1,0 +1,97 @@
+<!doctype html><meta charset="utf-8">
+<style>html,body{margin:0;background:#000}canvas{display:block}
+/* Pull the face in so canvas has it rasterised before the first frame is drawn. */
+.pre{font-family:"Inter Display";font-weight:900;position:absolute;left:-9999px}</style>
+<div class="pre">3.0</div>
+<canvas id="c"></canvas>
+<script>
+// The channel photo: the same mark as the X avatar, with the version under it.
+//
+// WHY THE VERSION WORKS HERE AND NOT ON THE OLD LOGO. The old one put the whole wordmark
+// in the circle — twenty-odd characters that go to mush by 32px. "3.0" is three glyphs,
+// so it can be set large enough to survive a chat list. The rule was never "no text on an
+// avatar", it was "no text you cannot set large".
+const S = 512;
+const BG = "#0B0F14", ACCENT = "#14DBF5", BALL = "#F3F5F7";
+
+// THE MARK GIVES UP ROOM FOR THE VERSION rather than the version squeezing into a gap.
+// Dropped to 0.80 and lifted 50px, which clears a full-width band at the bottom — so the
+// digits are set at 130px instead of wedged into the 160px notch beside the wedge.
+const SCALE = 0.80, LIFT = 50;
+const SWEEP_END = 0.55, BALL_AT = 0.62, BALL_WIDTH = 0.22;
+
+const ease = (x) => x * x * (3 - 2 * x);
+const clamp01 = (x) => (x < 0 ? 0 : x > 1 ? 1 : x);
+
+function draw(ctx, t, version, versionColor) {
+  ctx.fillStyle = BG;
+  ctx.fillRect(0, 0, S, S);
+
+  ctx.save();
+  ctx.translate(S / 2, S / 2);
+  ctx.scale(SCALE, SCALE);
+  ctx.translate(-S / 2, -S / 2);
+  ctx.translate(0, -LIFT / SCALE);
+
+  ctx.fillStyle = ACCENT;
+  ctx.beginPath();
+  ctx.moveTo(112, 400);
+  ctx.arc(112, 400, 230, -Math.PI / 2, 0);
+  ctx.closePath();
+  ctx.fill();
+
+  const q = clamp01(t / SWEEP_END);
+  const amt = t < SWEEP_END ? Math.sin(Math.PI * q) : 0;
+  if (amt > 0.001) {
+    ctx.save();
+    ctx.clip();
+    const ang = -Math.PI / 2 + ease(q) * (Math.PI / 2);
+    const cx = 112 + Math.cos(ang) * 230, cy = 400 + Math.sin(ang) * 230;
+    const g = ctx.createRadialGradient(cx, cy, 0, cx, cy, 200);
+    g.addColorStop(0, `rgba(255,255,255,${0.55 * amt})`);
+    g.addColorStop(0.45, `rgba(255,255,255,${0.14 * amt})`);
+    g.addColorStop(1, "rgba(255,255,255,0)");
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, S, S);
+    ctx.restore();
+  }
+
+  const d = Math.abs(t - BALL_AT) / BALL_WIDTH;
+  const beat = d >= 1 ? 0 : Math.cos(d * Math.PI / 2) ** 2;
+  ctx.save();
+  if (beat > 0.001) {
+    ctx.shadowColor = `rgba(20,219,245,${0.7 * beat})`;
+    ctx.shadowBlur = 38 * beat;
+  }
+  ctx.fillStyle = BALL;
+  ctx.beginPath();
+  ctx.arc(360, 168 - beat * 4, 46, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.restore();
+  ctx.restore();
+
+  // THE VERSION IS STATIC. It is the one piece of information on the photo, and a number
+  // that fades or moves is a number somebody has to wait to read.
+  if (version) {
+    ctx.save();
+    ctx.font = `900 130px "Inter Display", Inter, sans-serif`;
+    ctx.textAlign = "center";
+    ctx.textBaseline = "alphabetic";
+    ctx.letterSpacing = "-4px";
+    ctx.fillStyle = versionColor;
+    ctx.fillText(version, S / 2, 445);
+    ctx.restore();
+  }
+}
+
+window.__frame = (size, t, version, versionColor) => {
+  const c = document.getElementById("c");
+  c.width = c.height = size;
+  const ctx = c.getContext("2d");
+  ctx.save();
+  ctx.scale(size / S, size / S);
+  draw(ctx, t, version, versionColor || "#F3F5F7");
+  ctx.restore();
+  return c.toDataURL("image/png");
+};
+</script>

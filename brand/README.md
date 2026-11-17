@@ -8,8 +8,11 @@ than redrawn beside it. `mark.html` holds the geometry; `render.cjs` renders it.
 | File | Where |
 |---|---|
 | `corner-model-x-avatar-400.png` | X / Twitter account photo (400×400) |
-| `corner-model-telegram-loop.mp4` | Telegram profile or channel photo, animated (800×800, 4s) |
-| `corner-model-loop.gif` | the same loop as a GIF (480×480), for anywhere that wants one |
+| `corner-model-channel-loop.mp4` | **Telegram channel photo**, animated, with `3.0` (800×800, 4s) |
+| `corner-model-channel-400.png` | the same, still, if a video is not wanted |
+| `corner-model-telegram-loop.mp4` | the plain mark, animated, no version — for a personal profile |
+| `corner-model-loop.gif` | the plain loop as a GIF (480×480), for anywhere that wants one |
+| `corner-model-channel-loop.gif` | the `3.0` loop as a GIF |
 | `corner-model-avatar-1000.png` | the static mark at 1000×1000, for anything else |
 | `x-header-3-0.png` | X header (1500×500) |
 | `relaunch-card-3-0.png` | square relaunch card (1080×1080), for posting |
@@ -25,13 +28,25 @@ spreadsheet's 6.0 is comparing two different things.
 Worth knowing because the mistake is easy to make from the artwork alone: the only
 surviving picture of the old project carries a HIGHER number than the current one.
 
-## Why the version is not on the avatar
+## Text on a photo this small
 
-It is on the header and on the card, where text is read at size, and nowhere near the
-32px circle. The old logo put the whole wordmark inside the avatar, and at 32px — a reply
-row, a member list — it collapses into a dark smudge with a grey band across it. The mark
-is still a corner and a ball at that size. Render `legib.html` beside the old file to see
-the two columns side by side.
+The rule is not "no text on an avatar", it is **no text you cannot set large**. The old
+logo put twenty-odd characters inside the circle, and at 32px — a reply row, a member
+list — they collapse into a dark smudge with a grey band across them. `legib.html`
+renders that beside the mark if you want to see it.
+
+`3.0` is three glyphs, so it can be set at 130px and still be read in a chat list. The
+channel photo makes room for it rather than squeezing it into a gap: the mark drops to
+0.80 and lifts 50px, which clears a full-width band at the bottom. Squeezed into the
+notch beside the wedge the digits would have had about 160px, and that is the version
+back at the size that fails.
+
+Set in the ball's near-white rather than the accent cyan: 15.9:1 against the ground
+against roughly 10:1, which is what decides it at 40px. It also leaves cyan meaning one
+thing. Both were rendered at 140 / 54 / 40px before picking.
+
+**It does not animate.** The version is the one piece of information on the photo, and a
+number that fades in is a number somebody has to wait to read.
 
 The old file has a second avatar problem: it is a JPG on a white grid background with the
 black circle inscribed in the square, so a platform's circular crop leaves a white halo

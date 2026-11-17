@@ -1,0 +1,73 @@
+<!doctype html><meta charset="utf-8">
+<style>
+  /* Brand ground, accent and ball lifted from storyImage.js and favicon.svg so the
+     relaunch set matches the site rather than approximating it. */
+  :root{--bg:#0B0F14;--accent:#14DBF5;--ball:#F3F5F7;--card:#11161D;--muted:#98A4B3}
+  *{box-sizing:border-box}
+  body{margin:0;background:#222;font-family:"Inter Display",Inter,system-ui,sans-serif}
+  .stage{background:var(--bg);color:var(--ball);position:relative;overflow:hidden}
+
+  /* THE MARK, as an inline SVG rather than the PNG: these render at 1500px wide and a
+     400px bitmap scaled up would soften exactly the edge the logo is made of. */
+  .mark{display:block}
+
+  .word{font-weight:900;letter-spacing:-.022em;line-height:.92;text-transform:uppercase}
+  .ver{color:var(--accent)}
+  .sub{color:var(--muted);font-weight:500;letter-spacing:.01em}
+
+  /* --- X header: 1500x500 ------------------------------------------------------------
+     X lays the avatar over the BOTTOM-LEFT of the header and crops the top and bottom on
+     narrow screens. So nothing load-bearing goes in the left 400px or within 60px of the
+     top and bottom edges — the content sits in the middle band, right of the avatar. */
+  /* Left 400px kept clear for the avatar X lays over it; 70px top and bottom because X
+     crops the header's height on narrow screens. */
+  #header{width:1500px;height:500px;display:flex;align-items:center;
+          padding:70px 96px 70px 420px}
+  #header .word{font-size:104px}
+  /* Set as a line of its own, not as small print: near-white at 40px, where the old
+     muted 28px subtitle read as a caption under the name. */
+  #header .slogan{font-size:40px;font-weight:600;letter-spacing:-.01em;margin-top:26px;
+                  color:var(--ball)}
+
+  /* --- Square announcement card: 1080x1080 -------------------------------------------- */
+  #card{width:1080px;height:1080px;padding:96px;display:flex;flex-direction:column;
+        justify-content:space-between}
+  #card .word{font-size:104px}
+  #card .kicker{color:var(--accent);font-size:30px;font-weight:800;letter-spacing:.14em;
+                text-transform:uppercase}
+  #card ul{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:22px}
+  #card li{font-size:38px;font-weight:600;line-height:1.3;display:flex;gap:26px;
+           align-items:flex-start}
+  #card li::before{content:"";width:18px;height:18px;margin-top:17px;flex:0 0 auto;
+                   background:var(--accent);border-radius:3px}
+  #card .slogan{color:var(--muted);font-size:40px;font-weight:600;margin-top:26px;
+                letter-spacing:-.01em}
+  #card .foot{color:var(--muted);font-size:30px;font-weight:500}
+</style>
+
+<div class="stage" id="header">
+  <div>
+    <div class="word">The Corner<br>Model <span class="ver">[<span class="v">7.0</span>]</span></div>
+    <div class="slogan">Cornered the market.</div>
+  </div>
+</div>
+
+<div class="stage" id="card">
+  <svg class="mark" width="150" height="150" viewBox="0 0 512 512"
+       style="position:absolute;right:96px;top:96px">
+    <path d="M112 170 A230 230 0 0 1 342 400 L112 400 Z" fill="#14DBF5"/>
+    <circle cx="360" cy="168" r="46" fill="#F3F5F7"/>
+  </svg>
+  <div>
+    <div class="kicker">Relaunch</div>
+    <div class="word" style="margin-top:28px">The Corner<br>Model <span class="ver">[<span class="v">7.0</span>]</span></div>
+    <div class="slogan">Cornered the market.</div>
+  </div>
+  <ul>
+    <li>Every book's price, best first</li>
+    <li>Prices caught days before they're cut</li>
+    <li>A month calendar for your teams</li>
+    <li>Fair odds and the edge, every fixture</li>
+  </ul>
+  <div class="foot">thecornermodel.com &nbsp;·&nbsp; 18+ &nbsp;·&nbsp; begambleaware.org</div>
+</div>

@@ -6,7 +6,7 @@ import { withFlag } from "@/lib/countryFlag";
 import { kickoffTime } from "@/lib/kickoff";
 import {
   WEEKDAYS, PAST, TODAY, UNKNOWN, OUTSIDE,
-  buildMonth, monthLabel, shiftMonth, canShift, mineLabel,
+  buildMonth, monthLabel, shiftMonth, canShift, mineLabel, dayLabel,
 } from "@/lib/calendarMonth";
 
 /**
@@ -162,7 +162,7 @@ export default function Calendar() {
           {day && (
             <div className="mt-4 rounded-xl border border-border bg-card p-3"
               data-testid="cal-detail">
-              <p className="mb-2 text-sm font-semibold">{day.key}</p>
+              <p className="mb-2 text-sm font-semibold">{dayLabel(day.key)}</p>
               {day.mine.length === 0 && (
                 <p className="text-xs text-muted-foreground">
                   {day.state === UNKNOWN

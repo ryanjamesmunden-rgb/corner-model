@@ -1,0 +1,98 @@
+<!doctype html><meta charset="utf-8">
+<style>html,body{margin:0;background:#000}canvas{display:block}</style>
+<canvas id="c"></canvas>
+<script>
+// The mark, redrawn on canvas from favicon.svg's own geometry so the animated version and
+// the static one are the same picture rather than two drawings of one idea.
+//
+//   ground  #0B0F14      wedge  #14DBF5      ball  #F3F5F7
+//   wedge: centre (112,400) r 230, swept from straight up round to the right
+//   ball:  (360,168) r 46
+const S = 512;
+const BG = "#0B0F14", ACCENT = "#14DBF5", BALL = "#F3F5F7";
+
+// SCALED UP FROM THE FAVICON, because a profile photo is not a favicon. favicon.svg keeps
+// the mark inside a safe area so Android's circular mask cannot clip it — about 57% of the
+// frame. Every platform here masks to a circle too, but a circle crops the CORNERS, and
+// this mark's furthest point (the wedge's bottom-left) sits 204px from centre against a
+// 256px radius. There is room, and the mark needs it: an avatar is read at 40px in a
+// timeline, smaller than the favicon ever is. 1.12 takes the furthest point to 228 — still
+// 28px of clearance, so nothing is cut on any of them.
+const SCALE = 1.12;
+
+// WHERE THE LOOP SPENDS ITS TIME. The sweep runs in the first 55%, the ball answers it, and
+// the last quarter is STILL — at which point the frame is exactly the static avatar.
+// A profile photo is mostly seen paused (a thumbnail, a post author line, a notification),
+// so the resting frame has to be the logo, not an arbitrary moment mid-animation.
+const SWEEP_END = 0.55, BALL_AT = 0.62, BALL_WIDTH = 0.22;
+
+const ease = (x) => x * x * (3 - 2 * x);
+const clamp01 = (x) => (x < 0 ? 0 : x > 1 ? 1 : x);
+
+function draw(ctx, t) {
+  ctx.fillStyle = BG;
+  ctx.fillRect(0, 0, S, S);
+
+  ctx.save();
+  ctx.translate(S / 2, S / 2);
+  ctx.scale(SCALE, SCALE);
+  ctx.translate(-S / 2, -S / 2);
+
+  // The wedge, FILLED rather than stroked — see the note in favicon.svg: drawn as a ring it
+  // floated, read as a crescent, and the corner went out of it.
+  ctx.fillStyle = ACCENT;
+  ctx.beginPath();
+  ctx.moveTo(112, 400);
+  ctx.arc(112, 400, 230, -Math.PI / 2, 0);
+  ctx.closePath();
+  ctx.fill();
+
+  // THE SWEEP, clipped to the wedge so it can only ever light the mark rather than smear
+  // across the ground. Its opacity rises and falls to nothing inside the window, which is
+  // what makes the rest state identical to the static logo instead of merely close to it.
+  const q = clamp01(t / SWEEP_END);
+  const amt = t < SWEEP_END ? Math.sin(Math.PI * q) : 0;
+  if (amt > 0.001) {
+    ctx.save();
+    ctx.clip();
+    const ang = -Math.PI / 2 + ease(q) * (Math.PI / 2);
+    const cx = 112 + Math.cos(ang) * 230, cy = 400 + Math.sin(ang) * 230;
+    const g = ctx.createRadialGradient(cx, cy, 0, cx, cy, 200);
+    g.addColorStop(0, `rgba(255,255,255,${0.55 * amt})`);
+    g.addColorStop(0.45, `rgba(255,255,255,${0.14 * amt})`);
+    g.addColorStop(1, "rgba(255,255,255,0)");
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, S, S);
+    ctx.restore();
+  }
+
+  // The ball answers the sweep rather than moving with it: the light runs up the corner,
+  // and the ball pings once it arrives. Lift of four pixels — at 40px anything more is a
+  // wobble, and a logo that wobbles looks broken rather than animated.
+  const d = Math.abs(t - BALL_AT) / BALL_WIDTH;
+  const beat = d >= 1 ? 0 : Math.cos(d * Math.PI / 2) ** 2;
+  ctx.save();
+  if (beat > 0.001) {
+    ctx.shadowColor = `rgba(20,219,245,${0.7 * beat})`;
+    ctx.shadowBlur = 38 * beat;
+  }
+  ctx.fillStyle = BALL;
+  ctx.beginPath();
+  ctx.arc(360, 168 - beat * 4, 46, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.restore();
+
+  ctx.restore();
+}
+
+window.__frame = (size, t) => {
+  const c = document.getElementById("c");
+  c.width = c.height = size;
+  const ctx = c.getContext("2d");
+  ctx.save();
+  ctx.scale(size / S, size / S);
+  draw(ctx, t);
+  ctx.restore();
+  return c.toDataURL("image/png");
+};
+</script>

@@ -142,6 +142,26 @@ export const monthLabel = (month) => {
   return i >= 0 && i < 12 ? `${MONTHS[i]} ${m[1]}` : "";
 };
 
+/**
+ * "Sat 21 November" — the day a square stands for, for the panel under the grid.
+ *
+ * BUILT FROM THE KEY'S OWN DIGITS, never by parsing it into a Date and formatting that.
+ * These keys are UK calendar days: the backend builds them in Europe/London so a 20:00
+ * kick-off cannot land on the wrong square. `new Date("2026-11-21")` is UTC midnight, so
+ * for any reader west of London it formats as the 20th — and the panel would then name a
+ * different day from the square the reader just tapped.
+ *
+ * No year, because the heading above the grid already carries it.
+ */
+export const dayLabel = (key) => {
+  const p = parseDay(key);
+  if (!p) return "";
+  // getUTCDay on a UTC-constructed date: no local zone involved either way. Sunday is 0
+  // there and last here, so shift by six.
+  const weekday = WEEKDAYS[(new Date(Date.UTC(p.y, p.m - 1, p.d)).getUTCDay() + 6) % 7];
+  return `${weekday} ${p.d} ${MONTHS[p.m - 1]}`;
+};
+
 /** The month before or after, as "YYYY-MM". */
 export const shiftMonth = (month, by) => {
   const m = /^(\d{4})-(\d{2})$/.exec(String(month || ""));

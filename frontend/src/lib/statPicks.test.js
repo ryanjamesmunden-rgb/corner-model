@@ -1,5 +1,5 @@
 import {
-  MIN_PICK_ROWS, MAX_PICK_ROWS,
+  MIN_PICK_ROWS, MAX_PICK_ROWS, daysCovered,
   pickLine, pickCount, hitRate, pickEv, pickRow, fixtureHead,
   picksFrom, picksPost, statRule,
 } from "./statPicks";
@@ -244,5 +244,48 @@ describe("the post as text", () => {
   it("is nothing at all for no post", () => {
     expect(picksPost({ post: null })).toBe("");
     expect(picksPost({})).toBe("");
+  });
+});
+
+describe("a card that spans more than one day", () => {
+  // THE BUG THIS PINS. A six-day run produced "WEDNESDAY 18TH NOVEMBER" over a card whose
+  // next nine fixtures were on Saturday, and every row carried a bare time — eleven
+  // kick-offs wrong by three days for anyone pasting it into a channel.
+  const spread = data([
+    pick({ fixture_id: "a", kickoff: "2026-11-18T22:30:00+00:00" }),
+    pick({ fixture_id: "b", kickoff: "2026-11-21T15:00:00+00:00",
+           home_name: "Cambridge", away_name: "Stockport", team: "Cambridge" }),
+  ]);
+
+  it("knows which days it covers", () => {
+    expect(daysCovered(spread.picks)).toEqual(["2026-11-18", "2026-11-21"]);
+    expect(daysCovered([])).toEqual([]);
+  });
+
+  it("titles the card with a range, not with its first row", () => {
+    const post = picksFrom(spread);
+    expect(post.multiDay).toBe(true);
+    expect(post.days).toBe(2);
+    expect(post.day).toBe("Wednesday 18th November – Saturday 21st November");
+  });
+
+  it("puts the day on every fixture heading", () => {
+    const text = picksPost({ post: picksFrom(spread) });
+    expect(text).toContain("Cambridge v Stockport  ·  Saturday 21st November  ·  3:00pm");
+    expect(text).toContain("Wednesday 18th November  ·  10:30pm");
+  });
+
+  it("leaves a same-day card exactly as it was", () => {
+    // A one-day card says the date once at the top and a bare time reads correctly.
+    const oneDay = picksFrom(data([
+      pick({ fixture_id: "a" }),
+      pick({ fixture_id: "b", home_name: "MK Dons", away_name: "Burton",
+             team: "Burton" }),
+    ]));
+    expect(oneDay.multiDay).toBe(false);
+    expect(oneDay.day).toBe("Saturday 14th November");
+    const text = picksPost({ post: oneDay });
+    expect(text).toContain("💾 Save this before kick-off");
+    expect(text).not.toContain("Saturday 14th November  ·  10:30pm");
   });
 });

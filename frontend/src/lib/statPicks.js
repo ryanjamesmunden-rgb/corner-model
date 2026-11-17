@@ -86,13 +86,27 @@ export const pickRow = (p = {}) => {
           pickCount(p), pickEv(p)].filter(Boolean).join(" ");
 };
 
-/** "🇧🇷 Fortaleza v Vila Nova · 10:30pm" */
-export const fixtureHead = (p = {}) => {
+/**
+ * "🇧🇷 Fortaleza v Vila Nova · 10:30pm", or with the day when the card spans more than one.
+ *
+ * THE DAY IS CONDITIONAL AND THAT IS THE POINT. A same-day card says the date once at the
+ * top and a bare time under each fixture reads correctly. A card reaching across a week
+ * says "Wednesday 18th" at the top and then shows eleven rows, nine of which are on
+ * Saturday — which is not a formatting nicety, it is eleven kick-off times that are wrong
+ * by three days for anyone pasting it into a channel.
+ */
+export const fixtureHead = (p = {}, { withDay = false } = {}) => {
   const flag = flagFor(p.league_id) || countryCodeFor(p.league_id) || "";
-  const when = postTime(p.kickoff);
+  const when = [withDay ? postDate(p.kickoff) : "", postTime(p.kickoff)]
+    .filter(Boolean).join("  ·  ");
   const game = [p.home_name, p.away_name].filter(Boolean).join(" v ");
   return [flag, game].filter(Boolean).join(" ") + (when ? `  ·  ${when}` : "");
 };
+
+/** The distinct days a set of picks falls on, in order. */
+export const daysCovered = (rows = []) =>
+  [...new Set((rows || []).map((p) => String(p?.kickoff || "").slice(0, 10))
+    .filter(Boolean))].sort();
 
 const ms = (iso) => {
   const t = new Date(iso || "").getTime();
@@ -119,11 +133,16 @@ export const picksFrom = (data = {}, { max = MAX_PICK_ROWS } = {}) => {
   const kept = byRate.slice(0, Math.max(MIN_PICK_ROWS, max));
   kept.sort((a, b) => ms(a.kickoff) - ms(b.kickoff) || hitRate(b) - hitRate(a));
 
+  const days = daysCovered(kept);
+  const multiDay = days.length > 1;
   const games = [];
   for (const p of kept) {
     const last = games[games.length - 1];
     if (last && last.fixture_id === p.fixture_id) last.rows.push(p);
-    else games.push({ fixture_id: p.fixture_id, head: fixtureHead(p), rows: [p] });
+    else {
+      games.push({ fixture_id: p.fixture_id,
+                   head: fixtureHead(p, { withDay: multiDay }), rows: [p] });
+    }
   }
 
   const books = [...new Set(kept.map((p) => p.book).filter(Boolean))];
@@ -136,7 +155,13 @@ export const picksFrom = (data = {}, { max = MAX_PICK_ROWS } = {}) => {
     window: num(data.window),
     minHit: num(data.min_hit),
     minOdds: num(data.min_odds),
-    day: postDate(kept[0]?.kickoff),
+    // THE TITLE FOLLOWS THE CARD, NOT ITS FIRST ROW. Reading the date off kept[0] put
+    // "WEDNESDAY 18TH NOVEMBER" above a card whose next nine fixtures were on Saturday.
+    day: multiDay
+      ? `${postDate(kept[0]?.kickoff)} – ${postDate(kept[kept.length - 1]?.kickoff)}`
+      : postDate(kept[0]?.kickoff),
+    days: days.length,
+    multiDay,
     // The rule the card is filtered by, written out, because a list headed "stat picks"
     // with no rule under it is a tip sheet; with the rule under it, it is a filter anyone
     // can disagree with.
@@ -186,7 +211,8 @@ export const statRule = (data = {}) => {
 export const picksPost = ({ post = null, site = "", heading = "" } = {}) => {
   if (!post || !post.n) return "";
   const out = [heading || `${post.day ? post.day.toUpperCase() : "TODAY"} — CORNER STAT PICKS`,
-               "💾 Save this before kick-off", ""];
+               post.multiDay ? "💾 Save this — kick-off times below"
+                             : "💾 Save this before kick-off", ""];
   if (post.rule) out.push(`Every team corner line on the card ${post.rule}.`, "");
   post.games.forEach((g) => {
     out.push(g.head);

@@ -6,7 +6,7 @@ import { withFlag } from "@/lib/countryFlag";
 import { kickoffTime } from "@/lib/kickoff";
 import {
   WEEKDAYS, PAST, TODAY, UNKNOWN, OUTSIDE,
-  buildMonth, monthLabel, shiftMonth, canShift, mineLabel, dayLabel,
+  buildMonth, monthLabel, shiftMonth, canShift, mineLabel, dayLabel, emptyNote,
 } from "@/lib/calendarMonth";
 
 /**
@@ -195,9 +195,8 @@ export default function Calendar() {
           )}
 
           {built.mineCount === 0 && (
-            <p className="mt-4 text-xs text-muted-foreground">
-              No teams followed yet — star a few on a league page and they will show up
-              here.
+            <p className="mt-4 text-xs text-muted-foreground" data-testid="cal-empty">
+              {emptyNote(data, built.label)}
             </p>
           )}
         </>

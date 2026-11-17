@@ -1,7 +1,7 @@
 import {
   WEEKDAYS, PAST, TODAY, UPCOMING, UNKNOWN, OUTSIDE,
   parseDay, monthGrid, squareState, buildMonth, monthLabel, shiftMonth, canShift, mineLabel,
-  dayLabel,
+  dayLabel, emptyNote,
 } from "./calendarMonth";
 
 const game = (over = {}) => ({
@@ -217,6 +217,35 @@ describe("labels", () => {
     for (const key of monthGrid("2026-11")) {
       expect(dayLabel(key).split(" ")[1]).toBe(String(Number(key.slice(8, 10))));
     }
+  });
+
+  it("tells 'you follow nobody' apart from 'they are not playing'", () => {
+    // THE BUG. An empty grid used to print "No teams followed yet" either way — a claim
+    // about the account, made without looking at it. Someone following six sides was told
+    // to go and star some.
+    expect(emptyNote({ teams: [] }, "November 2026"))
+      .toMatch(/^No teams followed yet/);
+    expect(emptyNote({}, "November 2026")).toMatch(/^No teams followed yet/);
+
+    const note = emptyNote({ teams: [{ name: "Vila Nova" }, { name: "Fortaleza" }] },
+                           "November 2026");
+    expect(note).toBe("Following 2 teams (Vila Nova, Fortaleza) — none of them play "
+                      + "in November 2026.");
+  });
+
+  it("names a few of the followed teams rather than all of them", () => {
+    const teams = ["A", "B", "C", "D", "E"].map((name) => ({ name }));
+    expect(emptyNote({ teams }, "")).toBe("Following 5 teams (A, B, C and 2 more) — "
+                                          + "none of them play.");
+    expect(emptyNote({ teams: [{ name: "Solo" }] }, "")).toBe(
+      "Following 1 team (Solo) — none of them play.");
+  });
+
+  it("still counts a followed team the teams list has no name for", () => {
+    // A followed id missing from db.teams comes back nameless. It is still somebody's
+    // team and still the reason the grid is empty, so it must not vanish from the count.
+    expect(emptyNote({ teams: [{ team_id: "x" }, { team_id: "y" }] }, "November 2026"))
+      .toBe("Following 2 teams — none of them play in November 2026.");
   });
 
   it("parses a day key and refuses a bad one", () => {

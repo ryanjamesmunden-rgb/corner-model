@@ -162,6 +162,34 @@ export const dayLabel = (key) => {
   return `${weekday} ${p.d} ${MONTHS[p.m - 1]}`;
 };
 
+/**
+ * What to say when the month has none of your games on it.
+ *
+ * TWO COMPLETELY DIFFERENT FACTS, and the page used to state the first one whatever the
+ * truth was: "No teams followed yet". That is a claim about somebody's ACCOUNT, and the
+ * page had not looked — it was inferred from an empty grid. Follow six sides whose games
+ * are not matching and it tells you that you follow none, which sends you off to star
+ * teams you already have.
+ *
+ * The endpoint has always sent `teams`, so the two states are there to be told apart:
+ * nobody followed, versus followed and not playing. The second names them, because if
+ * those sides obviously DO play this month then the fault is in the matching, and the
+ * page has just said so instead of hiding it.
+ */
+export const emptyNote = (data = {}, label = "") => {
+  const teams = (data?.teams || []).filter(Boolean);
+  if (!teams.length) {
+    return "No teams followed yet — star a team anywhere you see the ☆ and its games show up here.";
+  }
+  const names = teams.map((t) => t?.name).filter(Boolean);
+  const who = names.length === 0 ? ""
+    : names.length <= 3 ? ` (${names.join(", ")})`
+    : ` (${names.slice(0, 3).join(", ")} and ${names.length - 3} more)`;
+  const plural = teams.length === 1 ? "" : "s";
+  return `Following ${teams.length} team${plural}${who} — none of them play`
+         + (label ? ` in ${label}` : "") + ".";
+};
+
 /** The month before or after, as "YYYY-MM". */
 export const shiftMonth = (month, by) => {
   const m = /^(\d{4})-(\d{2})$/.exec(String(month || ""));

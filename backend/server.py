@@ -4852,6 +4852,39 @@ async def odds_fetch(days: int = 2, limit: int = 40, token: Optional[str] = None
     return {"mode": "window", **got}
 
 
+@api_router.post("/odds/ahead")
+async def odds_ahead(days: int = 6, from_days: int = 1, limit: int = 120,
+                     token: Optional[str] = None):
+    """Price the week ahead, once per fixture, as each market opens.
+
+    WHY THIS IS NOT JUST /odds/fetch WITH A BIGGER `days`. That one takes the soonest N
+    fixtures whatever their state, which is right for a pass running every hour against
+    games about to be bet — it is re-reading prices that MOVE. Pointed six days out on the
+    same rule it would re-pay for every fixture once an hour for a price that had not
+    changed since the morning.
+
+    This one prices only what has never been priced, so the cost collapses as a week fills
+    in: the first run of a week is expensive and every run after it is nearly free. A
+    market that opens on Wednesday is picked up on Wednesday rather than on Friday night.
+
+    THE MEASUREMENT THAT JUSTIFIES IT. fetch_odds.DEFAULT_DAYS carries a note saying a
+    wide window buys empty answers — 2 priced out of 62 over seven days. That was true
+    when it was measured. Re-measured on 17 Nov 2026: 83 of 100 over six days, with
+    Saturday's Bundesliga, La Liga and Serie B fixtures among those that priced. The books
+    open corner markets earlier than they used to, and until this existed the only prices
+    the board ever showed were the ones left after the market had already moved.
+
+    `skipped_priced` is the number that says the rule is working: it climbs through the
+    week while `calls` falls towards nothing.
+    """
+    _check_tools_token(token)
+    fetch_ahead = _odds_fetcher("fetch_ahead")
+    got = await fetch_ahead(db, days=max(2, min(days, 10)),
+                            from_days=max(0, min(from_days, 5)),
+                            limit=max(1, min(limit, 200)))
+    return {"mode": "ahead", **got}
+
+
 @api_router.post("/odds/closing")
 async def odds_closing(minutes: int = 90, limit: int = 60, token: Optional[str] = None):
     """Capture the last price before kick-off, so CLV can be computed at all.

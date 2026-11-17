@@ -1,0 +1,116 @@
+# Price the week ahead, once per fixture, as each market opens.
+#
+# WHY THIS IS A SEPARATE FILE AND NOT A THIRD MODE ON odds.yml. That workflow already
+# tried to run one of its passes on one of its two crons, keyed on
+# `github.event.schedule`, and GitHub never reported the value — so the comparison was
+# false on every run and the pass had never executed once. Nothing raised; it simply did
+# nothing for weeks. A workflow with its own cron cannot have that bug: if it runs at all,
+# it runs the thing it is for.
+#
+# WHAT IT BUYS. Until this existed the board could not show a weekend fixture until the
+# hourly pass reached it, about a day out — so every price anybody saw had already been
+# cut. This reads them when the market opens.
+#
+# WHAT IT COSTS, AND WHY THAT FALLS. It prices only fixtures that have NO price yet, so
+# the first run of a week is expensive and every run after it is nearly free. Read
+# `calls` against `skipped_priced` in the run: the second should climb through the week
+# while the first falls towards nothing. If `calls` stays high, something is wrong with
+# the filter, not with the market.
+name: Price the week ahead
+
+on:
+  schedule:
+    # Once a day, early enough that a market opening overnight is caught the same morning.
+    # 07:23 rather than on the hour: a job on :00 queues behind everything else that runs
+    # on :00, and this one has nothing waiting on it.
+    - cron: "23 7 * * *"
+  workflow_dispatch:
+    inputs:
+      days:
+        description: "How far ahead to reach, in days (blank = 6)"
+        required: false
+        default: "6"
+        type: string
+      from_days:
+        # Starts beyond the hourly pass's reach so the two never pay for the same fixture
+        # on the same day.
+        description: "Skip fixtures closer than this many days (blank = 1)"
+        required: false
+        default: "1"
+        type: string
+      limit:
+        description: "Ceiling on API calls for this run (blank = 120)"
+        required: false
+        default: "120"
+        type: string
+
+concurrency:
+  # Never two at once: both would pay for the same unpriced fixtures, because neither
+  # would have written a price before the other asked.
+  group: corner-odds-ahead
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  ahead:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Wake the backend
+        env:
+          BACKEND: ${{ vars.BACKEND_URL || 'https://corner-model.onrender.com' }}
+        run: |
+          for i in 1 2 3 4 5 6; do
+            code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 60 "$BACKEND/api/" || true)
+            echo "attempt $i: HTTP $code"
+            [ "$code" = "200" ] && break
+            sleep 15
+          done
+
+      - name: Price what has not been priced
+        env:
+          BACKEND: ${{ vars.BACKEND_URL || 'https://corner-model.onrender.com' }}
+          TOOLS_TOKEN: ${{ secrets.TOOLS_TOKEN }}
+        run: |
+          DAYS="${{ inputs.days || '6' }}"
+          FROM="${{ inputs.from_days || '1' }}"
+          LIMIT="${{ inputs.limit || '120' }}"
+          echo "Reaching $FROM-$DAYS days ahead, at most $LIMIT API call(s)."
+          code=$(curl -s -o ahead.json -w '%{http_code}' --max-time 900 -X POST \
+            "$BACKEND/api/odds/ahead?token=$TOOLS_TOKEN&days=$DAYS&from_days=$FROM&limit=$LIMIT" \
+            || true)
+          echo "HTTP $code"
+          cat ahead.json; echo
+          python3 - "$code" <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import json, sys
+          code = sys.argv[1]
+          try:
+              d = json.load(open("ahead.json"))
+          except Exception:
+              print(f"| Week ahead | ⚠️ HTTP {code}, and the body was not JSON |")
+              raise SystemExit(0)
+          if code != "200":
+              print(f"| Week ahead | ⚠️ HTTP {code} — {str(d.get('detail'))[:160]} |")
+              raise SystemExit(0)
+          calls = d.get("calls", 0)
+          bits = [f"**{calls} API call(s)**"]
+          if d.get("fixtures"):
+              bits.append(f"priced {d.get('priced', 0)}/{d.get('fixtures', 0)}")
+              bits.append(f"{d.get('lines', 0)} line(s)")
+          if d.get("unpriced"):
+              # NOT A FAILURE. A fixture whose book has not opened a corner market yet is
+              # the normal case this far out, and it will be asked again tomorrow.
+              bits.append(f"{d['unpriced']} market(s) not open yet")
+          # THE NUMBER THAT SAYS THE RULE IS WORKING.
+          bits.append(f"{d.get('skipped_priced', 0)} already had a price")
+          if d.get("capped"):
+              bits.append("⚠️ hit the call ceiling — more left unpriced")
+          if d.get("errors"):
+              bits.append(f"⚠️ {d['errors']} error(s): {str(d.get('last_error'))[:80]}")
+          print("## Week ahead\n")
+          print(f"Reaching {d.get('from_days')}–{d.get('days')} days out. "
+                + "  ·  ".join(bits))
+          PY
+          [ "$code" = "200" ] || exit 1

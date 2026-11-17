@@ -1,6 +1,7 @@
 import {
   WEEKDAYS, PAST, TODAY, UPCOMING, UNKNOWN, OUTSIDE,
   parseDay, monthGrid, squareState, buildMonth, monthLabel, shiftMonth, canShift, mineLabel,
+  dayLabel,
 } from "./calendarMonth";
 
 const game = (over = {}) => ({
@@ -196,6 +197,26 @@ describe("labels", () => {
     expect(mineLabel({ mine: [game(), game()] })).toBe("2 games");
     expect(mineLabel({ mine: [] })).toBe("");
     expect(mineLabel({})).toBe("");
+  });
+
+  it("names the day a square stands for, weekday first", () => {
+    // Monday-first, so Sunday must come out last rather than as the week's head.
+    expect(dayLabel("2026-11-21")).toBe("Sat 21 November");
+    expect(dayLabel("2026-11-23")).toBe("Mon 23 November");
+    expect(dayLabel("2026-11-22")).toBe("Sun 22 November");
+    expect(dayLabel("2027-01-01")).toBe("Fri 1 January");
+    expect(dayLabel("nonsense")).toBe("");
+  });
+
+  it("never names a different day from the key it was given", () => {
+    // THE BUG THIS GUARDS. The panel used to print the raw key, and the obvious repair —
+    // `new Date(key).toLocaleDateString()` — is the other way to get it wrong: the keys
+    // are UK calendar days, `new Date("2026-11-21")` is UTC midnight, and west of London
+    // that formats as the 20th. The panel would then name a different day from the square
+    // the reader had just tapped. Every day of a month, label's number against key's.
+    for (const key of monthGrid("2026-11")) {
+      expect(dayLabel(key).split(" ")[1]).toBe(String(Number(key.slice(8, 10))));
+    }
   });
 
   it("parses a day key and refuses a bad one", () => {

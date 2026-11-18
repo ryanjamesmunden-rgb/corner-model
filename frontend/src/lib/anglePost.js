@@ -212,6 +212,50 @@ export const ladderPost = ({ rungs = [], url = "" } = {}) => {
 };
 
 /**
+ * The same angle as ONE pasteable block, in the channel's own shape.
+ *
+ * NOT THE THREAD. angleThread splits this material into two tweets because that is how X
+ * carries it — the game, then the ladder as a reply. A channel post is a single message,
+ * so the link sits directly above the first rung and nothing is repeated.
+ *
+ * NO BLANK LINES, which is the difference you actually see when you paste it. The tweet
+ * builders space their blocks out because a tweet is read on its own; a channel post is
+ * one of twenty in a scroll, and the gaps are what make it look like three posts.
+ *
+ * CAPPED AT 6+ BY DEFAULT, where angleThread leaves the cap to its caller. A tool run is
+ * somebody choosing a ladder; this is a button, and the person pressing it should not
+ * have to know that the model's tail is fatter than the market's. The cap's own note has
+ * the evidence: every long rung came back monotonically bigger, six fixtures and six
+ * books agreeing at the short end, and the ledger has twelve settled bets past 6+.
+ */
+export const telegramAngle = (row = {}, { group = "home", site = "",
+                                          minEv = ANGLE_MIN_EV, minPlus = null,
+                                          maxPlus = ANGLE_MAX_PLUS } = {}) => {
+  const rungs = angleRungs(row, { group, minEv, minPlus, maxPlus });
+  if (!rungs.length) return "";
+  // postHeader, not three lines written again here: the day, the flag and the clock then
+  // agree with every other post the app produces.
+  const head = postHeader({
+    fixture: { date: row.date, league_id: row.league_id, league_name: row.league_name,
+               home_name: row.home_name, away_name: row.away_name },
+  });
+  const url = fixtureUrl(site, row.fixture_id);
+  return [...head, url, ...rungs.flatMap(rungLines)].filter(Boolean).join("\n");
+};
+
+/**
+ * Every angle on the board as one message, newest-kicking-off first.
+ *
+ * SEPARATED BY A BLANK LINE AND NOTHING ELSE. A divider row looks tidy in a preview and
+ * then has to be deleted out of the paste, because the channel already separates posts.
+ */
+export const telegramAngles = (rows = [], opts = {}) =>
+  (rows || [])
+    .flatMap((row) => ["home", "away"].map((group) => telegramAngle(row, { ...opts, group })))
+    .filter(Boolean)
+    .join("\n\n");
+
+/**
  * Both tweets for one side of one fixture, or null when there is no angle on it.
  *
  * ONE SIDE PER THREAD. A fixture where both teams clear the floor is two separate

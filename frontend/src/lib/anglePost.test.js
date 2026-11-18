@@ -1,7 +1,7 @@
 import {
   ANGLE_MIN_EV, ANGLE_MAX_PLUS, THIN_BOOKS,
   plusOf, evPercent, teamFor, rungLines, angleRungs, fixtureUrl,
-  gamePost, ladderPost, angleThread,
+  gamePost, ladderPost, angleThread, telegramAngle, telegramAngles,
 } from "./anglePost";
 
 // The real Leganes ladder, as the board returned it on 13 Nov.
@@ -253,5 +253,47 @@ describe("the two tweets", () => {
 
   it("is null when the cap leaves nothing", () => {
     expect(angleThread(row(), { maxPlus: 2 })).toBeNull();
+  });
+});
+
+describe("the channel block", () => {
+  // THE SHAPE IS COPIED FROM A POST THAT WENT OUT, not invented here. Anything that
+  // changes spacing or wording changes what lands in the channel, so it is pinned
+  // literally rather than asserted piece by piece.
+  it("is one block: header, link, then the rungs, no blank lines", () => {
+    const out = telegramAngle(row(), { site: "thecornermodel.com", minEv: 3 });
+    expect(out).toBe(
+      [
+        "📅 Friday 13th November",
+        "🇪🇸 Segunda Division @ 7:30pm",
+        "🏟️ Leganes v Burgos",
+        "thecornermodel.com/fixture/lega1",
+        "🚩 5+ Leganes [1.72]",
+        "📊 Model: 1.62 (62%) EV: +6.0%",
+        "🚩 6+ Leganes [2.30]",
+        "📊 Model: 2.11 (48%) EV: +9.3%",
+      ].join("\n"));
+  });
+
+  it("stops at 6+ without being asked", () => {
+    // A tool run is somebody choosing a ladder; this is a button. The 7+ and 8+ rungs in
+    // the fixture carry the biggest edges and are exactly what the cap exists for.
+    const out = telegramAngle(row(), { site: "thecornermodel.com" });
+    expect(out).not.toMatch(/🚩 [789]\+/);
+    expect(out).toMatch(/🚩 6\+/);
+  });
+
+  it("keeps the blank line BETWEEN games and not inside one", () => {
+    const two = telegramAngles([row(), row({ fixture_id: "lega2" })],
+                               { site: "thecornermodel.com", minEv: 3 });
+    const blocks = two.split("\n\n");
+    expect(blocks).toHaveLength(2);
+    blocks.forEach((b) => expect(b.split("\n").length).toBeGreaterThan(4));
+  });
+
+  it("is empty rather than a bare header when nothing clears the floor", () => {
+    // A header and a link with no rungs under it reads as a pick with the pick missing.
+    expect(telegramAngle(row(), { minEv: 999 })).toBe("");
+    expect(telegramAngles([row()], { minEv: 999 })).toBe("");
   });
 });

@@ -218,6 +218,73 @@ const faded = (ctx, alpha, draw) => {
   ctx.globalAlpha = prev;
 };
 
+/**
+ * THE MARK, from public/favicon.svg's geometry, drawn to fit a box of `size`.
+ *
+ * The file's viewBox is 512 and the mark sits inside a safe area within it — about 57%,
+ * because Android crops an icon to a circle. Nothing crops these cards, so the drawing is
+ * fitted to its own INK BOX rather than to the viewBox, or the logo arrives on a 1080px
+ * card already a third smaller than asked for, with invisible padding nobody chose.
+ *
+ *   wedge: centre (112,400) r 230, straight up round to the right   ink x 112..406
+ *   ball:  (360,168) r 46                                           ink y 122..400
+ */
+const INK = { x: 112, y: 122, w: 294, h: 278 };
+const drawMark = (ctx, cx, cy, size, color) => {
+  const k = size / Math.max(INK.w, INK.h);
+  ctx.save();
+  ctx.translate(cx - (INK.x + INK.w / 2) * k, cy - (INK.y + INK.h / 2) * k);
+  ctx.scale(k, k);
+  ctx.fillStyle = color;
+  ctx.beginPath();
+  ctx.moveTo(112, 400);
+  ctx.arc(112, 400, 230, -Math.PI / 2, 0);
+  ctx.closePath();
+  ctx.fill();
+  ctx.beginPath();
+  ctx.arc(360, 168, 46, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.restore();
+};
+
+/** The px size out of a CSS font shorthand, for sizing the mark against the wordmark. */
+const fontPx = (font) => Number(/(\d+(?:\.\d+)?)px/.exec(String(font))?.[1]) || 30;
+
+/**
+ * The lockup: mark, then wordmark, in place of a bare fillText(brand, x, y).
+ *
+ * WHY A HELPER AND NOT TWENTY EDITS. The brand is drawn at about twenty call sites, each
+ * having already chosen its own size, colour, letter-spacing and alignment. Positioning a
+ * mark by hand at each one is twenty chances to put it a few pixels out, on cards nobody
+ * looks at again until they are posted.
+ *
+ * IT READS THE STATE RATHER THAN TAKING PARAMETERS. Whatever font, fillStyle, textAlign
+ * and textBaseline the caller set still apply — so a right-aligned 22px brand and a
+ * centred 24px one both work without either site being told about the other.
+ *
+ * THE LOCKUP KEEPS THE CALLER'S ANCHOR. The mark is placed INSIDE the space the text used
+ * to occupy, not bolted to the left of it: a left-aligned brand at x=72 keeps its left
+ * edge at 72 and the words move right. Hanging the mark off the front instead would push
+ * every card's brand towards the margin, and on the 16:9 cut straight off it.
+ */
+const brandLock = (ctx, text, x, y) => {
+  const size = fontPx(ctx.font);
+  const mark = size * 1.08;
+  const gap = size * 0.46;
+  const w = ctx.measureText(text).width;
+  const total = mark + gap + w;
+  const align = ctx.textAlign || "left";
+  const left = align === "right" ? x - total : align === "center" ? x - total / 2 : x;
+  // "middle" centres on y; the default alphabetic baseline sits under the caps, so the
+  // mark's centre lifts by about a third of the size to sit level with them.
+  const cy = ctx.textBaseline === "middle" ? y : y - size * 0.34;
+  drawMark(ctx, left + mark / 2, cy, mark, ctx.fillStyle);
+  ctx.save();
+  ctx.textAlign = "left";
+  ctx.fillText(text, left + mark + gap, y);
+  ctx.restore();
+};
+
 /** Text drawn behind a blur, for the parts being held back. */
 const blurred = (ctx, draw, radius) => {
   ctx.save();
@@ -307,7 +374,7 @@ export const renderStory = (canvas, {
   showClear = 0,
   maxRows = 6,
   cta = "Model + odds → paid Telegram",
-  brand = "CORNER MODEL",
+  brand = "THE CORNER MODEL",
   // What to claim in the footer. Defaults to the rows drawn; a teased day passes the
   // true total, because "3 angles live" under "the top 3 of 5" is a smaller number than
   // the sentence above it and reads as a contradiction.
@@ -332,7 +399,7 @@ export const renderStory = (canvas, {
   ctx.fillStyle = C.primary;
   ctx.font = `700 30px ${FONT_HEAD}`;
   ctx.letterSpacing = "6px";
-  ctx.fillText(brand, 72, 200);
+  brandLock(ctx, brand, 72, 200);
   ctx.letterSpacing = "0px";
 
   ctx.fillStyle = C.text;
@@ -628,7 +695,7 @@ const drawCurve = (ctx, dist, line, { x, y, w, h, progress = 1,
 export const renderFixtureStory = (canvas, {
   homeName = "", awayName = "", leagueId = "", kickoff = "",
   dist = [], group = "total", markets = [],
-  cta = "Model price on the site", brand = "CORNER MODEL", blurRadius = 14,
+  cta = "Model price on the site", brand = "THE CORNER MODEL", blurRadius = 14,
   // 1 is the finished frame, which is exactly what the still image wants — so the PNG and
   // the video are the same drawing code and cannot drift apart.
   progress = 1,
@@ -653,7 +720,7 @@ export const renderFixtureStory = (canvas, {
     ctx.fillStyle = C.primary;
     ctx.font = `700 30px ${FONT_HEAD}`;
     ctx.letterSpacing = "6px";
-    ctx.fillText(brand, 72, 180);
+    brandLock(ctx, brand, 72, 180);
     ctx.letterSpacing = "0px";
 
     // The fixture, on two lines. Team names are long and unpredictable, and one line of
@@ -902,7 +969,7 @@ export const renderAngleStory = (canvas, {
   // to the 14-16 the dark stories use: at 16 it stopped reading as a hidden number and
   // became an empty grey box, which kills the curiosity the slip exists to create; at 11
   // the digits were starting to be legible, which defeats the point entirely.
-  cta = "See the price on the site", brand = "CORNER MODEL", blurRadius = 13,
+  cta = "See the price on the site", brand = "THE CORNER MODEL", blurRadius = 13,
 } = {}) => {
   canvas.width = STORY_W;
   canvas.height = STORY_H;
@@ -932,7 +999,7 @@ export const renderAngleStory = (canvas, {
   ctx.fillStyle = C.primary;
   ctx.font = `700 26px ${FONT_HEAD}`;
   ctx.letterSpacing = "6px";
-  ctx.fillText(brand, M, 132);
+  brandLock(ctx, brand, M, 132);
   ctx.letterSpacing = "0px";
 
   ctx.fillStyle = C.muted;
@@ -1403,7 +1470,7 @@ export const renderResultStory = (canvas, {
   cornerMinutes = [],
   slip = null,
   slipImage = null,
-  cta = "The full record on the site", brand = "CORNER MODEL",
+  cta = "The full record on the site", brand = "THE CORNER MODEL",
   progress = 1,
 } = {}) => {
   const P = clamp01(progress);
@@ -1429,7 +1496,7 @@ export const renderResultStory = (canvas, {
     ctx.fillStyle = C.primary;
     ctx.font = `700 30px ${FONT_HEAD}`;
     ctx.letterSpacing = "6px";
-    ctx.fillText(brand, 72, 180);
+    brandLock(ctx, brand, 72, 180);
     ctx.letterSpacing = "0px";
 
     ctx.fillStyle = C.text;
@@ -1605,7 +1672,7 @@ export const renderResultWide = (canvas, {
   cornerMinutes = [],
   slip = null,
   slipImage = null,
-  cta = "The full record on the site", brand = "CORNER MODEL",
+  cta = "The full record on the site", brand = "THE CORNER MODEL",
   progress = 1,
 } = {}) => {
   const P = clamp01(progress);
@@ -1632,7 +1699,7 @@ export const renderResultWide = (canvas, {
     ctx.fillStyle = C.primary;
     ctx.font = `700 26px ${FONT_HEAD}`;
     ctx.letterSpacing = "6px";
-    ctx.fillText(brand, L, 110);
+    brandLock(ctx, brand, L, 110);
     ctx.letterSpacing = "0px";
 
     ctx.fillStyle = C.text;
@@ -1825,7 +1892,7 @@ const drawStrip = (ctx, strip, { x, y, w, h, gap = 12 }) => {
  * not been made yet, and the honest response is to not post one.
  */
 export const renderRecordCard = (canvas, {
-  card = null, shape = "feed", site = "thecornermodel.com", brand = "CORNER MODEL",
+  card = null, shape = "feed", site = "thecornermodel.com", brand = "THE CORNER MODEL",
 } = {}) => {
   if (!card) return false;
   const W = FEED_W;
@@ -1849,7 +1916,7 @@ export const renderRecordCard = (canvas, {
   ctx.fillStyle = C.primary;
   ctx.font = `700 30px ${FONT_HEAD}`;
   ctx.letterSpacing = "6px";
-  ctx.fillText(brand, pad, y);
+  brandLock(ctx, brand, pad, y);
   ctx.letterSpacing = "0px";
 
   y += shape === "story" ? 130 : 110;
@@ -1933,7 +2000,7 @@ export const renderRecordCard = (canvas, {
  * on a results graphic reads as a bad day.
  */
 export const renderDayCard = (canvas, {
-  card = null, shape = "feed", site = "thecornermodel.com", brand = "CORNER MODEL",
+  card = null, shape = "feed", site = "thecornermodel.com", brand = "THE CORNER MODEL",
 } = {}) => {
   if (!card) return false;
   const W = FEED_W;
@@ -1958,7 +2025,7 @@ export const renderDayCard = (canvas, {
   ctx.fillStyle = C.primary;
   ctx.font = `700 30px ${FONT_HEAD}`;
   ctx.letterSpacing = "6px";
-  ctx.fillText(brand, pad, y);
+  brandLock(ctx, brand, pad, y);
   ctx.letterSpacing = "0px";
 
   y += shape === "story" ? 120 : 100;
@@ -2071,7 +2138,7 @@ export const dayCardDate = (key = "") => {
  * a slate card with one row is worse than silence, and dailySlip decides that, not this.
  */
 export const renderDailySlip = (canvas, {
-  slip = null, site = "thecornermodel.com", brand = "CORNER MODEL",
+  slip = null, site = "thecornermodel.com", brand = "THE CORNER MODEL",
   tagline = "DATA. DISCIPLINE. EXECUTION.",
 } = {}) => {
   if (!slip || !slip.rows?.length) return false;
@@ -2099,7 +2166,7 @@ export const renderDailySlip = (canvas, {
   ctx.fillStyle = C.text;
   ctx.font = `700 34px ${FONT_HEAD}`;
   ctx.letterSpacing = "2px";
-  ctx.fillText(brand, pad, 78);
+  brandLock(ctx, brand, pad, 78);
   ctx.letterSpacing = "0px";
 
   ctx.textAlign = "right";
@@ -2312,7 +2379,7 @@ const BET_TONE = {
  * a day with no priced bet on it has no card, and that decision belongs there, not here.
  */
 export const renderBetsCard = (canvas, {
-  card = null, site = "thecornermodel.com", brand = "CORNER MODEL",
+  card = null, site = "thecornermodel.com", brand = "THE CORNER MODEL",
   heading = "TODAY'S BETS",
 } = {}) => {
   if (!card || !card.rows?.length) return false;
@@ -2345,7 +2412,7 @@ export const renderBetsCard = (canvas, {
   ctx.fillStyle = C.text;
   ctx.font = `700 34px ${FONT_HEAD}`;
   ctx.letterSpacing = "2px";
-  ctx.fillText(brand, pad, 74);
+  brandLock(ctx, brand, pad, 74);
   ctx.letterSpacing = "0px";
 
   ctx.textAlign = "right";
@@ -2552,7 +2619,7 @@ export const renderBetsCard = (canvas, {
  * false: a period with no stated months has no card, and that decision belongs there.
  */
 export const renderReviewCard = (canvas, {
-  review = null, site = "thecornermodel.com", brand = "CORNER MODEL",
+  review = null, site = "thecornermodel.com", brand = "THE CORNER MODEL",
   heading = "THE RECORD", subtitle = "CORNER BETTING  ·  STRUCTURED RELEASES",
   creed = ["DISCIPLINE", "PROCESS", "EVIDENCE", "LONG TERM"],
 } = {}) => {
@@ -2584,7 +2651,7 @@ export const renderReviewCard = (canvas, {
   ctx.fillStyle = C.text;
   ctx.font = `700 36px ${FONT_HEAD}`;
   ctx.letterSpacing = "2px";
-  ctx.fillText(brand, pad, 70);
+  brandLock(ctx, brand, pad, 70);
   ctx.letterSpacing = "0px";
   ctx.fillStyle = C.muted;
   ctx.font = `600 20px ${FONT_BODY}`;
@@ -2767,7 +2834,7 @@ export const renderReviewCard = (canvas, {
  * false.
  */
 export const renderResultsReel = (canvas, {
-  reel = null, progress = 1, site = "thecornermodel.com", brand = "CORNER MODEL",
+  reel = null, progress = 1, site = "thecornermodel.com", brand = "THE CORNER MODEL",
   heading = "THIS WEEK",
 } = {}) => {
   if (!reel || !reel.rows?.length) return false;
@@ -2793,7 +2860,7 @@ export const renderResultsReel = (canvas, {
   ctx.fillStyle = C.text;
   ctx.font = `700 40px ${FONT_HEAD}`;
   ctx.letterSpacing = "2px";
-  ctx.fillText(brand, pad, 96);
+  brandLock(ctx, brand, pad, 96);
   ctx.letterSpacing = "0px";
   ctx.textAlign = "right";
   ctx.fillStyle = C.muted;
@@ -3054,7 +3121,7 @@ export const renderResultsReel = (canvas, {
  * false: below three spots there is no board, and chaseSlate decides that, not this.
  */
 export const renderChaseSlate = (canvas, {
-  slate = null, site = "thecornermodel.com", brand = "CORNER MODEL",
+  slate = null, site = "thecornermodel.com", brand = "THE CORNER MODEL",
   tagline = "DATA. DISCIPLINE. EXECUTION.",
 } = {}) => {
   if (!slate || !slate.rows?.length) return false;
@@ -3083,7 +3150,7 @@ export const renderChaseSlate = (canvas, {
   ctx.fillStyle = C.text;
   ctx.font = `700 32px ${FONT_HEAD}`;
   ctx.letterSpacing = "2px";
-  ctx.fillText(brand, pad, 72);
+  brandLock(ctx, brand, pad, 72);
   ctx.letterSpacing = "0px";
 
   ctx.textAlign = "right";
@@ -3328,7 +3395,7 @@ const drawMismatchHalf = (ctx, { x, y, w, h, kicker, name, hits, n, values, line
 
 export const renderMismatchStory = (canvas, {
   mismatch = null, fixture = {}, leagueName = "", kickoff = "",
-  cta = "Full lines on the site", brand = "CORNER MODEL",
+  cta = "Full lines on the site", brand = "THE CORNER MODEL",
 } = {}) => {
   canvas.width = STORY_W;
   canvas.height = STORY_H;
@@ -3350,7 +3417,7 @@ export const renderMismatchStory = (canvas, {
   ctx.fillStyle = C.primary;
   ctx.font = `700 26px ${FONT_HEAD}`;
   ctx.letterSpacing = "6px";
-  ctx.fillText(brand, M, 132);
+  brandLock(ctx, brand, M, 132);
   ctx.letterSpacing = "0px";
 
   ctx.fillStyle = C.muted;
@@ -3628,7 +3695,7 @@ export const renderFormWide = (canvas, {
   claim = "", windowLabel = "", venueLabel = "", opponentLabel = "",
   staleNote = "", prior = [],
   leagueId = "", leagueName = "", kickoff = "",
-  cta = "Full lines on the site", brand = "CORNER MODEL", progress = 1,
+  cta = "Full lines on the site", brand = "THE CORNER MODEL", progress = 1,
 } = {}) => {
   const P = clamp01(progress);
   const done = P >= 1;
@@ -3677,7 +3744,7 @@ export const renderFormWide = (canvas, {
     ctx.font = `700 22px ${FONT_HEAD}`;
     ctx.letterSpacing = "5px";
     ctx.textAlign = "right";
-    ctx.fillText(brand, WIDE_W - M - 30, 101);
+    brandLock(ctx, brand, WIDE_W - M - 30, 101);
     ctx.letterSpacing = "0px";
     ctx.textAlign = "left";
   });
@@ -3808,7 +3875,7 @@ export const renderFormStory = (canvas, {
   // panel it was made from. `prior` is aligned with `values`.
   staleNote = "", prior = [],
   leagueId = "", leagueName = "", kickoff = "",
-  cta = "Full lines on the site", brand = "CORNER MODEL", progress = 1,
+  cta = "Full lines on the site", brand = "THE CORNER MODEL", progress = 1,
 } = {}) => {
   const P = clamp01(progress);
   const done = P >= 1;
@@ -3833,7 +3900,7 @@ export const renderFormStory = (canvas, {
     ctx.fillStyle = C.primary;
     ctx.font = `700 30px ${FONT_HEAD}`;
     ctx.letterSpacing = "6px";
-    ctx.fillText(brand, M, 180);
+    brandLock(ctx, brand, M, 180);
     ctx.letterSpacing = "0px";
 
     ctx.fillStyle = C.text;
@@ -3933,7 +4000,7 @@ export const renderFormStory = (canvas, {
  */
 export const renderStatCard = (canvas, {
   hero = "", unit = "", headline = "", detail = "", meta = [],
-  tone = "primary", cta = "thecornermodel.com", brand = "CORNER MODEL",
+  tone = "primary", cta = "thecornermodel.com", brand = "THE CORNER MODEL",
 } = {}) => {
   canvas.width = WIDE_W;
   canvas.height = WIDE_H;
@@ -3961,7 +4028,7 @@ export const renderStatCard = (canvas, {
   ctx.fillStyle = accent;
   ctx.font = `700 24px ${FONT_HEAD}`;
   ctx.letterSpacing = "6px";
-  ctx.fillText(brand, CX, 96);
+  brandLock(ctx, brand, CX, 96);
   ctx.letterSpacing = "0px";
 
   // The claim, above the number it rests on: a reader who stops for one line stops for
@@ -4046,7 +4113,7 @@ export const renderStatCard = (canvas, {
  * below two picks there is no clip, and tipsReel decides that, not this.
  */
 export const renderTipsReel = (canvas, {
-  reel = null, progress = 1, site = "thecornermodel.com", brand = "CORNER MODEL",
+  reel = null, progress = 1, site = "thecornermodel.com", brand = "THE CORNER MODEL",
   heading = "BEST PRICES",
 } = {}) => {
   if (!reel || !reel.rows?.length) return false;
@@ -4073,7 +4140,7 @@ export const renderTipsReel = (canvas, {
   ctx.fillStyle = C.text;
   ctx.font = `700 40px ${FONT_HEAD}`;
   ctx.letterSpacing = "2px";
-  ctx.fillText(brand, pad, 96);
+  brandLock(ctx, brand, pad, 96);
   ctx.letterSpacing = "0px";
   ctx.textAlign = "right";
   ctx.fillStyle = C.muted;
@@ -4348,7 +4415,7 @@ export const renderTipsReel = (canvas, {
  */
 export const renderAngleLadder = (canvas, {
   thread = null, dist = [], progress = 1,
-  site = "thecornermodel.com", brand = "CORNER MODEL",
+  site = "thecornermodel.com", brand = "THE CORNER MODEL",
 } = {}) => {
   if (!thread || !thread.rungs?.length) return false;
   const W = STORY_W;
@@ -4374,7 +4441,7 @@ export const renderAngleLadder = (canvas, {
   ctx.fillStyle = C.text;
   ctx.font = `700 40px ${FONT_HEAD}`;
   ctx.letterSpacing = "2px";
-  ctx.fillText(brand, pad, 96);
+  brandLock(ctx, brand, pad, 96);
   ctx.letterSpacing = "0px";
   ctx.textAlign = "right";
   ctx.fillStyle = C.muted;

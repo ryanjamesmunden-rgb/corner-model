@@ -55,9 +55,11 @@ export default function Calendar() {
     let live = true;
     setLoading(true);
     setErr("");
-    const qs = new URLSearchParams({ source });
-    if (month) qs.set("month", month);
-    api(`/calendar?${qs}`)
+    // api is an OBJECT of named calls, not a callable. This page shipped with
+    // `api(\`/calendar?…\`)`, which threw "api is not a function" on mount — every
+    // mount, from the first one — so the error boundary replaced the page and the
+    // calendar never ran at all.
+    api.calendar({ source, month })
       .then((d) => { if (live) { setData(d); setMonth(d.month); } })
       .catch((e) => { if (live) setErr(e?.message || "Could not load the calendar"); })
       .finally(() => { if (live) setLoading(false); });
@@ -227,13 +229,19 @@ export default function Calendar() {
               </div>
               <div className="flex flex-col gap-0.5">
                 {data.playing
-                  .filter((t) => t.name.toLowerCase().includes(find.trim().toLowerCase()))
+                  // `|| ""` because a nameless side must not take the page down with it.
+                  // The endpoint coerces the name, so this never fires today — but the
+                  // page is one render away from the boundary whenever it trusts a field
+                  // it did not produce, and that is exactly how this page spent its whole
+                  // life showing an error instead of a month.
+                  .filter((t) => (t.name || "").toLowerCase()
+                    .includes(find.trim().toLowerCase()))
                   .slice(0, 12)
                   .map((t) => (
                     <div key={t.team_id}
                       className="flex items-baseline justify-between gap-3 py-0.5">
                       <span className="min-w-0">
-                        <span className="truncate text-sm">{t.name}</span>
+                        <span className="truncate text-sm">{t.name || "Unnamed team"}</span>
                         <span className="ml-2 text-[11px] text-muted-foreground">
                           {withFlag(t.league_id, t.league_name)}
                           {"  ·  "}{t.games} game{t.games === 1 ? "" : "s"}

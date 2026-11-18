@@ -69,6 +69,13 @@ export const api = {
     axios.get(`${API}/favourites/teams`, { params: { within_days: withinDays } }).then((r) => r.data),
   addFavouriteTeam: (teamId) => axios.post(`${API}/favourites/teams/${teamId}`).then((r) => r.data),
   removeFavouriteTeam: (teamId) => axios.delete(`${API}/favourites/teams/${teamId}`).then((r) => r.data),
+  // The month grid, with your games picked out. `month` omitted means the current one,
+  // and the backend decides which that is — it buckets kick-offs by UK day, so letting
+  // the browser pick the month would disagree with the squares for anyone abroad.
+  calendar: ({ source = "all", month = "", leagueId = "" } = {}) =>
+    axios.get(`${API}/calendar`, {
+      params: { source, ...(month ? { month } : {}), ...(leagueId ? { league_id: leagueId } : {}) },
+    }).then((r) => r.data),
   // TRACKED teams: a trial list. Keep an eye on a side without following it; promote it
   // to favourites once it has proven itself.
   trackedTeams: () => axios.get(`${API}/tracking/teams`).then((r) => r.data),

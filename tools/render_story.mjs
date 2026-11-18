@@ -59,12 +59,15 @@ const KINDS = {
   form_wide: "renderFormWide",
   // The daily fact as a picture. No tease on this one — see renderStatCard.
   stat: "renderStatCard",
+  // The monthly record as a 9:16 clip, for Instagram. Animated because a reel is held
+  // full-screen: the months arrive one at a time and the headline figure counts up.
+  months: "renderMonthsReel",
 };
 // WHICH KINDS ANIMATE. The fixture story draws a curve that can grow; the two reels step
 // through picks one at a time, which is the case where the SEQUENCE is the content rather
 // than decoration. The slate and the cards are tables, and a table that assembles itself
 // is motion for its own sake.
-const ANIMATES = ["fixture", "results", "tips", "angle"].includes(KIND);
+const ANIMATES = ["fixture", "results", "tips", "angle", "months"].includes(KIND);
 // With --video, the same drawing is rendered frame by frame and encoded instead of
 // snapshotted. Timings match recordStoryVideo's defaults so the automated clip and the one
 // the Share button makes are the same length and the same pace.

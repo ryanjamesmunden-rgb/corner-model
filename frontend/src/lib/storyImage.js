@@ -2833,6 +2833,174 @@ export const renderReviewCard = (canvas, {
  * `reel` is whatever lib/resultsReel.reelFrom returned. Null draws nothing and returns
  * false.
  */
+/**
+ * The monthly record as a 9:16 clip — the one that goes on Instagram.
+ *
+ * WHY A SECOND RENDERER AND NOT A TALLER REVIEW CARD. renderReviewCard draws a FEED shape
+ * and draws it all at once, which is right for a square post that is read in a scroll. A
+ * reel is held full-screen for a few seconds, so the months can arrive one at a time and
+ * the headline figure can count up — and a feed card stretched to 1080x1920 is a square
+ * card with empty space, not a reel.
+ *
+ * IT TAKES reviewFrom's OWN BLOCKS. The figures, the total and the rule about a running
+ * month all come from there, so this clip cannot disagree with the join page or the
+ * record card about what the channel has made. Nothing here recomputes a unit.
+ *
+ * EVERY MONTH, INCLUDING THE RED ONE. The hero is the newest month, because that is the
+ * news — but the full list sits under it. channelResults.js makes the argument better
+ * than this comment can: a table that drops its losing months is not a record, it is a
+ * selection, and the month that went the wrong way is the one that proves the others are
+ * reported honestly. A reel showing one green month and nothing else is the version a
+ * sceptic correctly ignores.
+ *
+ * AND IT CARRIES THE SOURCE LINE. These are stated figures the site cannot verify, which
+ * is exactly the thing a graphic is good at hiding. The line is not optional decoration;
+ * reviewFrom supplies it and this draws it.
+ */
+export const renderMonthsReel = (canvas, {
+  review = null, site = "thecornermodel.com", brand = "THE CORNER MODEL",
+  heading = "THE RECORD", progress = 1,
+} = {}) => {
+  if (!review || !review.blocks?.length) return false;
+  const P = clamp01(progress);
+  canvas.width = STORY_W;
+  canvas.height = STORY_H;
+  const ctx = canvas.getContext("2d");
+  const M = 96;
+
+  ctx.fillStyle = C.bg;
+  ctx.fillRect(0, 0, STORY_W, STORY_H);
+  // A wash behind the hero so the big number sits on something, matching the fixture card.
+  const wash = ctx.createLinearGradient(0, 0, STORY_W, STORY_H * 0.6);
+  wash.addColorStop(0, "rgba(20,219,245,0.10)");
+  wash.addColorStop(1, "rgba(20,219,245,0)");
+  ctx.fillStyle = wash;
+  ctx.fillRect(0, 0, STORY_W, STORY_H);
+
+  ctx.textBaseline = "alphabetic";
+  ctx.textAlign = "left";
+
+  faded(ctx, seg(P, 0, 0.08), () => {
+    ctx.fillStyle = C.primary;
+    ctx.font = `700 30px ${FONT_HEAD}`;
+    ctx.letterSpacing = "6px";
+    brandLock(ctx, brand, M, 200);
+    ctx.letterSpacing = "0px";
+  });
+
+  faded(ctx, seg(P, 0.04, 0.12), () => {
+    ctx.fillStyle = C.muted;
+    ctx.font = `600 34px ${FONT_HEAD}`;
+    ctx.letterSpacing = "8px";
+    ctx.fillText(heading.toUpperCase(), M, 300);
+    ctx.letterSpacing = "0px";
+  });
+
+  // --- the hero: the newest month, counting up ------------------------------------------
+  const hero = review.blocks[0];
+  const heroUp = hero.units > 0;
+  faded(ctx, seg(P, 0.10, 0.20), () => {
+    ctx.fillStyle = C.text;
+    ctx.font = `600 58px ${FONT_HEAD}`;
+    ctx.fillText(hero.period.toUpperCase(), M, 430);
+    if (hero.partial) {
+      ctx.fillStyle = C.muted;
+      ctx.font = `500 34px ${FONT_BODY}`;
+      ctx.fillText("month to date", M, 486);
+    }
+  });
+
+  // THE COUNT-UP RUNS ON THE REAL FIGURE and lands on it exactly. Interpolating towards a
+  // rounded number would show a final frame that disagrees with the row below it.
+  const grow = seg(P, 0.16, 0.46);
+  const shown = hero.units * grow;
+  faded(ctx, seg(P, 0.16, 0.22), () => {
+    ctx.fillStyle = heroUp ? C.solid : "#FF6B6B";
+    ctx.font = `700 210px ${FONT_HEAD}`;
+    const text = `${shown > 0 ? "+" : shown < 0 ? "-" : ""}${Math.abs(shown).toFixed(2)}u`;
+    ctx.fillText(text, M, 660);
+  });
+
+  // --- every month, oldest last ---------------------------------------------------------
+  let y = 840;
+  review.blocks.forEach((b, i) => {
+    const at = 0.46 + i * 0.09;
+    faded(ctx, seg(P, at, at + 0.08), () => {
+      ctx.fillStyle = C.card;
+      roundRect(ctx, M, y - 56, STORY_W - M * 2, 96, 18);
+      ctx.fill();
+      ctx.fillStyle = C.text;
+      ctx.font = `600 42px ${FONT_HEAD}`;
+      ctx.fillText(b.period, M + 32, y + 4);
+      if (b.note) {
+        ctx.fillStyle = C.muted;
+        ctx.font = `500 26px ${FONT_BODY}`;
+        ctx.fillText(b.note, M + 32 + ctx.measureText(b.period).width + 170, y + 2);
+      }
+      ctx.textAlign = "right";
+      ctx.fillStyle = b.up ? C.solid : "#FF6B6B";
+      ctx.font = `700 46px ${FONT_DATA}`;
+      ctx.fillText(b.unitsText, STORY_W - M - 32, y + 6);
+      ctx.textAlign = "left";
+    });
+    y += 116;
+  });
+
+  // --- the total -------------------------------------------------------------------------
+  const totalAt = 0.46 + review.blocks.length * 0.09;
+  faded(ctx, seg(P, totalAt, totalAt + 0.08), () => {
+    ctx.strokeStyle = C.border;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(M, y - 24);
+    ctx.lineTo(STORY_W - M, y - 24);
+    ctx.stroke();
+
+    ctx.fillStyle = C.muted;
+    ctx.font = `600 36px ${FONT_HEAD}`;
+    ctx.letterSpacing = "4px";
+    // SAYS WHETHER IT IS FINAL. reviewFrom flags a running month; a total drawn without
+    // that flag is the exact "true number arranged into a false impression" its own note
+    // warns about.
+    //
+    // `partial`, NOT `running`. running is the LIST of month names and an empty array is
+    // truthy in JS, so testing it directly stamps "TO DATE" on a total where every month
+    // has closed — a caveat that is not true is its own kind of dishonest, and it would
+    // have gone out on the first clip.
+    ctx.fillText(review.partial ? "TOTAL, TO DATE" : "TOTAL", M, y + 52);
+    ctx.letterSpacing = "0px";
+
+    ctx.textAlign = "right";
+    ctx.fillStyle = review.total > 0 ? C.solid : "#FF6B6B";
+    ctx.font = `700 76px ${FONT_HEAD}`;
+    ctx.fillText(review.totalText, STORY_W - M, y + 62);
+    ctx.textAlign = "left";
+  });
+
+  // --- the source line, and the footer ----------------------------------------------------
+  faded(ctx, seg(P, totalAt + 0.06, totalAt + 0.14), () => {
+    ctx.fillStyle = C.muted;
+    ctx.font = `400 27px ${FONT_BODY}`;
+    wrapText(ctx, review.source || "", STORY_W - M * 2).forEach((line, i) => {
+      ctx.fillText(line, M, y + 150 + i * 36);
+    });
+
+    // FOLLOWS THE CONTENT, NOT PINNED TO THE BOTTOM EDGE. This is the cut that goes on
+    // Instagram, and a reel there has the caption, the username and the action buttons
+    // drawn over roughly its bottom 250px. Anchored to STORY_H the site link and the 18+
+    // line sat squarely under all of it — the two lines on the card that are least
+    // optional, hidden on the one platform it was made for.
+    ctx.fillStyle = C.primary;
+    ctx.font = `600 34px ${FONT_HEAD}`;
+    ctx.fillText(site, M, y + 268);
+    ctx.fillStyle = C.muted;
+    ctx.font = `400 26px ${FONT_BODY}`;
+    ctx.fillText("18+  ·  begambleaware.org", M, y + 316);
+  });
+
+  return true;
+};
+
 export const renderResultsReel = (canvas, {
   reel = null, progress = 1, site = "thecornermodel.com", brand = "THE CORNER MODEL",
   heading = "THIS WEEK",

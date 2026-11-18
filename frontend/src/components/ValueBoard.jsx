@@ -8,6 +8,7 @@ import { kickoffLabel } from "@/lib/kickoff";
 import { priceFreshness } from "@/lib/priceAge";
 import TierBadge from "@/components/TierBadge";
 import BookOdds from "@/components/BookOdds";
+import CopyAngle from "@/components/CopyAngle";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 
 // Everywhere you have found an edge, on one screen.
@@ -121,6 +122,10 @@ function Row({ r, muted = false, open, setOpen, navigate }) {
           data-testid="value-price-age">
           price {fresh.label}
         </span>
+        {/* Only on a backable row. A muted row is one that has already kicked off or
+            cannot be priced, and a Copy button on it is an invitation to post a game
+            that is half over. */}
+        {!muted && <CopyAngle row={r} />}
         {alts.length > 0 && (
           <button
             onClick={() => setOpen((o) => ({ ...o, [r.fixture_id]: !o[r.fixture_id] }))}

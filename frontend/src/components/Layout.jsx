@@ -1,7 +1,8 @@
 import { useState, useEffect } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import MobileNav from "@/components/MobileNav";
-import { CornerDownRight, LayoutDashboard, Radar, Flame, Zap, Star, Sparkles, Receipt, Trophy,
+import BrandMark from "@/components/BrandMark";
+import { LayoutDashboard, Radar, Flame, Zap, Star, Sparkles, Receipt, Trophy,
          TrendingUp, Globe, ShieldCheck, Activity, Bell, CalendarDays } from "lucide-react";
 import { LeagueContext } from "@/context/LeagueContext";
 import ExportMenu from "@/components/ExportMenu";
@@ -106,11 +107,16 @@ export default function Layout({ children }) {
                 you were. */}
             <Link to="/" className="flex items-center gap-2 shrink-0">
               <div className="h-8 w-8 rounded-md bg-primary flex items-center justify-center">
-                <CornerDownRight className="h-4 w-4 text-black" strokeWidth={2.5} />
+                {/* 22 of the tile's 32px. favicon.svg already holds the mark inside a
+                    safe area, so an 18px mark in a 32px tile was inset twice and read as
+                    a speck. */}
+                <BrandMark className="h-[22px] w-[22px] text-black" title="The Corner Model" />
               </div>
               <div className="hidden sm:block">
-                <p className="font-head font-bold text-sm leading-none tracking-tight">Corner Model</p>
-                <p className="font-mono-data text-[9px] text-primary tracking-widest">v2.0</p>
+                {/* "The Corner Model", which is the domain, the account name and what the
+                    artwork says. The header was the last place still dropping the "The". */}
+                <p className="font-head font-bold text-sm leading-none tracking-tight">The Corner Model</p>
+                <p className="font-mono-data text-[9px] text-primary tracking-widest">3.0</p>
               </div>
             </Link>
 

@@ -1,5 +1,5 @@
 import { Link } from "react-router-dom";
-import { CornerDownRight } from "lucide-react";
+import BrandMark from "@/components/BrandMark";
 
 // The bottom of every page, and the standing answer to "where do I stop paying?".
 //
@@ -17,8 +17,12 @@ export default function SiteFooter({ className = "" }) {
     <footer className={`border-t border-border mt-10 ${className}`} data-testid="site-footer">
       <div className="max-w-[1600px] mx-auto px-3 sm:px-6 py-6 flex flex-wrap items-center gap-x-5 gap-y-2 text-xs text-muted-foreground">
         <span className="flex items-center gap-1.5 text-foreground/80">
-          <CornerDownRight className="h-3.5 w-3.5 text-primary" />
-          Corner Model
+          <BrandMark className="h-3.5 w-3.5 text-primary" />
+          The Corner Model
+          {/* The slogan sits here and nowhere louder. A tagline in the header competes
+              with the nav on every screen; in the footer it is read once, by somebody
+              who has already scrolled to the bottom of something. */}
+          <span className="hidden sm:inline text-muted-foreground/70">· Cornered the market.</span>
         </span>
         <Link to="/faq" className="hover:text-foreground transition-colors" data-testid="footer-faq">
           Questions

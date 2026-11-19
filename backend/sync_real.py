@@ -44,7 +44,23 @@ db = client[os.environ["DB_NAME"]]
 # Past results never change and fixture_stats is cached permanently, so this is a one-off
 # spend, not a recurring one, and a run that stops early RESUMES rather than repeats.
 # Raise it with the STATS_CAP env var once the first pass has settled — no deploy needed.
-STATS_CAP = int(os.environ.get("STATS_CAP", "250"))
+STATS_CAP = int(os.environ.get("STATS_CAP", "450"))
+# RAISED FROM 250 TO 450 so a team can carry ~40 games of history rather than ~25. The
+# one-off cost is the uncached fixtures between the two caps — about 200 a league — and a
+# run that hits the day's quota resumes on the next sync, because fixture_stats is cached
+# permanently. Set STATS_CAP=250 on the host to go back.
+
+# How many real games a team keeps, in two tiers.
+#
+# MODEL_GAMES is what the projection averages over: `real_matches`, the last 20, which is
+# the window the model was tuned and calibrated on. Lengthening it would quietly change
+# every probability on the site, so it does not move with this.
+#
+# HISTORY_GAMES is everything kept for a team: `history_matches`, up to 40. It feeds the
+# things that get better with more games and do not move a price — how long a run really
+# is, and when it started — so "at least 20 in a row" can become "31 in a row".
+MODEL_GAMES = int(os.environ.get("MODEL_GAMES", "20"))
+HISTORY_GAMES = max(MODEL_GAMES, int(os.environ.get("HISTORY_GAMES", "40")))
 # Upcoming fixtures stored per league. These come out of the /fixtures call the sync
 # already makes, so a bigger number costs NOTHING extra in API calls — and the old
 # value of 10 was silently capping every downstream "next N days" view: a league
@@ -345,6 +361,16 @@ async def sync_league(hc, my_lid):
 
     teams_resp = await af_get(hc, "/teams", {"league": api_id, "season": season})
     team_names = {t["team"]["id"]: t["team"]["name"] for t in teams_resp}
+    # LAST SEASON'S SQUAD LIST, one call, to find the sides that are new to this league:
+    # promoted or relegated. Their history here is only this season's games, against a
+    # different standard of opponent from the one they were used to, so their numbers are
+    # flagged rather than trusted. Empty on failure, which flags nobody.
+    try:
+        prev_teams = await af_get(hc, "/teams", {"league": api_id, "season": season - 1})
+        prev_team_ids = sorted({t["team"]["id"] for t in prev_teams})
+    except Exception as e:
+        print(f"[{my_lid}] prev season team list skipped: {e}")
+        prev_team_ids = []
 
     fixtures = await af_get(hc, "/fixtures", {"league": api_id, "season": season})
     ft = [f for f in fixtures if f["fixture"]["status"]["short"] == "FT"]
@@ -466,7 +492,8 @@ async def sync_league(hc, my_lid):
     team_docs = []
     for tid, name in team_names.items():
         rng = random.Random(f"{my_lid}-{tid}")
-        real = sorted(samples.get(tid, []), key=lambda m: m["date"])[-20:]  # chronological, newest last
+        history = sorted(samples.get(tid, []), key=lambda m: m["date"])[-HISTORY_GAMES:]
+        real = history[-MODEL_GAMES:]  # chronological, newest last — the model's window
         m_for = (sum(x["corners_for"] for x in real) / len(real)) if real else league_avg
         m_ag = (sum(x["corners_against"] for x in real) / len(real)) if real else league_avg
         if len(real) >= 5:
@@ -476,6 +503,10 @@ async def sync_league(hc, my_lid):
         team_docs.append({
             "team_id": f"{my_lid}-{tid}", "api_team_id": tid, "league_id": my_lid,
             "name": name, "matches": matches, "real_matches": real, "real_samples": len(real),
+            "history_matches": history, "history_samples": len(history),
+            # Not in this league last season: promoted or relegated (the server works out
+            # which from the other leagues' lists). None when last season's list is unknown.
+            "new_to_league": (tid not in prev_team_ids) if prev_team_ids else None,
         })
     if team_docs:
         await db.teams.insert_many(team_docs)
@@ -591,6 +622,7 @@ async def sync_league(hc, my_lid):
                                           "country": meta["country"], "data_source": "real",
                                           "tier": meta.get("tier"),
                                           "season": season, "avg_shots": avg_shots,
+                                          "prev_season_team_ids": prev_team_ids,
                                           "avg_blocked": avg_blocked,
                                           "synced_at": datetime.now(timezone.utc).isoformat()}},
                                 upsert=True)

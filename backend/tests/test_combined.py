@@ -83,3 +83,15 @@ def test_value_rows_sort_first():
     rows = combined.combine_boards([a, b], [run(team="t1"), run(team="t2", nf=fx(fid="f2"))],
                                    [], teams, odds, poisson_ge)
     assert [r["team_id"] for r in rows] == ["t2", "t1"]
+
+
+def test_promoted_sides_are_flagged_and_sink_below_established_ones():
+    flagged = {**mismatch(team="t2"), "next_fixture": fx(fid="f2"),
+               "league_change": {"status": "promoted", "label": "newly promoted"}}
+    teams = {**TEAMS, "t2": {"team_id": "t2", "real_samples": 20}}
+    odds = {"f1": {"home_over_5.5": 2.0}, "f2": {"home_over_5.5": 2.0}}
+    rows = combined.combine_boards([flagged, mismatch()],
+                                   [run(team="t2", nf=fx(fid="f2")), run()], [],
+                                   teams, odds, poisson_ge)
+    assert [r["team_id"] for r in rows] == ["t1", "t2"]
+    assert "Team newly promoted: price less reliable" in rows[1]["warnings"]

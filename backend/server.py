@@ -33,6 +33,7 @@ import log_redact
 import record_view
 import calibration
 import combined
+import league_change
 import oddities
 import projection_record
 import state_corners
@@ -3282,7 +3283,7 @@ SCREEN_STALE_HOURS = 13  # a little over the 12h sync cadence
 # BUMP THIS whenever a screen's payload SHAPE changes. Staleness is otherwise keyed on
 # the data alone, so a deploy that adds a field would keep serving the old shape from
 # cache until the next sync happened to move data_version.
-SCREEN_SCHEMA = 5   # 4: fixture-board angles gained `mismatch`, and rows gained `reason`
+SCREEN_SCHEMA = 6   # 4: fixture-board angles gained `mismatch`, and rows gained `reason`
 # Must match TOP_TEAMS_LIMIT in frontend/src/components/BestTeams.jsx, or that screen
 # misses its cache on every visit.
 TOP_TEAMS_LIMIT = 60
@@ -7133,10 +7134,15 @@ def live_streak_candidates(team: dict, venue: str, subject: str, direction: str,
     that means anything, and a caller that can only see live_streak's pick gets the
     first and throws it away. live_streak ranks them for callers that want a headline.
     """
-    history = _src(team)
+    # Runs are counted over the LONG history (up to 40 games, see sync_real.HISTORY_GAMES)
+    # so this panel and the streak board agree on how long a run is. The par below still
+    # comes off the model's 20, which is the window every other average uses.
+    model_pool = _src(team)
+    history = team.get("history_matches") or model_pool
     if venue in ("home", "away"):
         want = venue == "home"
         history = [m for m in history if bool(m.get("home")) is want]
+        model_pool = [m for m in model_pool if bool(m.get("home")) is want]
     if len(history) < min_len:
         return []
     # Only lines that are worth suggesting: high enough to mean something on an over,
@@ -7173,7 +7179,7 @@ def live_streak_candidates(team: dict, venue: str, subject: str, direction: str,
     # OVER THE COVERED GAMES ONLY. A shot subject answers None for a game the provider
     # filed no shots for, and summing those as zero would drag the side's par down and
     # then let the under test wave through lines the team never actually stays below.
-    vals = [v for v in (streak_value(m, subject) for m in history) if v is not None]
+    vals = [v for v in (streak_value(m, subject) for m in model_pool) if v is not None]
     par = (sum(vals) / len(vals)) if vals else 0.0
     out = []
     for line in STREAK_LADDERS.get(subject, STREAK_LADDERS["team"]):
@@ -7517,6 +7523,17 @@ def _streak_projection(team: dict, opp: Optional[dict], team_venue: str, opp_ven
             "tier": tier_for_ev(ev) if ev is not None else None}
 
 
+async def _league_changes(teams: Optional[list] = None) -> Dict[str, dict]:
+    """Promoted / relegated / new-to-league sides, keyed by team_id. See league_change.py."""
+    if teams is None:
+        teams = await db.teams.find({"new_to_league": True},
+                                    {"_id": 0, "team_id": 1, "league_id": 1,
+                                     "api_team_id": 1, "new_to_league": 1}).to_list(2000)
+    lgs = await db.leagues.find({}, {"_id": 0, "league_id": 1, "name": 1, "country": 1,
+                                     "tier": 1, "prev_season_team_ids": 1}).to_list(200)
+    return league_change.change_map(teams, lgs)
+
+
 # The team-corner lines a post actually quotes a price at.
 LADDER_LINES = (5, 6)
 
@@ -7612,7 +7629,10 @@ async def streaks(league_id: Optional[str] = None, side: str = "overall", window
 
     results = []
     for t in teams:
-        rms = t.get("real_matches") or []
+        # THE LONGER HISTORY where the sync has stored one: the window below still takes
+        # only the last few games, but the run's length and start date can now reach back
+        # 40 games instead of stopping at 20. Prices still come off the last 20.
+        rms = t.get("history_matches") or t.get("real_matches") or []
         if side == "home":
             history = [m for m in rms if m["home"]]
         elif side == "away":
@@ -7686,9 +7706,14 @@ async def streaks(league_id: Optional[str] = None, side: str = "overall", window
             "avg": spread["avg"], "min_won": spread["min"], "max_won": spread["max"],
             "covered": spread["covered"],
             "streak": runs["current"], "longest": runs["longest"],
-            "real_samples": t.get("real_samples", 0), "recent": recent,
+            "real_samples": t.get("real_samples", 0),
+            "history_samples": t.get("history_samples") or t.get("real_samples", 0),
+            "recent": recent,
             "next_fixture": nf, "projection": projection,
         })
+    league_change.annotate(results, league_change.change_map(
+        [t for t in teams if t.get("new_to_league")],
+        await db.leagues.find({}, {"_id": 0}).to_list(200)))
     # tightest under / highest over first, then the most reliable and longest runs
     if direction == "under":
         results.sort(key=lambda x: (-x["line"], x["hits"], x["streak"]["length"], -(x["avg"] or 0)), reverse=True)
@@ -7934,7 +7959,10 @@ async def _all_mismatches(within_days: Optional[int] = None, limit: int = 20):
                                      "venue_used": opp_d["venue_used"], "recent": opp_d["recent"]},
                     }})
     out.sort(key=lambda x: x["lambda"], reverse=True)
-    return out[:limit]
+    out = out[:limit]
+    league_change.annotate(out, await _league_changes(
+        [t for t in teams if t.get("new_to_league")]))
+    return out
 
 
 @api_router.get("/top-mismatches")

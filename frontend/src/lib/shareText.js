@@ -540,7 +540,11 @@ export const pickGameDetailed = (rows = [], minProb = GAME_MIN_PROB) => {
   };
   const realPrice = (r) => isRealPrice(r?.projection?.odds_source) && Number.isFinite(ev(r));
 
-  const live = (rows || []).filter((r) => r?.next_fixture?.date && run(r) >= 2);
+  // NO PROMOTED OR RELEGATED SIDE, on either team. Their numbers come from a different
+  // division or a thin new one, so the model's price on the game is the weakest it
+  // makes, and the public post is the last place to lead with it.
+  const live = (rows || []).filter((r) => r?.next_fixture?.date && run(r) >= 2
+    && !r.league_change && !r.opponent_league_change);
   if (!live.length) return { row: null, basis: "none" };
 
   // Only a POSITIVE edge counts. The best of a bad set is still a bad bet, and posting
@@ -626,7 +630,8 @@ export const gameShare = ({ row = {}, site = "", now = new Date() } = {}) => () 
     // "AT LEAST" ONLY WHEN IT IS TRUE. When the run covers every game we hold for the
     // team, it started before our record did and the real figure is unknown, so the post
     // says so. Otherwise it is exactly this long and says that.
-    const capped = Number(row.real_samples) > 0 && run >= Number(row.real_samples);
+    const held = Number(row.history_samples ?? row.real_samples);
+    const capped = held > 0 && run >= held;
     const head = `${flag} ${row.name} have won ${row.line_label} corners in every ${venue}`
       + (since ? ` since ${since}.` : ".");
     lines.push((capped

@@ -150,6 +150,15 @@ def combine_boards(mismatches: Iterable[dict], runs: Iterable[dict],
             warnings.append(f"opponent's venue record is {opp_games} games")
         if not priced:
             warnings.append("no bookmaker price for 5+/6+ yet")
+        # Promoted / relegated sides: whichever board the row came from carries the flag.
+        mine = next((r.get("league_change") for r in (qs, *s["runs"], s["perfect"])
+                     if r and r.get("league_change")), None)
+        theirs = next((r.get("opponent_league_change") for r in (qs, *s["runs"], s["perfect"])
+                       if r and r.get("opponent_league_change")), None)
+        if mine:
+            warnings.append(f"{base.get('name')} {mine['label']}: price less reliable")
+        if theirs:
+            warnings.append(f"{nf.get('opponent')} {theirs['label']}: price less reliable")
 
         run = _best_streak(s["runs"], venue)
         perfect_row = s["perfect"]
@@ -168,13 +177,17 @@ def combine_boards(mismatches: Iterable[dict], runs: Iterable[dict],
             "perfect": None if not perfect_row else {
                 "streak": perfect_row.get("streak"),
                 "opp_leak": perfect_row.get("opp_leak")},
+            "league_change": mine, "opponent_league_change": theirs,
             "lambda": lam, "angles": angles, "best": best,
             "value": bool(best and best["ev"] > 0),
             "warnings": warnings,
         })
 
-    # Value first, then how many boards agree, then the size of the edge, then kick-off.
-    out.sort(key=lambda r: (not r["value"], -r["board_count"],
+    # Value first, established sides before new ones, then how many boards agree, then the size of the edge, then kick-off.
+    # Promoted / relegated games sink below established ones at the same value.
+    out.sort(key=lambda r: (not r["value"],
+                            bool(r["league_change"] or r["opponent_league_change"]),
+                            -r["board_count"],
                             -((r["best"] or {}).get("ev") or -999),
                             r["next_fixture"].get("date") or ""))
     return out

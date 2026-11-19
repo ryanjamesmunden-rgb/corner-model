@@ -792,6 +792,21 @@ describe("the game post, in the account's format", () => {
     expect(runSince("2025-08-01T00:00:00Z", NOW)).toBe("1 August 2025");
   });
 
+  test("'at least' measures against the full history, not the model's 20", () => {
+    const long = bodo({ real_samples: 20, history_samples: 40,
+                        streak: { length: 31, start_date: "2026-03-01T00:00:00Z" } });
+    expect(gameShare({ row: long, site: SITE, now: NOW })().split("\n\n")[0])
+      .toBe("🇳🇴 Bodo/Glimt have won 4+ corners in every game since 1 March. 31 in a row.");
+  });
+
+  test("a promoted or relegated side on either team is never the game of the day", () => {
+    const ok = bodo();
+    const promoted = bodo({ name: "Promoted FC", league_change: { status: "promoted" } });
+    const vsRelegated = bodo({ name: "Vs Relegated", opponent_league_change: { status: "relegated" } });
+    expect(pickGame([promoted, vsRelegated])).toBeNull();
+    expect(pickGame([promoted, ok, vsRelegated]).name).toBe("Bodo/Glimt");
+  });
+
   test("a row with no fixture attached produces nothing to post", () => {
     expect(gameShare({ row: bodo({ next_fixture: null }) })()).toBe("");
   });

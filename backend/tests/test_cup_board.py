@@ -315,13 +315,22 @@ class TestTheIdIsAcceptedWhereItWorksAndRefusedWhereItDoesNot:
         assert "unknown" in server._not_a_league("zzz-x").lower()
 
     def test_the_tool_endpoints_validate_against_the_league_list(self):
-        """FOUR ENDPOINTS, AND ONLY FOUR. They launch per-league scripts — syncing teams,
-        backfilling per-fixture statistics, probing api ids — and every one of those
-        iterates LEAGUE_META. A cup id accepted here starts a subprocess that exits with
-        "unknown league key" while the endpoint reports that it began fine."""
+        """FIVE ENDPOINTS, AND ONLY FIVE. They launch per-league scripts — backfilling
+        per-fixture statistics and goals, measuring, probing odds and probing leagues —
+        and every one of those iterates LEAGUE_META. A cup id accepted here starts a
+        subprocess that exits with "unknown league key" while the endpoint reports that it
+        began fine. (Four until /tools/probe-leagues gained the same check.)"""
         import inspect
+        import re
         src = inspect.getsource(server)
-        assert src.count("_not_a_league(league_id)") == 4
+        assert src.count("_not_a_league(league_id)") == 5
+        # Named, so a sixth turning up says which one rather than just a number.
+        guarded = set()
+        for m in re.finditer(r"_not_a_league\(league_id\)", src):
+            route = re.findall(r'@api_router\.\w+\("([^"]+)"\)', src[:m.start()])[-1]
+            guarded.add(route)
+        assert guarded == {"/tools/backfill-shots", "/tools/backfill-goals", "/tools/measure",
+                           "/tools/probe-odds", "/tools/probe-leagues"}
 
     def test_but_refresh_can_still_be_pointed_at_a_cup(self):
         """The opposite requirement, and the reason the check above is a count rather

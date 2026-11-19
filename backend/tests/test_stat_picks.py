@@ -28,7 +28,9 @@ def _slice():
     with open(os.path.join(HERE, "server.py")) as fh:
         src = fh.read()
     start = src.index("STAT_PICK_BAND = (5, 6)")
-    end = src.index('@api_router.get("/share/stat-picks")')
+    # The first route after the helpers, whichever it is: naming one specific route broke
+    # the moment another (/share/angles) was added between them.
+    end = src.index("@api_router.", start)
     ns = {"odds_feed": odds_feed, "Optional": __import__("typing").Optional,
           "STAT_PICK_BAND": None}
     exec(compile(src[start:end], "sliced", "exec"), ns)

@@ -32,6 +32,8 @@ import h2h
 import log_redact
 import record_view
 import calibration
+import combined
+import league_change
 import oddities
 import projection_record
 import state_corners
@@ -3351,7 +3353,7 @@ SCREEN_STALE_HOURS = 13  # a little over the 12h sync cadence
 # BUMP THIS whenever a screen's payload SHAPE changes. Staleness is otherwise keyed on
 # the data alone, so a deploy that adds a field would keep serving the old shape from
 # cache until the next sync happened to move data_version.
-SCREEN_SCHEMA = 4   # 4: fixture-board angles gained `mismatch`, and rows gained `reason`
+SCREEN_SCHEMA = 6   # 4: fixture-board angles gained `mismatch`, and rows gained `reason`
 # Must match TOP_TEAMS_LIMIT in frontend/src/components/BestTeams.jsx, or that screen
 # misses its cache on every visit.
 TOP_TEAMS_LIMIT = 60
@@ -3519,6 +3521,10 @@ async def _screen_best_bets():
     return await best_bets(user={})
 
 
+async def _screen_combined():
+    return await _combined_rows(within_days=7, user={})
+
+
 async def _screen_fixture_board():
     # days=3 mirrors the home page's default tab, not this endpoint's own default
     return await fixture_board(days=3, user={})
@@ -3541,6 +3547,8 @@ SCREENS = {
     "trends": _screen_trends,
     # The whole-database superlatives behind the daily post. One shape, no parameters.
     "oddities": _screen_oddities,
+    # Quick Scan + Streaks + Perfect Games together, for the week ahead.
+    "combined": _screen_combined,
 }
 
 
@@ -5497,6 +5505,10 @@ async def _odds_for_many(fixture_ids) -> Dict[str, dict]:
             continue
         out[fid] = {
             "odds": {k: v["price"] for k, v in merged.items()},
+            # Who quoted each fetched price, so a post can say "via Sky Bet". Fetched
+            # prices only — see feed_book_names for why a typed price gets no name.
+            "books": feed_book_names((f.get(fid) or {}).get("books"),
+                                     {k: v["source"] for k, v in merged.items()}),
             # `.get("odds")` and not the document's presence: a row can exist carrying an
             # empty odds dict, and that is not a human having chosen anything.
             "source": (m.get(fid) or {}).get("source") if (m.get(fid) or {}).get("odds")
@@ -5985,7 +5997,9 @@ async def fixture_detail(fixture_id: str, token: Optional[str] = None,
     lg_avg = (sum(lg_vals) / len(lg_vals)) if lg_vals else 0.0
 
     def recent(team):
-        rms = team.get("real_matches") or []
+        # THE LONG HISTORY (up to 40 games) so the fixture page's slider and charts can
+        # reach back further. Prices on this page still come off the model's 20.
+        rms = team.get("history_matches") or team.get("real_matches") or []
         return [{"date": m["date"], "opponent": m["opponent"], "home": m["home"],
                  # WHICH SEASON EACH GAME BELONGS TO. The pool mixes them on purpose — the
                  # sync tops up from last season while the current one is thin, which is what
@@ -6988,9 +7002,13 @@ def _blur(row):
         return row
     out = {k: v for k, v in row.items() if k not in BLURRED_FIELDS}
     # Nested model numbers hide in the same places on every board.
-    for nest in ("projection", "best"):
+    for nest in ("projection", "best", "quick_scan"):
         if isinstance(row.get(nest), dict):
             out[nest] = {k: v for k, v in row[nest].items() if k not in BLURRED_FIELDS}
+    ladder = (row.get("projection") or {}).get("ladder") if isinstance(row.get("projection"), dict) else None
+    if isinstance(ladder, list):
+        out["projection"]["ladder"] = [{k: v for k, v in a.items() if k not in BLURRED_FIELDS}
+                                       if isinstance(a, dict) else a for a in ladder]
     if isinstance(row.get("angles"), list):
         out["angles"] = [{k: v for k, v in a.items() if k not in BLURRED_FIELDS}
                          if isinstance(a, dict) else a for a in row["angles"]]
@@ -7245,10 +7263,15 @@ def live_streak_candidates(team: dict, venue: str, subject: str, direction: str,
     that means anything, and a caller that can only see live_streak's pick gets the
     first and throws it away. live_streak ranks them for callers that want a headline.
     """
-    history = _src(team)
+    # Runs are counted over the LONG history (up to 40 games, see sync_real.HISTORY_GAMES)
+    # so this panel and the streak board agree on how long a run is. The par below still
+    # comes off the model's 20, which is the window every other average uses.
+    model_pool = _src(team)
+    history = team.get("history_matches") or model_pool
     if venue in ("home", "away"):
         want = venue == "home"
         history = [m for m in history if bool(m.get("home")) is want]
+        model_pool = [m for m in model_pool if bool(m.get("home")) is want]
     if len(history) < min_len:
         return []
     # Only lines that are worth suggesting: high enough to mean something on an over,
@@ -7285,7 +7308,7 @@ def live_streak_candidates(team: dict, venue: str, subject: str, direction: str,
     # OVER THE COVERED GAMES ONLY. A shot subject answers None for a game the provider
     # filed no shots for, and summing those as zero would drag the side's par down and
     # then let the under test wave through lines the team never actually stays below.
-    vals = [v for v in (streak_value(m, subject) for m in history) if v is not None]
+    vals = [v for v in (streak_value(m, subject) for m in model_pool) if v is not None]
     par = (sum(vals) / len(vals)) if vals else 0.0
     out = []
     for line in STREAK_LADDERS.get(subject, STREAK_LADDERS["team"]):
@@ -7629,6 +7652,44 @@ def _streak_projection(team: dict, opp: Optional[dict], team_venue: str, opp_ven
             "tier": tier_for_ev(ev) if ev is not None else None}
 
 
+async def _league_changes(teams: Optional[list] = None) -> Dict[str, dict]:
+    """Promoted / relegated / new-to-league sides, keyed by team_id. See league_change.py."""
+    if teams is None:
+        teams = await db.teams.find({"new_to_league": True},
+                                    {"_id": 0, "team_id": 1, "league_id": 1,
+                                     "api_team_id": 1, "new_to_league": 1}).to_list(2000)
+    lgs = await db.leagues.find({}, {"_id": 0, "league_id": 1, "name": 1, "country": 1,
+                                     "tier": 1, "prev_season_team_ids": 1}).to_list(200)
+    return league_change.change_map(teams, lgs)
+
+
+# The team-corner lines a post actually quotes a price at.
+LADDER_LINES = (5, 6)
+
+
+def team_price_ladder(lam, venue: str, odds: Dict[str, float], books: Dict[str, str],
+                      lines=LADDER_LINES) -> List[dict]:
+    """5+ and 6+ team corners for one side of a fixture: the book's price, who quoted it,
+    and the model's chance and edge at that line.
+
+    A streak's own line is often not the line worth betting. A side that has won 4+ in
+    twenty straight is a 4+ fact, but 4+ is priced at 1.10 and nobody posts that; the post
+    quotes the price at 5+ or 6+ against the run. So the ladder rides with the row and the
+    composer picks from it, rather than the composer guessing a market key."""
+    if not lam:
+        return []
+    out = []
+    for line in lines:
+        key = f"{venue}_over_{line - 0.5}"
+        p = nb_ge(line, lam)
+        book = odds.get(key)
+        out.append({"line": line, "label": f"{line}+", "market_key": key,
+                    "prob": round(p * 100, 1), "fair_odds": fair_odds(p),
+                    "book_odds": book, "book_name": books.get(key) if book else None,
+                    "ev": round((book * p - 1) * 100, 2) if book else None})
+    return out
+
+
 @api_router.get("/streaks")
 async def streaks(league_id: Optional[str] = None, side: str = "overall", window: int = 5,
                   min_hits: int = 5, threshold: Optional[int] = None, min_line: int = 3,
@@ -7680,6 +7741,7 @@ async def streaks(league_id: Optional[str] = None, side: str = "overall", window
     # Unmarked documents predate the stamp OR came from a seeder; either way they are not
     # known to be a real bookmaker's price, and "unknown" must not read as "real".
     odds_src = {fid: row["source"] for fid, row in priced.items()}
+    books_map = {fid: row.get("books") or {} for fid, row in priced.items()}
     now = datetime.now(timezone.utc)
 
     direction = "under" if direction == "under" else "over"
@@ -7696,7 +7758,10 @@ async def streaks(league_id: Optional[str] = None, side: str = "overall", window
 
     results = []
     for t in teams:
-        rms = t.get("real_matches") or []
+        # THE LONGER HISTORY where the sync has stored one: the window below still takes
+        # only the last few games, but the run's length and start date can now reach back
+        # 40 games instead of stopping at 20. Prices still come off the last 20.
+        rms = t.get("history_matches") or t.get("real_matches") or []
         if side == "home":
             history = [m for m in rms if m["home"]]
         elif side == "away":
@@ -7750,6 +7815,11 @@ async def streaks(league_id: Optional[str] = None, side: str = "overall", window
                                             bl_map.get(t["league_id"], 0.0))
             if projection is not None:
                 projection["odds_source"] = odds_src.get(nf["fixture_id"])
+                if direction == "over" and subject == "team":
+                    projection["ladder"] = team_price_ladder(
+                        projection.get("lambda"), team_venue,
+                        odds_map.get(nf["fixture_id"], {}),
+                        books_map.get(nf["fixture_id"], {}))
         results.append({
             "team_id": t["team_id"], "name": t["name"], "league_id": t["league_id"],
             "league_name": leagues.get(t["league_id"], ""),
@@ -7765,9 +7835,14 @@ async def streaks(league_id: Optional[str] = None, side: str = "overall", window
             "avg": spread["avg"], "min_won": spread["min"], "max_won": spread["max"],
             "covered": spread["covered"],
             "streak": runs["current"], "longest": runs["longest"],
-            "real_samples": t.get("real_samples", 0), "recent": recent,
+            "real_samples": t.get("real_samples", 0),
+            "history_samples": t.get("history_samples") or t.get("real_samples", 0),
+            "recent": recent,
             "next_fixture": nf, "projection": projection,
         })
+    league_change.annotate(results, league_change.change_map(
+        [t for t in teams if t.get("new_to_league")],
+        await db.leagues.find({}, {"_id": 0}).to_list(200)))
     # tightest under / highest over first, then the most reliable and longest runs
     if direction == "under":
         results.sort(key=lambda x: (-x["line"], x["hits"], x["streak"]["length"], -(x["avg"] or 0)), reverse=True)
@@ -8013,7 +8088,10 @@ async def _all_mismatches(within_days: Optional[int] = None, limit: int = 20):
                                      "venue_used": opp_d["venue_used"], "recent": opp_d["recent"]},
                     }})
     out.sort(key=lambda x: x["lambda"], reverse=True)
-    return out[:limit]
+    out = out[:limit]
+    league_change.annotate(out, await _league_changes(
+        [t for t in teams if t.get("new_to_league")]))
+    return out
 
 
 @api_router.get("/top-mismatches")
@@ -8138,6 +8216,54 @@ async def perfect_games(within_days: int = 7, limit: int = 20, min_hits: int = 4
     # high lambda off two games is a smaller thing than a high lambda off ten.
     out.sort(key=lambda x: (x["mismatch"]["lambda"], x["streak"]["length"]), reverse=True)
     return _preview(out[:max(1, min(limit, 100))], user, response)
+
+
+# ----------------------------- Combined board -----------------------------
+# Quick Scan, Streaks and Perfect Games read together, one row per team and fixture,
+# priced at 5+ and 6+ team corners. The merge itself lives in combined.py.
+
+async def _combined_rows(within_days: int = 7, min_samples: int = combined.DEFAULT_MIN_SAMPLES,
+                         min_opp_games: int = combined.DEFAULT_MIN_OPP_GAMES,
+                         min_boards: int = 2, user: dict = None):
+    within = max(1, min(within_days, 14))
+    user = user or {}
+    # Internal calls: no `response`, so each board comes back whole rather than trimmed.
+    mismatches = await _all_mismatches(within_days=within, limit=10000)
+    runs = []
+    for side in ("overall", "home", "away"):
+        runs.extend(await streaks(league_id="all", side=side, window=5, min_hits=4,
+                                  threshold=None, min_line=3, within_days=within,
+                                  direction="over", subject="team", max_line=None,
+                                  min_streak=MIN_STREAK_LEN, user=user))
+    perfect = await perfect_games(within_days=within, limit=100, min_hits=4, window=5,
+                                  side="overall", min_opp_leak=5, user=user)
+    teams = await db.teams.find({}, {"_id": 0, "team_id": 1, "real_samples": 1}).to_list(5000)
+    teams_by_id = {t["team_id"]: t for t in teams}
+    fixture_ids = list({(r.get("next_fixture") or {}).get("fixture_id")
+                        for r in [*mismatches, *runs, *perfect]} - {None})
+    priced = await _odds_for_many(fixture_ids)
+    odds_by_fixture = {fid: row["odds"] for fid, row in priced.items()}
+    return combined.combine_boards(mismatches, runs, perfect, teams_by_id, odds_by_fixture,
+                                   prob_ge=nb_ge, min_samples=min_samples,
+                                   min_opp_games=min_opp_games, min_boards=min_boards)
+
+
+@api_router.get("/combined")
+async def combined_board(within_days: int = 7, min_samples: int = combined.DEFAULT_MIN_SAMPLES,
+                         min_opp_games: int = combined.DEFAULT_MIN_OPP_GAMES,
+                         min_boards: int = 2, value_only: bool = False,
+                         response: Response = None,
+                         user: dict = Depends(get_current_user)):
+    """Teams on two or more of Quick Scan, Streaks and Perfect Games for the same fixture,
+    each priced at 5+ and 6+ team corners against the stored bookmaker price."""
+    if (_cache_ok() and within_days == 7 and min_samples == combined.DEFAULT_MIN_SAMPLES
+            and min_opp_games == combined.DEFAULT_MIN_OPP_GAMES and min_boards == 2):
+        rows = await _screen("combined")
+    else:
+        rows = await _combined_rows(within_days, min_samples, min_opp_games, min_boards, user)
+    if value_only:
+        rows = [r for r in rows if r.get("value")]
+    return _preview(rows, user, response)
 
 
 def _venue_matches(team, venue):

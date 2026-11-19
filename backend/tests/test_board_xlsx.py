@@ -362,9 +362,11 @@ class TestEmptyBoards:
         # thing that decides that by crashing.
         out = tmp_path / "empty.xlsx"
         counts = board_xlsx.build({"streaks": [], "mismatches": [], "chase": []}, out)
-        # Every count, not an exact dict: this asserted a three-key literal and so broke
-        # the moment a summary sheet was added, which is the one kind of change that
-        # cannot make an empty workbook crash.
+        # EVERY COUNT, NOT AN EXACT DICT. This asserted a three-key literal, so it broke
+        # the moment the Combined sheet was added (#360) and again when By kick-off was —
+        # which is the one kind of change that cannot make an empty workbook crash. A
+        # literal here tests the builder's dict shape, not the thing the test is named
+        # after.
         assert set(counts) == {"priced", "combined", "streaks", "mismatches", "chase"}
         assert all(v == 0 for v in counts.values()), counts
         book = openpyxl.load_workbook(out)

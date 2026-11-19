@@ -8,9 +8,10 @@
 import { CONCEDED_MARK, MISMATCH_MARK, mismatchShare,
   streakShare, fixtureShare, bestTeamsShare, streakResultShare,
          fixtureStreakShare, telegramPick, wonLadder, openGameCase, postHeader,
-         pickGame, pickGameDetailed, gameShare, cardPost, picksReview, moreVia,
+         pickGame, pickGameDetailed, gameShare, pricedRung, dayWord, shortTime, runSince, cardPost, picksReview, moreVia,
          postDate, postTime, postDayTime, POST_TZ, pickLabel, angleMenu,
          BEST_TEAMS_MARK, AVG_MARK } from "./shareText";
+import { xWeight } from "./xLimit";
 
 const NORWAY = "\u{1F1F3}\u{1F1F4}";
 const soon = () => {
@@ -706,87 +707,113 @@ describe("the game of the day", () => {
     expect(pick.name).toBe("ShortAndLessBad");
   });
 
-  test("renders plain — one stat a line, no separators between clauses", () => {
-    const out = gameShare({ row: pickGame(board) })();
-    const lines = out.split("\n");
-    // The hour is the READER'S clock, so it is asserted by shape — pinning 11:00am
-    // would only be asserting the timezone the suite happens to run in.
-    expect(lines[0]).toMatch(/^📅 Sunday 13th September \d{1,2}:\d{2}(am|pm)$/);
-    expect(lines[1]).toBe("🇧🇪 Jupiler Pro League Club Brugge v Antwerp");
-    expect(lines[2]).toBe("🔥 Club Brugge 5+ corners 9 in a row");
-    expect(lines[3]).toBe("🎯 averaging 8.2 a game");
-  });
-
-  test("no template punctuation anywhere in it", () => {
-    // A post that reads as generated gets scrolled past. The @, the slashes between
-    // clauses and the em-dashes all went for that reason.
-    const out = gameShare({ row: pickGame(board) })();
-    expect(out).not.toContain(" @ ");
-    expect(out).not.toContain(" / ");
-    expect(out).not.toContain("—");
-    expect(out).not.toContain(" · ");
-  });
-
-  test("the only blank line in the post is the one before the tail", () => {
-    const out = gameShare({ row: pickGame(board), more: 14, site: "https://thecornermodel.com" })();
-    expect(out.split("\n\n")).toHaveLength(2);
-    expect(out.endsWith("14+ more via: thecornermodel.com")).toBe(true);
-  });
-
   test("the tail counts other angles, and drops the scheme X does not need", () => {
     expect(moreVia(14, "https://thecornermodel.com")).toBe("\n\n14+ more via: thecornermodel.com");
     expect(moreVia(0, "https://thecornermodel.com")).toBe("\n\nMore via: thecornermodel.com");
-    // No site configured is not a reason to publish a dangling "more via:".
     expect(moreVia(14, "")).toBe("");
   });
+});
 
-  test("an away team is named on the right side of the v", () => {
-    const out = gameShare({ row: board[0] })();
-    expect(out).toContain("Sassuolo v Juventus");
-    expect(out).not.toContain("Juventus v Sassuolo");
+describe("the game post, in the account's format", () => {
+  const SITE = "https://www.thecornermodel.com";
+  // Friday 20 Nov 2026, so a Saturday 18:00 UK kick-off is "tomorrow".
+  const NOW = new Date("2026-11-20T12:00:00Z");
+  const bodo = (over = {}) => ({
+    name: "Bodo/Glimt", league_id: "nor-el", league_name: "Eliteserien", line_label: "4+",
+    side: "overall", real_samples: 20,
+    streak: { length: 20, start_date: "2026-05-04T00:00:00+00:00" },
+    projection: {
+      odds_source: "api", prob: 90, ev: -2,
+      ladder: [
+        { line: 5, label: "5+", book_odds: 1.4, book_name: "Bet365", prob: 70, fair_odds: 1.43, ev: -2 },
+        { line: 6, label: "6+", book_odds: 1.91, book_name: "Sky Bet", prob: 58, fair_odds: 1.72, ev: 10.8 },
+      ],
+    },
+    next_fixture: { fixture_id: "nor-el-1494808", date: "2026-11-21T18:00:00Z",
+                    opponent: "Molde", is_home: false },
+    ...over,
   });
 
-  test("a flag rather than a fire below the fire line", () => {
-    expect(gameShare({ row: board[3] })()).toContain("🚩 Grimsby 6+ corners 5 in a row");
-    expect(gameShare({ row: board[1] })()).toContain("🔥");
+  test("matches the format line for line", () => {
+    const out = gameShare({ row: bodo(), site: SITE, now: NOW })();
+    expect(out.split("\n\n")).toEqual([
+      "🇳🇴 Bodo/Glimt have won 4+ corners in every game since 4 May. at least 20 in a row. "
+        + "Our record of them starts there, so it may well be longer...",
+      "📈 They're priced @ 1.91 via Sky Bet to get 6+ corners away to Molde tomorrow",
+      "🏟️ Molde v Bodo/Glimt @ 6pm: https://www.thecornermodel.com/fixture/nor-el-1494808",
+    ]);
   });
 
-  test("the model's number never reaches the tweet, in either form", () => {
-    // A percentage and a fair price are the same fact — 79% IS 1.26 — so publishing the
-    // percentage publishes the price. Both are pinned out.
-    const out = gameShare({ row: pickGame(board) })();
+  test("'at least' only when the run is as long as our record", () => {
+    const out = gameShare({ row: bodo({ streak: { length: 9, start_date: "2026-09-12T00:00:00Z" } }),
+                            site: SITE, now: NOW })();
+    expect(out.split("\n\n")[0]).toBe("🇳🇴 Bodo/Glimt have won 4+ corners in every game since 12 September. 9 in a row.");
+  });
+
+  test("a venue run says so, and a home game reads 'at home to'", () => {
+    const row = bodo({ side: "home", next_fixture: { ...bodo().next_fixture, is_home: true } });
+    const out = gameShare({ row, site: SITE, now: NOW })();
+    expect(out).toContain("in every home game since");
+    expect(out).toContain("6+ corners at home to Molde tomorrow");
+    expect(out).toContain("🏟️ Bodo/Glimt v Molde @ 6pm");
+  });
+
+  test("quotes the value rung, else the longest priced one", () => {
+    expect(pricedRung(bodo()).line).toBe(6);
+    const noValue = bodo();
+    noValue.projection.ladder = noValue.projection.ladder.map((r) => ({ ...r, ev: -5 }));
+    expect(pricedRung(noValue).line).toBe(6);
+    const fiveOnly = bodo();
+    fiveOnly.projection.ladder = [fiveOnly.projection.ladder[0]];
+    expect(pricedRung(fiveOnly).line).toBe(5);
+  });
+
+  test("no real price, no price line: a demo price is never quoted as a book's", () => {
+    const demo = bodo({ projection: { ...bodo().projection, odds_source: "seed" } });
+    const out = gameShare({ row: demo, site: SITE, now: NOW })();
+    expect(out).not.toContain("📈");
+    expect(out.split("\n\n")).toHaveLength(2);
+  });
+
+  test("the model's number never reaches the tweet", () => {
+    const out = gameShare({ row: bodo(), site: SITE, now: NOW })();
     expect(out).not.toContain("%");
-    expect(out).not.toContain("1.26");
-    expect(out).not.toMatch(/\d\.\d\d/);
-    expect(out).not.toMatch(/model/i);
+    expect(out).not.toContain("1.72");
+    expect(out).not.toMatch(/\bmodel\b|\bfair\b|\bedge\b/i);
   });
 
-  test("what it does carry is countable by anyone", () => {
-    // The run and the average are facts about games already played. Giving those away
-    // costs nothing; giving the price away costs the subscription.
-    const out = gameShare({ row: pickGame(board) })();
-    expect(out).toContain("9 in a row");
-    expect(out).toContain("averaging 8.2 a game");
+  test("day words and times as typed", () => {
+    expect(dayWord("2026-11-20T19:45:00Z", NOW)).toBe("today");
+    expect(dayWord("2026-11-21T18:00:00Z", NOW)).toBe("tomorrow");
+    expect(dayWord("2026-11-22T14:00:00Z", NOW)).toBe("on Sunday");
+    expect(dayWord("2026-12-05T15:00:00Z", NOW)).toBe("on 5 December");
+    expect(shortTime("2026-11-21T18:00:00Z")).toBe("6pm");
+    expect(shortTime("2026-11-21T19:45:00Z")).toBe("7:45pm");
+    expect(runSince("2025-08-01T00:00:00Z", NOW)).toBe("1 August 2025");
   });
 
-  test("an unmeasured average is dropped rather than printed as a number", () => {
-    const bare = { ...board[1], avg: null };
-    const out = gameShare({ row: bare })();
-    expect(out).not.toContain("🎯");
-    expect(out).toContain("🔥 Club Brugge");
+  test("'at least' measures against the full history, not the model's 20", () => {
+    const long = bodo({ real_samples: 20, history_samples: 40,
+                        streak: { length: 31, start_date: "2026-03-01T00:00:00Z" } });
+    expect(gameShare({ row: long, site: SITE, now: NOW })().split("\n\n")[0])
+      .toBe("🇳🇴 Bodo/Glimt have won 4+ corners in every game since 1 March. 31 in a row.");
+  });
+
+  test("a promoted or relegated side on either team is never the game of the day", () => {
+    const ok = bodo();
+    const promoted = bodo({ name: "Promoted FC", league_change: { status: "promoted" } });
+    const vsRelegated = bodo({ name: "Vs Relegated", opponent_league_change: { status: "relegated" } });
+    expect(pickGame([promoted, vsRelegated])).toBeNull();
+    expect(pickGame([promoted, ok, vsRelegated]).name).toBe("Bodo/Glimt");
   });
 
   test("a row with no fixture attached produces nothing to post", () => {
-    expect(gameShare({ row: { ...board[1], next_fixture: null } })()).toBe("");
-    expect(pickGame([])).toBeNull();
-    expect(pickGame([{ name: "NoFixture", streak: { length: 9 } }])).toBeNull();
+    expect(gameShare({ row: bodo({ next_fixture: null }) })()).toBe("");
   });
 
-  test("the whole post fits a tweet with room for the link", () => {
-    for (const r of board) {
-      const out = gameShare({ row: r })();
-      expect(out.length).toBeLessThan(200);
-    }
+  test("fits a tweet", () => {
+    const out = gameShare({ row: bodo(), site: SITE, now: NOW })();
+    expect(xWeight(out)).toBeLessThanOrEqual(280);
   });
 });
 

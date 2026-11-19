@@ -11,8 +11,9 @@ requests and the thing you were about to tap moves out from under you.
 """
 import os
 import sys
-from datetime import datetime, timezone
-from typing import Optional
+from datetime import datetime, timedelta, timezone
+from typing import Dict, List, Optional, Tuple
+from zoneinfo import ZoneInfo
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -29,8 +30,13 @@ def _src():
 # and test_shot_streaks do.
 def _load():
     src = _src()
-    ns = {"datetime": datetime, "timezone": timezone, "Optional": Optional}
-    body = src[src.index("MY_TEAMS_FIXTURES = "):src.index('@api_router.get("/my-teams")')]
+    ns = {"datetime": datetime, "timezone": timezone, "Optional": Optional,
+          "ZoneInfo": ZoneInfo, "Dict": Dict, "List": List, "Tuple": Tuple,
+          "timedelta": timedelta}
+    start = src.index("MY_TEAMS_FIXTURES = ")
+    # Up to the first route after the helpers, whichever it is: the calendar endpoint was
+    # added in between, and slicing to /my-teams by name pulled its decorator in.
+    body = src[start:src.index("@api_router.", start)]
     exec(compile(body, "sliced:my_teams", "exec"), ns)
     return ns
 

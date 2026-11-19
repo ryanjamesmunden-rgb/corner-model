@@ -362,9 +362,10 @@ class TestEmptyBoards:
         # thing that decides that by crashing.
         out = tmp_path / "empty.xlsx"
         counts = board_xlsx.build({"streaks": [], "mismatches": [], "chase": []}, out)
-        assert counts == {"streaks": 0, "mismatches": 0, "chase": 0}
+        # The Combined sheet (#360) is built from the same three boards, so it is empty too.
+        assert counts == {"combined": 0, "streaks": 0, "mismatches": 0, "chase": 0}
         book = openpyxl.load_workbook(out)
-        assert book.sheetnames == ["Read me", "Streaks", "Mismatches", "Chase"]
+        assert book.sheetnames == ["Read me", "Combined", "Streaks", "Mismatches", "Chase"]
 
     def test_a_missing_board_key_is_not_an_error(self, tmp_path):
         # /api/share/rows returns {} when the backend is asleep, and the builder is asked

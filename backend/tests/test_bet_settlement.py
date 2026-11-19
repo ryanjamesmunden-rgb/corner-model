@@ -160,7 +160,16 @@ class TestItNoLongerNeedsTheFixtureToStillExist:
         src = inspect.getsource(server.settle_pending_bets)
         # The docstring explains the bug and names the collection; it is the CODE that
         # must not touch it. Checking the whole source would fail on its own explanation.
-        body = src.replace(server.settle_pending_bets.__doc__ or "", "")
+        # Parsed and re-printed without its docstring: that drops the comments as well, and
+        # works where `src.replace(__doc__)` did not (Python dedents __doc__, so it never
+        # matched the indented source and the whole explanation stayed in the check).
+        import ast
+        import textwrap
+        fn = ast.parse(textwrap.dedent(src)).body[0]
+        if fn.body and isinstance(fn.body[0], ast.Expr) and isinstance(
+                getattr(fn.body[0], "value", None), ast.Constant):
+            fn.body = fn.body[1:]
+        body = ast.unparse(fn)
         assert "db.fixtures" not in body, \
             "settlement reads db.fixtures again — the sync deletes played fixtures, so " \
             "every bet will sit pending for ever"

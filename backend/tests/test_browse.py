@@ -7,6 +7,8 @@ filtered browser can get wrong without anybody noticing: a count that does not m
 opening it reveals.
 """
 import asyncio
+
+import pytest
 import os
 import sys
 from datetime import datetime, timedelta, timezone
@@ -27,6 +29,14 @@ class FakeCollection:
         self.rows = list(rows)
 
     def find(self, *a, **k):
+        return self
+
+    # _data_version() reads the newest sync with .sort().limit(); order does not matter
+    # to these tests, so both just hand the cursor back.
+    def sort(self, *a, **k):
+        return self
+
+    def limit(self, *a, **k):
         return self
 
     async def to_list(self, _n):
@@ -102,6 +112,18 @@ FIXTURES = [
     fixture("f-ch", "eng-ch", "eng-ch-c", "eng-ch-d"),
     fixture("f-no", "nor-d1", "nor-d1-e", "nor-d1-f"),
 ]
+
+
+@pytest.fixture(autouse=True)
+def _build_not_cache(monkeypatch):
+    """THE BUILD, NOT THE CACHE. browse() serves its default arguments from the prebuilt
+    screen, which the fake database does not have, and memoises its base between calls,
+    which would carry one test's fake teams into the next. These tests are about how the
+    page is put together, so every one takes the path that builds it, from scratch."""
+    monkeypatch.setattr(server, "_cache_ok", lambda: False)
+    server._browse_memo.clear()
+    yield
+    server._browse_memo.clear()
 
 
 def browse(monkeypatch, **kw):

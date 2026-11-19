@@ -497,3 +497,59 @@ def test_a_row_clearing_nothing_keeps_its_best_line(monkeypatch):
     row = board(min_ev=50.0)[0]
     assert row["status"] == "below_floor"
     assert row["best"]["ev"] == 7.0
+
+
+# --- one day, for one post ----------------------------------------------------------
+#
+# The windows are cumulative — "next 3 days" is today AND tomorrow AND the day after —
+# which is right for browsing and wrong for the card that goes to the channel. A day is
+# a day.
+
+def at_day(fid, iso, **kw):
+    """A fixture at an exact instant rather than N hours from now."""
+    return {"fixture_id": fid, "league_id": "eng-pl", "date": iso,
+            "home_team_id": "t-home", "away_team_id": "t-away",
+            "home_name": "Home", "away_name": "Away", "round": "R5", **kw}
+
+
+def test_a_day_takes_that_day_and_leaves_the_rest(monkeypatch):
+    soon = (NOW + timedelta(days=2)).astimezone(server.VALUE_PICK_TZ).date()
+    after = soon + timedelta(days=1)
+    install(monkeypatch,
+            odds=[priced("on"), priced("off")],
+            fixtures=[at_day("on", f"{soon.isoformat()}T15:00:00Z"),
+                      at_day("off", f"{after.isoformat()}T15:00:00Z")])
+    rows = {r["fixture_id"]: r["status"] for r in board(day=soon.isoformat())}
+    assert rows["on"] == "ok"
+    assert rows["off"] == "outside_window"
+
+
+def test_the_day_wins_over_the_horizon(monkeypatch):
+    """`day` IS the window; passing both must not narrow it twice or widen it."""
+    far = (NOW + timedelta(days=9)).astimezone(server.VALUE_PICK_TZ).date()
+    install(monkeypatch, odds=[priced("far")],
+            fixtures=[at_day("far", f"{far.isoformat()}T15:00:00Z")])
+    # within_days=3 would normally file this as outside_window.
+    assert board(day=far.isoformat(), within_days=3)[0]["status"] == "ok"
+
+
+def test_a_late_kick_off_is_filed_under_its_london_day(monkeypatch):
+    """A 23:30Z game in summer is 00:30 the next morning in London. Filing it under the
+    UTC date puts Saturday's game in Sunday's post."""
+    # A date in a FUTURE summer: British Summer Time is the only time the two dates
+    # differ, and a past kick-off would come back "kicked_off" before the day filter was
+    # ever consulted.
+    summer = NOW.year + 1
+    install(monkeypatch, odds=[priced("late")],
+            fixtures=[at_day("late", f"{summer}-06-21T23:30:00Z")])
+    assert board(day=f"{summer}-06-22")[0]["status"] == "ok"
+    assert board(day=f"{summer}-06-21")[0]["status"] == "outside_window"
+
+
+def test_without_a_day_nothing_changes(monkeypatch):
+    """The horizon still works for the people and jobs that use it."""
+    install(monkeypatch, odds=[priced("soon"), priced("far")],
+            fixtures=[fixture("soon", hours=24), fixture("far", hours=24 * 30)])
+    rows = {r["fixture_id"]: r["status"] for r in board(within_days=3)}
+    assert rows["soon"] == "ok"
+    assert rows["far"] == "outside_window"

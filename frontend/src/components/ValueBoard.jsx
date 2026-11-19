@@ -10,6 +10,8 @@ import TierBadge from "@/components/TierBadge";
 import BookOdds from "@/components/BookOdds";
 import CopyAngle from "@/components/CopyAngle";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import CopyDay from "@/components/CopyDay";
+import { dayOptions, boardParams } from "@/lib/valueQuery";
 
 // Everywhere you have found an edge, on one screen.
 //
@@ -38,12 +40,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 //
 // A board whose job is "show me what I have priced" must not open by hiding most of it.
 // Narrowing is a decision the reader makes once they can see what they are narrowing.
-const WINDOWS = [
-  { v: "0", l: "All upcoming" },
-  { v: "3", l: "Next 3 days" },
-  { v: "7", l: "Next 7 days" },
-  { v: "14", l: "Next 14 days" },
-];
+//
 // THE LADDER GOES UP TO THE CAP, not just to 10%. It stopped at "10%+", which is the one
 // band where the question "is this real?" starts to matter — so the only way to ask "show
 // me just the big ones so I can check them" was to read the whole board and squint.
@@ -216,7 +213,10 @@ function Row({ r, muted = false, open, setOpen, navigate }) {
 
 export default function ValueBoard() {
   const navigate = useNavigate();
-  const [days, setDays] = useState("0");
+  // Built once per mount, not per render: the labels are relative ("Today") and a list
+  // rebuilt on every keystroke would swap identities underneath the open select.
+  const [whens] = useState(() => dayOptions());
+  const [days, setDays] = useState("all");
   const [floor, setFloor] = useState("-100");
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -226,9 +226,7 @@ export default function ValueBoard() {
 
   useEffect(() => {
     setLoading(true);
-    const params = { min_ev: Number(floor), limit: 40 };
-    if (days !== "0") params.within_days = Number(days);
-    api.valueBoard(params)
+    api.valueBoard(boardParams(days, floor))
       .then((d) => {
         setRows(Array.isArray(d) ? d : []);
         setPreview(d?.preview ? { total: d.total } : null);
@@ -270,9 +268,14 @@ export default function ValueBoard() {
           <Select value={days} onValueChange={setDays}>
             <SelectTrigger data-testid="value-window" className="w-[140px] bg-[#121212] border-border text-xs h-8"><SelectValue /></SelectTrigger>
             <SelectContent className="bg-[#121212] border-border">
-              {WINDOWS.map((o) => <SelectItem key={o.v} value={o.v} className="text-xs">{o.l}</SelectItem>)}
+              {whens.map((o) => <SelectItem key={o.v} value={o.v} className="text-xs">{o.l}</SelectItem>)}
             </SelectContent>
           </Select>
+          {/* ONLY ON A DAY. A card headed "Saturday 21st November" built from "all
+              upcoming" would carry next Wednesday's games into Saturday's post, and the
+              heading would be the part that lied. */}
+          <CopyDay when={days} floor={floor}
+            label={whens.find((o) => o.v === days)?.l || ""} />
         </div>
       </div>
 

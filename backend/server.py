@@ -6448,6 +6448,7 @@ def _orphan_note(priced_at) -> str:
 
 @api_router.get("/value-board")
 async def value_board(within_days: Optional[int] = 7, min_ev: float = 0.0,
+                      day: Optional[str] = None,
                       league_id: Optional[str] = None, limit: int = 40,
                       explain: bool = False, ladder: bool = False,
                       response: Response = None,
@@ -6646,7 +6647,23 @@ async def value_board(within_days: Optional[int] = 7, min_ev: float = 0.0,
         if ladder:
             row["ladder"] = [shape(m, doc) for m in model["markets"]]
 
-        if kickoff and horizon and kickoff > horizon:
+        # ONE DAY, OR A HORIZON — never both, because `day` IS the window.
+        #
+        # WHY A DAY AND NOT A SHORTER `within_days`. The windows are cumulative: "next 3
+        # days" is today AND tomorrow AND the day after, which is the right shape for
+        # browsing and the wrong one for the job this grew out of — posting the day's EV+
+        # card to the channel. A card built from a cumulative window carries Saturday's
+        # games into Sunday's post, and the only way to stop it was to read the kick-off
+        # on every row and leave the rest out by hand.
+        #
+        # local_day, not the first ten characters of the timestamp: a 23:00Z game in
+        # summer is 00:30 the next day in London, and filing it under the UTC date puts it
+        # in the wrong post. That function's own note has the reasoning.
+        if day:
+            if local_day(fx.get("date")) != day:
+                rows.append({**row, "status": "outside_window"})
+                continue
+        elif kickoff and horizon and kickoff > horizon:
             rows.append({**row, "status": "outside_window"})
             continue
         rows.append({**row, "status": "ok" if clearing else "below_floor"})

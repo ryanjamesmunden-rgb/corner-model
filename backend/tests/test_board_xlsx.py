@@ -362,12 +362,200 @@ class TestEmptyBoards:
         # thing that decides that by crashing.
         out = tmp_path / "empty.xlsx"
         counts = board_xlsx.build({"streaks": [], "mismatches": [], "chase": []}, out)
-        assert counts == {"streaks": 0, "mismatches": 0, "chase": 0}
+        # Every count, not an exact dict: this asserted a three-key literal and so broke
+        # the moment a summary sheet was added, which is the one kind of change that
+        # cannot make an empty workbook crash.
+        assert set(counts) == {"priced", "combined", "streaks", "mismatches", "chase"}
+        assert all(v == 0 for v in counts.values()), counts
         book = openpyxl.load_workbook(out)
-        assert book.sheetnames == ["Read me", "Streaks", "Mismatches", "Chase"]
+        assert book.sheetnames == ["Read me", "By kick-off", "Combined",
+                                   "Streaks", "Mismatches", "Chase"]
 
     def test_a_missing_board_key_is_not_an_error(self, tmp_path):
         # /api/share/rows returns {} when the backend is asleep, and the builder is asked
         # for the file before anything has checked.
         out = tmp_path / "none.xlsx"
         assert board_xlsx.build({}, out)["chase"] == 0
+
+
+# ---------------------------------------------------------------------------
+# By kick-off: the card. One row per bet, in the order the games start, with a
+# stake on it — so the things worth asserting are the ones a reader cannot
+# check by eye: that a mirrored match line is one row, that the stake respects
+# the record tier, and that the column sorts.
+# ---------------------------------------------------------------------------
+
+def priced_row(**kw):
+    row = fixture_row(**kw)
+    row.setdefault("hits", 5)
+    row.setdefault("settled", 5)
+    return row
+
+
+def at(iso, **kw):
+    row = priced_row(**kw)
+    row["next_fixture"] = dict(row["next_fixture"], date=iso)
+    row["next_fixture"].update(kw.pop("fixture", {}))
+    return row
+
+
+CARD = {
+    "within_days": 5, "data_age_hours": 1,
+    "streaks": [
+        # SUNDAY FIRST IN THE PAYLOAD, Friday last, so a sheet that preserves input
+        # order or sorts the display string fails. "Fri" sorts before "Sun" by luck;
+        # the pair that catches an alphabetical sort is Sunday against Thursday.
+        dict(at("2026-11-22T17:00:00Z", line=6, line_label="6+", direction="over",
+                subject="team", name="Sunday Team",
+                projection={"prob": 70.0, "fair_odds": 1.43, "void_prob": 0.0,
+                            "book_odds": 1.80}),
+             next_fixture={"opponent": "X", "is_home": True, "fixture_id": "f-sun",
+                           "date": "2026-11-22T17:00:00Z"}),
+        dict(at("2026-11-19T19:00:00Z", line=4, line_label="4+", direction="over",
+                subject="team", name="Thursday Four",
+                projection={"prob": 75.0, "fair_odds": 1.33, "void_prob": 0.0,
+                            "book_odds": 1.50}),
+             next_fixture={"opponent": "Y", "is_home": True, "fixture_id": "f-thu",
+                           "date": "2026-11-19T19:00:00Z"}),
+        # THE SAME MATCH LINE, PUBLISHED UNDER BOTH TEAMS. One bet, one row.
+        dict(at("2026-11-20T20:00:00Z", line=11, line_label="11+", direction="over",
+                subject="match", name="Home Side",
+                projection={"prob": 64.0, "fair_odds": 1.56, "void_prob": 0.0,
+                            "book_odds": 1.82}),
+             next_fixture={"opponent": "Away Side", "is_home": True, "fixture_id": "f-fri",
+                           "date": "2026-11-20T20:00:00Z"}),
+        dict(at("2026-11-20T20:00:00Z", line=11, line_label="11+", direction="over",
+                subject="match", name="Away Side",
+                projection={"prob": 64.0, "fair_odds": 1.56, "void_prob": 0.0,
+                            "book_odds": 1.82}),
+             next_fixture={"opponent": "Home Side", "is_home": False, "fixture_id": "f-fri",
+                           "date": "2026-11-20T20:00:00Z"}),
+        # A PRICE WELL CLEAR OF FAIR. Nobody lays a corner line at double the model's
+        # price; it is the wrong line or a stale one, and it must not be staked.
+        dict(at("2026-11-21T15:00:00Z", line=5, line_label="5+", direction="over",
+                subject="team", name="Too Good",
+                projection={"prob": 70.0, "fair_odds": 1.43, "void_prob": 0.0,
+                            "book_odds": 2.90}),
+             next_fixture={"opponent": "Z", "is_home": True, "fixture_id": "f-sat",
+                           "date": "2026-11-21T15:00:00Z"}),
+        # NO PRICE AT ALL — a lead, not a bet, and not on this sheet.
+        dict(at("2026-11-21T15:00:00Z", line=7, line_label="7+", direction="over",
+                subject="team", name="Unpriced",
+                projection={"prob": 55.0, "fair_odds": 1.82, "void_prob": 0.0}),
+             next_fixture={"opponent": "Z", "is_home": False, "fixture_id": "f-sat",
+                           "date": "2026-11-21T15:00:00Z"}),
+    ],
+    "mismatches": [], "chase": [],
+}
+
+
+@pytest.fixture(scope="module")
+def card(tmp_path_factory):
+    out = tmp_path_factory.mktemp("card") / "card.xlsx"
+    board_xlsx.build(CARD, out)
+    return openpyxl.load_workbook(out)["By kick-off"]
+
+
+def cell(ws, header, row):
+    return ws[f"{columns(ws)[header]}{row}"]
+
+
+def find(ws, team_or_bet):
+    """The row number carrying this team, or this bet where there is no team."""
+    col = columns(ws)
+    for r in range(2, ws.max_row + 1):
+        if team_or_bet in (ws[f"{col['Team']}{r}"].value,
+                           ws[f"{col['Bet']}{r}"].value):
+            return r
+    raise AssertionError(f"{team_or_bet} is not on the sheet")
+
+
+class TestTheCardIsOneRowPerBet:
+    def test_a_match_line_under_both_teams_is_one_row(self, card):
+        # Listing it twice shows one position as two, which is how a two-leg weekend
+        # becomes a four-leg one.
+        col = columns(card)
+        elevens = [r for r in range(2, card.max_row + 1)
+                   if card[f"{col['Bet']}{r}"].value == "11+ match corners"]
+        assert len(elevens) == 1, f"the mirrored match line is on {len(elevens)} rows"
+        assert card[f"{col['Team']}{elevens[0]}"].value in (None, ""), \
+            "a match line belongs to the fixture, not to one of the teams"
+
+    def test_an_unpriced_lead_is_not_on_the_card(self, card):
+        teams = [card[f"{columns(card)['Team']}{r}"].value
+                 for r in range(2, card.max_row + 1)]
+        assert "Unpriced" not in teams, \
+            "a row with no book price is a lead, not a bet"
+
+
+class TestTheKickOffColumnSorts:
+    def test_it_holds_a_real_datetime(self, card):
+        import datetime as dt
+        value = cell(card, "Kick-off", 2).value
+        assert isinstance(value, dt.datetime), \
+            f"Kick-off is {type(value).__name__}; a string sorts Fri, Mon, Sat, Sun, Thu"
+        assert value.tzinfo is None, "openpyxl writes a tz-aware datetime as an error"
+
+    def test_the_rows_run_in_kick_off_order(self, card):
+        import datetime as dt
+        col = columns(card)["Kick-off"]
+        # Datetimes only: column A also carries "Totals" and the notes under the rows.
+        seen = [v for v in (card[f"{col}{r}"].value
+                            for r in range(2, card.max_row + 1))
+                if isinstance(v, dt.datetime)]
+        assert seen == sorted(seen), f"not in kick-off order: {seen}"
+        assert len(seen) == 4, f"expected four priced bets, got {len(seen)}"
+
+
+class TestTheStakeFollowsTheRecord:
+    def test_a_five_plus_team_over_stakes_in_full(self, card):
+        assert cell(card, "x", find(card, "Sunday Team")).value == 1.0
+
+    def test_a_four_plus_team_over_stakes_at_nothing(self, card):
+        # The one bucket this channel has lost money in: -12.90u over 29 bets.
+        r = find(card, "Thursday Four")
+        assert cell(card, "x", r).value == 0.0
+        assert "4+" in cell(card, "Record tier", r).value
+
+    def test_a_match_line_stakes_at_half(self, card):
+        r = find(card, "11+ match corners")
+        assert cell(card, "x", r).value == 0.5
+        assert "untested" in cell(card, "Record tier", r).value
+
+    def test_units_multiply_the_edge_band_by_the_tier(self, card):
+        r = find(card, "Sunday Team")
+        col = columns(card)
+        formula = cell(card, "Units", r).value
+        assert f"{col['EV']}{r}" in formula, f"Units ignores the EV column — {formula}"
+        assert f"*{col['x']}{r}" in formula.replace(" ", ""), \
+            f"Units does not multiply by the record tier — {formula}"
+
+    def test_the_stake_column_is_prefilled_and_typeable(self, card):
+        r = find(card, "Sunday Team")
+        col = columns(card)
+        assert cell(card, "Your units", r).value == f"={col['Units']}{r}", \
+            "the sheet should arrive with a plan, not an empty column"
+        assert cell(card, "Your units", r).fill.fgColor.rgb.endswith("FFFF00"), \
+            "the column you type over has to be the yellow one"
+
+
+class TestTheChecksFire:
+    def test_a_price_far_over_fair_is_flagged_and_not_staked(self, card):
+        r = find(card, "Too Good")
+        col = columns(card)
+        flat = cell(card, "Check", r).value.replace(" ", "")
+        assert f"{col['Book']}{r}>{col['Fair']}{r}*1.5" in flat, \
+            f"the Check column does not compare the price to fair — {flat}"
+        assert f"{col['Book']}{r}>{col['Fair']}{r}*1.5" in \
+            cell(card, "Units", r).value.replace(" ", ""), \
+            "a suspect price must stake at nothing, not at its paper edge"
+
+    def test_too_many_legs_on_one_game_is_counted(self, card):
+        r = find(card, "Sunday Team")
+        col = columns(card)
+        flat = cell(card, "Check", r).value.replace(" ", "")
+        assert "COUNTIFS" in flat, f"nothing counts the legs per fixture — {flat}"
+        assert f"${col['Fixture']}$2" in flat, \
+            "the per-fixture count must range over the Fixture column"
+        assert f"${col['Your units']}$2" in flat, \
+            "it has to count what was STAKED, not what was listed"

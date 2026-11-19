@@ -40,16 +40,66 @@ BORDER = Border(left=THIN, right=THIN, top=THIN, bottom=THIN)
 # as an edge rather than each having an opinion.
 BET_AT = 0.05
 
+# THE STAKE BANDS, and they are the channel's own record rather than a staking theory.
+#
+# Kelly was the obvious thing to reach for and it is wrong here: f = edge/(odds-1) on a
+# model with this much parameter uncertainty sizes a 20% edge at 1.50 as a fifth of the
+# bank. The posted slips stake 1u and 2u, so these bands are that, scaled by how big the
+# edge is and nothing else.
+UNIT_BANDS = ((0.20, 2.0), (0.12, 1.5), (BET_AT, 1.0))
 
-def kickoff(row):
+# THE RECORD TIER, which is the part a pure-EV sheet cannot see.
+#
+#   team over, 5+ and above   +48.47u over 90 bets
+#   team over, 4+ and below    -12.90u over 29 bets
+#
+# A 4+ line with a 10% edge on paper sits in the only bucket this channel has lost money
+# in, so it is staked at nothing until that record turns round — the sheet says which
+# bucket every row is in and multiplies by it, rather than quietly shading the number.
+# Everything else (match lines, team unders) has no bucket of its own yet; half stakes,
+# and the tier column says "untested" rather than pretending the 90-bet record covers it.
+TIER_PROVEN = ("5+ team over: +48.5u/90", 1.0)
+TIER_LOSING = ("4+ or less: -12.9u/29", 0.0)
+TIER_UNTESTED = ("untested line type", 0.5)
+
+# A corner line priced half again above the model's fair price is not an edge anybody
+# finds; it is a price stored against the wrong line, or a stale one. Flag it and stake it
+# at nothing until somebody has looked at the market.
+SUSPECT_OVER_FAIR = 1.5
+
+# One or two selections in a fixture returned +13.0% over 512.5u staked; three or more on
+# the same game returned -4.4% over 112u. Correlated legs, so the sheet counts what has
+# been staked per fixture rather than trusting that nobody will stack them.
+MAX_PER_FIXTURE = 2
+
+
+def kickoff_dt(row):
+    """The kick-off as a real datetime in London, or None.
+
+    WHY THIS EXISTS ALONGSIDE kickoff(). That one returns "Sat 21 Nov 15:00" for display,
+    and sorting on it sorts alphabetically: Fri before Mon before Sat before Sun before
+    Thu. Every sheet that put the kick-off in column A therefore shipped a column whose
+    own sort button reorders a weekend into nonsense, and the Combined sheet used the
+    string as a tiebreak and got the same wrong answer.
+
+    Naive, deliberately. It has already been converted to London, and openpyxl writes a
+    tz-aware datetime as an error — Excel's serial date has nowhere to put the offset.
+    """
     nf = row.get("next_fixture") or {}
     try:
         dt = datetime.fromisoformat((nf.get("date") or "").replace("Z", "+00:00"))
         if dt.tzinfo is None:
             dt = dt.replace(tzinfo=timezone.utc)
-        return dt.astimezone(LON).strftime("%a %d %b %H:%M")
+        return dt.astimezone(LON).replace(tzinfo=None)
     except Exception:
-        return (nf.get("date") or "")[:10]
+        return None
+
+
+def kickoff(row):
+    dt = kickoff_dt(row)
+    if dt is None:
+        return ((row.get("next_fixture") or {}).get("date") or "")[:10]
+    return dt.strftime("%a %d %b %H:%M")
 
 
 def fixture(row):
@@ -136,6 +186,10 @@ def readme(wb, data, generated):
     ws["A1"].font = Font(name=FONT, bold=True, size=14)
     age = data.get("data_age_hours")
     lines = [
+        "",
+        "By kick-off is the card: every bet that HAS a price, in the order the games start,",
+        "with the edge and a stake on each one. Start there. A row with no price is not a",
+        "bet and is not on it — those are leads, and they are on the sheets below.",
         "",
         "Combined is every team-over line with whatever each board says about it, so a",
         "line carried by more than one is visible without reading three sheets side by",
@@ -342,7 +396,8 @@ def combined_sheet(wb, data):
         k = combine_key(row)
         if k not in rows:
             fx, venue = fixture(row)
-            rows[k] = {"kickoff": kickoff(row), "league": row.get("league_name", ""),
+            rows[k] = {"kickoff": kickoff(row), "at": kickoff_dt(row),
+                       "league": row.get("league_name", ""),
                        "fixture": fx, "team": row.get("name") or row.get("team"),
                        "venue": venue, "line": row.get("line"),
                        "boards": [], "streak": None, "run": None, "in_row": None,
@@ -390,8 +445,11 @@ def combined_sheet(wb, data):
         if row.get("book_odds") is not None:
             r["book"] = row["book_odds"]
 
+    # The tiebreak sorts on the DATETIME, not on the "Sat 21 Nov 15:00" string, which
+    # sorts alphabetically and put Friday before Monday before Saturday.
     out = sorted(rows.values(),
-                 key=lambda r: (-len(r["boards"]), -(r["prob"] or 0), r["kickoff"]))
+                 key=lambda r: (-len(r["boards"]), -(r["prob"] or 0),
+                                r["at"] or datetime.max))
 
     ws = wb.create_sheet("Combined", 1)
     header(ws, ["Kick-off", "League", "Fixture", "Team", "Venue", "Line", "Boards",
@@ -446,16 +504,200 @@ def combined_sheet(wb, data):
     return len(out)
 
 
+def model_of(row):
+    """The model's numbers, wherever that board keeps them.
+
+    The streak board nests them under `projection`; the mismatch and chase boards put the
+    same keys at the top level. Reading one shape and not the other is why a sheet can
+    show a fair price on some rows and a blank on others for no reason a reader can see.
+    """
+    proj = row.get("projection") if isinstance(row.get("projection"), dict) else {}
+    out = {}
+    for k in ("prob", "fair_odds", "book_odds", "void_prob", "lambda"):
+        v = proj.get(k)
+        out[k] = row.get(k) if v is None else v
+    return out
+
+
+def record_tier(subject, direction, line):
+    """Which bucket of the channel's own record this bet falls in.
+
+    Returns (label, multiplier). The constants at the top of this file carry the figures
+    and the reasoning; this is only the lookup.
+    """
+    if subject == "match" or direction == "under":
+        return TIER_UNTESTED
+    try:
+        return TIER_PROVEN if int(line) >= 5 else TIER_LOSING
+    except (TypeError, ValueError):
+        return TIER_UNTESTED
+
+
+def priced_bets(data):
+    """Every DISTINCT bet that has a book price, with the boards carrying it merged.
+
+    DISTINCT, because a match line is published once per team and is one bet. Over 11
+    match corners in Cordoba v Oviedo arrives on the streak board twice — under Cordoba
+    and under Oviedo — and a sheet that lists both shows one position as two, which is
+    exactly the mistake that turns a two-leg weekend into a four-leg one. A team line
+    keeps the team in its key; a match line does not.
+    """
+    bets = {}
+    for board in ("streaks", "mismatches", "chase"):
+        for row in data.get(board) or []:
+            m = model_of(row)
+            if m["book_odds"] is None:
+                continue
+            nf = row.get("next_fixture") or {}
+            subj = row.get("subject") or "team"
+            dirn = row.get("direction") or "over"
+            team = row.get("name") or row.get("team") or ""
+            fx, venue = fixture(row)
+            key = (nf.get("fixture_id") or fx, subj, dirn, row.get("line"),
+                   "" if subj == "match" else team)
+            b = bets.get(key)
+            if b is None:
+                settled = row.get("settled") or row.get("window") or 0
+                b = bets[key] = {
+                    "at": kickoff_dt(row), "league": row.get("league_name") or "",
+                    "fixture": fx, "team": "" if subj == "match" else team,
+                    "venue": "" if subj == "match" else venue,
+                    "bet": bet_label(row), "boards": [],
+                    "run": f"{row.get('hits', 0)}/{settled}" if settled else None,
+                    "prob": None, "fair": None, "book": None, "void": 0.0,
+                }
+                b["tier"], b["mult"] = record_tier(subj, dirn, row.get("line"))
+            if board not in b["boards"]:
+                b["boards"].append(board)
+            # The first board to carry a model wins, and a later one only fills gaps —
+            # the alternative is the price and the probability coming from different
+            # boards and the EV being computed across the two.
+            if b["prob"] is None and m["prob"] is not None:
+                b["prob"], b["fair"] = m["prob"], m["fair_odds"]
+                b["void"] = m["void_prob"] or 0.0
+            if b["book"] is None:
+                b["book"] = m["book_odds"]
+            if b["run"] is None and (row.get("settled") or row.get("window")):
+                b["run"] = f"{row.get('hits', 0)}/{row.get('settled') or row.get('window')}"
+    return sorted(bets.values(), key=lambda b: (b["at"] or datetime.max,
+                                                -(b["prob"] or 0)))
+
+
+def by_kickoff_sheet(wb, data):
+    """The weekend as a card: every priced bet in kick-off order, with a stake on it.
+
+    WHY THIS IS NOT THE COMBINED SHEET. Combined answers "what do the boards say about
+    this line", and it is sorted by how many of them say it — right for picking through
+    leads, useless for a Saturday. This answers the other question: what is on, in the
+    order it kicks off, what is the edge, and how much goes on it. Nothing here is a lead;
+    a row without a price is not a bet and is not on this sheet.
+    """
+    rows = priced_bets(data)
+    ws = wb.create_sheet("By kick-off", 1)
+    header(ws, ["Kick-off", "League", "Fixture", "Team", "Side", "Bet", "From", "Run",
+                "Prob", "Push", "Fair", "Book", "EV", "Verdict", "Record tier", "x",
+                "Units", "Your units", "Check"])
+    for r, b in enumerate(rows, start=2):
+        # A REAL DATETIME, so the column's own sort button works. A formatted string here
+        # sorts Friday, Monday, Saturday, Sunday, Thursday.
+        cell = ws.cell(row=r, column=1, value=b["at"])
+        cell.number_format = "ddd dd mmm hh:mm"
+        cell.font = BLACK
+        for c, v in enumerate([b["league"], b["fixture"], b["team"], b["venue"], b["bet"],
+                               ", ".join(b["boards"]), b["run"]], start=2):
+            cell = ws.cell(row=r, column=c, value=v)
+            cell.font = BOLD if c == 6 else BLACK
+            cell.border = BORDER
+        for c, v in ((9, b["prob"]), (10, b["void"])):
+            ws.cell(row=r, column=c,
+                    value=None if v is None else v / 100).number_format = "0.0%"
+            ws.cell(row=r, column=c).font = BLUE
+        ws.cell(row=r, column=11, value=b["fair"]).number_format = "0.00"
+        ws.cell(row=r, column=11).font = BLUE
+        ws.cell(row=r, column=12, value=b["book"])
+        ws.cell(row=r, column=15, value=b["tier"]).font = GREY
+        ws.cell(row=r, column=16, value=b["mult"]).number_format = "0.0"
+        ws.cell(row=r, column=16).font = BLUE
+
+    if not rows:
+        ws["A2"] = ("No price has been recorded against any line in this window, so "
+                    "there is nothing to stake. The fair prices are on the other sheets.")
+        ws["A2"].font = WARN
+        widths(ws, {"A": 100})
+        return 0
+
+    last = len(rows) + 1
+    # The tested formula, off Prob (I) with the push in J credited back.
+    wire(ws, 2, last, "L", "I", "M", "N", void="J")
+    bands = "".join(f"IF(M{{r}}>={ev},{u}," for ev, u in UNIT_BANDS)
+    for r in range(2, last + 1):
+        suspect = f"AND(L{r}>0,K{r}>0,L{r}>K{r}*{SUSPECT_OVER_FAIR})"
+        staked = f'COUNTIFS($C$2:$C${last},C{r},$R$2:$R${last},">0")'
+        ws[f"Q{r}"] = (f'=IF(M{r}="","",IF({suspect},0,'
+                       + bands.format(r=r) + "0" + ")" * len(UNIT_BANDS)
+                       + f"*P{r}))")
+        ws[f"Q{r}"].number_format = "0.0"
+        ws[f"Q{r}"].font = BLACK
+        # PREFILLED WITH THE SUGGESTION, not left blank. A sheet that hands over an empty
+        # stake column has done the easy half and left the arithmetic; this one arrives
+        # with a plan and a total, and any cell can be typed over.
+        ws[f"R{r}"] = f"=Q{r}"
+        ws[f"R{r}"].fill, ws[f"R{r}"].font = INPUT_FILL, BLUE
+        ws[f"R{r}"].number_format = "0.0"
+        ws[f"R{r}"].border = BORDER
+        ws[f"S{r}"] = (f'=TRIM(IF({suspect},"price is 50%+ over fair - wrong line? ","")'
+                       f'&IF({staked}>{MAX_PER_FIXTURE},'
+                       f'"{MAX_PER_FIXTURE + 1}+ staked on this game",""))')
+        ws[f"S{r}"].font = WARN
+
+    ws.cell(row=last + 1, column=1, value="Totals").font = BOLD
+    for col in ("Q", "R"):
+        ws[f"{col}{last + 1}"] = f"=SUM({col}2:{col}{last})"
+        ws[f"{col}{last + 1}"].font = BOLD
+        ws[f"{col}{last + 1}"].number_format = "0.0"
+    ws[f"S{last + 1}"] = f'=COUNTIF(R2:R{last},">0")&" bets"'
+    ws[f"S{last + 1}"].font = BOLD
+
+    for i, note in enumerate((
+        f"Units are the edge banded into {'/'.join(str(u) for _, u in UNIT_BANDS)}u "
+        f"({'/'.join(f'{ev:.0%}' for ev, _ in UNIT_BANDS)}+ edge), multiplied by the "
+        "record tier in column P. They are a starting point off this channel's own "
+        "record, not a staking plan: type over any of them in 'Your units'.",
+        "Record tier: a team over at 5+ or above is the bucket that has made "
+        f"{TIER_PROVEN[0].split(': ')[1]}, so it stakes in full. A team over at 4+ or "
+        f"below is the bucket that has lost {TIER_LOSING[0].split(': ')[1]}, so it "
+        "stakes at nothing until that turns round. Match lines and team unders have no "
+        "record of their own yet and stake at half.",
+        f"'Check' flags a price more than {SUSPECT_OVER_FAIR:.0%} of the model's fair "
+        "price — on a corner line that is a price stored against the wrong line or a "
+        f"stale one, not an edge — and more than {MAX_PER_FIXTURE} legs staked on one "
+        "game: one or two per fixture returned +13.0% over 512.5u, three or more "
+        "returned -4.4% over 112u.",
+        "One row per bet. A match line is published once per team and is ONE bet, so it "
+        "appears here once however many teams carry it.",
+    ), start=3):
+        ws.cell(row=last + i, column=1, value=note).font = WARN
+    widths(ws, {"A": 17, "B": 18, "C": 34, "D": 19, "E": 6, "F": 21, "G": 20, "H": 8,
+                "I": 8, "J": 7, "K": 7, "L": 8, "M": 9, "N": 13, "O": 20, "P": 5,
+                "Q": 7, "R": 10, "S": 30})
+    ws.auto_filter.ref = f"A1:S{last}"
+    return len(rows)
+
+
 def build(data, out_path, generated=None):
     generated = generated or datetime.now(timezone.utc)
     wb = Workbook()
     readme(wb, data, generated)
     combined = combined_sheet(wb, data)
+    # Second, so it lands as the first sheet after Read me: it is the one that answers
+    # "what is on this weekend and what goes on it".
+    priced = by_kickoff_sheet(wb, data)
     streaks_sheet(wb, data.get("streaks") or [])
     mismatches_sheet(wb, data.get("mismatches") or [])
     chase_sheet(wb, data.get("chase") or [])
     wb.save(out_path)
-    return {"combined": combined,
+    return {"priced": priced,
+            "combined": combined,
             "streaks": len(data.get("streaks") or []),
             "mismatches": len(data.get("mismatches") or []),
             "chase": len(data.get("chase") or [])}

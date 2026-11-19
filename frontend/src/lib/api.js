@@ -134,6 +134,8 @@ export const api = {
   calibration: (params) => axios.get(`${API}/calibration`, { params }).then((r) => r.data),
   topCornerTeams: (params) => axios.get(`${API}/top-corner-teams`, { params }).then((r) => r.data),
   perfectGames: (params) => axios.get(`${API}/perfect-games`, { params }).then(withPreview),
+  // Quick Scan + Streaks + Perfect Games merged per team and fixture, priced at 5+/6+.
+  combined: (params) => axios.get(`${API}/combined`, { params }).then(withPreview),
   topMismatches: (params) => axios.get(`${API}/top-mismatches`, { params }).then(withPreview),
   exportMarkdown: () => axios.get(`${API}/export`, { responseType: "text" }).then((r) => r.data),
   exportStreaks: (days = 7) => axios.get(`${API}/export/streaks`, { params: { days }, responseType: "text" }).then((r) => r.data),

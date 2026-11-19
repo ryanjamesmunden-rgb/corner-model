@@ -3,7 +3,7 @@ import { Link, useLocation, useNavigate } from "react-router-dom";
 import MobileNav from "@/components/MobileNav";
 import BrandMark from "@/components/BrandMark";
 import { LayoutDashboard, Radar, Flame, Zap, Star, Sparkles, Receipt, Trophy,
-         TrendingUp, Globe, ShieldCheck, Activity, Bell, CalendarDays } from "lucide-react";
+         TrendingUp, Globe, ShieldCheck, Activity, Bell, CalendarDays, Layers } from "lucide-react";
 import { LeagueContext } from "@/context/LeagueContext";
 import ExportMenu from "@/components/ExportMenu";
 import { api } from "@/lib/api";
@@ -55,6 +55,7 @@ export default function Layout({ children }) {
     { to: "/", label: "Fixtures", icon: Globe },
     { to: "/scanner", label: "Value Finder", icon: Radar },
     { to: "/quick-scan", label: "Quick Scan", icon: Zap },
+    { to: "/combined", label: "Combined", icon: Layers },
     { to: "/dashboard", label: "Leagues", icon: LayoutDashboard },
     { to: "/streaks", label: "Streaks", icon: Flame },
     // ACCOUNT HOLDERS ONLY, link and all. It is the model's projection for games that

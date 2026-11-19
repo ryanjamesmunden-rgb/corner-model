@@ -32,6 +32,7 @@ import h2h
 import log_redact
 import record_view
 import calibration
+import combined
 import oddities
 import projection_record
 import state_corners
@@ -3449,6 +3450,10 @@ async def _screen_best_bets():
     return await best_bets(user={})
 
 
+async def _screen_combined():
+    return await _combined_rows(within_days=7, user={})
+
+
 async def _screen_fixture_board():
     # days=3 mirrors the home page's default tab, not this endpoint's own default
     return await fixture_board(days=3, user={})
@@ -3471,6 +3476,8 @@ SCREENS = {
     "trends": _screen_trends,
     # The whole-database superlatives behind the daily post. One shape, no parameters.
     "oddities": _screen_oddities,
+    # Quick Scan + Streaks + Perfect Games together, for the week ahead.
+    "combined": _screen_combined,
 }
 
 
@@ -6861,7 +6868,7 @@ def _blur(row):
         return row
     out = {k: v for k, v in row.items() if k not in BLURRED_FIELDS}
     # Nested model numbers hide in the same places on every board.
-    for nest in ("projection", "best"):
+    for nest in ("projection", "best", "quick_scan"):
         if isinstance(row.get(nest), dict):
             out[nest] = {k: v for k, v in row[nest].items() if k not in BLURRED_FIELDS}
     if isinstance(row.get("angles"), list):
@@ -8011,6 +8018,54 @@ async def perfect_games(within_days: int = 7, limit: int = 20, min_hits: int = 4
     # high lambda off two games is a smaller thing than a high lambda off ten.
     out.sort(key=lambda x: (x["mismatch"]["lambda"], x["streak"]["length"]), reverse=True)
     return _preview(out[:max(1, min(limit, 100))], user, response)
+
+
+# ----------------------------- Combined board -----------------------------
+# Quick Scan, Streaks and Perfect Games read together, one row per team and fixture,
+# priced at 5+ and 6+ team corners. The merge itself lives in combined.py.
+
+async def _combined_rows(within_days: int = 7, min_samples: int = combined.DEFAULT_MIN_SAMPLES,
+                         min_opp_games: int = combined.DEFAULT_MIN_OPP_GAMES,
+                         min_boards: int = 2, user: dict = None):
+    within = max(1, min(within_days, 14))
+    user = user or {}
+    # Internal calls: no `response`, so each board comes back whole rather than trimmed.
+    mismatches = await _all_mismatches(within_days=within, limit=10000)
+    runs = []
+    for side in ("overall", "home", "away"):
+        runs.extend(await streaks(league_id="all", side=side, window=5, min_hits=4,
+                                  threshold=None, min_line=3, within_days=within,
+                                  direction="over", subject="team", max_line=None,
+                                  min_streak=MIN_STREAK_LEN, user=user))
+    perfect = await perfect_games(within_days=within, limit=100, min_hits=4, window=5,
+                                  side="overall", min_opp_leak=5, user=user)
+    teams = await db.teams.find({}, {"_id": 0, "team_id": 1, "real_samples": 1}).to_list(5000)
+    teams_by_id = {t["team_id"]: t for t in teams}
+    fixture_ids = list({(r.get("next_fixture") or {}).get("fixture_id")
+                        for r in [*mismatches, *runs, *perfect]} - {None})
+    priced = await _odds_for_many(fixture_ids)
+    odds_by_fixture = {fid: row["odds"] for fid, row in priced.items()}
+    return combined.combine_boards(mismatches, runs, perfect, teams_by_id, odds_by_fixture,
+                                   prob_ge=nb_ge, min_samples=min_samples,
+                                   min_opp_games=min_opp_games, min_boards=min_boards)
+
+
+@api_router.get("/combined")
+async def combined_board(within_days: int = 7, min_samples: int = combined.DEFAULT_MIN_SAMPLES,
+                         min_opp_games: int = combined.DEFAULT_MIN_OPP_GAMES,
+                         min_boards: int = 2, value_only: bool = False,
+                         response: Response = None,
+                         user: dict = Depends(get_current_user)):
+    """Teams on two or more of Quick Scan, Streaks and Perfect Games for the same fixture,
+    each priced at 5+ and 6+ team corners against the stored bookmaker price."""
+    if (_cache_ok() and within_days == 7 and min_samples == combined.DEFAULT_MIN_SAMPLES
+            and min_opp_games == combined.DEFAULT_MIN_OPP_GAMES and min_boards == 2):
+        rows = await _screen("combined")
+    else:
+        rows = await _combined_rows(within_days, min_samples, min_opp_games, min_boards, user)
+    if value_only:
+        rows = [r for r in rows if r.get("value")]
+    return _preview(rows, user, response)
 
 
 def _venue_matches(team, venue):

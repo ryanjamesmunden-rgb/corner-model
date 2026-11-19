@@ -15,6 +15,7 @@ const Dashboard = lazy(() => import("@/pages/Dashboard"));
 const Scanner = lazy(() => import("@/pages/Scanner"));
 const Streaks = lazy(() => import("@/pages/Streaks"));
 const QuickScan = lazy(() => import("@/pages/QuickScan"));
+const Combined = lazy(() => import("@/pages/Combined"));
 const FixtureDetail = lazy(() => import("@/pages/FixtureDetail"));
 const Join = lazy(() => import("@/pages/Join"));
 const Account = lazy(() => import("@/pages/Account"));
@@ -57,6 +58,7 @@ function AppRouter() {
       <Route path="/dashboard" element={page(Dashboard)} />
       <Route path="/scanner" element={page(Scanner)} />
       <Route path="/quick-scan" element={page(QuickScan)} />
+      <Route path="/combined" element={page(Combined)} />
       <Route path="/streaks" element={page(Streaks)} />
       <Route path="/saved" element={page(Saved)} />
       <Route path="/form" element={page(FormGraph)} />

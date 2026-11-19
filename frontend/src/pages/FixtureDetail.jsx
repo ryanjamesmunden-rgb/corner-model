@@ -543,8 +543,12 @@ export default function FixtureDetail() {
             <TeamBreakdown team={g.team} title={g.label} highlight={g.key} embedded
                            line={ladderLine}
                            fixture={fixture} leagueName={data.league_name}
-                           window={winFor(g.key, (g.team?.recent || [])
-                             .filter((x) => x.home === g.venue).length)}
+                           // THE RAW CHOICE, clamped inside against the split being
+                           // shown. Clamping it here to the VENUE pool meant that on
+                           // "Overall" the slider could never pass the home (or away)
+                           // count: drag it further and it snapped straight back, so the
+                           // chart never showed the whole run of home and away games.
+                           window={windows[g.key]}
                            onWindow={(n) => setWindows({ ...windows, [g.key]: n })} />
           </div>
           );

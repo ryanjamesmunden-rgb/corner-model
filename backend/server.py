@@ -5927,7 +5927,9 @@ async def fixture_detail(fixture_id: str, token: Optional[str] = None,
     lg_avg = (sum(lg_vals) / len(lg_vals)) if lg_vals else 0.0
 
     def recent(team):
-        rms = team.get("real_matches") or []
+        # THE LONG HISTORY (up to 40 games) so the fixture page's slider and charts can
+        # reach back further. Prices on this page still come off the model's 20.
+        rms = team.get("history_matches") or team.get("real_matches") or []
         return [{"date": m["date"], "opponent": m["opponent"], "home": m["home"],
                  # WHICH SEASON EACH GAME BELONGS TO. The pool mixes them on purpose — the
                  # sync tops up from last season while the current one is thin, which is what

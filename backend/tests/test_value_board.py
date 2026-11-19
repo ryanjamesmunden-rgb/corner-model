@@ -362,3 +362,194 @@ def test_the_two_stores_combine_rather_than_replace(monkeypatch):
     # All three prices are handed to the model, each from whichever store had it.
     assert seen == {"total_over_9.5": 1.8, "total_over_10.5": 2.40,
                     "home_over_4.5": 1.75}
+
+
+# --- how big is too big ------------------------------------------------------------
+#
+# A board ranked by EV is ranked by how far the model disagrees with the market, so its
+# top rows were a mix of real edges and the model's worst misreads — under a footnote
+# that said so and changed nothing. These cover the two halves of the fix: the verdict,
+# and the sort that acts on it.
+
+class TestEvCredibility:
+    def test_an_ordinary_edge_is_credible_and_unlabelled(self):
+        for ev in (0.0, 5.0, 12.5, 30.0):
+            v = server.ev_credibility(ev)
+            assert v["band"] == "credible", ev
+            # No note: labelling the normal case labels every row, which says nothing.
+            assert v["note"] == ""
+
+    def test_no_ev_gets_no_opinion(self):
+        # A row with no priced market must come back exactly as it was rather than
+        # being called fine.
+        assert server.ev_credibility(None) is None
+
+    def test_past_the_hard_cap_it_is_not_an_edge_at_all(self):
+        v = server.ev_credibility(240.0, {"books": 6, "over_second": 0.5})
+        assert v["band"] == "implausible"
+        assert "wrong line" in v["note"]
+
+    def test_one_book_clear_of_the_market_points_at_the_line(self):
+        # 2.90 where the next five books are near 2.00: far more often a wrong
+        # half-point than a gift, and the thing to check is the stored line.
+        v = server.ev_credibility(45.0, {"books": 6, "over_second": 31.0})
+        assert v["band"] == "outlier"
+        assert "clear of the next best" in v["note"]
+        assert "check the line" in v["note"]
+
+    def test_a_market_agreeing_with_itself_points_at_the_model(self):
+        # Every book within a whisker of the price, so the PRICE is real and the
+        # disagreement is the model's. Opposite job from the row above, same number
+        # on screen — which is why one threshold cannot do this.
+        v = server.ev_credibility(45.0, {"books": 6, "over_second": 1.4})
+        assert v["band"] == "stretch"
+        assert "the model is the one out on its own" in v["note"]
+        assert "projection" in v["note"]
+
+    def test_without_a_quorum_it_says_there_is_nothing_to_check_against(self):
+        for spread in (None, {"books": 1, "over_second": None},
+                       {"books": 2, "over_second": 40.0}):
+            v = server.ev_credibility(45.0, spread)
+            assert v["band"] == "stretch", spread
+            assert "nothing to check it against" in v["note"]
+
+    def test_the_boundary_belongs_to_credible(self):
+        assert server.ev_credibility(server.EV_CREDIBLE_MAX)["band"] == "credible"
+        assert server.ev_credibility(server.EV_CREDIBLE_MAX + 0.1)["band"] == "stretch"
+        assert server.ev_credibility(server.EV_HARD_CAP)["band"] != "implausible"
+        assert server.ev_credibility(server.EV_HARD_CAP + 0.1)["band"] == "implausible"
+
+
+def test_a_believable_edge_outranks_a_bigger_broken_one(monkeypatch):
+    """THE FIX, in one assertion. The board sorted purely by EV, so the misprices led
+    the page and the rows worth backing sat under them."""
+    install(monkeypatch,
+            odds=[priced("real"), priced("broken")],
+            fixtures=[fixture("real"), fixture("broken")])
+
+    # Two fixtures, same shape, different edges: +8% and +250%.
+    def model(h, a, lg, o):
+        ev = 250.0 if model.calls == 0 else 8.0
+        model.calls += 1
+        return {"markets": [market(ev)], "confidence": {"score": 70, "label": "High"},
+                "lambdas": {"total": 10.4}}
+    model.calls = 0
+    monkeypatch.setattr(server, "fixture_model_from", model)
+
+    rows = board()
+    assert [r["best"]["ev"] for r in rows] == [8.0, 250.0], \
+        "the +250% row must not head the board"
+    assert rows[0]["best"]["credibility"] == "credible"
+    assert rows[1]["best"]["credibility"] == "implausible"
+    # Still on the board — flagged and demoted, never dropped.
+    assert rows[1]["status"] == "ok"
+    assert rows[1]["best"]["credibility_note"]
+
+
+def test_within_a_band_the_bigger_edge_still_wins(monkeypatch):
+    """Credibility is the first key, not the only one."""
+    install(monkeypatch, odds=[priced("a"), priced("b")],
+            fixtures=[fixture("a"), fixture("b")])
+
+    def model(h, a, lg, o):
+        ev = 4.0 if model.calls == 0 else 19.0
+        model.calls += 1
+        return {"markets": [market(ev)], "confidence": {"score": 70, "label": "High"},
+                "lambdas": {"total": 10.4}}
+    model.calls = 0
+    monkeypatch.setattr(server, "fixture_model_from", model)
+    assert [r["best"]["ev"] for r in board()] == [19.0, 4.0]
+
+
+def test_a_fixture_leads_with_its_soundest_rung_not_its_biggest(monkeypatch):
+    """THE SAME BUG ONE LEVEL DOWN, and the one the board fix alone would have made
+    worse. A ladder ranked by raw EV makes a game's headline line its most broken rung,
+    so a fixture with a sound +7% and a mispriced +180% led with the +180% — and once
+    flagged rows sort to the bottom, that whole fixture including the good line would
+    have gone with it."""
+    install(monkeypatch, odds=[priced("fx1")], fixtures=[fixture("fx1")],
+            markets=[market(7.0), market(180.0), market(2.0)])
+    row = board()[0]
+    assert row["best"]["ev"] == 7.0
+    assert row["best"]["credibility"] == "credible"
+    # Still reachable, still flagged: the drawer is bet off exactly as the headline is.
+    bands = [m["credibility"] for m in row["alternatives"]]
+    assert "implausible" in bands, bands
+    assert row["other_count"] == 2
+
+
+def test_a_high_floor_surfaces_the_broken_rung_so_it_can_be_fixed(monkeypatch):
+    """Asking for 100%+ is asking to see the misprices, not to be protected from them.
+    The floor filters RUNGS, so the rung that cleared it is the one shown."""
+    install(monkeypatch, odds=[priced("fx1")], fixtures=[fixture("fx1")],
+            markets=[market(7.0), market(180.0), market(2.0)])
+    row = board(min_ev=100.0)[0]
+    assert row["status"] == "ok"
+    assert row["best"]["ev"] == 180.0
+    assert row["best"]["credibility"] == "implausible"
+    assert row["best"]["credibility_note"]
+
+
+def test_a_row_clearing_nothing_keeps_its_best_line(monkeypatch):
+    """below_floor is a label on a row, never a row with no price on it."""
+    install(monkeypatch, odds=[priced("fx1")], fixtures=[fixture("fx1")],
+            markets=[market(7.0), market(2.0)])
+    row = board(min_ev=50.0)[0]
+    assert row["status"] == "below_floor"
+    assert row["best"]["ev"] == 7.0
+
+
+# --- one day, for one post ----------------------------------------------------------
+#
+# The windows are cumulative — "next 3 days" is today AND tomorrow AND the day after —
+# which is right for browsing and wrong for the card that goes to the channel. A day is
+# a day.
+
+def at_day(fid, iso, **kw):
+    """A fixture at an exact instant rather than N hours from now."""
+    return {"fixture_id": fid, "league_id": "eng-pl", "date": iso,
+            "home_team_id": "t-home", "away_team_id": "t-away",
+            "home_name": "Home", "away_name": "Away", "round": "R5", **kw}
+
+
+def test_a_day_takes_that_day_and_leaves_the_rest(monkeypatch):
+    soon = (NOW + timedelta(days=2)).astimezone(server.VALUE_PICK_TZ).date()
+    after = soon + timedelta(days=1)
+    install(monkeypatch,
+            odds=[priced("on"), priced("off")],
+            fixtures=[at_day("on", f"{soon.isoformat()}T15:00:00Z"),
+                      at_day("off", f"{after.isoformat()}T15:00:00Z")])
+    rows = {r["fixture_id"]: r["status"] for r in board(day=soon.isoformat())}
+    assert rows["on"] == "ok"
+    assert rows["off"] == "outside_window"
+
+
+def test_the_day_wins_over_the_horizon(monkeypatch):
+    """`day` IS the window; passing both must not narrow it twice or widen it."""
+    far = (NOW + timedelta(days=9)).astimezone(server.VALUE_PICK_TZ).date()
+    install(monkeypatch, odds=[priced("far")],
+            fixtures=[at_day("far", f"{far.isoformat()}T15:00:00Z")])
+    # within_days=3 would normally file this as outside_window.
+    assert board(day=far.isoformat(), within_days=3)[0]["status"] == "ok"
+
+
+def test_a_late_kick_off_is_filed_under_its_london_day(monkeypatch):
+    """A 23:30Z game in summer is 00:30 the next morning in London. Filing it under the
+    UTC date puts Saturday's game in Sunday's post."""
+    # A date in a FUTURE summer: British Summer Time is the only time the two dates
+    # differ, and a past kick-off would come back "kicked_off" before the day filter was
+    # ever consulted.
+    summer = NOW.year + 1
+    install(monkeypatch, odds=[priced("late")],
+            fixtures=[at_day("late", f"{summer}-06-21T23:30:00Z")])
+    assert board(day=f"{summer}-06-22")[0]["status"] == "ok"
+    assert board(day=f"{summer}-06-21")[0]["status"] == "outside_window"
+
+
+def test_without_a_day_nothing_changes(monkeypatch):
+    """The horizon still works for the people and jobs that use it."""
+    install(monkeypatch, odds=[priced("soon"), priced("far")],
+            fixtures=[fixture("soon", hours=24), fixture("far", hours=24 * 30)])
+    rows = {r["fixture_id"]: r["status"] for r in board(within_days=3)}
+    assert rows["soon"] == "ok"
+    assert rows["far"] == "outside_window"

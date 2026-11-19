@@ -10,6 +10,8 @@ import TierBadge from "@/components/TierBadge";
 import BookOdds from "@/components/BookOdds";
 import CopyAngle from "@/components/CopyAngle";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import CopyDay from "@/components/CopyDay";
+import { dayOptions, boardParams } from "@/lib/valueQuery";
 
 // Everywhere you have found an edge, on one screen.
 //
@@ -38,22 +40,44 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 //
 // A board whose job is "show me what I have priced" must not open by hiding most of it.
 // Narrowing is a decision the reader makes once they can see what they are narrowing.
-const WINDOWS = [
-  { v: "0", l: "All upcoming" },
-  { v: "3", l: "Next 3 days" },
-  { v: "7", l: "Next 7 days" },
-  { v: "14", l: "Next 14 days" },
-];
+//
+// THE LADDER GOES UP TO THE CAP, not just to 10%. It stopped at "10%+", which is the one
+// band where the question "is this real?" starts to matter — so the only way to ask "show
+// me just the big ones so I can check them" was to read the whole board and squint.
+//
+// The steps are 5s to 30 and then coarse, because that is where the meaning changes
+// rather than where the arithmetic does: inside 30% an edge is an edge, past it the row
+// is a job to do. 100%+ is not a filter anybody bets off — it is the shortlist of prices
+// to go and fix, and it is on the ladder for that.
 const FLOORS = [
   { v: "-100", l: "Everything I've priced" },
   { v: "0", l: "Positive edge only" },
   { v: "2", l: "2%+" },
   { v: "5", l: "5%+" },
   { v: "10", l: "10%+" },
+  { v: "15", l: "15%+" },
+  { v: "20", l: "20%+" },
+  { v: "25", l: "25%+" },
+  { v: "30", l: "30%+ — check these" },
+  { v: "50", l: "50%+ — probably wrong" },
+  { v: "100", l: "100%+ — broken prices" },
 ];
+
+// WHAT THE SERVER'S VERDICT LOOKS LIKE. The band is computed in value_board so that this
+// screen, the Telegram card and the spreadsheet cannot disagree about which edges to
+// believe; all this does is colour it.
+//
+// `credible` gets no badge at all. Marking the normal case marks every row, and a board
+// where everything carries a label has said nothing.
+const CREDIBILITY = {
+  stretch: { label: "big edge", cls: "text-amber-400 border-amber-400/40" },
+  outlier: { label: "one book", cls: "text-amber-400 border-amber-400/40" },
+  implausible: { label: "check the line", cls: "text-red-400 border-red-400/40" },
+};
 
 function Line({ m, muted = false }) {
   const t = m.tier ? tierMeta[m.tier] : null;
+  const cred = CREDIBILITY[m.credibility] || null;
   return (
     <>
       <span className={muted ? "text-muted-foreground" : "text-foreground"}>{m.label}</span>
@@ -64,9 +88,22 @@ function Line({ m, muted = false }) {
           Falls back to plain text on rows stored before the feed kept every book. */}
       <BookOdds m={m} muted={muted} />
       <span className="text-muted-foreground/60 text-[10px]"> (fair {m.fair_odds?.toFixed(2)})</span>
-      <span className={`ml-1.5 font-semibold ${t ? t.text : "text-muted-foreground"}`}>
+      {/* THE EV LOSES ITS COLOUR ONCE IT STOPS MEANING WHAT IT SAYS. tierMeta paints
+          anything over 5% as a strong edge, so a +240% misprice rendered in the same
+          confident green as a +6% one. A flagged row prints the number in the flag's
+          colour instead — the figure is still there to read, it just stops recommending
+          itself. */}
+      <span className={`ml-1.5 font-semibold ${
+        cred ? cred.cls.split(" ")[0] : t ? t.text : "text-muted-foreground"}`}>
         {m.ev > 0 ? "+" : ""}{m.ev?.toFixed(1)}%
       </span>
+      {cred && (
+        <span data-testid="value-credibility" data-band={m.credibility}
+          className={`ml-1.5 align-middle rounded border px-1 py-px text-[9px] uppercase
+            tracking-wide font-sans ${cred.cls}`}>
+          {cred.label}
+        </span>
+      )}
     </>
   );
 }
@@ -116,6 +153,19 @@ function Row({ r, muted = false, open, setOpen, navigate }) {
         <p className="mt-1.5 text-[11px] leading-snug text-amber-400/80" data-testid="value-note">{r.note}</p>
       )}
 
+      {/* WHY THE BADGE IS THERE, AND WHICH THING TO GO AND LOOK AT. The two reasons an
+          edge gets too big are opposite jobs — a wrong line stored here, or a projection
+          the whole market disagrees with — and a badge alone cannot say which. The server
+          works out which from how many books quoted the market and how far clear the top
+          price is, and sends the sentence. */}
+      {r.best?.credibility_note && (
+        <p data-testid="value-credibility-note"
+          className={`mt-1.5 text-[11px] leading-snug ${
+            r.best.credibility === "implausible" ? "text-red-400/90" : "text-amber-400/80"}`}>
+          {r.best.credibility_note}
+        </p>
+      )}
+
       <div className="mt-1.5 flex items-center gap-3 flex-wrap">
         <span className={`text-[10px] font-mono-data ${fresh.cls}`}
           title={fresh.note || "Price entered recently"}
@@ -124,8 +174,14 @@ function Row({ r, muted = false, open, setOpen, navigate }) {
         </span>
         {/* Only on a backable row. A muted row is one that has already kicked off or
             cannot be priced, and a Copy button on it is an invitation to post a game
-            that is half over. */}
-        {!muted && <CopyAngle row={r} />}
+            that is half over.
+            AND NOT ON A BROKEN PRICE, for the same reason one step further on. A row
+            the server has called implausible is a price stored against the wrong line;
+            a Copy button beside it is one tap between a misprice and a paying channel,
+            and it is the biggest number on the board so it is the one most likely to be
+            tapped. `stretch` and `outlier` keep theirs — those say go and check, not
+            definitely wrong. */}
+        {!muted && r.best?.credibility !== "implausible" && <CopyAngle row={r} />}
         {alts.length > 0 && (
           <button
             onClick={() => setOpen((o) => ({ ...o, [r.fixture_id]: !o[r.fixture_id] }))}
@@ -157,7 +213,10 @@ function Row({ r, muted = false, open, setOpen, navigate }) {
 
 export default function ValueBoard() {
   const navigate = useNavigate();
-  const [days, setDays] = useState("0");
+  // Built once per mount, not per render: the labels are relative ("Today") and a list
+  // rebuilt on every keystroke would swap identities underneath the open select.
+  const [whens] = useState(() => dayOptions());
+  const [days, setDays] = useState("all");
   const [floor, setFloor] = useState("-100");
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -167,9 +226,7 @@ export default function ValueBoard() {
 
   useEffect(() => {
     setLoading(true);
-    const params = { min_ev: Number(floor), limit: 40 };
-    if (days !== "0") params.within_days = Number(days);
-    api.valueBoard(params)
+    api.valueBoard(boardParams(days, floor))
       .then((d) => {
         setRows(Array.isArray(d) ? d : []);
         setPreview(d?.preview ? { total: d.total } : null);
@@ -211,9 +268,14 @@ export default function ValueBoard() {
           <Select value={days} onValueChange={setDays}>
             <SelectTrigger data-testid="value-window" className="w-[140px] bg-[#121212] border-border text-xs h-8"><SelectValue /></SelectTrigger>
             <SelectContent className="bg-[#121212] border-border">
-              {WINDOWS.map((o) => <SelectItem key={o.v} value={o.v} className="text-xs">{o.l}</SelectItem>)}
+              {whens.map((o) => <SelectItem key={o.v} value={o.v} className="text-xs">{o.l}</SelectItem>)}
             </SelectContent>
           </Select>
+          {/* ONLY ON A DAY. A card headed "Saturday 21st November" built from "all
+              upcoming" would carry next Wednesday's games into Saturday's post, and the
+              heading would be the part that lied. */}
+          <CopyDay when={days} floor={floor}
+            label={whens.find((o) => o.v === days)?.l || ""} />
         </div>
       </div>
 
@@ -275,19 +337,23 @@ export default function ValueBoard() {
 
       {preview && <PreviewWall total={preview.total} shown={rows.length} noun="games" />}
 
-      {/* THE SELECTION EFFECT, said out loud. A board sorted by EV is sorted by how far
-          the model disagrees with the market, and the top of it is a mix of real edges
-          and the lines the model has got most wrong. */}
+      {/* THE SELECTION EFFECT, now acted on rather than only admitted to. This said "be
+          most suspicious of the biggest number" and then sorted the biggest numbers to the
+          top of the page, which left the warning as something to scroll past. The sort
+          puts the believable rows first; this explains where the others went. */}
       <div className="px-3 py-2.5 border-t border-border text-[11px] text-muted-foreground leading-relaxed">
         <p className="flex items-start gap-2">
           <Info className="h-3.5 w-3.5 shrink-0 mt-0.5" />
           <span>
-            <span className="text-foreground">Be most suspicious of the biggest number.</span>{" "}
-            Ranking by EV ranks by how far the model disagrees with the market — which
-            catches real edges and the model's own worst errors in the same net. A line the
-            book has at 3.00 and the model at 1.80 is more often a sign the model has
-            misread the fixture than a gift. Check the projection against what the teams
-            have actually been doing before you stake it.
+            <span className="text-foreground">The biggest number is not the best bet.</span>{" "}
+            Ranking by EV ranks by how far the model disagrees with the market, which
+            catches real edges and the model's own worst errors in the same net. A corner
+            market is quoted by thirty-odd books and arbitraged between them, so an edge
+            past <span className="text-amber-400">30%</span> needs the market to have
+            missed something, and past <span className="text-red-400">100%</span> the
+            price is not a price. Those rows are still here — flagged, with what to go and
+            check, and sorted below the ones worth backing. Use the filter to pull them up
+            when you want to fix them.
           </span>
         </p>
       </div>

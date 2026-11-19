@@ -293,3 +293,62 @@ export const angleThread = (row = {}, { group = "home", site = "", minEv = ANGLE
     ladder: ladderPost({ rungs }),
   };
 };
+
+/**
+ * One message carrying every EV+ angle on a given day, in kick-off order.
+ *
+ * WHY telegramAngles IS NOT THIS. That one maps both sides of every fixture and joins
+ * them, which is right for a tool run over a hand-picked list and wrong for a day's card:
+ * a fixture where both teams clear the floor goes out as two picks on one game, and a
+ * card of eight games becomes a post claiming sixteen bets. The ledger prices three or
+ * more on one fixture at -4.4% over 112u against +13.0% for one or two, so this takes the
+ * BETTER SIDE of each game and leaves the other one alone. Same rule CopyAngle follows
+ * one row at a time, and for the same reason.
+ *
+ * A FLAGGED PRICE NEVER GOES OUT. value_board calls a row implausible when the price sits
+ * past the hard cap — stored against the wrong line, or long stale. That is the biggest
+ * edge on the board and therefore the one a whole-day post would lead with, which is
+ * precisely the post you cannot take back. `stretch` and `outlier` still go: those say go
+ * and check, and the person pressing the button has the board in front of them.
+ *
+ * ORDERED BY KICK-OFF, not by edge. The reader is working down a day, and a card that
+ * opens with the 20:00 game and buries the 12:30 one is unusable by the time they reach
+ * it.
+ */
+export const telegramDay = (rows = [], { site = "", heading = "",
+                                         minEv = ANGLE_MIN_EV, minPlus = null,
+                                         maxPlus = ANGLE_MAX_PLUS } = {}) => {
+  const opts = { minEv, minPlus, maxPlus };
+  const blocks = (rows || [])
+    .filter((row) => row && row.best?.credibility !== "implausible")
+    .map((row) => {
+      const sides = ["home", "away"]
+        .map((group) => ({ group, rungs: angleRungs(row, { ...opts, group }) }))
+        .filter((s) => s.rungs.length)
+        // THE BETTER SIDE WINS, measured on its best rung. Two sides of one game are two
+        // different claims about two different corner distributions; this picks the one
+        // the model is most sure of rather than whichever happens to be at home.
+        .sort((a, b) => Math.max(...b.rungs.map((r) => r.ev))
+                      - Math.max(...a.rungs.map((r) => r.ev)));
+      if (!sides.length) return null;
+      return { date: row.date || "", text: telegramAngle(row, { ...opts, site,
+                                                                group: sides[0].group }) };
+    })
+    .filter((b) => b && b.text)
+    .sort((a, b) => String(a.date).localeCompare(String(b.date)))
+    // THE DATE LINE COMES OFF EACH BLOCK WHEN THE CARD CARRIES ONE.
+    //
+    // telegramAngle opens with postHeader, whose first line is "📅 Saturday 21st
+    // November" — right for a post about one game, and nine copies of the same sentence
+    // in a post about nine. The heading says the day once; every block keeps its own
+    // league, kick-off time and fixture, which are the lines that differ.
+    .map((b) => (heading ? b.text.replace(/^📅[^\n]*\n/, "") : b.text));
+  if (!blocks.length) return "";
+  return [heading, ...blocks].filter(Boolean).join("\n\n");
+};
+
+/** "📅 Saturday 21st November" — the line a day's card opens with. */
+export const dayHeading = (iso) => {
+  const day = postDate(iso);
+  return day ? `📅 ${day}` : "";
+};

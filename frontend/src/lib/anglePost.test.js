@@ -2,6 +2,7 @@ import {
   ANGLE_MIN_EV, ANGLE_MAX_PLUS, THIN_BOOKS,
   plusOf, evPercent, teamFor, rungLines, angleRungs, fixtureUrl,
   gamePost, ladderPost, angleThread, telegramAngle, telegramAngles,
+  telegramDay, dayHeading,
 } from "./anglePost";
 
 // The real Leganes ladder, as the board returned it on 13 Nov.
@@ -295,5 +296,101 @@ describe("the channel block", () => {
     // A header and a link with no rungs under it reads as a pick with the pick missing.
     expect(telegramAngle(row(), { minEv: 999 })).toBe("");
     expect(telegramAngles([row()], { minEv: 999 })).toBe("");
+  });
+});
+
+// --- the day's card ------------------------------------------------------------------
+//
+// One message carrying a whole day. The things worth asserting are the ones you cannot
+// see by eye in a pasted block: that a game appears once, that a flagged price never
+// leaves the building, and that the order is the order the day is played in.
+
+const dayRow = ({ id = "f1", home = "Barnsley", away = "Sheff Wed",
+                  date = "2026-11-21T15:00:00Z", ladder = [],
+                  credibility = "credible" } = {}) => ({
+  fixture_id: id, home_name: home, away_name: away, date,
+  league_id: "eng-l1", league_name: "League One",
+  best: { credibility }, alternatives: [], ladder,
+});
+
+const rung = (group, line, book, prob) => ({
+  key: `${group}_over_${line - 0.5}`, group, line: line - 0.5,
+  book_odds: book, prob, fair_odds: Number((100 / prob).toFixed(2)), quotes: [],
+});
+
+describe("telegramDay", () => {
+  it("takes ONE side of a fixture, the better one", () => {
+    // Both teams clear the floor. Posting both reads as two bets on one game, which the
+    // ledger prices at -4.4% over 112u against +13.0% for one or two.
+    const row = dayRow({ ladder: [rung("home", 6, 1.90, 65), rung("away", 5, 2.60, 50)] });
+    const text = telegramDay([row], { site: "x.com" });
+    const flags = (text.match(/🚩/g) || []).length;
+    expect(flags).toBe(1);
+    // away: 2.60 * 0.50 = +30%; home: 1.90 * 0.65 = +23.5%. The away side wins.
+    expect(text).toContain("Sheff Wed");
+    expect(text).not.toContain("Barnsley [");
+  });
+
+  it("never posts a price the server called implausible", () => {
+    const broken = dayRow({ id: "f9", home: "AC Milan", away: "Frosinone",
+                            credibility: "implausible",
+                            ladder: [rung("away", 5, 2.55, 71)] });
+    expect(telegramDay([broken], { site: "x.com" })).toBe("");
+  });
+
+  it("still posts a stretch or an outlier — those say go and check", () => {
+    for (const band of ["stretch", "outlier"]) {
+      const row = dayRow({ credibility: band, ladder: [rung("home", 6, 1.90, 65)] });
+      expect(telegramDay([row], { site: "x.com" })).toContain("🚩");
+    }
+  });
+
+  it("runs in kick-off order, not in the order the board sent them", () => {
+    const late = dayRow({ id: "late", home: "Late", away: "Game",
+                          date: "2026-11-21T20:00:00Z",
+                          ladder: [rung("home", 6, 1.90, 65)] });
+    const early = dayRow({ id: "early", home: "Early", away: "Game",
+                           date: "2026-11-21T12:30:00Z",
+                           ladder: [rung("home", 6, 1.90, 65)] });
+    const text = telegramDay([late, early], { site: "x.com" });
+    expect(text.indexOf("Early")).toBeLessThan(text.indexOf("Late"));
+  });
+
+  it("carries the heading once, above everything", () => {
+    const rows = [dayRow({ id: "a", ladder: [rung("home", 6, 1.90, 65)] }),
+                  dayRow({ id: "b", home: "Reading", away: "Bromley",
+                           date: "2026-11-21T12:30:00Z",
+                           ladder: [rung("home", 6, 1.90, 65)] })];
+    const text = telegramDay(rows, { site: "x.com", heading: "📅 Saturday" });
+    expect(text.startsWith("📅 Saturday\n\n")).toBe(true);
+    // ONCE. Each block opens with postHeader, whose first line is the same date — nine
+    // copies of "Saturday 21st November" in a post about nine games. The heading says it
+    // once and the per-block date line comes off; the league, time and fixture stay.
+    expect((text.match(/📅/g) || []).length).toBe(1);
+    expect(text).toContain("League One");
+    expect(text).toContain("🏟️");
+  });
+
+  it("is empty when nothing clears, rather than a bare heading", () => {
+    // A heading with no bets under it is a post that says the day was blank when what
+    // happened is that nothing was priced.
+    const row = dayRow({ ladder: [rung("home", 6, 1.40, 65)] });   // 1.40 * 0.65 = -9%
+    expect(telegramDay([row], { site: "x.com", heading: "📅 Saturday" })).toBe("");
+  });
+
+  it("honours a floor", () => {
+    const row = dayRow({ ladder: [rung("home", 6, 1.60, 65)] });   // +4.0%
+    expect(telegramDay([row], { site: "x.com", minEv: 0 })).toContain("🚩");
+    expect(telegramDay([row], { site: "x.com", minEv: 5 })).toBe("");
+  });
+});
+
+describe("dayHeading", () => {
+  it("is the channel's own date line", () => {
+    expect(dayHeading("2026-11-21T15:00:00Z")).toBe("📅 Saturday 21st November");
+  });
+  it("is empty rather than a stray emoji when there is no date", () => {
+    expect(dayHeading("")).toBe("");
+    expect(dayHeading(undefined)).toBe("");
   });
 });

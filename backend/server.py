@@ -90,6 +90,76 @@ def tier_for_ev(ev: float) -> str:
     return "none"
 
 
+# HOW BIG AN EDGE IS TOO BIG TO BELIEVE.
+#
+# A board ranked by EV is ranked by how far the model disagrees with the market, and the
+# top of it is therefore a mix of real edges and the lines the model has got MOST wrong.
+# The board said so in a footnote for months and then sorted the errors to the top of the
+# page anyway, which is the worst of both: the warning is there to be scrolled past and
+# the first thing a reader sees is the junk.
+#
+# A corner market is quoted by thirty-odd books and arbitraged between them. An edge of a
+# few per cent is a line the market has shaded; thirty per cent is the market having
+# missed something, which happens but is rare; past a hundred the price is not a price.
+# These are the two places to draw the line, and they are deliberately generous — the
+# point is to stop an error heading the board, not to hide a real outlier.
+EV_CREDIBLE_MAX = 30.0
+EV_HARD_CAP = 100.0
+
+#: How far clear of the SECOND best price the top one can be before it is one book on its
+#: own rather than a market. quote_spread's own note makes the argument.
+EV_OUTLIER_SPREAD = 5.0
+
+#: Fewer books than this and there is no market to compare against, so an outlier cannot
+#: be told from a consensus either way.
+EV_QUORUM = 3
+
+#: Worst first: the sort has to put the believable rows at the top, and `credible` is the
+#: default for a row carrying no EV at all so that a board of unpriced rows is unchanged.
+CREDIBILITY_ORDER = {"credible": 0, "stretch": 1, "outlier": 2, "implausible": 3}
+
+
+def ev_credibility(ev: Optional[float], spread: Optional[dict] = None) -> Optional[dict]:
+    """Whether an edge this big is a finding or a fault, and which kind of fault.
+
+    THE SPREAD IS WHAT SEPARATES THE TWO, and it was already computed and thrown away.
+    A 40% edge against a price only one book quotes is a mispriced LINE — a wrong
+    half-point, a stale number — and the fix is to go and look at what is stored. A 40%
+    edge against a price every book agrees on is a real price, so the disagreement is
+    between the model and the whole market, and the thing to go and look at is the
+    projection. Same number on screen, opposite jobs, and a single threshold cannot tell
+    them apart.
+
+    Returns None when there is no EV to judge, so a row with no priced market is left
+    exactly as it was rather than being labelled.
+    """
+    if ev is None:
+        return None
+    if ev <= EV_CREDIBLE_MAX:
+        return {"band": "credible", "note": ""}
+    # The size is already on screen beside the note, so the note says what to DO about it
+    # rather than repeating the number back.
+    if ev > EV_HARD_CAP:
+        return {"band": "implausible",
+                "note": "Not an edge. A price this far from fair is stored against the "
+                        "wrong line or is long stale — check it before anything else."}
+    books = (spread or {}).get("books") or 0
+    over_second = (spread or {}).get("over_second")
+    if books >= EV_QUORUM and over_second is not None:
+        if over_second <= EV_OUTLIER_SPREAD:
+            return {"band": "stretch",
+                    "note": f"All {books} books are within {over_second:.1f}% of this "
+                            f"price, so the price is real and the model is the one out "
+                            f"on its own. Check the projection, not the odds."}
+        return {"band": "outlier",
+                "note": f"This book is {over_second:.1f}% clear of the next best of "
+                        f"{books}. One book alone at a price is more often a wrong line "
+                        f"than a gift — check the line before the model."}
+    return {"band": "stretch",
+            "note": "An edge this big needs the market to have missed something. No "
+                    "other book is quoted here, so there is nothing to check it against."}
+
+
 # ---- Model v2: Negative-Binomial (dispersion-corrected) + shots/form intent ----
 NB_R = 11          # dispersion param tuned via backtester (Brier 0.2226, calibration gap 0.80%)
 REF_SHOTS = 12.0   # fallback league avg shots when unknown
@@ -6464,6 +6534,18 @@ async def value_board(within_days: Optional[int] = 7, min_ev: float = 0.0,
             if better:
                 # Said, never acted on: a price somebody chose stands.
                 out["feed_price"] = better
+        # HOW BIG IS TOO BIG. Computed here rather than in the browser because the bot's
+        # card, the spreadsheet and this board all read these rows, and three readers each
+        # holding their own opinion about which edges to believe is how the same row ends
+        # up flagged on one screen and headlined on another.
+        #
+        # OUTSIDE the `if doc` block: the band depends on the EV, which every row has, and
+        # only the REASON needs the spread. A row shaped without a document would
+        # otherwise come back with no opinion at all, which reads as "fine".
+        cred = ev_credibility(m.get("ev"), out.get("spread"))
+        if cred:
+            out["credibility"] = cred["band"]
+            out["credibility_note"] = cred["note"]
         return out
 
     rows = []
@@ -6525,12 +6607,32 @@ async def value_board(within_days: Optional[int] = 7, min_ev: float = 0.0,
             rows.append({**row, "status": "no_market"})
             continue
 
-        marks.sort(key=lambda m: m["ev"], reverse=True)
-        row["best"] = shape(marks[0], doc)
+        # SHAPED BEFORE SORTED, so the credibility verdict is available to sort on.
+        #
+        # THE SAME BUG, ONE LEVEL DOWN, and sorting the board alone would have made this
+        # fixture worse rather than better. A ladder ranked by raw EV makes a fixture's
+        # HEADLINE line its most broken rung: a game with a sound +7% on one line and a
+        # mispriced +180% on another led with the +180%, and once the board started
+        # demoting flagged rows that whole fixture — the good line included — would have
+        # sunk to the bottom. The rung chosen to represent the game has to be the one
+        # worth backing.
+        shaped = [shape(m, doc) for m in marks]
+        # THE FLOOR FILTERS RUNGS, not just the row. Asking for 100%+ is asking to see
+        # the broken prices so they can be fixed, so when only a flagged rung clears the
+        # floor that rung is the one to show; with the default floor everything clears and
+        # credibility picks the line. Falling back to the whole ladder keeps a row that
+        # clears nothing from losing its `best` entirely — it is still shown, as
+        # below_floor, exactly as before.
+        clearing = [s for s in shaped if s["ev"] >= min_ev]
+        pool = clearing or shaped
+        pool.sort(key=lambda s: (CREDIBILITY_ORDER.get(s.get("credibility"), 0), -s["ev"]))
+        row["best"] = pool[0]
         # Capped: the point is the shortlist, and a fixture whose whole ladder is priced
         # over would otherwise bring its whole ladder with it.
-        row["alternatives"] = [shape(m, doc) for m in marks[1:4]]
-        row["other_count"] = len(marks) - 1
+        row["alternatives"] = pool[1:4]
+        # Every other PRICED line on the game, not just the ones that cleared the floor:
+        # the drawer's label is a fact about the fixture.
+        row["other_count"] = len(shaped) - 1
         # EVERY RUNG, PRICED OR NOT, when asked for — and OFF BY DEFAULT because this is
         # twenty-four markets a fixture and the member board does not read it.
         #
@@ -6547,10 +6649,18 @@ async def value_board(within_days: Optional[int] = 7, min_ev: float = 0.0,
         if kickoff and horizon and kickoff > horizon:
             rows.append({**row, "status": "outside_window"})
             continue
-        rows.append({**row, "status": "ok" if marks[0]["ev"] >= min_ev else "below_floor"})
+        rows.append({**row, "status": "ok" if clearing else "below_floor"})
 
     order = {s: i for i, s in enumerate(VALUE_STATUS_ORDER)}
+    # CREDIBILITY BEFORE SIZE, and this is the fix rather than a nicety. Ranking by EV
+    # alone ranks by how far the model disagrees with the market, so the head of the board
+    # was the model's worst errors — a screen whose first rows are the ones least worth
+    # backing, under a footnote saying as much. The believable edges now come first, each
+    # band still ordered by size within itself, and nothing is dropped: a +300% row is
+    # still on the board, at the bottom, saying why it is there.
     rows.sort(key=lambda r: (order.get(r["status"], 99),
+                             CREDIBILITY_ORDER.get(
+                                 (r["best"] or {}).get("credibility"), 0),
                              -(r["best"]["ev"] if r["best"] else 0),
                              r.get("date") or ""))
     counts = {}

@@ -531,7 +531,13 @@ export const GAME_MIN_PROB = 50;
 export const pickGameDetailed = (rows = [], minProb = GAME_MIN_PROB) => {
   const run = (r) => Number(r?.streak?.length) || 0;
   const prob = (r) => Number(r?.projection?.prob ?? 0);
-  const ev = (r) => Number(r?.projection?.ev);
+  // The best edge on the row: its own line, or the 5+/6+ rung the post will quote.
+  const ev = (r) => {
+    const own = Number(r?.projection?.ev);
+    const rung = Number(pricedRung(r)?.ev);
+    const both = [own, rung].filter(Number.isFinite);
+    return both.length ? Math.max(...both) : NaN;
+  };
   const realPrice = (r) => isRealPrice(r?.projection?.odds_source) && Number.isFinite(ev(r));
 
   const live = (rows || []).filter((r) => r?.next_fixture?.date && run(r) >= 2);
@@ -585,55 +591,113 @@ export const moreVia = (count, site = "") => {
 };
 
 /**
- * One game, the way it actually gets typed.
+ * One game, posted the way it gets typed:
  *
- * PLAIN. No `@`, no slashes between clauses, no em-dashes — those read as a template
- * rather than as someone posting a game, and a post that looks generated gets scrolled
- * past. What is left is an emoji, a fact, and a line break.
+ *   🇳🇴 Bodo/Glimt have won 4+ corners in every game since 4 May. at least 20 in a row.
+ *   Our record of them starts there, so it may well be longer...
  *
- * ONE STAT PER LINE, and no blank line between them. The gap is reserved for the tail, so
- * the only visual break in the post is the one that separates the game from the call to
- * action.
+ *   📈 They're priced @ 1.91 via Sky Bet to get 6+ corners away to Molde tomorrow
  *
- * `more` is how many OTHER angles are live on the site, not how many this post trimmed.
- * The post shows one game; the reason to click is everything it is not showing.
+ *   🏟️ Molde v Bodo/Glimt @ 6pm: https://www.thecornermodel.com/fixture/nor-el-1494808
+ *
+ * THE RUN, THE BOOK'S PRICE, THE GAME. The price is the bookmaker's, quoted at the 5+ or
+ * 6+ rung of the row's ladder (see pricedRung), and the post names the book that offers
+ * it. THE MODEL'S NUMBER STILL NEVER APPEARS: no probability, no fair price, no edge. A
+ * probability and a fair price are the same fact written twice, and that fact is what the
+ * channel sells. The draft shows it to whoever is posting, in its note, not in the tweet.
+ *
+ * With no real price stored the 📈 line is left out rather than guessed.
  */
-export const gameShare = ({ row = {}, more = 0, site = "" } = {}) => () => {
+export const gameShare = ({ row = {}, site = "", now = new Date() } = {}) => () => {
   const fx = row?.next_fixture;
-  if (!fx?.date) return "";
+  if (!fx?.date || !fx.fixture_id) return "";
   const home = fx.is_home ? row.name : fx.opponent;
   const away = fx.is_home ? fx.opponent : row.name;
-  if (!home || !away) return "";
+  if (!home || !away || !row.name) return "";
 
-  const day = postDate(fx.date);
-  const time = postTime(fx.date);
-  const when = [day, time].filter(Boolean).join(" ");
-  const league = row.league_name || "";
-  const where = `${flagBullet(row.league_id, "")} ${league} ${home} v ${away}`
-    .replace(/\s+/g, " ").trim();
+  const lines = [];
 
+  // 1. THE RUN, as a sentence somebody would actually say about a team.
   const run = Number(row.streak?.length) || 0;
-  const marks = [];
   if (run >= 2 && row.line_label) {
-    marks.push(`${run >= GAME_FIRE_RUN ? "🔥" : "🚩"} ${row.name} ${row.line_label} `
-      + `corners ${run} in a row`);
+    const flag = flagFor(row.league_id) || "";
+    const since = runSince(row.streak?.start_date, now);
+    const venue = row.side === "home" ? "home game" : row.side === "away" ? "away game" : "game";
+    // "AT LEAST" ONLY WHEN IT IS TRUE. When the run covers every game we hold for the
+    // team, it started before our record did and the real figure is unknown, so the post
+    // says so. Otherwise it is exactly this long and says that.
+    const capped = Number(row.real_samples) > 0 && run >= Number(row.real_samples);
+    const head = `${flag} ${row.name} have won ${row.line_label} corners in every ${venue}`
+      + (since ? ` since ${since}.` : ".");
+    lines.push((capped
+      ? `${head} at least ${run} in a row. Our record of them starts there, so it may well be longer...`
+      : `${head} ${run} in a row.`).replace(/\s+/g, " ").trim());
   }
-  // Trending form, in the only sense this post is about: how many corners they are
-  // actually winning. Dropped rather than guessed where the window never reported one.
-  if (row.avg != null) marks.push(`🎯 averaging ${row.avg} a game`);
 
-  // NO MODEL NUMBER HERE. It was added and taken back out on purpose: a probability and a
-  // fair price are the same fact written two ways — 79% IS 1.26 — so printing the
-  // percentage on a public post gives away the price, which is the thing the channel
-  // sells. The run and the average stay, because those are facts about games already
-  // played that anyone could count for themselves.
-  //
-  // It is still SHOWN to whoever is about to post, just not inside the post: the draft
-  // carries the model's number in its own note line (see tools/social_draft.mjs), which
-  // reaches the Telegram message header and never the tweet.
-  return [when && `📅 ${when}`, where, ...marks].filter(Boolean).join("\n")
-    + moreVia(more, site);
+  // 2. THE PRICE: the bookmaker's, never the model's. The model's number is the product
+  // and stays off the post; a book's price is public and is what makes someone click.
+  const rung = pricedRung(row);
+  const where = fx.is_home ? `at home to ${fx.opponent}` : `away to ${fx.opponent}`;
+  const when = dayWord(fx.date, now);
+  if (rung) {
+    lines.push(`📈 They're priced @ ${rung.book_odds.toFixed(2)}`
+      + (rung.book_name ? ` via ${rung.book_name}` : "")
+      + ` to get ${rung.label} corners ${where} ${when}`.trimEnd());
+  }
+
+  // 3. THE GAME AND THE LINK.
+  const time = shortTime(fx.date);
+  const url = site ? `${String(site).replace(/\/$/, "")}/fixture/${fx.fixture_id}` : "";
+  lines.push(`🏟️ ${home} v ${away}${time ? ` @ ${time}` : ""}${url ? `: ${url}` : ""}`);
+
+  return lines.join("\n\n");
 };
+
+/**
+ * The 5+/6+ rung a post quotes, from the row's price ladder.
+ *
+ * The biggest positive edge where one exists, so the post is quoting the bet the model
+ * actually likes. Otherwise the longest priced line, because "@ 1.91 to get 6+" is the
+ * line people click and "@ 1.25 to get 5+" is not. Only real prices: a demo price is the
+ * model's own number with noise on it, and quoting one as a bookmaker's would be false.
+ */
+export const pricedRung = (row = {}) => {
+  if (!isRealPrice(row?.projection?.odds_source)) return null;
+  const priced = (row?.projection?.ladder || []).filter((r) => Number(r?.book_odds) > 1);
+  if (!priced.length) return null;
+  const value = priced.filter((r) => Number(r.ev) > 0);
+  if (value.length) return [...value].sort((a, b) => b.ev - a.ev)[0];
+  return [...priced].sort((a, b) => b.line - a.line)[0];
+};
+
+/** "4 May", or "4 May 2025" when the run began in an earlier year. UK calendar. */
+export const runSince = (iso, now = new Date(), tz = POST_TZ) => {
+  const parts = inZone(iso, { day: "numeric", month: "long", year: "numeric" }, tz);
+  if (!parts) return "";
+  const year = partOf(parts, "year");
+  const thisYear = partOf(inZone(now.toISOString(), { year: "numeric" }, tz) || [], "year");
+  return `${partOf(parts, "day")} ${partOf(parts, "month")}${year !== thisYear ? ` ${year}` : ""}`;
+};
+
+/** "today", "tomorrow", "on Saturday" or "on 28 November", in UK days. */
+export const dayWord = (iso, now = new Date(), tz = POST_TZ) => {
+  const key = (d) => {
+    const p = inZone(d, { year: "numeric", month: "2-digit", day: "2-digit" }, tz);
+    return p ? `${partOf(p, "year")}-${partOf(p, "month")}-${partOf(p, "day")}` : "";
+  };
+  const k = key(iso);
+  if (!k) return "";
+  const today = key(now.toISOString());
+  const diff = Math.round((Date.parse(`${k}T00:00:00Z`) - Date.parse(`${today}T00:00:00Z`)) / 86400000);
+  if (diff === 0) return "today";
+  if (diff === 1) return "tomorrow";
+  if (diff > 1 && diff < 7) return `on ${partOf(inZone(iso, { weekday: "long" }, tz) || [], "weekday")}`;
+  const p = inZone(iso, { day: "numeric", month: "long" }, tz);
+  return p ? `on ${partOf(p, "day")} ${partOf(p, "month")}` : "";
+};
+
+/** "6pm", "7:45pm": the time as typed, not as a clock shows it. */
+export const shortTime = (iso, tz = POST_TZ) => postTime(iso, tz).replace(":00", "");
 //
 // The VIP channel gets a pick written to a fixed shape — date, league, fixture, line,
 // price, model price, then the evidence. It was being typed out by hand every time, which

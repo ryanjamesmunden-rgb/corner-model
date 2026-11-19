@@ -3282,7 +3282,7 @@ SCREEN_STALE_HOURS = 13  # a little over the 12h sync cadence
 # BUMP THIS whenever a screen's payload SHAPE changes. Staleness is otherwise keyed on
 # the data alone, so a deploy that adds a field would keep serving the old shape from
 # cache until the next sync happened to move data_version.
-SCREEN_SCHEMA = 4   # 4: fixture-board angles gained `mismatch`, and rows gained `reason`
+SCREEN_SCHEMA = 5   # 4: fixture-board angles gained `mismatch`, and rows gained `reason`
 # Must match TOP_TEAMS_LIMIT in frontend/src/components/BestTeams.jsx, or that screen
 # misses its cache on every visit.
 TOP_TEAMS_LIMIT = 60
@@ -5434,6 +5434,10 @@ async def _odds_for_many(fixture_ids) -> Dict[str, dict]:
             continue
         out[fid] = {
             "odds": {k: v["price"] for k, v in merged.items()},
+            # Who quoted each fetched price, so a post can say "via Sky Bet". Fetched
+            # prices only — see feed_book_names for why a typed price gets no name.
+            "books": feed_book_names((f.get(fid) or {}).get("books"),
+                                     {k: v["source"] for k, v in merged.items()}),
             # `.get("odds")` and not the document's presence: a row can exist carrying an
             # empty odds dict, and that is not a human having chosen anything.
             "source": (m.get(fid) or {}).get("source") if (m.get(fid) or {}).get("odds")
@@ -6871,6 +6875,10 @@ def _blur(row):
     for nest in ("projection", "best", "quick_scan"):
         if isinstance(row.get(nest), dict):
             out[nest] = {k: v for k, v in row[nest].items() if k not in BLURRED_FIELDS}
+    ladder = (row.get("projection") or {}).get("ladder") if isinstance(row.get("projection"), dict) else None
+    if isinstance(ladder, list):
+        out["projection"]["ladder"] = [{k: v for k, v in a.items() if k not in BLURRED_FIELDS}
+                                       if isinstance(a, dict) else a for a in ladder]
     if isinstance(row.get("angles"), list):
         out["angles"] = [{k: v for k, v in a.items() if k not in BLURRED_FIELDS}
                          if isinstance(a, dict) else a for a in row["angles"]]
@@ -7509,6 +7517,33 @@ def _streak_projection(team: dict, opp: Optional[dict], team_venue: str, opp_ven
             "tier": tier_for_ev(ev) if ev is not None else None}
 
 
+# The team-corner lines a post actually quotes a price at.
+LADDER_LINES = (5, 6)
+
+
+def team_price_ladder(lam, venue: str, odds: Dict[str, float], books: Dict[str, str],
+                      lines=LADDER_LINES) -> List[dict]:
+    """5+ and 6+ team corners for one side of a fixture: the book's price, who quoted it,
+    and the model's chance and edge at that line.
+
+    A streak's own line is often not the line worth betting. A side that has won 4+ in
+    twenty straight is a 4+ fact, but 4+ is priced at 1.10 and nobody posts that; the post
+    quotes the price at 5+ or 6+ against the run. So the ladder rides with the row and the
+    composer picks from it, rather than the composer guessing a market key."""
+    if not lam:
+        return []
+    out = []
+    for line in lines:
+        key = f"{venue}_over_{line - 0.5}"
+        p = nb_ge(line, lam)
+        book = odds.get(key)
+        out.append({"line": line, "label": f"{line}+", "market_key": key,
+                    "prob": round(p * 100, 1), "fair_odds": fair_odds(p),
+                    "book_odds": book, "book_name": books.get(key) if book else None,
+                    "ev": round((book * p - 1) * 100, 2) if book else None})
+    return out
+
+
 @api_router.get("/streaks")
 async def streaks(league_id: Optional[str] = None, side: str = "overall", window: int = 5,
                   min_hits: int = 5, threshold: Optional[int] = None, min_line: int = 3,
@@ -7560,6 +7595,7 @@ async def streaks(league_id: Optional[str] = None, side: str = "overall", window
     # Unmarked documents predate the stamp OR came from a seeder; either way they are not
     # known to be a real bookmaker's price, and "unknown" must not read as "real".
     odds_src = {fid: row["source"] for fid, row in priced.items()}
+    books_map = {fid: row.get("books") or {} for fid, row in priced.items()}
     now = datetime.now(timezone.utc)
 
     direction = "under" if direction == "under" else "over"
@@ -7630,6 +7666,11 @@ async def streaks(league_id: Optional[str] = None, side: str = "overall", window
                                             bl_map.get(t["league_id"], 0.0))
             if projection is not None:
                 projection["odds_source"] = odds_src.get(nf["fixture_id"])
+                if direction == "over" and subject == "team":
+                    projection["ladder"] = team_price_ladder(
+                        projection.get("lambda"), team_venue,
+                        odds_map.get(nf["fixture_id"], {}),
+                        books_map.get(nf["fixture_id"], {}))
         results.append({
             "team_id": t["team_id"], "name": t["name"], "league_id": t["league_id"],
             "league_name": leagues.get(t["league_id"], ""),

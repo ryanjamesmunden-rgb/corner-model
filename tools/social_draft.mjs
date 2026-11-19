@@ -29,7 +29,7 @@ const LIB = resolve(HERE, "..", "frontend", "src", "lib");
 
 // The lib modules import each other by relative path and use no bundler features, so
 // they load as-is. `shareText.js` pulls in countryFlag and kickoff itself.
-const { streakShare, fixtureShare, streakResultShare, pickGame, pickGameDetailed, gameShare, cardPost,
+const { streakShare, fixtureShare, streakResultShare, pickGame, pickGameDetailed, gameShare, pricedRung, cardPost,
         picksReview, angleMenu, PUBLIC_STREAK_ROWS } = await import(resolve(LIB, "shareText.js"));
 const { fixtureStoryMarkets } = await import(resolve(LIB, "storyImage.js"));
 const { kickoffLabel } = await import(resolve(LIB, "kickoff.js"));
@@ -796,10 +796,8 @@ if (BOARD === "game") {
   // value one — see pickGameDetailed.
   const { row, basis } = pickGameDetailed(data.streaks || []);
   if (!row) skip("no game today carries a run worth posting on its own");
-  // EVERY OTHER ANGLE ON THE SITE, not what this post trimmed. The post shows one game;
-  // the reason to click is all the ones it is not showing.
-  const more = Math.max(0, (data.streaks || []).length - 1);
-  const post = gameShare({ row, more, site: SITE })();
+  const post = gameShare({ row, site: SITE })();
+  const rung = pricedRung(row);
   if (!post) skip("the best row has no fixture attached — nothing to post about");
 
   // THE PICTURE, built from the same fixture the text is about.
@@ -859,7 +857,9 @@ Chosen on ${basis === "value" ? "VALUE — the biggest edge over a price you typ
 ${row.name} ${row.line_label}: ${row.streak?.length} in a row, model ${prob ?? "—"}%${
   row.projection?.fair_odds ? ` (fair ${row.projection.fair_odds})` : ""}${
   data.data_age_hours != null ? `, on data ${data.data_age_hours}h old` : ""}.
-No price appears in this post — see gameShare.
+${rung ? `Quoting ${rung.label} @ ${rung.book_odds}${rung.book_name ? ` (${rung.book_name})` : ""}: model ${rung.prob}%, fair ${rung.fair_odds}, edge ${rung.ev ?? "—"}%.`
+  : "No real bookmaker price at 5+/6+, so the post has no price line."}
+Only the bookmaker's price is in the post. The model's number stays here — see gameShare.
 `, { empty: false, board: "game", post, intent, weight, full: post, story,
      note: `${row.name} ${row.line_label} · ${row.streak?.length} in a row · model ${prob ?? "—"}%`
        + (basis === "value"

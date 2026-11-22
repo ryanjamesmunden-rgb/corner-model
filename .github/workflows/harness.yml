@@ -35,6 +35,7 @@ on:
           - team_r          # is NB_R=11 the right dispersion for a team line
           - state_bias      # where the model is wrong, by half-time game state
           - chase_predictor # can that bias be predicted BEFORE kick-off (free)
+          - chase_filter    # does the value board's chase-spot / avoid label pick better spots (free)
           - goal_scores     # SPENDS CREDITS — fill half-time scores, needed by state_bias
           - chase_board     # does the chase board's ranking find underrated spots
           - calibration     # is the printed probability honest — ledger, then replay
@@ -197,6 +198,7 @@ jobs:
               state_bias)  SCRIPT="measure_game_state" ;;
               chase_board) SCRIPT="measure_chase_board" ;;
               chase_predictor) SCRIPT="measure_chase_predictor" ;;
+              chase_filter) SCRIPT="measure_chase_filter" ;;
               calibration) SCRIPT="measure_calibration" ;;
               calibration_table) SCRIPT="calibration_report" ;;
               settlement_audit) SCRIPT="audit_settlement" ;;

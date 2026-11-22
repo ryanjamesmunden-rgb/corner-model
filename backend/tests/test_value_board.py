@@ -553,3 +553,68 @@ def test_without_a_day_nothing_changes(monkeypatch):
     rows = {r["fixture_id"]: r["status"] for r in board(within_days=3)}
     assert rows["soon"] == "ok"
     assert rows["far"] == "outside_window"
+
+
+# --- the game-state label -----------------------------------------------------------
+#
+# Every team line carries game_state.side_verdict for the side it is on; a total line has
+# no side and carries none. And the label never reorders the board: it is unmeasured
+# until measure_chase_filter has replayed it.
+
+def team_market(ev, group="away"):
+    return {"key": f"{group}_over_4.5", "group": group, "group_label": group.title(),
+            "label": "Over 4.5", "line": 4.5, "book_odds": 2.2, "fair_odds": 1.9,
+            "prob": 52.0, "ev": ev, "tier": "small"}
+
+
+def history(gf, ga, n=10):
+    return [{"home": i % 2 == 0, "corners_for": 5, "corners_against": 5,
+             "goals_for": gf, "goals_against": ga, "fh_goals_for": 0,
+             "fh_goals_against": 0, "shots_for": 12} for i in range(n)]
+
+
+def test_a_team_line_carries_the_verdict_for_its_own_side(monkeypatch):
+    # The away side is two goals a game worse than the home side: the Bayern v Köln shape.
+    teams = [{"team_id": "t-home", "real_matches": history(3, 1)},
+             {"team_id": "t-away", "real_matches": history(0, 2)}]
+    install(monkeypatch, odds=[priced("f0")], fixtures=[fixture("f0")], teams=teams,
+            markets=[team_market(20.0, "away")])
+    gs_ = board()[0]["game_state"]
+    assert gs_["verdict"] == "avoid" and "mismatch" in gs_["flags"]
+    assert gs_["measured"] is False
+
+
+def test_the_opponents_market_price_is_read_from_the_right_side(monkeypatch):
+    teams = [{"team_id": "t-home", "real_matches": history(1, 1)},
+             {"team_id": "t-away", "real_matches": history(1, 1)}]
+    feed = [{**fetched("f0"), "match_odds": {"home": 0.70, "draw": 0.2, "away": 0.10}}]
+    install(monkeypatch, odds=[], fixtures=[fixture("f0")], teams=teams, feed=feed,
+            markets=[team_market(8.0, "away")])
+    # an AWAY line: the opponent is the home side, 70% to win
+    assert board()[0]["game_state"]["opp_win_prob"] == 0.70
+
+
+def test_a_total_line_has_no_side_and_no_verdict(monkeypatch):
+    install(monkeypatch, odds=[priced("f0")], fixtures=[fixture("f0")])
+    assert board()[0]["game_state"] is None
+
+
+def test_the_label_does_not_reorder_the_board(monkeypatch):
+    # "avoid" carries the bigger edge, "chase" the smaller. If the label sorted the board
+    # the chase spot would lead; it must not, until the harness says it works.
+    teams = [{"team_id": "a-home", "real_matches": history(3, 1)},
+             {"team_id": "a-away", "real_matches": history(0, 2)},     # swamped: avoid
+             {"team_id": "c-home", "real_matches": history(1, 1)},
+             {"team_id": "c-away", "real_matches": history(1, 1)}]
+    install(monkeypatch, odds=[priced("avoid"), priced("chase")],
+            fixtures=[fixture("avoid", home="a-home", away="a-away"),
+                      fixture("chase", home="c-home", away="c-away")], teams=teams)
+    ev = {"a-home": 20.0, "c-home": 6.0}
+    monkeypatch.setattr(server, "fixture_model_from",
+                        lambda h, a, lg, o: {"markets": [team_market(ev[h["team_id"]])],
+                                             "confidence": {"score": 70, "label": "High"},
+                                             "lambdas": {"total": 10.4}})
+    rows = board()
+    assert [r["fixture_id"] for r in rows] == ["avoid", "chase"]
+    assert rows[0]["game_state"]["verdict"] == "avoid"
+    assert rows[1]["game_state"]["verdict"] != "avoid"

@@ -38,6 +38,7 @@ import oddities
 import projection_record
 import state_corners
 import odds_feed
+import game_state
 from pick_context import pick_context
 from settlement import settle_pending
 
@@ -3808,6 +3809,9 @@ TOOL_SCRIPTS = {"backfill_shots": "backfill_shots.py", "measure_features": "meas
                 # Whether the trailing bias measure_game_state found can be predicted
                 # before kick-off rather than only observed afterwards.
                 "measure_chase_predictor": "measure_chase_predictor.py",
+                # Whether game_state's verdict (chase spot / avoid) picks better spots,
+                # replayed walk-forward through the same function the value board calls.
+                "measure_chase_filter": "measure_chase_filter.py",
                 "measure_mismatch_board": "measure_mismatch_board.py",
                 "night_results": "night_results.py",
                 "measure_calibration": "measure_calibration.py",
@@ -3850,6 +3854,9 @@ TOOL_COOLDOWN = {"backfill_shots": 600, "measure_features": 120,
                  # Paced with the other read-only measures rather than the replays: the
                  # answer only moves when the sync adds finished games.
                  "measure_chase_predictor": 120,
+                 # One pass over fixture_stats with a 40-game history per team; the
+                 # answer only moves when the sync adds finished games.
+                 "measure_chase_filter": 120,
                  # One window query and two name lookups; the answer only moves
                  # when a game finishes and the sync catches up.
                  "night_results": 120,
@@ -3907,6 +3914,10 @@ MEASURE_MODES = {
     # first-half feature plus a random split as controls, so a gap can be told apart from
     # the harness inventing one.
     "chase_predictor": ("measure_chase_predictor", [], False),
+    # DOES THE VALUE BOARD'S GAME-STATE LABEL WORK. game_state.side_verdict, replayed
+    # walk-forward with a random control; until it separates, the board shows the label
+    # and does not sort on it.
+    "chase_filter": ("measure_chase_filter", [], False),
     # IS THE PRINTED PROBABILITY HONEST. Distinct from `chase_board` above, which asks
     # whether the ORDER finds better spots; this asks whether the NUMBER is true. It
     # scores the published ledger against the model_prob frozen into each pick before
@@ -6414,6 +6425,9 @@ async def _merged_prices(manual_docs: Dict[str, dict]) -> Dict[str, dict]:
             # one to make on the way past. Absent on documents written before the feed
             # started keeping it, which every reader has to tolerate.
             "feed_quoted": f.get("quoted") or {},
+            # The market's 1X2 view, when the fetch carried one. Read by the game-state
+            # verdict as a FACT beside it, never as part of it (see game_state.py).
+            "match_odds": f.get("match_odds"),
             # Where a BETTER price was quoted elsewhere than the one a human typed, so a
             # row can say so without the board switching off somebody's own choice.
             "feed_better": {k: v["feed_price"] for k, v in merged.items()
@@ -6458,6 +6472,28 @@ def _orphan_note(priced_at) -> str:
                 "played. Kept as a record of what you priced.")
     return ("Left over from an older version of the site — there is no game behind this "
             "price. It clears itself on the next sync.")
+
+
+def _game_state_for(best: Optional[dict], home: dict, away: dict, league: dict,
+                    match_odds: Optional[dict] = None) -> Optional[dict]:
+    """game_state.side_verdict for the side a value-board line is on, or None for a total.
+
+    The opponent's win probability is taken from the fetched Match Winner consensus when
+    there is one: for a home line that is the AWAY win, and vice versa."""
+    group = (best or {}).get("group")
+    if group not in ("home", "away"):
+        return None
+    us, them = (home, away) if group == "home" else (away, home)
+    opp_win = None
+    if match_odds:
+        opp_win = match_odds.get("away" if group == "home" else "home")
+    try:
+        return game_state.side_verdict(_src(us), _src(them),
+                                       (league or {}).get("avg_shots") or REF_SHOTS,
+                                       opp_win)
+    except Exception as e:                       # a label must never take the board down
+        logger.warning(f"game_state verdict failed: {e}")
+        return None
 
 
 @api_router.get("/value-board")
@@ -6648,6 +6684,16 @@ async def value_board(within_days: Optional[int] = 7, min_ev: float = 0.0,
         # Every other PRICED line on the game, not just the ones that cleared the floor:
         # the drawer's label is a fact about the fixture.
         row["other_count"] = len(shaped) - 1
+        # WILL THIS SIDE BE CHASING. The verdict for the side the headline line is on —
+        # chase spot, neutral, caution or avoid — with its reasons in words. A total line
+        # has no side, so it carries none.
+        #
+        # SHOWN, NOT SORTED ON. game_state is unmeasured as a filter until
+        # measure_chase_filter has replayed it; ordering the board by it before then would
+        # be the chase board's mistake again (issue #220: an ordering that looked like
+        # insight and replayed flat against random).
+        row["game_state"] = _game_state_for(row["best"], home, away, lg,
+                                            doc.get("match_odds"))
         # EVERY RUNG, PRICED OR NOT, when asked for — and OFF BY DEFAULT because this is
         # twenty-four markets a fixture and the member board does not read it.
         #

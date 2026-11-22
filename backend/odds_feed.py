@@ -38,6 +38,8 @@ Pure functions, no database and no HTTP, so the mapping is testable without eith
 import re
 from typing import Dict, List, Optional, Tuple
 
+from game_state import match_winner
+
 #: Provider market name -> the group in this app's market keys. Anything absent is refused.
 MARKET_GROUP = {
     "Corners Over Under": "total",
@@ -242,6 +244,11 @@ def feed_doc(fixture_id: str, api_fixture_id, entry: dict, fetched_at: str) -> d
         # the payload.
         "skipped": got["skipped"][:40],
         "skipped_total": len(got["skipped"]),
+        # WHO THE MARKET THINKS WINS, read out of the same response at no extra cost:
+        # /odds returns every market, so the Match Winner prices were already arriving and
+        # being dropped. Consensus no-margin probabilities, not best prices — see
+        # game_state.match_winner. None when no book quoted all three outcomes.
+        "match_odds": match_winner(entry),
     }
 
 

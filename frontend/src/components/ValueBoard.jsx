@@ -12,6 +12,7 @@ import CopyAngle from "@/components/CopyAngle";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import CopyDay from "@/components/CopyDay";
 import { dayOptions, boardParams } from "@/lib/valueQuery";
+import { gameStateBadge, gameStateReasons, UNMEASURED_HINT } from "@/lib/gameState";
 
 // Everywhere you have found an edge, on one screen.
 //
@@ -115,6 +116,8 @@ function Row({ r, muted = false, open, setOpen, navigate }) {
   const alts = r.alternatives || [];
   const isOpen = !!open[r.fixture_id];
   const named = r.home_name || r.away_name;
+  const gsBadge = muted ? null : gameStateBadge(r);
+  const gsReasons = muted ? [] : gameStateReasons(r);
   return (
     <div data-testid="value-row" data-status={r.status || "ok"}
       className={`px-3 py-2.5 sm:px-4 sm:py-3 hover:bg-white/5 transition-colors ${muted ? "opacity-70" : ""}`}>
@@ -136,7 +139,20 @@ function Row({ r, muted = false, open, setOpen, navigate }) {
             </div>
           )}
           {r.best ? (
-            <p className="mt-1 font-mono-data text-xs"><Line m={r.best} muted={muted} /></p>
+            <p className="mt-1 font-mono-data text-xs">
+              <Line m={r.best} muted={muted} />
+              {/* WILL THIS SIDE BE CHASING. The server's verdict for the side the line
+                  is on — see lib/gameState.js for why neutral has no badge and why the
+                  board is not sorted on it. */}
+              {gsBadge && (
+                <span data-testid="value-game-state" data-verdict={gsBadge.verdict}
+                  title={UNMEASURED_HINT}
+                  className={`ml-1.5 align-middle rounded border px-1 py-px text-[9px] uppercase
+                    tracking-wide font-sans ${gsBadge.cls}`}>
+                  {gsBadge.label}
+                </span>
+              )}
+            </p>
           ) : (
             <p className="mt-1 font-mono-data text-[11px] text-muted-foreground">
               {r.market_count} {r.market_count === 1 ? "price" : "prices"} stored, none of them priced up
@@ -164,6 +180,14 @@ function Row({ r, muted = false, open, setOpen, navigate }) {
             r.best.credibility === "implausible" ? "text-red-400/90" : "text-amber-400/80"}`}>
           {r.best.credibility_note}
         </p>
+      )}
+
+      {gsReasons.length > 0 && (
+        <ul data-testid="value-game-state-reasons"
+          className={`mt-1.5 space-y-0.5 text-[11px] leading-snug ${
+            gsBadge ? gsBadge.note : "text-muted-foreground"}`}>
+          {gsReasons.map((t) => <li key={t}>{t}</li>)}
+        </ul>
       )}
 
       <div className="mt-1.5 flex items-center gap-3 flex-wrap">

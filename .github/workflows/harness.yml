@@ -51,6 +51,7 @@ on:
           - chase_angle       # a corner side that leaks goals vs a solid winner
           - chase_teams       # the sides that ARE that shape, whoever they play
           - history_export    # everything the site has published, graded, by week
+          - priced_record     # every section's P/L at your price, the price when posted, and the close
           - ticker_feed       # the recording ticker's two lists, ready to paste
           - line_ladder      # how many landed, and how many would have one line lower
           - mismatch_board   # did the mismatch board's picks land, home vs away
@@ -212,6 +213,7 @@ jobs:
               chase_angle)      SCRIPT="chase_angle" ;;
               chase_teams)      SCRIPT="chase_angle" ;;
               history_export)   SCRIPT="history_export" ;;
+              priced_record)    SCRIPT="priced_record" ;;
               ticker_feed)      SCRIPT="ticker_feed" ;;
               line_ladder)      SCRIPT="line_ladder" ;;
               mismatch_board)   SCRIPT="measure_mismatch_board" ;;

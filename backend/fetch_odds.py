@@ -209,12 +209,46 @@ async def fetch_ahead(db, days: int = AHEAD_DAYS, from_days: int = AHEAD_FROM_DA
 CLOSING_MINUTES = 90
 
 
+#: Snapshot collections whose newest freezes hold the claims a closing price is wanted for.
+CLAIM_COLLECTIONS = ("streak_snapshots", "mismatch_snapshots", "perfect_snapshots",
+                     "value_snapshots")
+
+
+async def claimed_fixture_ids(db) -> set:
+    """Fixtures the site has made a claim on — the card, the boards, a posted angle, a pick.
+
+    WHY THE CLOSING PASS ASKS. It prices at most `limit` fixtures per run, in kick-off
+    order, and a Saturday 15:00 window can hold far more than that — so which fixtures got
+    a closing price was decided by sort order, and a claimed game could be skipped for an
+    unclaimed one. A claim without a close price has no P/L at the price the market
+    settled on, and that price cannot be fetched after the game. So claimed fixtures go
+    to the front of the queue."""
+    ids = set()
+    for coll in CLAIM_COLLECTIONS:
+        for snap in await db[coll].find({}, {"_id": 0, "entries.fixture_id": 1}) \
+                .sort("tag", -1).to_list(4):
+            ids.update(e.get("fixture_id") for e in (snap.get("entries") or []))
+    since = (_now() - timedelta(days=2)).isoformat()
+    for coll, field in (("posted_angles", "kickoff"), ("picks", "kickoff")):
+        for d in await db[coll].find({field: {"$gte": since}},
+                                     {"_id": 0, "fixture_id": 1}).to_list(2000):
+            ids.add(d.get("fixture_id"))
+    ids.discard(None)
+    return ids
+
+
 async def kicking_off_soon(db, minutes: int, limit: int):
-    """Fixtures inside the closing window that have not kicked off yet."""
+    """Fixtures inside the closing window that have not kicked off yet, claimed ones first."""
     now = _now()
     q = {"date": {"$gte": now.isoformat(),
                   "$lte": (now + timedelta(minutes=minutes)).isoformat()}}
     rows = await db.fixtures.find(q, {"_id": 0}).sort("date", 1).to_list(limit * 3)
+    try:
+        claimed = await claimed_fixture_ids(db)
+    except Exception:                      # a priority is a nicety, never a reason to fail
+        claimed = set()
+    # Stable: kick-off order is kept within each group.
+    rows.sort(key=lambda fx: fx.get("fixture_id") not in claimed)
     out = []
     for fx in rows:
         api_fid = fx.get("api_fixture_id") or str(fx.get("fixture_id", "")).split("-")[-1]

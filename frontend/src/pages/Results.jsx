@@ -274,6 +274,33 @@ function BoardRow({ b }) {
           {b.pending > 0 && <Stat n={b.pending} label="to play" cls="text-tone-streak-fg" />}
         </div>
       </div>
+      {/* WHAT IT WOULD HAVE MADE. Units at the kick-off price first — it prices every
+          section the same way, so it is the fairest comparison between them — then at
+          the price when posted, then at your own. Each with its own denominator. */}
+      {b.prices.length > 0 && (
+        <div className="mt-2 space-y-0.5" data-testid={`board-units-${b.key}`}>
+          {b.prices.map((p) => (
+            <p key={p.key} className="text-[11px] text-muted-foreground">
+              <span className={`font-mono-data font-semibold ${
+                p.units > 0 ? "text-tone-strong-fg" : p.units < 0 ? "text-tone-under-fg"
+                  : "text-foreground"}`}>
+                {p.units > 0 ? "+" : ""}{p.units.toFixed(2)}u
+              </span>
+              {p.roi !== null && <span className="font-mono-data"> ({p.roi > 0 ? "+" : ""}{p.roi}%)</span>}
+              {" "}{p.label} · {p.priced} of {p.of} priced
+            </p>
+          ))}
+          {b.clv && (
+            <p className="text-[11px] text-muted-foreground">
+              Price when posted beat the close by{" "}
+              <span className="font-mono-data text-foreground">
+                {b.clv.mean > 0 ? "+" : ""}{b.clv.mean}%
+              </span>{" "}
+              on average · {b.clv.beat} of {b.clv.measured} beat it
+            </p>
+          )}
+        </div>
+      )}
       {/* HOW MUCH OF THE FROZEN PILE WAS THE SAME CLAIM AGAIN. These boards freeze every
           morning over a seven-day horizon, so this gap is usually large — and it is the
           difference between an honest denominator and one several times too big. */}

@@ -39,6 +39,7 @@ import projection_record
 import state_corners
 import odds_feed
 import game_state
+import claim_prices
 from pick_context import pick_context
 from settlement import settle_pending
 
@@ -2880,6 +2881,13 @@ async def add_pick(body: ManualPickBody, token: Optional[str] = None):
     if fx:
         doc["fixture_id"] = fx["fixture_id"]
         doc["kickoff"] = fx["date"]
+        # The fetched price at logging time, beside the one you typed (`odds`), so a pick
+        # logged without a price still carries one a P/L can be computed from.
+        stamped = claim_prices.post_price(
+            {**doc, "subject": "team", "direction": "over", "is_home": doc["venue"] == "home"},
+            (await _feed_docs([fx["fixture_id"]])).get(fx["fixture_id"]),
+            datetime.now(timezone.utc))
+        doc.update(stamped)
     await db.picks.insert_one(dict(doc))
     doc.pop("_id", None)
     return doc
@@ -3812,6 +3820,8 @@ TOOL_SCRIPTS = {"backfill_shots": "backfill_shots.py", "measure_features": "meas
                 # Whether game_state's verdict (chase spot / avoid) picks better spots,
                 # replayed walk-forward through the same function the value board calls.
                 "measure_chase_filter": "measure_chase_filter.py",
+                # Every section's record priced at typed / posted / closing prices.
+                "priced_record": "priced_record.py",
                 "measure_mismatch_board": "measure_mismatch_board.py",
                 "night_results": "night_results.py",
                 "measure_calibration": "measure_calibration.py",
@@ -3857,6 +3867,7 @@ TOOL_COOLDOWN = {"backfill_shots": 600, "measure_features": 120,
                  # One pass over fixture_stats with a 40-game history per team; the
                  # answer only moves when the sync adds finished games.
                  "measure_chase_filter": 120,
+                 "priced_record": 120,
                  # One window query and two name lookups; the answer only moves
                  # when a game finishes and the sync catches up.
                  "night_results": 120,
@@ -3918,6 +3929,9 @@ MEASURE_MODES = {
     # walk-forward with a random control; until it separates, the board shows the label
     # and does not sort on it.
     "chase_filter": ("measure_chase_filter", [], False),
+    # WHICH SECTION MAKES MONEY, not just which lands most: units at the price typed,
+    # the fetched price at posting, and the last price before kick-off. See claim_prices.
+    "priced_record": ("priced_record", [], False),
     # IS THE PRINTED PROBABILITY HONEST. Distinct from `chase_board` above, which asks
     # whether the ORDER finds better spots; this asks whether the NUMBER is true. It
     # scores the published ledger against the model_prob frozen into each pick before
@@ -10206,8 +10220,49 @@ async def snapshot_streaks(body: StreakSnapshotBody, token: Optional[str] = None
         })
     doc = {"tag": tag, "created_at": datetime.now(timezone.utc).isoformat(),
            "days": body.days, "entries": entries}
+    # THE PRICE A READER COULD HAVE TAKEN, frozen with the claim. See claim_prices.
+    await _stamp_post_prices(doc["entries"])
     await db.streak_snapshots.insert_one({"_id": tag, **doc})
     return {"status": "created", **doc}
+
+
+async def _feed_docs(fixture_ids) -> Dict[str, dict]:
+    """The fetched-price document per fixture, raw — no staleness filter, no manual merge.
+
+    RAW ON PURPOSE. claim_prices applies its own clock rules relative to when the claim was
+    made and when the game kicked off, which is a different question from "is this price
+    fresh NOW" that _merge_one answers. And typed prices are left out entirely: db.odds
+    also holds seeded demo prices, and stamping one onto the record as a price somebody
+    could have taken would be the model grading itself against its own jitter."""
+    ids = [f for f in set(fixture_ids or []) if f]
+    if not ids:
+        return {}
+    docs = await db.odds_feed.find({"fixture_id": {"$in": ids}}, {"_id": 0}) \
+        .to_list(len(ids) + 50)
+    return {d["fixture_id"]: d for d in docs}
+
+
+async def _stamp_post_prices(entries: List[dict]) -> List[dict]:
+    """Freeze the fetched price onto each claim at the moment it is made.
+
+    Mutates and returns `entries`. A claim with no price available gets `post_why`
+    instead, so "unpriced" in the record always comes with a reason. Never touches
+    `price`, which is reserved for a price somebody actually typed."""
+    feed = await _feed_docs(e.get("fixture_id") for e in entries)
+    now = datetime.now(timezone.utc)
+    for e in entries:
+        e.update(claim_prices.post_price(e, feed.get(e.get("fixture_id")), now))
+    return entries
+
+
+async def _with_close_prices(rows: List[dict]) -> List[dict]:
+    """Graded rows with the last pre-match price merged on, read at grading time."""
+    ids = {r.get("fixture_id") for r in rows if r.get("fixture_id")}
+    if not ids:
+        return [dict(r) for r in rows]
+    closing = {d["fixture_id"]: d for d in await db.odds_closing.find(
+        {"fixture_id": {"$in": list(ids)}}, {"_id": 0}).to_list(len(ids) + 50)}
+    return claim_prices.attach_close(rows, closing, await _feed_docs(ids))
 
 
 def _grade_entries(entries: List[dict], teams: Dict[str, dict]) -> List[dict]:
@@ -10423,6 +10478,8 @@ async def snapshot_mismatches(body: MismatchSnapshotBody, token: Optional[str] =
         })
     doc = {"tag": tag, "created_at": now_.isoformat(), "days": body.days,
            "entries": entries}
+    # THE PRICE A READER COULD HAVE TAKEN, frozen with the claim. See claim_prices.
+    await _stamp_post_prices(doc["entries"])
     await db.mismatch_snapshots.insert_one({"_id": tag, **doc})
     return {"status": "created", "tag": tag, "entries": len(entries)}
 
@@ -10732,6 +10789,7 @@ async def snapshot_perfect(body: PerfectSnapshotBody, token: Optional[str] = Non
             "opponent": nf.get("opponent"), "is_home": nf.get("is_home"),
             "cross_league": bool(nf.get("cross_league")),
         })
+    await _stamp_post_prices(entries)        # see claim_prices
     await db.perfect_snapshots.insert_one(
         {"_id": tag, "tag": tag, "created_at": now_.isoformat(),
          "days": body.days, "entries": entries})
@@ -10902,6 +10960,20 @@ async def log_posted_angle(body: PostedAngleBody, token: Optional[str] = None,
     existing = await db.posted_angles.find_one({"_id": key}, {"_id": 0})
     if existing:
         return {"status": "exists", **existing}
+    # THE FIXTURE, AND THE PRICE THAT WAS UP WHEN IT WAS POSTED. An angle logged without a
+    # price used to carry nothing a P/L could be built from; the fetched price at posting
+    # time is now frozen onto it (post_price), beside — never instead of — a typed one.
+    fx = await db.fixtures.find_one(
+        {"$or": [{"home_team_id": team["team_id"]}, {"away_team_id": team["team_id"]}],
+         "date": {"$regex": f"^{ko.date().isoformat()}"}},
+        {"_id": 0, "fixture_id": 1, "home_team_id": 1, "date": 1})
+    if fx:
+        doc["fixture_id"] = fx["fixture_id"]
+        if doc["is_home"] is None:
+            doc["is_home"] = fx.get("home_team_id") == team["team_id"]
+        await _stamp_post_prices([doc])
+    else:
+        doc["post_why"] = "could not find the fixture this angle was about"
     await db.posted_angles.insert_one({"_id": key, **doc})
     return {"status": "created", **doc}
 
@@ -11225,40 +11297,97 @@ async def results_by_board(weeks: int = RESULTS_WEEKS, token: Optional[str] = No
         raise HTTPException(status_code=401, detail="Sign in to see the record")
     weeks = max(1, min(weeks, 400))
 
+    return {"weeks": weeks, "boards": await board_records(weeks)}
+
+
+#: THE SECTIONS BEYOND THE THREE FROZEN BOARDS, read the same way. `card` is the streak
+#: board narrowed to the rows that were actually ON the Monday/Wednesday card — the bets
+#: the channel posts — which is a stricter thing than clearing the bar. `value` is the
+#: EV+ board, the one section that froze a price with every claim from the start.
+EXTRA_SECTIONS = {
+    "card": ("The card", "The Monday and Wednesday card — the bets that were posted."),
+    "value": ("Value board", "Positive-EV prices, frozen at the price first claimable."),
+    "posted": ("Posted by hand", "Angles logged before kick-off from a fixture page."),
+}
+
+
+def _board_row(key, label, blurb, graded, wilson, snaps=None, claims=None):
+    """One section's record: counts, interval, residual, and units at each price."""
+    t = _tally(graded)
+    lo, hi = wilson(t["landed"], t["settled"]) if t["settled"] else (None, None)
+    # The board's own stated probability, over the SETTLED rows that carry one. The
+    # residual against it is the result; the hit rate on its own says nothing about
+    # whether the board was right, only about which games it happened to pick.
+    pr = [g for g in graded if g.get("result") in (WIN, LOSS)
+          and isinstance(g.get("prob"), (int, float))]
+    mean_p = (sum(g["prob"] for g in pr) / len(pr)) if pr else None
+    if mean_p is not None and mean_p <= 1.0:
+        mean_p *= 100
+    actual = (100.0 * sum(1 for g in pr if g["result"] == WIN) / len(pr)) if pr else None
+    snaps = snaps or []
+    return {
+        "key": key, "label": label, "blurb": blurb,
+        "snapshots": len(snaps),
+        "frozen_rows": sum(len(s.get("entries") or []) for s in snaps),
+        "claims": claims if claims is not None else len(graded),
+        "first_tag": min((s.get("tag") for s in snaps if s.get("tag")), default=None),
+        "last_tag": max((s.get("tag") for s in snaps if s.get("tag")), default=None),
+        **t,
+        "lo": round(lo, 1) if lo is not None else None,
+        "hi": round(hi, 1) if hi is not None else None,
+        "priced_prob": len(pr),
+        "mean_prob": round(mean_p, 1) if mean_p is not None else None,
+        "residual": (round(actual - mean_p, 1)
+                     if mean_p is not None and actual is not None else None),
+        # UNITS AT THREE PRICES, each over its own priced rows — see claim_prices. Most
+        # older claims have no post price (it did not exist yet) and many have no close
+        # (the capture only ran on fixtures kicking off inside its window), so `priced`
+        # is the denominator to quote beside every figure.
+        "prices": claim_prices.priced_summary(graded, WIN, LOSS),
+    }
+
+
+async def board_records(weeks: int = RESULTS_WEEKS) -> List[dict]:
+    """Every section's record, priced. /results/boards and the priced_record harness."""
+    from measure_calibration import wilson
     out = []
-    for key, label, coll_name, blurb in RESULT_BOARDS:
+
+    async def graded_from(coll_name):
         snaps = await db[coll_name].find({}, {"_id": 0}).sort("tag", -1).to_list(weeks)
-        pairs = one_claim_per_fixture(snaps)
-        entries = [e for _, e in pairs]
+        entries = [e for _, e in one_claim_per_fixture(snaps)]
         graded = _grade_entries(entries, await _teams_for(entries)) if entries else []
-        t = _tally(graded)
-        lo, hi = wilson(t["landed"], t["settled"]) if t["settled"] else (None, None)
-        # The board's own stated probability, over the SETTLED rows that carry one. The
-        # residual against it is the result; the hit rate on its own says nothing about
-        # whether the board was right, only about which games it happened to pick.
-        pr = [g for g in graded if g.get("result") in (WIN, LOSS)
-              and isinstance(g.get("prob"), (int, float))]
-        mean_p = (sum(g["prob"] for g in pr) / len(pr)) if pr else None
-        if mean_p is not None and mean_p <= 1.0:
-            mean_p *= 100
-        actual = (100.0 * sum(1 for g in pr if g["result"] == WIN) / len(pr)) \
-            if pr else None
-        out.append({
-            "key": key, "label": label, "blurb": blurb,
-            "snapshots": len(snaps),
-            "frozen_rows": sum(len(s.get("entries") or []) for s in snaps),
-            "claims": len(entries),
-            "first_tag": min((s.get("tag") for s in snaps if s.get("tag")), default=None),
-            "last_tag": max((s.get("tag") for s in snaps if s.get("tag")), default=None),
-            **t,
-            "lo": round(lo, 1) if lo is not None else None,
-            "hi": round(hi, 1) if hi is not None else None,
-            "priced_prob": len(pr),
-            "mean_prob": round(mean_p, 1) if mean_p is not None else None,
-            "residual": (round(actual - mean_p, 1)
-                         if mean_p is not None and actual is not None else None),
-        })
-    return {"weeks": weeks, "boards": out}
+        return snaps, entries, await _with_close_prices(graded)
+
+    # The card first: it is what the channel posts, so it is the record that matters most.
+    snaps, _entries, graded = await graded_from("streak_snapshots")
+    card = [g for g in graded if g.get("qualified")]
+    label, blurb = EXTRA_SECTIONS["card"]
+    out.append(_board_row("card", label, blurb, card, wilson, claims=len(card)))
+
+    for key, label, coll_name, blurb in RESULT_BOARDS:
+        if coll_name != "streak_snapshots":
+            snaps, _entries, graded = await graded_from(coll_name)
+        else:
+            snaps, _entries, graded = snaps, _entries, graded
+        out.append(_board_row(key, label, blurb, graded, wilson, snaps=snaps,
+                              claims=len(_entries)))
+
+    # VALUE: the price frozen on each claim IS the price at posting, so it is reported as
+    # post_price — it was fetched, not typed.
+    snaps, _entries, graded = await graded_from("value_snapshots")
+    graded = [{**g, "post_price": g.get("post_price") or g.get("price"), "price": None}
+              for g in graded]
+    label, blurb = EXTRA_SECTIONS["value"]
+    out.append(_board_row("value", label, blurb, graded, wilson, snaps=snaps,
+                          claims=len(_entries)))
+
+    posted = await db.posted_angles.find({}, {"_id": 0}).sort("kickoff", -1).to_list(2000)
+    posted = [p for p in posted if p.get("before_kickoff")]
+    graded = await _with_close_prices(_grade_entries(posted, await _teams_for(posted))) \
+        if posted else []
+    label, blurb = EXTRA_SECTIONS["posted"]
+    out.append(_board_row("posted", label, blurb, graded, wilson, claims=len(posted)))
+    return out
 
 
 @api_router.get("/angles/card")

@@ -61,10 +61,50 @@ export const boardLine = (b) => {
     // THE REPEATS LINE, only when there were repeats. These boards freeze every morning
     // over a seven-day horizon, so the gap is usually large, and it is the difference
     // between an honest denominator and one several times too big.
+    prices: priceLines(b),
+    clv: clvLine(b),
     repeats: frozen !== null && claims !== null && frozen > claims
       ? { frozen, claims, snapshots: num(b.snapshots) || 0 }
       : null,
   };
+};
+
+/**
+ * UNITS AT EACH PRICE, as lines a panel can print — or an empty list.
+ *
+ * Three prices, never blended (see backend/claim_prices.py): the one you typed, the
+ * fetched price when the claim was posted, and the last price before kick-off. A line
+ * only appears when at least one settled row carries that price, and it always carries
+ * its own denominator — "+3.2u on 40 of 52" — because most older claims have no fetched
+ * price at all and a units figure without its n is a figure about an unstated subset.
+ */
+export const PRICE_LABELS = {
+  close_price: "at the kick-off price",
+  post_price: "at the price when posted",
+  price: "at your price",
+};
+
+export const priceLines = (b) => {
+  const p = b?.prices;
+  if (!p) return [];
+  const settled = num(b.settled) || 0;
+  return ["close_price", "post_price", "price"]
+    .map((k) => {
+      const blk = p[k] || {};
+      const units = num(blk.units);
+      const priced = num(blk.priced) || 0;
+      if (units === null || priced === 0) return null;
+      return { key: k, label: PRICE_LABELS[k], units, roi: num(blk.roi), priced, of: settled };
+    })
+    .filter(Boolean);
+};
+
+/** Did the price at posting beat the close? Null until something measured it. */
+export const clvLine = (b) => {
+  const c = b?.prices?.clv;
+  const mean = num(c?.mean);
+  if (mean === null || !num(c?.measured)) return null;
+  return { mean, measured: num(c.measured), beat: num(c.beat_close) || 0 };
 };
 
 /** The day's boards as rows, dropping any with nothing frozen. */

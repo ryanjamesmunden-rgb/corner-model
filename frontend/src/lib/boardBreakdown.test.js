@@ -120,3 +120,29 @@ describe("it keeps the label and the reasoning the board rests on", () => {
     expect(boardLine(board({ label: null })).label).toBe("mismatch");
   });
 });
+
+describe("units at each price", () => {
+  const { priceLines, clvLine } = require("./boardBreakdown");
+  const b = (prices, settled = 10) => ({ key: "card", claims: 12, settled, prices });
+
+  test("kick-off price first, each with its own denominator", () => {
+    const lines = priceLines(b({
+      close_price: { units: 3.2, roi: 8.0, priced: 8 },
+      post_price: { units: -1.0, roi: -20.0, priced: 5 },
+      price: { units: null, priced: 0 },
+    }));
+    expect(lines.map((l) => l.key)).toEqual(["close_price", "post_price"]);
+    expect(lines[0]).toMatchObject({ units: 3.2, priced: 8, of: 10 });
+  });
+
+  test("no prices at all is no lines, not +0.00u", () => {
+    expect(priceLines(b({ close_price: { units: null, priced: 0 } }))).toEqual([]);
+    expect(priceLines({ key: "x", claims: 1 })).toEqual([]);
+  });
+
+  test("clv only once something was measured", () => {
+    expect(clvLine(b({ clv: { measured: 0, mean: null } }))).toBeNull();
+    expect(clvLine(b({ clv: { measured: 4, mean: 2.5, beat_close: 3 } })))
+      .toEqual({ mean: 2.5, measured: 4, beat: 3 });
+  });
+});

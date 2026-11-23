@@ -98,15 +98,23 @@ export const recordOf = (side) => {
  * The sentence under a side: what the record says, and at which line.
  *
  * "9 of 10, lowest 4" when the run and the bet agree.
- * "5+ in 9 of 10 — not this line" when they do not, because the alternative is a number
- * that silently belongs to a different bet.
+ * "3+ · 4 of 5, lowest 1" when they do not — the line named first, so the figure can
+ * never be read as a record of the bet printed beside it.
+ *
+ * THE DISTINCTION IS CARRIED BY COLOUR, NOT BY A SENTENCE. The first version appended
+ * "— not this line" in the same green, which was right about the fact and wrong about
+ * the weight: on a real day most runs are at a different line from the best price, so
+ * every row carried the caveat and the green stopped meaning anything. Green now means
+ * exactly one thing — this record is a record of THIS bet — and a run at another line
+ * is drawn muted, with its own line in front of it. `recordOf(...).atPick` is what the
+ * caller switches on.
  */
 export const recordText = (side) => {
   const rec = recordOf(side);
   if (!rec) return "";
   const floor = rec.floor === null ? "" : `, lowest ${rec.floor}`;
-  if (rec.atPick) return `${rec.hits} of ${rec.settled}${floor}`;
-  return `${rec.lineLabel} in ${rec.hits} of ${rec.settled}${floor} — not this line`;
+  const run = `${rec.hits} of ${rec.settled}${floor}`;
+  return rec.atPick ? run : `${rec.lineLabel} · ${run}`;
 };
 
 /**

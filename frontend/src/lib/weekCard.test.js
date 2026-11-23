@@ -43,13 +43,19 @@ describe("the record — the green half", () => {
     expect(recordText(side())).toBe("9 of 10, lowest 4");
   });
 
-  it("says plainly when the run is at a different line from the bet", () => {
+  it("names the line first when the run is at a different one from the bet", () => {
     // THE BUG THIS PREVENTS: a 5+ record printed under a 6+ price reads as a 6+ record.
-    const text = recordText(side({
+    // The caller draws this one muted; green is reserved for a record of THIS bet.
+    const other = side({
       pick: pick({ line: 6 }), run_matches_pick: false,
       run: { line: 5, line_label: "5+", hits: 9, settled: 10, floor: 4 },
-    }));
-    expect(text).toBe("5+ in 9 of 10, lowest 4 — not this line");
+    });
+    expect(recordText(other)).toBe("5+ · 9 of 10, lowest 4");
+    expect(recordOf(other).atPick).toBe(false);
+  });
+
+  it("marks a matching run as such, so the caller can colour it", () => {
+    expect(recordOf(side()).atPick).toBe(true);
   });
 
   it("is empty for a side with no run rather than inventing one", () => {

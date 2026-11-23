@@ -1,0 +1,70 @@
+# What the Combined board showed for a past stretch of days, and how each row landed.
+#
+# WHY. The Combined screen is rebuilt from today's team records every time it opens, so a
+# weekend's rows are gone by Monday. From the day sync.yml started freezing it, the answer
+# comes from that freeze. Before then it is REBUILT from the three boards' own freezes
+# (quick scan, streaks, perfect games): the team+fixture pairs on two or more of them.
+# The run summary says which of the two it used.
+#
+# The runner holds the tools token, so nobody has to paste it anywhere.
+name: Combined board history
+
+on:
+  workflow_dispatch:
+    inputs:
+      start:
+        description: "First kick-off day, YYYY-MM-DD (UTC)"
+        required: true
+        type: string
+      end:
+        description: "Last kick-off day, YYYY-MM-DD (blank = same as start)"
+        required: false
+        default: ""
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  history:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      BACKEND: ${{ vars.BACKEND_URL || 'https://corner-model.onrender.com' }}
+    steps:
+      - name: Fetch and grade
+        env:
+          TOOLS_TOKEN: ${{ secrets.TOOLS_TOKEN }}
+          START: ${{ inputs.start }}
+          END: ${{ inputs.end }}
+        run: |
+          end="${END:-$START}"
+          code=$(curl -s -o hist.json -w '%{http_code}' --max-time 240 \
+            "$BACKEND/api/combined/history?start=$START&end=$end&token=$TOOLS_TOKEN" || echo 000)
+          echo "HTTP $code"
+          [ "$code" = "200" ] || { cat hist.json; exit 1; }
+          python3 - <<'PY' | tee -a "$GITHUB_STEP_SUMMARY"
+          import json
+          d = json.load(open("hist.json"))
+          rows = d.get("results") or []
+          print(f"## Combined board, {d['start']} to {d['end']}")
+          print()
+          print("Source: **" + d.get("source", "?") + "**"
+                + (" (rebuilt from the three boards' own freezes, an approximation)"
+                   if d.get("source") == "rebuilt" else " (the board's own daily freeze)"))
+          print()
+          pend = sum(1 for r in rows if r.get("result") == "pending")
+          print(f"{d.get('landed', 0)} landed, {d.get('missed', 0)} missed, {pend} pending")
+          print()
+          print("| Kick-off (UTC) | Team | v | Line | Boards | Corners | Result |")
+          print("|---|---|---|---|---|---|---|")
+          icon = {"win": "✅", "loss": "❌", "pending": "⏳"}
+          for r in rows:
+              ko = (r.get("kickoff") or "")[:16].replace("T", " ")
+              venue = "H" if r.get("is_home") else "A"
+              boards = ", ".join(b.replace("_", " ") for b in r.get("boards") or [])
+              res = str(r.get("result"))
+              print(f"| {ko} | {r.get('name')} ({venue}) | {r.get('opponent')} | "
+                    f"{r.get('line')}+ | {boards} | {r.get('value') if r.get('value') is not None else '–'} | "
+                    f"{icon.get(res.lower(), res)} |")
+          PY

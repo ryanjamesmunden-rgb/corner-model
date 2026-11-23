@@ -76,6 +76,15 @@ export const api = {
     axios.get(`${API}/calendar`, {
       params: { source, ...(month ? { month } : {}), ...(leagueId ? { league_id: leagueId } : {}) },
     }).then((r) => r.data),
+  // ONE DAY'S GAMES, both sides of each, with the line, the price and the run behind it.
+  // `day` is a UK calendar date (YYYY-MM-DD) and not a horizon — the backend's own note
+  // says why. Members only, like the value board, because the content is live prices.
+  weekCard: ({ day = "", leagueId = "", minRun = 0, pricedOnly = false } = {}) =>
+    axios.get(`${API}/week-card`, {
+      params: { ...(day ? { day } : {}), ...(leagueId ? { league_id: leagueId } : {}),
+                ...(minRun ? { min_run: minRun } : {}),
+                ...(pricedOnly ? { priced_only: true } : {}) },
+    }).then((r) => r.data),
   // TRACKED teams: a trial list. Keep an eye on a side without following it; promote it
   // to favourites once it has proven itself.
   trackedTeams: () => axios.get(`${API}/tracking/teams`).then((r) => r.data),

@@ -24,6 +24,7 @@ const Saved = lazy(() => import("@/pages/Saved"));
 const FormGraph = lazy(() => import("@/pages/FormGraph"));
 const MyTeams = lazy(() => import("@/pages/MyTeams"));
 const Calendar = lazy(() => import("@/pages/Calendar"));
+const WeekCardPage = lazy(() => import("@/pages/WeekCard"));
 const Bets = lazy(() => import("@/pages/Bets"));
 const Results = lazy(() => import("@/pages/Results"));
 const Projections = lazy(() => import("@/pages/Projections"));
@@ -64,6 +65,11 @@ function AppRouter() {
       <Route path="/form" element={page(FormGraph)} />
       <Route path="/my-teams" element={page(MyTeams)} />
       <Route path="/calendar" element={page(Calendar)} />
+      {/* The month grid next door answers "when do my teams play". This is the
+          other half of the same question: given a day, what is on and what is
+          the bet. Separate routes because they are different time scales and
+          one page doing both fights for the same screen. */}
+      <Route path="/week-card" element={page(WeekCardPage)} />
       <Route path="/bets" element={page(Bets)} />
       <Route path="/results" element={page(Results)} />
       {/* PUBLIC. It lists no pick and names no team — it is the model's own

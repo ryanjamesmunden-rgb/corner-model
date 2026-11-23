@@ -33,6 +33,7 @@ import log_redact
 import record_view
 import calibration
 import combined
+import week_card
 import league_change
 import oddities
 import projection_record
@@ -8329,6 +8330,215 @@ async def combined_board(within_days: int = 7, min_samples: int = combined.DEFAU
     if value_only:
         rows = [r for r in rows if r.get("value")]
     return _preview(rows, user, response)
+
+
+# ----------------------------- The week card -----------------------------
+# One card per fixture, both sides at once: the line to back, the price, the run behind
+# it and whether that side will be chasing. The merge is in week_card.py; this gathers.
+
+# ONE LONDON DAY PER REQUEST, not a horizon, and that is a deliberate narrowing.
+# A week of fixtures is 300-odd games, the value board caps at 100 rows, and a card is
+# three or four lines tall — a whole week in one response would be truncated by the cap
+# and unreadable if it were not. A day is also the unit the card is actually used in:
+# you sit down on Monday and write out Tuesday.
+WEEK_CARD_MAX_AHEAD = 14
+
+
+def _week_card_states(home: dict, away: dict, lg: dict, match_odds: Optional[dict]):
+    """A `states_for(row, group)` for week_card.build_cards, bound to one fixture.
+
+    _game_state_for takes the headline market and reads the side off its `group`, which
+    is right for a board with one line per row and wrong here: this card shows BOTH
+    sides, so each one needs its own verdict whatever the headline happens to be.
+
+    THE ROW'S OWN VERDICT IS REUSED where it fits. value_board already computed one, for
+    the side its headline line is on; recomputing that side would walk the same forty
+    matches a second time on every card. Only the other side is new work.
+    """
+    def states_for(row, group):
+        theirs = row.get("game_state")
+        if theirs and (row.get("best") or {}).get("group") == group:
+            return theirs
+        return _game_state_for({"group": group}, home, away, lg, match_odds)
+    return states_for
+
+
+@api_router.get("/week-card")
+async def week_card_board(day: Optional[str] = None, league_id: Optional[str] = None,
+                          min_run: int = 0, priced_only: bool = False,
+                          response: Response = None,
+                          user: dict = Depends(require_member)):
+    """Every game on one day, both sides, with the bet and the evidence beside it.
+
+    MEMBERS ONLY, for the reason /value-board is: the card's content is live prices the
+    model disagrees with, on games that have not kicked off. That is the product, and a
+    taste of it is the best three bets on the day rather than a sample of them.
+
+    `day` is a London calendar date (YYYY-MM-DD); omitted, it is today in London. Not a
+    `within_days` horizon — see the note above WEEK_CARD_MAX_AHEAD.
+
+    `min_run` keeps only cards where a side has a run of at least that many settled
+    hits behind it. `priced_only` drops cards where neither side has a bookmaker price.
+
+    COST: this is the expensive board. The value board walks every priced fixture and the
+    merged board walks every team three times over. It is one day's worth and it is not
+    cached, so it is not something to poll.
+    """
+    today = local_day(datetime.now(timezone.utc).isoformat())
+    want_day = (day or today or "")[:10]
+    try:
+        ahead = (datetime.fromisoformat(want_day).date()
+                 - datetime.fromisoformat(today).date()).days
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400,
+                            detail="day must be a date, as YYYY-MM-DD")
+    if ahead < 0:
+        raise HTTPException(status_code=400, detail="that day has already been played")
+    if ahead > WEEK_CARD_MAX_AHEAD:
+        raise HTTPException(
+            status_code=400,
+            detail=f"{want_day} is more than {WEEK_CARD_MAX_AHEAD} days ahead")
+
+    # The value board filtered to exactly this London day, carrying every rung — priced
+    # or not — because a side's line is chosen from the whole ladder and an unquoted rung
+    # still has the model's fair price on it.
+    rows = await value_board(within_days=None, min_ev=0.0, day=want_day,
+                             league_id=league_id, limit=100, ladder=True, user=user)
+    rows = [r for r in rows if r.get("status") in ("ok", "below_floor")]
+
+    # Board membership and the run. min_boards=1, because a side on the streak board
+    # alone is still a side with a run behind it — the two-board bar is what makes the
+    # COMBINED board a shortlist, and this is a diary, not a shortlist.
+    board_rows = await _combined_rows(within_days=max(1, ahead + 1), min_boards=1,
+                                      user=user)
+    board_rows = [b for b in board_rows
+                  if local_day((b.get("next_fixture") or {}).get("date")) == want_day]
+
+    # THE GAMES WITH A RUN BUT NO PRICE, which the value board cannot see at all.
+    #
+    # value_board is ODDS-DRIVEN — it walks stored prices, so a fixture nobody has
+    # quoted produces no row however interesting the sides are. That is right for a
+    # board of live edges and wrong for a card you research FROM: the games you want to
+    # look up are precisely the ones that have a run on them and no price yet. They come
+    # in here with an empty ladder, so every side reads "no price yet" beside its run.
+    #
+    # This is a union, not a widening: a fixture with neither a price nor a side on any
+    # board never appears, which is what keeps a 118-game Saturday down to a card.
+    have = {r.get("fixture_id") for r in rows}
+    want_ids = {(b.get("next_fixture") or {}).get("fixture_id") for b in board_rows} - have
+    want_ids.discard(None)
+    if want_ids:
+        now = datetime.now(timezone.utc)
+        for fx in await db.fixtures.find({"fixture_id": {"$in": list(want_ids)}},
+                                         {"_id": 0}).to_list(len(want_ids) + 100):
+            if league_id and league_id != "all" and fx.get("league_id") != league_id:
+                continue
+            kicked = _iso_to_dt(fx.get("date"))
+            if kicked and kicked < now:
+                continue
+            rows.append({"fixture_id": fx["fixture_id"], "date": fx.get("date"),
+                         "round": fx.get("round"), "league_id": fx.get("league_id"),
+                         "league_name": "", "tier": (LEAGUE_META.get(fx.get("league_id"))
+                                                     or {}).get("tier"),
+                         "home_name": fx.get("home_name"), "away_name": fx.get("away_name"),
+                         "home_team_id": fx.get("home_team_id"),
+                         "away_team_id": fx.get("away_team_id"),
+                         "status": "no_price", "note": "No price stored for this game yet.",
+                         "best": None, "ladder": [], "lambda_total": None,
+                         "confidence": None})
+
+    # BOTH IN BULK, one query each. A card needs the two teams' match history for the
+    # game-state verdict and the league's shot reference to judge a blunt side; asking
+    # per fixture is a few hundred round trips for a day's board.
+    teams, leagues_by_id = {}, {}
+    ids = {t for r in rows for t in (r.get("home_team_id"), r.get("away_team_id")) if t}
+    if ids:
+        for t in await db.teams.find({"team_id": {"$in": list(ids)}}, {"_id": 0}) \
+                               .to_list(len(ids) + 100):
+            teams[t["team_id"]] = t
+    lids = {r.get("league_id") for r in rows if r.get("league_id")}
+    if lids:
+        for lg_doc in await db.leagues.find({"league_id": {"$in": list(lids)}},
+                                            {"_id": 0}).to_list(len(lids) + 100):
+            leagues_by_id[lg_doc["league_id"]] = lg_doc
+    # The unpriced rows came from the fixtures collection, which carries an id and not a
+    # name. Filled in here so every card is labelled the same way, whichever list it
+    # arrived on — an unnamed league on half the cards reads as missing data.
+    for r in rows:
+        if not r.get("league_name"):
+            r["league_name"] = (leagues_by_id.get(r.get("league_id")) or {}).get("name", "")
+
+    # A MODEL LADDER FOR THE UNPRICED GAMES, so a research card says what the bet is
+    # rather than "no line". The model does not need a book price to work one out — it
+    # needs the two sides and the league — and the fair price is the answer to "what is
+    # this worth", which is the question you open the game with. Every rung comes back
+    # with book_odds None, so the card prints it as the model's number and never as one
+    # anybody is offering.
+    for r in rows:
+        if r.get("status") != "no_price":
+            continue
+        home = teams.get(r.get("home_team_id"))
+        away = teams.get(r.get("away_team_id"))
+        if not home or not away:
+            continue
+        try:
+            model = fixture_model_from(home, away,
+                                       leagues_by_id.get(r.get("league_id")) or {}, {})
+        except Exception as e:                   # one unpriceable game must not take the day
+            logger.warning(f"week card model failed for {r.get('fixture_id')}: {e}")
+            continue
+        r["ladder"] = [{"key": m["key"], "group": m["group"],
+                        "label": f"{m['group_label']} {m['label']}", "line": m["line"],
+                        "book_odds": None, "fair_odds": m["fair_odds"],
+                        "prob": m["prob"], "ev": None, "tier": m["tier"]}
+                       for m in model["markets"]]
+        r["lambda_total"] = model["lambdas"]["total"]
+        r["confidence"] = model["confidence"]
+
+    # ONLY the Match Winner consensus, not the whole price document. game_state uses it
+    # for one thing — how short the opponent is — and the corner prices are already on
+    # the rows. _merged_prices would re-merge two collections to hand back what the
+    # ladder is carrying anyway.
+    fids = [r["fixture_id"] for r in rows if r.get("fixture_id")]
+    match_odds = {}
+    if fids:
+        for d in await db.odds_feed.find({"fixture_id": {"$in": fids}},
+                                         {"_id": 0, "fixture_id": 1, "match_odds": 1}) \
+                                   .to_list(len(fids) + 100):
+            if d.get("match_odds"):
+                match_odds[d["fixture_id"]] = d["match_odds"]
+
+    cards = []
+    for row in rows:
+        home = teams.get(row.get("home_team_id")) or {}
+        away = teams.get(row.get("away_team_id")) or {}
+        lg = leagues_by_id.get(row.get("league_id")) or {}
+        states_for = _week_card_states(home, away, lg,
+                                       match_odds.get(row.get("fixture_id")))
+        cards.extend(week_card.build_cards([row], board_rows, states_for,
+                                           CREDIBILITY_ORDER))
+
+    cards.sort(key=week_card.card_sort_key)
+    total = len(cards)
+    if min_run > 0:
+        cards = [c for c in cards
+                 if any((c[s].get("run") or {}).get("settled", 0) and
+                        (c[s]["run"].get("hits") or 0) >= min_run
+                        for s in ("home", "away"))]
+    if priced_only:
+        cards = [c for c in cards
+                 if any((c[s].get("pick") or {}).get("book_odds")
+                        for s in ("home", "away")) or (c.get("total") or {}).get("book_odds")]
+
+    out = {"day": want_day, "cards": cards, "fixtures": len(cards),
+           # WHAT WAS LEFT OUT, because a short list after a filter and a quiet day look
+           # identical otherwise — the same reason the fixture board reports `scanned`.
+           "considered": total,
+           "with_runs": sum(1 for c in cards if c["run_count"]),
+           "max_ahead": WEEK_CARD_MAX_AHEAD}
+    if response is not None:
+        response.headers["X-Week-Cards"] = str(len(cards))
+    return out
 
 
 def _venue_matches(team, venue):

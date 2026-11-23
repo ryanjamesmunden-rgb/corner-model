@@ -122,6 +122,23 @@ export default function Calendar() {
         </div>
       </div>
 
+      {/* THE OTHER HALF OF THE SAME QUESTION. This grid answers "when do my teams play";
+          the card answers "given that day, what is the bet on each game". Linked rather
+          than merged because they are different time scales, and a month of cards is
+          neither readable nor cheap to build. */}
+      <button type="button" onClick={() => navigate("/week-card")}
+        className="mb-3 flex w-full items-center justify-between gap-2 rounded-lg border
+          border-border bg-card px-3 py-2 text-left text-sm hover:border-primary/50">
+        <span>
+          <span className="font-medium">The week card</span>
+          <span className="block text-xs text-muted-foreground">
+            One day at a time: both sides of every game, the line, the price and the run
+            behind it.
+          </span>
+        </span>
+        <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground" />
+      </button>
+
       {err && <p className="mb-3 text-sm text-rose-400">{err}</p>}
       {loading && !built && <p className="text-sm text-muted-foreground">Loading…</p>}
 

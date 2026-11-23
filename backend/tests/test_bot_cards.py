@@ -22,8 +22,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import pytest  # noqa: E402
 
-from bot_cards import (MAX_ROWS, TELEGRAM_LIMIT, board_card,  # noqa: E402
-                       board_line, digest_card, perfect_card, plus_line,
+from bot_cards import (MAX_COMBINED, MAX_ROWS, TELEGRAM_LIMIT, board_card,  # noqa: E402
+                       board_line, combined_card, digest_card, perfect_card, plus_line,
                        results_card, settled_card, stale_warning, units_text,
                        value_card, value_rows, week_card)
 
@@ -465,3 +465,107 @@ def test_the_unit_note_appears_only_when_a_stake_does():
            "book_odds": 1.9, "dedup_key": "f:1"}
     assert STAKE_NOTE not in value_card([row])
     assert STAKE_NOTE in value_card([{**row, "stake": 1.0}])
+
+
+class TestTheCombinedCard:
+    """The agreement card. Its two failure modes are both claims to paying subscribers:
+    presenting three correlated boards as three models agreeing, and posting a price the
+    rest of the app has already called broken."""
+
+    def row(self, **kw):
+        r = {"name": "Operário", "next_fixture": {"opponent": "CRB", "is_home": True},
+             "boards": ["quick_scan", "streaks"], "board_count": 2, "value": True,
+             "streak": {"side": "home", "line": 5, "hits": 9, "settled": 10, "floor": 5},
+             "quick_scan": {"opp_conceded": 7.1, "lambda": 6.8},
+             "best": {"line": 5, "label": "5+", "prob": 71.4, "fair_odds": 1.40,
+                      "book_odds": 1.72, "ev": 22.8, "credibility": "credible"},
+             "warnings": []}
+        r.update(kw)
+        return r
+
+    def test_it_shows_the_run_the_opponent_and_the_price(self):
+        card = combined_card([self.row()])
+        assert "Operário 5+ v CRB" in card
+        assert "9/10" in card, "the run"
+        assert "floor 5" in card, "the whatever-the-score test"
+        assert "CRB ship 7.1" in card, "the opponent's own concession rate"
+        assert "1.72 (+22.8%)" in card
+
+    def test_it_names_the_boards_in_words(self):
+        # The payload says "quick_scan"; nobody calls it that.
+        card = combined_card([self.row()])
+        assert "Quick Scan + Streaks" in card
+        assert "quick_scan" not in card
+
+    def test_it_never_claims_the_boards_are_independent(self):
+        # All three lean on the same corner count, so "2" is a reason to look, not two
+        # models agreeing — and a Telegram card is read away from the module that says so.
+        card = combined_card([self.row()])
+        assert "reason to look" in card
+        assert "same corner count" in card
+
+    def test_a_broken_price_is_dropped_rather_than_led_with(self):
+        # The sort puts the biggest edge on top of the value group, so an implausible row
+        # would HEAD this card.
+        broken = self.row(name="Wrong Line",
+                          best={"line": 5, "label": "5+", "prob": 71.0, "fair_odds": 1.41,
+                                "book_odds": 2.55, "ev": 81.1,
+                                "credibility": "implausible"})
+        card = combined_card([broken, self.row()])
+        assert "Wrong Line" not in card
+        assert "Operário" in card
+
+    def test_a_card_of_only_broken_prices_is_the_empty_card(self):
+        broken = self.row(best={"ev": 240.0, "label": "5+", "credibility": "implausible"})
+        assert "No team is on more than one board" in combined_card([broken])
+
+    def test_a_stretch_or_outlier_still_goes_out(self):
+        for band in ("stretch", "outlier"):
+            best = dict(self.row()["best"], ev=42.0, credibility=band)
+            assert "Operário" in combined_card([self.row(best=best)]), band
+
+    def test_an_unpriced_row_says_so_instead_of_printing_an_edge(self):
+        card = combined_card([self.row(value=False,
+                                       best={"line": 5, "label": "5+", "prob": 71.4,
+                                             "fair_odds": 1.40, "book_odds": None,
+                                             "ev": None},
+                                       warnings=["no bookmaker price for 5+/6+ yet"])])
+        assert "no price yet" in card
+        assert "fair 1.40" in card
+        assert "%)" not in card, "there is no edge to print without a price"
+
+    def test_warnings_are_printed_because_they_are_the_point_of_the_row(self):
+        card = combined_card([self.row(
+            warnings=["opponent's venue record is 6 games", "Remo promoted: price less reliable"])])
+        assert "venue record is 6 games" in card
+        assert "price less reliable" in card
+
+    def test_a_priced_row_displaces_an_unpriced_one_and_the_card_counts_it(self):
+        # The card is four rows long. Where something IS priced, that is what a reader can
+        # act on this morning, so the leads step aside — and the footer says how many did
+        # rather than letting them vanish.
+        unpriced = self.row(name="No Price", value=False,
+                            best={"label": "6+", "prob": 60.0, "fair_odds": 1.66,
+                                  "book_odds": None, "ev": None})
+        card = combined_card([unpriced, self.row()])
+        assert "Operário" in card
+        assert "No Price" not in card
+        assert "1 of them have no 5+/6+ price stored yet" in card
+
+    def test_it_is_capped_and_says_what_it_left_out(self):
+        rows = [self.row(name=f"Team {i}") for i in range(MAX_COMBINED + 3)]
+        card = combined_card(rows)
+        assert f"and {3} more on the site" in card
+
+    def test_an_away_fixture_is_not_printed_as_a_home_one(self):
+        card = combined_card([self.row(next_fixture={"opponent": "CRB", "is_home": False})])
+        assert "@ CRB" in card and " v CRB" not in card
+
+    def test_an_empty_board_explains_itself(self):
+        card = combined_card([])
+        assert "normal state" in card
+        assert "0%" not in card
+
+    def test_junk_rows_do_not_crash_it(self):
+        assert combined_card([None, "nope", 7]).startswith("🧩")
+        assert combined_card(None).startswith("🧩")

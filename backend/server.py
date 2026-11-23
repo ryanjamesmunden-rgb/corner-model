@@ -8289,9 +8289,28 @@ async def _combined_rows(within_days: int = 7, min_samples: int = combined.DEFAU
                         for r in [*mismatches, *runs, *perfect]} - {None})
     priced = await _odds_for_many(fixture_ids)
     odds_by_fixture = {fid: row["odds"] for fid, row in priced.items()}
-    return combined.combine_boards(mismatches, runs, perfect, teams_by_id, odds_by_fixture,
+    rows = combined.combine_boards(mismatches, runs, perfect, teams_by_id, odds_by_fixture,
                                    prob_ge=nb_ge, min_samples=min_samples,
                                    min_opp_games=min_opp_games, min_boards=min_boards)
+    # THE SAME VERDICT THE VALUE BOARD CARRIES, for the reason ev_credibility exists: the
+    # bot's card, the spreadsheet and the site must not each hold their own opinion about
+    # which edges to believe. This board prices its own 5+/6+ angle from a stored book
+    # price, so it can surface the identical misprice the value board now demotes — and
+    # unflagged it would head this board too, because the sort puts the biggest edge on
+    # top of the value group.
+    #
+    # NO SPREAD HERE, so the note falls back to "nothing to check it against". The other
+    # books' quotes are per market key on the odds document and `combine_boards` is handed
+    # only the merged price map; passing the whole document through a pure merge to reach
+    # them is a bigger change than the flag is worth. The band is the part that gates a
+    # post, and the band only needs the EV.
+    for row in rows:
+        best = row.get("best")
+        cred = ev_credibility((best or {}).get("ev")) if best else None
+        if cred:
+            best["credibility"] = cred["band"]
+            best["credibility_note"] = cred["note"]
+    return rows
 
 
 @api_router.get("/combined")
@@ -11340,7 +11359,7 @@ async def angles_card(count: int = angle_of_day.COUNT, token: Optional[str] = No
 # Which boards `/share/rows` will assemble. Named rather than "everything, always",
 # because three of the five walk every team in the database and the daily poster only ever
 # needs the first two — see the `boards` parameter below.
-SHARE_BOARDS = ("streaks", "fixtures", "mismatches", "chase", "value")
+SHARE_BOARDS = ("streaks", "fixtures", "mismatches", "chase", "value", "combined")
 SHARE_BOARDS_DEFAULT = "streaks,fixtures"
 
 
@@ -11469,6 +11488,17 @@ BOT_VALUE_DAYS = 7
 #: The same floor the value board's own default screen uses. A row that clears nothing is
 #: not an edge, and a card listing every priced row would be a card of noise.
 BOT_VALUE_MIN_EV = 5.0
+#: THREE DAYS FOR THE COMBINED CARD, where the value card takes seven.
+#:
+#: They are shortlists of different kinds. The value card is priced bets, and a wide window
+#: is safe there because a stale fetched price drops out of the merge on its own (see
+#: BOT_VALUE_DAYS above) — so a week out either has a live price or shows nothing. The
+#: combined card is a shortlist to go and PRICE UP, most of whose rows have no book price
+#: yet, and nothing expires those. At seven days it becomes the same twenty teams every
+#: morning; at one day it is empty most mornings, because two boards agreeing on a game
+#: tomorrow is rare. Three days is long enough to get a price on and short enough that the
+#: card changes.
+BOT_COMBINED_DAYS = 3
 #: How much better a bet's EV has to get before it is sent A SECOND time.
 #:
 #: The value send runs off the back of the odds fetch, so the same bet is looked at again
@@ -12054,6 +12084,14 @@ async def telegram_digest(token: Optional[str] = None, to: str = "owner",
         sections.append(bot_cards.value_card(bot_cards.value_rows(rows, min_ev=BOT_VALUE_MIN_EV)))
     except Exception:
         logger.exception("digest: value board failed")
+    # AFTER THE VALUE CARD, because it answers a different question and the order says
+    # which. The value card is the day's priced bets; this is the shortlist to go and
+    # price up, so it reads as the follow-on rather than competing with it.
+    try:
+        sections.append(bot_cards.combined_card(
+            await _combined_rows(within_days=BOT_COMBINED_DAYS, user={})))
+    except Exception:
+        logger.exception("digest: combined board failed")
     try:
         sections.append(bot_cards.settled_card(yesterday, await _bot_settled(yesterday)))
     except Exception:
@@ -12636,6 +12674,17 @@ async def share_rows(days: int = 3, limit: int = 12, token: Optional[str] = None
         out["mismatches"] = await timed("mismatches", _all_mismatches(days, limit))
     if "chase" in want:
         out["chase"] = await timed("chase", _chase_board(days, limit))
+    if "combined" in want:
+        # AGREEMENT, which none of the others answer. streaks says a side keeps clearing a
+        # line, mismatches says this attack meets that defence, chase says game state —
+        # this is the same team and the same fixture turning up on more than one of them.
+        #
+        # ALREADY FILTERED FOR THE POSTER, like the value board below: an implausible band
+        # is a price stored against the wrong line, and the daily post is the last place it
+        # should surface. _combined_rows attaches the band; this drops it.
+        rows = await timed("combined", _combined_rows(within_days=days, user={}))
+        out["combined"] = [r for r in rows
+                           if (r.get("best") or {}).get("credibility") != "implausible"][:limit]
     if "value" in want:
         # ONLY THE ROWS THAT ARE ACTUALLY BETS. The board deliberately keeps every price as
         # a row so nothing vanishes unexplained, and those `status` rows are the right

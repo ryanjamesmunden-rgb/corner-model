@@ -78,51 +78,60 @@ const fail = (msg) => {
   process.exit(1);
 };
 
-const getOnce = async (path, ms, fatal) => {
+// `last` is the final retry; `fatal` says whether this board is one the post needs.
+// A TRANSIENT failure exits only when both hold — otherwise it is thrown, to be retried
+// or caught. A PERMANENT one exits as soon as it is seen, whatever attempt that is.
+const getOnce = async (path, ms, { last, fatal }) => {
   let res;
   try {
     res = await fetch(`${BACKEND}${path}`, { signal: AbortSignal.timeout(ms) });
   } catch (err) {
     const what = err.name === "TimeoutError"
       ? `timed out after ${ms / 1000}s` : err.message;
-    if (!fatal) throw new Error(what);
+    if (!(last && fatal)) throw new Error(what);
     fail(`could not reach ${BACKEND} — ${what}`);
   }
-  // CONFIG ERRORS ARE FATAL ON THE FIRST ATTEMPT. A missing or wrong token answers the
-  // same however often it is asked, and retrying only buries the one message that says
-  // what a person has to go and change. `fatal` is false only for a board the post can do
-  // without, and then even these are reported rather than exited on — the streak call ran
-  // first, so a token this request cannot use is one the whole run already proved good.
-  const config = res.status === 503
+  // THESE ANSWER THE SAME HOWEVER OFTEN THEY ARE ASKED, so they are never retried:
+  // retrying only buries the one message that says what a person has to go and change.
+  // 503 and 403 are the token; 400 from share/rows is a board it does not know, which is
+  // what a backend deployed before that board was added replies — and logging that as
+  // "attempt 1 failed, retrying" reads as a blip rather than as a pending deploy.
+  //
+  // A caller that can do without this board gets it as a `permanent` error to catch; one
+  // that cannot exits here, as it always has, on the first attempt rather than the last.
+  const permanent = res.status === 503
     ? "backend has no TOOLS_TOKEN set in its own environment — set it on Render, then "
       + "set the matching GitHub repo secret"
     : res.status === 403
     ? "backend rejected the token — the TOOLS_TOKEN repo secret does not match the "
       + "backend env"
+    : res.status === 400
+    ? "backend does not know that board — it predates this deploy"
     : null;
-  if (config) {
-    if (!fatal) throw new Error(config);
-    fail(config);
+  if (permanent) {
+    if (fatal) fail(permanent);
+    throw Object.assign(new Error(permanent), { permanent: true });
   }
   if (!res.ok) {
     const what = `/share/rows returned ${res.status} ${res.statusText}`;
-    if (!fatal) throw new Error(what);
+    if (!(last && fatal)) throw new Error(what);
     fail(what);
   }
   return res.json();
 };
 
-// `fatal: false` makes the LAST attempt throw instead of exiting, so a caller that can do
-// without this board catches it. Without the flag `getOnce` exits the process on its final
-// try and a try/catch round `get` never runs — the digest would die for a board it was
-// explicitly willing to lose.
+// `fatal: false` makes failures throw instead of exiting, so a caller that can do without
+// this board catches them. Without the flag `getOnce` exits the process itself and a
+// try/catch round `get` never runs — the digest would die for a board it was explicitly
+// willing to lose. `fatal` is passed to every attempt, not just the last: a permanent
+// error must exit on the first one, which is what the note in getOnce is about.
 const get = async (path, { fatal = true } = {}) => {
   for (let i = 0; i < FETCH_MS.length; i++) {
     const last = i === FETCH_MS.length - 1;
     try {
-      return await getOnce(path, FETCH_MS[i], last && fatal);
+      return await getOnce(path, FETCH_MS[i], { last, fatal });
     } catch (err) {
-      if (last) throw err;
+      if (last || err.permanent) throw err;
       console.error(`digest: attempt ${i + 1} failed (${err.message}) — retrying with `
                     + `${FETCH_MS[i + 1] / 1000}s`);
     }

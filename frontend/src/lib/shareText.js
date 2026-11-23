@@ -569,6 +569,70 @@ export const pickGame = (rows = [], minProb = GAME_MIN_PROB) =>
   pickGameDetailed(rows, minProb).row;
 
 /**
+ * How often this side has actually cleared the line a post is about to QUOTE.
+ *
+ * WHY THIS EXISTS. The run in a row (`line_label`, `streak.length`) and the rung a post
+ * quotes (see pricedRung) are chosen independently, and on a real board they disagree
+ * more often than not: three of five positive-EV candidates on 23 Nov 2026 described a
+ * 3+ run and recommended a 6+ bet, whose records at the quoted line were 2/5, 1/5 and
+ * 2/5. The post read as a run supporting the bet; it was a run at a line nobody was
+ * being asked to back. This counts the right line, from the same `recent` games the
+ * board already carries.
+ *
+ * Returns `{ hits, of }`, or null when there is nothing to count.
+ */
+export const rungRecord = (row = {}, line = null, games = 5) => {
+  // `Number(null)` is 0 and 0 is finite, so a missing line counted every game as clearing
+  // it and reported a perfect record. A line that is not a number is no line.
+  if (line === null || line === undefined || line === "") return null;
+  const want = Number(line);
+  if (!Number.isFinite(want)) return null;
+  const counts = (row?.recent || [])
+    .slice(0, Math.max(1, games))
+    .map((g) => Number(g?.corners ?? g?.value))
+    .filter(Number.isFinite);
+  if (!counts.length) return null;
+  return { hits: counts.filter((c) => c >= want).length, of: counts.length };
+};
+
+/**
+ * The best N games to post, one per fixture.
+ *
+ * ONE PER FIXTURE, because both sides of the same game can carry a run and posting both
+ * is posting the same match twice — and worse, often as two bets that cannot both be the
+ * reason to look at it. The better side by edge wins.
+ *
+ * VALUE ONLY. `pickGameDetailed` falls back to the model's confidence when no real price
+ * exists, which is right for "today's one game" and wrong here: a caller asking for
+ * several is asking for several PRICES, and a confidence ranking padded onto the end of
+ * a value list would be indistinguishable from it once posted. Fewer than asked for is
+ * the honest answer, so the count returned may be short.
+ */
+export const pickGamesValue = (rows = [], count = 3) => {
+  const ev = (r) => {
+    const own = Number(r?.projection?.ev);
+    const rung = Number(pricedRung(r)?.ev);
+    const both = [own, rung].filter(Number.isFinite);
+    return both.length ? Math.max(...both) : NaN;
+  };
+  const live = (rows || []).filter(
+    (r) => r?.next_fixture?.date && (Number(r?.streak?.length) || 0) >= 2
+      && !r.league_change && !r.opponent_league_change
+      && isRealPrice(r?.projection?.odds_source) && ev(r) > 0);
+
+  const best = new Map();
+  for (const r of live) {
+    const fid = r.next_fixture.fixture_id || `${r.name}-${r.next_fixture.date}`;
+    const held = best.get(fid);
+    if (!held || ev(r) > ev(held)) best.set(fid, r);
+  }
+  return [...best.values()]
+    .sort((a, b) => (ev(b) - ev(a))
+      || ((Number(b?.streak?.length) || 0) - (Number(a?.streak?.length) || 0)))
+    .slice(0, Math.max(1, count));
+};
+
+/**
  * That game, in three lines:
  *
  *   📅 Friday 11th September @ 11:00am
@@ -620,11 +684,30 @@ export const gameShare = ({ row = {}, site = "", now = new Date() } = {}) => () 
   if (!home || !away || !row.name) return "";
 
   const lines = [];
+  const rung = pricedRung(row);
 
-  // 1. THE RUN, as a sentence somebody would actually say about a team.
+  // 1. THE EVIDENCE, AND IT IS ALWAYS ABOUT THE LINE BEING QUOTED.
+  //
+  // THE BUG THIS REPLACES. The run sentence used `row.line_label` and the price line used
+  // the rung's own label, chosen independently — so a post could read "have won 3+ corners
+  // in every game, 3 in a row" and then recommend 6+ at 4.20, and every reader takes the
+  // first sentence as the reason for the second. On the board of 23 Nov 2026 three of the
+  // five positive-EV candidates were that shape, with records at the line actually being
+  // recommended of 2/5, 1/5 and 2/5.
+  //
+  // So when the quoted rung is the line the run is on, the run sentence stands as it was —
+  // it is the strongest thing this format says and it is true. When it is not, the post
+  // states the side's record AT THE QUOTED LINE instead, which is weaker, shorter and
+  // about the bet. A bet whose own record cannot carry a sentence is a bet not worth
+  // posting, and that now shows rather than being dressed in another line's run.
   const run = Number(row.streak?.length) || 0;
-  if (run >= 2 && row.line_label) {
-    const flag = flagFor(row.league_id) || "";
+  const flag = flagFor(row.league_id) || "";
+  // The row's own line, from the number where there is one and the label otherwise — a
+  // row carrying only "4+" must not read as "no line" and so match every rung.
+  const ownLine = Number.isFinite(Number(row.line))
+    ? Number(row.line) : parseFloat(String(row.line_label || "").replace("+", ""));
+  const sameLine = rung ? Number(rung.line) === ownLine : true;
+  if (sameLine && run >= 2 && row.line_label) {
     const since = runSince(row.streak?.start_date, now);
     const venue = row.side === "home" ? "home game" : row.side === "away" ? "away game" : "game";
     // "AT LEAST" ONLY WHEN IT IS TRUE. When the run covers every game we hold for the
@@ -637,11 +720,16 @@ export const gameShare = ({ row = {}, site = "", now = new Date() } = {}) => () 
     lines.push((capped
       ? `${head} at least ${run} in a row. Our record of them starts there, so it may well be longer...`
       : `${head} ${run} in a row.`).replace(/\s+/g, " ").trim());
+  } else if (rung) {
+    const rec = rungRecord(row, rung.line);
+    if (rec) {
+      lines.push(`${flag} ${row.name} have won ${rung.label} corners in `
+        + `${rec.hits} of their last ${rec.of}.`.trimEnd());
+    }
   }
 
   // 2. THE PRICE: the bookmaker's, never the model's. The model's number is the product
   // and stays off the post; a book's price is public and is what makes someone click.
-  const rung = pricedRung(row);
   const where = fx.is_home ? `at home to ${fx.opponent}` : `away to ${fx.opponent}`;
   const when = dayWord(fx.date, now);
   if (rung) {

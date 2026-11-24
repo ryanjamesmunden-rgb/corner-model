@@ -11142,6 +11142,98 @@ async def mismatch_snapshot_results(tag: str, token: Optional[str] = None,
             "results": out, **_tally(out)}
 
 
+class CombinedSnapshotBody(BaseModel):
+    """Which combined rows the board was showing, so they can be graded later."""
+    tag: Optional[str] = None
+    days: int = 7
+
+
+@api_router.post("/combined/snapshot")
+async def snapshot_combined(body: CombinedSnapshotBody, token: Optional[str] = None,
+                            user: dict = Depends(get_current_user)):
+    """Freeze the combined board — the one screen nobody could look back at.
+
+    SAME ARGUMENT AS THE THREE BOARDS IT IS BUILT FROM: the live board is computed from
+    today's team records, so a weekend's rows are gone by Monday morning and nobody could
+    say what it had shown. Written down now or not knowable.
+
+    One entry per line (5+ and 6+), with the boards that agreed and the price as it stood.
+    Idempotent per tag and stale-refusing, for the reasons on snapshot_streaks.
+    """
+    _check_tools_token(token)
+    tag = body.tag or datetime.now(timezone.utc).date().isoformat()
+    existing = await db.combined_snapshots.find_one({"_id": tag}, {"_id": 0})
+    if existing:
+        return {"status": "exists", "tag": tag, "entries": len(existing.get("entries") or [])}
+
+    now_ = datetime.now(timezone.utc)
+    newest = await db.leagues.find({"data_source": "real"}, {"_id": 0, "synced_at": 1}) \
+        .sort("synced_at", -1).limit(1).to_list(1)
+    age_h = None
+    if newest and newest[0].get("synced_at"):
+        try:
+            age_h = round((now_ - datetime.fromisoformat(newest[0]["synced_at"])).total_seconds() / 3600, 1)
+        except Exception:
+            age_h = None
+    if age_h is None or age_h > SNAPSHOT_MAX_AGE_HOURS:
+        return {"status": "stale", "tag": tag, "data_age_hours": age_h,
+                "max_age_hours": SNAPSHOT_MAX_AGE_HOURS, "entries": 0}
+
+    rows = await _combined_rows(within_days=max(1, min(body.days, 14)), user={})
+    entries = combined.snapshot_entries(rows)
+    await db.combined_snapshots.insert_one(
+        {"_id": tag, "tag": tag, "created_at": now_.isoformat(), "days": body.days,
+         "rows": len(rows), "entries": entries})
+    return {"status": "created", "tag": tag, "rows": len(rows), "entries": len(entries)}
+
+
+@api_router.get("/combined/snapshot/{tag}/results")
+async def combined_snapshot_results(tag: str, token: Optional[str] = None,
+                                    user: dict = Depends(get_current_user)):
+    """How the combined rows in a snapshot actually landed. Same settlement as the rest."""
+    _check_tools_token(token)
+    snap = await db.combined_snapshots.find_one({"_id": tag}, {"_id": 0})
+    if not snap:
+        raise HTTPException(status_code=404, detail=f"no combined snapshot tagged {tag}")
+    out = _grade_entries(snap["entries"], await _teams_for(snap["entries"]))
+    return {"tag": tag, "created_at": snap.get("created_at"), "days": snap.get("days"),
+            "results": out, **_tally(out)}
+
+
+@api_router.get("/combined/history")
+async def combined_history(start: str, end: Optional[str] = None, token: Optional[str] = None,
+                           user: dict = Depends(get_current_user)):
+    """What the combined board showed for fixtures between `start` and `end`, and how it went.
+
+    Two sources, said plainly in the answer:
+      - `frozen`: the combined board's own daily snapshot, where one exists for those games.
+      - `rebuilt`: for games before that snapshot existed, the team+fixture pairs that sat on
+        two or more of the three boards' own frozen records. An approximation — the streak
+        freeze is the posted card, not the full streak board — so it can miss a row the live
+        screen showed, but it never invents one: every row was frozen before kick-off.
+    Dates are ISO days (UTC kick-off date), inclusive.
+    """
+    _check_tools_token(token)
+    end = end or start
+    snaps = await db.combined_snapshots.find({}, {"_id": 0}).sort("tag", -1).to_list(60)
+    frozen = [e for _, e in one_claim_per_fixture(snaps)
+              if start <= (e.get("kickoff") or "")[:10] <= end]
+    if frozen:
+        source, entries = "frozen", frozen
+    else:
+        by_board = {}
+        for board, coll in (("quick_scan", "mismatch_snapshots"),
+                            ("streaks", "streak_snapshots"),
+                            ("perfect_games", "perfect_snapshots")):
+            s = await db[coll].find({}, {"_id": 0}).sort("tag", -1).to_list(30)
+            by_board[board] = [e for _, e in one_claim_per_fixture(s)]
+        source = "rebuilt"
+        entries = combined.rebuild_from_snapshots(by_board, start, end)
+    graded = _grade_entries(entries, await _teams_for(entries)) if entries else []
+    return {"start": start, "end": end, "source": source,
+            "results": graded, **_tally(graded)}
+
+
 @api_router.get("/streaks/snapshot/{tag}/results")
 async def snapshot_results(tag: str, token: Optional[str] = None,
                            user: dict = Depends(get_current_user)):

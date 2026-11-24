@@ -191,3 +191,92 @@ def combine_boards(mismatches: Iterable[dict], runs: Iterable[dict],
                             -((r["best"] or {}).get("ev") or -999),
                             r["next_fixture"].get("date") or ""))
     return out
+
+
+# ----------------------------- Freezing and rebuilding -----------------------------
+# The live board is computed from the CURRENT team records, so once a fixture kicks off
+# its row is gone and cannot be shown again. Two ways back, kept here so they are pure:
+#
+#   snapshot_entries  — what the daily freeze writes: one gradeable entry per angle line
+#                       (5+ and 6+), each carrying the boards that agreed on the day.
+#   rebuild_from_snapshots — for days before the freeze existed: read the three boards'
+#                       OWN frozen collections and find the team+fixture pairs that sat
+#                       on two or more of them. An approximation, and labelled as one: the
+#                       streak freeze is the posted card's rows, not the full streak board,
+#                       so a pair can be missing here that the live screen showed.
+
+SNAPSHOT_BOARDS = ("quick_scan", "streaks", "perfect_games")
+
+
+def snapshot_entries(rows: Iterable[dict], lines: Iterable[int] = COMBINED_LINES) -> List[dict]:
+    """Combined rows -> gradeable entries, one per priced line.
+
+    One per line because the claim key includes the line: a 5+ and a 6+ on the same side
+    are two bets and settle separately. `direction`/`subject` ride along so the shared
+    settlement grades these exactly like every other board."""
+    out = []
+    for r in rows:
+        nf = r.get("next_fixture") or {}
+        if not nf.get("fixture_id") or not r.get("team_id"):
+            continue
+        by_line = {a.get("line"): a for a in (r.get("angles") or [])}
+        for line in lines:
+            a = by_line.get(line) or {}
+            out.append({
+                "team_id": r["team_id"], "name": r.get("name"),
+                "league_id": r.get("league_id"), "league_name": r.get("league_name"),
+                "line": line, "direction": "over", "subject": "team",
+                "boards": r.get("boards") or [], "board_count": r.get("board_count"),
+                "prob": a.get("prob"), "fair_odds": a.get("fair_odds"),
+                "book_odds": a.get("book_odds"), "ev": a.get("ev"),
+                "lambda": r.get("lambda"), "value": r.get("value"),
+                "best_line": (r.get("best") or {}).get("line"),
+                "warnings": r.get("warnings") or [],
+                "fixture_id": nf["fixture_id"], "kickoff": nf.get("date"),
+                "opponent": nf.get("opponent"), "is_home": nf.get("is_home"),
+            })
+    return out
+
+
+def rebuild_from_snapshots(by_board: Dict[str, List[dict]], start: str, end: str,
+                           min_boards: int = 2,
+                           lines: Iterable[int] = COMBINED_LINES) -> List[dict]:
+    """Rebuild the combined board for fixtures kicking off between `start` and `end`.
+
+    `by_board` maps each of SNAPSHOT_BOARDS to its frozen entries, already reduced to one
+    claim per fixture. Dates are ISO days, inclusive, compared on the kickoff's date part
+    (UTC, which is what is stored). Returns gradeable entries, one per line, in the same
+    shape snapshot_entries writes, so the same settlement reads both."""
+    pairs: Dict[tuple, dict] = {}
+    for board in SNAPSHOT_BOARDS:
+        for e in by_board.get(board) or []:
+            day = (e.get("kickoff") or "")[:10]
+            if not day or day < start or day > end:
+                continue
+            if e.get("subject", "team") != "team" or e.get("direction", "over") != "over":
+                continue
+            if not e.get("team_id") or not e.get("fixture_id"):
+                continue
+            key = (e["team_id"], e["fixture_id"])
+            slot = pairs.setdefault(key, {"base": e, "boards": [], "lines": {}})
+            if board not in slot["boards"]:
+                slot["boards"].append(board)
+            slot["lines"][board] = e.get("line")
+    out = []
+    for (team_id, fid), s in pairs.items():
+        if len(s["boards"]) < min_boards:
+            continue
+        b = s["base"]
+        for line in lines:
+            out.append({
+                "team_id": team_id, "name": b.get("name"),
+                "league_id": b.get("league_id"), "league_name": b.get("league_name"),
+                "line": line, "direction": "over", "subject": "team",
+                "boards": s["boards"], "board_count": len(s["boards"]),
+                "board_lines": s["lines"],
+                "fixture_id": fid, "kickoff": b.get("kickoff"),
+                "opponent": b.get("opponent"), "is_home": b.get("is_home"),
+            })
+    out.sort(key=lambda e: (e.get("kickoff") or "", -e["board_count"], e.get("name") or "",
+                            e["line"]))
+    return out

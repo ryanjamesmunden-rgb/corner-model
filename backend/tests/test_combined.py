@@ -95,3 +95,36 @@ def test_promoted_sides_are_flagged_and_sink_below_established_ones():
                                    teams, odds, poisson_ge)
     assert [r["team_id"] for r in rows] == ["t1", "t2"]
     assert "Team newly promoted: price less reliable" in rows[1]["warnings"]
+
+
+def frozen(team="t1", fid="f1", day="2026-11-22", line=6, **kw):
+    return {"team_id": team, "name": kw.get("name", "Team"), "league_id": "l",
+            "league_name": "L", "line": line, "direction": kw.get("direction", "over"),
+            "subject": kw.get("subject", "team"), "fixture_id": fid,
+            "kickoff": f"{day}T15:00:00+00:00", "opponent": "Opp", "is_home": True}
+
+
+def test_rebuild_keeps_pairs_on_two_boards_inside_the_dates():
+    by_board = {
+        "quick_scan": [frozen(), frozen(team="t2", fid="f2"), frozen(team="t3", fid="f3",
+                                                                      day="2026-11-24")],
+        "streaks": [frozen(line=5), frozen(team="t3", fid="f3", day="2026-11-24")],
+        "perfect_games": [frozen(team="t2", fid="f2", subject="match")],
+    }
+    out = combined.rebuild_from_snapshots(by_board, "2026-11-21", "2026-11-22")
+    # t1 is on two boards; t2's perfect row is a match total so it does not count;
+    # t3 is outside the dates.
+    assert {e["team_id"] for e in out} == {"t1"}
+    assert [e["line"] for e in out] == [5, 6]
+    assert out[0]["boards"] == ["quick_scan", "streaks"]
+    assert out[0]["board_lines"] == {"quick_scan": 6, "streaks": 5}
+
+
+def test_snapshot_entries_one_per_line_with_the_boards():
+    rows = combined.combine_boards([mismatch()], [run()], [], TEAMS, {"f1": {"home_over_4.5": 1.8}},
+                                   prob_ge=poisson_ge)
+    out = combined.snapshot_entries(rows)
+    assert [e["line"] for e in out] == [5, 6]
+    assert out[0]["book_odds"] == 1.8 and out[1]["book_odds"] is None
+    assert all(e["boards"] == ["quick_scan", "streaks"] and e["subject"] == "team"
+               for e in out)

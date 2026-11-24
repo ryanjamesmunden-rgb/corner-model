@@ -269,6 +269,26 @@ jobs:
             *)       echo "::warning::perfect-games snapshot did not run (HTTP $code)" ;;
           esac
 
+      # THE COMBINED BOARD, WHICH NOBODY COULD LOOK BACK AT. It is rebuilt from today's
+      # team records every time it is opened, so by Monday a weekend's rows were gone and
+      # "what was on Combined at the weekend" had no answer. Same soft failure as above.
+      - name: Freeze today's combined board
+        env:
+          TOOLS_TOKEN: ${{ secrets.TOOLS_TOKEN }}
+        run: |
+          code=$(curl -s -o cbsnap.json -w '%{http_code}' --max-time 180 -X POST \
+            -H 'Content-Type: application/json' -d '{"days":7}' \
+            "$BACKEND/api/combined/snapshot?token=$TOOLS_TOKEN" || echo 000)
+          status=$(python3 -c "import json;print(json.load(open('cbsnap.json')).get('status',''))" 2>/dev/null || echo "")
+          count=$(python3 -c "import json;print(json.load(open('cbsnap.json')).get('rows',0))" 2>/dev/null || echo 0)
+          echo "combined snapshot: HTTP $code status=$status rows=$count"
+          case "$status" in
+            created) echo "::notice::froze $count combined rows — gradeable once played" ;;
+            exists)  echo "::notice::already snapshotted today — left untouched" ;;
+            stale)   echo "::warning::data too old to snapshot — today cannot be graded" ;;
+            *)       echo "::warning::combined snapshot did not run (HTTP $code)" ;;
+          esac
+
       - name: Report what happened
         # A boot sync is a detached subprocess, so this is a progress check, not a
         # completion check. It exists so a dead sync shows up in the log instead of

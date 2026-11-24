@@ -120,3 +120,58 @@ describe("it keeps the label and the reasoning the board rests on", () => {
     expect(boardLine(board({ label: null })).label).toBe("mismatch");
   });
 });
+
+// --- the combined board ----------------------------------------------------------
+//
+// It was frozen daily from #373 and then read by nobody: the Results page listed three
+// boards out of four, so the one screen built as a shortlist of the others was the one
+// whose record could not be checked.
+
+describe("the combined board's line", () => {
+  const combined = (over = {}) => ({
+    key: "combined", label: "Combined",
+    blurb: "Teams on two of the three boards above for the same game — a subset of "
+      + "them, not a fourth independent source.",
+    snapshots: 12, frozen_rows: 188, claims: 94,
+    landed: 58, missed: 33, voided: 3, pending: 0, settled: 91,
+    hit_rate: 63.7, lo: 53.4, hi: 72.9,
+    priced_prob: 91, mean_prob: 60.2, residual: 3.5, ...over,
+  });
+
+  it("renders like every other board, with its own denominator", () => {
+    const row = boardLine(combined());
+    expect(row.key).toBe("combined");
+    expect(row.rate).toBe(63.7);
+    expect(row.settled).toBe(91);
+    expect(row.interval).toEqual({ lo: 53.4, hi: 72.9 });
+  });
+
+  it("carries the overlap warning through to the row", () => {
+    // The denominators would otherwise invite adding up, and every combined row is also
+    // a row on two of the boards above it.
+    expect(boardLine(combined()).blurb).toContain("not a fourth independent source");
+  });
+
+  it("reads its residual the same way as the rest — the price, not the hit rate", () => {
+    expect(boardLine(combined()).verdict).toBe("beat");
+    expect(boardLine(combined({ residual: -2.0 })).verdict).toBe("short");
+  });
+
+  it("counts its repeats, because it freezes daily like the others", () => {
+    expect(boardLine(combined()).repeats).toEqual({ frozen: 188, claims: 94, snapshots: 12 });
+  });
+
+  it("shows no rate at all on the first day it is frozen", () => {
+    // A board with claims and nothing settled is not a board on 0%.
+    const fresh = boardLine(combined({ landed: 0, missed: 0, voided: 0,
+                                       settled: 0, pending: 14, hit_rate: 0 }));
+    expect(fresh.rate).toBeNull();
+    expect(fresh.interval).toBeNull();
+    expect(fresh.pending).toBe(14);
+  });
+
+  it("is dropped entirely until the freeze has run once", () => {
+    expect(boardLine(combined({ claims: 0 }))).toBeNull();
+    expect(boardLines([combined({ claims: 0 })])).toEqual([]);
+  });
+});

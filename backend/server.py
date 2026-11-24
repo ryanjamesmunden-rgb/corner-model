@@ -11651,6 +11651,19 @@ RESULT_BOARDS = (
      "A run, a mismatch and a leaky opponent all agreeing."),
     ("mismatch", "Quick scan", "mismatch_snapshots",
      "This attack against THIS defence — about the fixture, not the form."),
+    # THE ONE BOARD THAT WAS FROZEN AND THEN READ BY NOBODY. #373 gave the combined board
+    # a daily snapshot and /combined/history, but the Results page is where the question
+    # "is this worth following" is actually asked, and it listed three boards out of four.
+    #
+    # ITS DENOMINATOR IS NOT COMPARABLE WITH THE OTHERS AND THE PAGE MUST NOT IMPLY IT IS.
+    # This board is a SHORTLIST of the three above it — a team is on it only by appearing
+    # on two of them for the same fixture — so its rows are a subset of theirs, settled
+    # again under a different name. A reader adding the four denominators together would
+    # be counting the same games twice, which is why the blurb says so rather than a
+    # footnote somewhere else saying it.
+    ("combined", "Combined", "combined_snapshots",
+     "Teams on two of the three boards above for the same game — a subset of them, "
+     "not a fourth independent source."),
 )
 
 

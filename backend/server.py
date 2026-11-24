@@ -34,6 +34,7 @@ import record_view
 import calibration
 import combined
 import markets
+import price_review
 import week_card
 import league_change
 import oddities
@@ -5981,6 +5982,153 @@ def _card_factors(team, opp, venue, team_name, opp_name, league_teams=None) -> L
 # not broken, not slow, just never called, and a 404 that names a fixture reads like a
 # bad id rather than a route that cannot be hit. Any further literal /fixtures/<word>
 # route has to go above that decorator too.
+#: How far back the review reaches by default. The played store keeps 30 days, so a week
+#: is a review and a month is the whole archive.
+REVIEW_DAYS = 7
+
+
+async def _odds_by_fixture(fixture_ids: List[str]) -> Dict[str, Dict[str, float]]:
+    """Every stored price for these fixtures, hand-typed and fetched merged.
+
+    The same merge the boards use, so a reviewed line is graded against the number the
+    board actually showed — a review computed off a different price than the one that was
+    published is worse than no review.
+    """
+    got = await _odds_for_many(fixture_ids)
+    return {fid: (row.get("odds") or {}) for fid, row in got.items()}
+
+
+@api_router.get("/line-history")
+async def line_history(team_id: str, key: str, limit: int = 6,
+                       token: Optional[str] = None,
+                       user: dict = Depends(get_current_user)):
+    """What this exact market did the last few times it was priced on this team.
+
+    WHY A LINE NEEDS A MEMORY. The board shows "Bradford 5+ @ 1.80, model says 68%" and
+    stops. Whether that same line was offered last week at 1.62 and landed, or has been
+    missed three games running, is a fact the site already holds and has never shown — and
+    it is the first thing anybody asks before taking a price.
+
+    THE SAME KEY, NOT A SIMILAR ONE. `home_over_4.5` and `away_over_4.5` are different
+    bets and a team is not always at home, so the caller passes the key it means. A game
+    is only reported when it had BOTH a stored price and a corner count: "it landed" with
+    no price attached answers half the question and invites the reader to fill in the
+    other half from memory.
+    """
+    if not price_review.parse_key(key):
+        raise HTTPException(status_code=400,
+                            detail=f"{key!r} is not a market this can settle")
+    limit = max(1, min(limit, 20))
+    rows = await db.fixtures_played.find(
+        {"$or": [{"home_team_id": team_id}, {"away_team_id": team_id}]},
+        {"_id": 0}).to_list(PLAYED_SCAN)
+    rows.sort(key=lambda r: str(r.get("date") or ""), reverse=True)
+    rows = rows[:40]
+    odds = await _odds_by_fixture([r["fixture_id"] for r in rows if r.get("fixture_id")])
+    games = [{**r, "odds": odds.get(r.get("fixture_id")) or {}} for r in rows]
+
+    out, seen = [], 0
+    for g in games:
+        got = price_review.last_time(key, [g])
+        if got:
+            # WHICH SIDE OF THE GAME THIS TEAM WAS ON, so a reader can see at a glance
+            # that a run of home_over_4.5 results is a run of HOME games.
+            got["was_home"] = g.get("home_team_id") == team_id
+            out.append(got)
+            seen += 1
+        if seen >= limit:
+            break
+    landed = [g for g in out if g["result"] == price_review.WIN]
+    return {"team_id": team_id, "key": key, "games": out,
+            "found": len(out), "landed": len(landed),
+            # The last one is what the board wants to print beside the price; the rest is
+            # there so a reader can see whether it was a run or a one-off.
+            "last": out[0] if out else None,
+            "prices_seen": sorted({g["book_odds"] for g in out}) if out else []}
+
+
+@api_router.get("/review")
+async def price_review_board(days: int = REVIEW_DAYS, league_id: Optional[str] = None,
+                             limit: int = 120, min_ev: float = 0.0,
+                             user: dict = Depends(require_member)):
+    """Games that have been played, with every price that was stored on them, settled.
+
+    WHY A FIXTURE SHOULD NOT VANISH AT KICK-OFF. Until now it did: the boards drop a game
+    the moment it starts, and its twenty-odd stored lines went with it. So the question
+    behind every week — "which of the edges we published actually landed, and at what
+    price" — had nothing to read, and the model's mistakes were only ever visible one
+    fixture at a time, by memory.
+
+    The prices survive already (the sync stopped deleting them), and fixtures_played keeps
+    the same fixture_id across kick-off. This is the join nobody had written.
+
+    EVERY LINE COMES BACK, WINNERS AND LOSERS. A review listing only the winners is a
+    tipster's results page. The figure to read is `ev_plus_rate`: the whole ladder
+    includes rungs nobody would back, so its hit rate describes the ladder rather than
+    the model.
+
+    MEMBERS ONLY, like the value board it reviews — it is the same prices, after the fact.
+    """
+    days = max(1, min(days, PLAYED_KEEP_DAYS))
+    q: Dict[str, object] = {"date": {"$gte": (datetime.now(timezone.utc)
+                                              - timedelta(days=days)).isoformat()}}
+    if league_id and league_id != "all":
+        q["league_id"] = league_id
+    rows = await db.fixtures_played.find(q, {"_id": 0}).to_list(PLAYED_SCAN)
+    rows.sort(key=lambda r: str(r.get("date") or ""), reverse=True)
+    rows = rows[:max(1, min(limit, 300))]
+    if not rows:
+        return {"days": days, "games": [], "best": [], **price_review.tally([])}
+
+    odds = await _odds_by_fixture([r["fixture_id"] for r in rows if r.get("fixture_id")])
+
+    # THE MODEL AS IT STANDS NOW, not as it stood then, and that is a real limitation
+    # rather than a detail. A team's lambda moves as results come in, so the EV printed
+    # here is this morning's opinion of a price from last week. It is the right number for
+    # "is the model any good at spotting these" and the wrong one for "what did the board
+    # show on the day" — the frozen snapshots answer that, and /results grades them.
+    teams, leagues_by_id = {}, {}
+    ids = {t for r in rows for t in (r.get("home_team_id"), r.get("away_team_id")) if t}
+    if ids:
+        for t in await db.teams.find({"team_id": {"$in": list(ids)}}, {"_id": 0}) \
+                               .to_list(len(ids) + 100):
+            teams[t["team_id"]] = t
+    lids = {r.get("league_id") for r in rows if r.get("league_id")}
+    if lids:
+        for lg in await db.leagues.find({"league_id": {"$in": list(lids)}},
+                                        {"_id": 0}).to_list(len(lids) + 100):
+            leagues_by_id[lg["league_id"]] = lg
+
+    reviews = []
+    for r in rows:
+        fid = r.get("fixture_id")
+        fx_odds = odds.get(fid) or {}
+        model = {}
+        home, away = teams.get(r.get("home_team_id")), teams.get(r.get("away_team_id"))
+        if fx_odds and home and away:
+            try:
+                # home/away are POSITIONAL here. Passing them again by keyword raises
+                # TypeError, which the except below would swallow — leaving every
+                # reviewed line with no EV and a review that looked merely empty.
+                built = fixture_model_from(home, away,
+                                           leagues_by_id.get(r.get("league_id")) or {},
+                                           fx_odds)
+                model = {m["key"]: m for m in built["markets"]}
+            except Exception as e:          # one unpriceable game must not take the week
+                logger.warning(f"review model failed for {fid}: {e}")
+        rv = price_review.review_fixture(r, fx_odds, model)
+        rv["league_name"] = (leagues_by_id.get(r.get("league_id")) or {}).get("name", "")
+        reviews.append(rv)
+
+    # `games`, NOT `fixtures`. tally() spreads a `fixtures` COUNT at the top level — the
+    # same shape /combined/history uses — and naming the list the same thing meant the
+    # count silently replaced it. The list is the point of this endpoint.
+    return {"days": days, "games": reviews,
+            "best": price_review.best_landed(reviews, limit=20, min_ev=min_ev),
+            "keep_days": PLAYED_KEEP_DAYS,
+            **price_review.tally(reviews)}
+
+
 @api_router.get("/fixtures/played")
 async def fixtures_played(days: Optional[int] = None, league_id: Optional[str] = None,
                           limit: int = 200, user: dict = Depends(get_current_user)):

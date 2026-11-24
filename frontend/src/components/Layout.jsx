@@ -3,7 +3,7 @@ import { Link, useLocation, useNavigate } from "react-router-dom";
 import MobileNav from "@/components/MobileNav";
 import BrandMark from "@/components/BrandMark";
 import { LayoutDashboard, Radar, Flame, Zap, Star, Sparkles, Receipt, Trophy,
-         TrendingUp, Globe, ShieldCheck, Activity, Bell, CalendarDays, Layers } from "lucide-react";
+         TrendingUp, Globe, ShieldCheck, Activity, Bell, CalendarDays, Layers, History } from "lucide-react";
 import { LeagueContext } from "@/context/LeagueContext";
 import ExportMenu from "@/components/ExportMenu";
 import { api } from "@/lib/api";
@@ -72,6 +72,9 @@ export default function Layout({ children }) {
     // One day's games, both sides, the line and the price. Signed-in only for the same
     // reason the value board is: the content is live prices.
     ...(user ? [{ to: "/week-card", label: "Week Card", icon: Layers }] : []),
+    // Played games with their prices still on them, settled. Members only, like the
+    // value board it reviews.
+    ...(user ? [{ to: "/review", label: "Review", icon: History }] : []),
     // Corner form line chart: favourites, tracked teams, or a whole league, ten a page.
     { to: "/form", label: "Form", icon: Activity },
     { to: "/bets", label: "Bets", icon: Receipt },

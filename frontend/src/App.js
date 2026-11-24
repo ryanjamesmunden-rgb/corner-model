@@ -25,6 +25,7 @@ const FormGraph = lazy(() => import("@/pages/FormGraph"));
 const MyTeams = lazy(() => import("@/pages/MyTeams"));
 const Calendar = lazy(() => import("@/pages/Calendar"));
 const WeekCardPage = lazy(() => import("@/pages/WeekCard"));
+const ReviewPage = lazy(() => import("@/pages/Review"));
 const Bets = lazy(() => import("@/pages/Bets"));
 const Results = lazy(() => import("@/pages/Results"));
 const Projections = lazy(() => import("@/pages/Projections"));
@@ -70,6 +71,9 @@ function AppRouter() {
           the bet. Separate routes because they are different time scales and
           one page doing both fights for the same screen. */}
       <Route path="/week-card" element={page(WeekCardPage)} />
+      {/* Played games keep their prices. The boards drop a fixture at kick-off;
+          this is where it goes instead. */}
+      <Route path="/review" element={page(ReviewPage)} />
       <Route path="/bets" element={page(Bets)} />
       <Route path="/results" element={page(Results)} />
       {/* PUBLIC. It lists no pick and names no team — it is the model's own

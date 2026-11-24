@@ -5048,9 +5048,27 @@ async def odds_ahead(days: int = 6, from_days: int = 1, limit: int = 120,
     """
     _check_tools_token(token)
     fetch_ahead = _odds_fetcher("fetch_ahead")
-    got = await fetch_ahead(db, days=max(2, min(days, 10)),
+    days = max(2, min(days, 10))
+    # WHICH GAMES THE BUDGET SHOULD REACH FIRST. The ceiling is being hit — a run on
+    # 23 Nov 2026 spent all 120 calls and reported `capped: true` — and sorted by date
+    # alone it is spent on whatever kicks off soonest, so a weekend carrying twenty
+    # qualifying runs got none of them priced. These are the fixtures the streak board
+    # would actually recommend, so they go first.
+    #
+    # FREE. The three venue tabs are prebuilt screens, so this costs no extra scan, and
+    # it changes the ORDER of the calls rather than their number.
+    prefer = set()
+    try:
+        for name in STREAK_SCREENS.values():
+            for row in (await _screen(name)) or []:
+                fid = (row.get("next_fixture") or {}).get("fixture_id")
+                if fid:
+                    prefer.add(fid)
+    except Exception as e:                   # aiming is an optimisation, never a blocker
+        logger.warning(f"odds ahead could not read the streak boards: {e}")
+    got = await fetch_ahead(db, days=days,
                             from_days=max(0, min(from_days, 5)),
-                            limit=max(1, min(limit, 200)))
+                            limit=max(1, min(limit, 200)), prefer=prefer)
     return {"mode": "ahead", **got}
 
 

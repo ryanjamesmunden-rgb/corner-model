@@ -95,8 +95,8 @@ class FakeDB:
         self.odds_feed = FakeColl(feed)
 
 
-def run(db, days=6, from_days=1, leagues=None, limit=120):
-    return asyncio.run(unpriced_ahead(db, days, from_days, leagues, limit))
+def run(db, days=6, from_days=1, leagues=None, limit=120, prefer=None):
+    return asyncio.run(unpriced_ahead(db, days, from_days, leagues, limit, prefer))
 
 
 # --- not spending twice -------------------------------------------------------------
@@ -106,7 +106,7 @@ def test_a_fixture_that_already_has_a_price_is_not_fetched_again():
     # a price that has not moved, and a six-day reach is unaffordable.
     db = FakeDB([fx("ger-bl-1", 3), fx("ger-bl-2", 4)],
                 [{"fixture_id": "ger-bl-1", "odds": {"home_over_4.5": 2.1}}])
-    todo, already = run(db)
+    todo, already, _ = run(db)
     assert [f["fixture_id"] for f, _ in todo] == ["ger-bl-2"]
     assert already == 1
 
@@ -117,7 +117,7 @@ def test_an_empty_price_document_still_counts_as_unpriced():
     # done would mean never looking again at exactly the fixtures whose market has not
     # opened — which is the thing this pass exists to catch.
     db = FakeDB([fx("ger-bl-1", 3)], [{"fixture_id": "ger-bl-1", "odds": {}}])
-    todo, already = run(db)
+    todo, already, _ = run(db)
     assert [f["fixture_id"] for f, _ in todo] == ["ger-bl-1"]
     assert already == 0
 
@@ -125,7 +125,7 @@ def test_an_empty_price_document_still_counts_as_unpriced():
 def test_the_whole_week_priced_costs_nothing():
     rows = [fx(f"ger-bl-{i}", 2 + i % 4) for i in range(1, 9)]
     feed = [{"fixture_id": r["fixture_id"], "odds": {"home_over_4.5": 2.0}} for r in rows]
-    todo, already = run(FakeDB(rows, feed))
+    todo, already, _ = run(FakeDB(rows, feed))
     assert todo == []
     assert already == 8
 
@@ -148,13 +148,13 @@ def test_it_does_not_reach_past_the_window():
 
 def test_soonest_first_so_a_cap_keeps_what_kicks_off_next():
     rows = [fx("ger-bl-late", 6), fx("ger-bl-soon", 2), fx("ger-bl-mid", 4)]
-    todo, _ = run(FakeDB(rows, []), limit=2)
+    todo, _, _ = run(FakeDB(rows, []), limit=2)
     assert [f["fixture_id"] for f, _ in todo] == ["ger-bl-soon", "ger-bl-mid"]
 
 
 def test_the_limit_is_a_ceiling_on_calls():
     rows = [fx(f"ger-bl-{i}", 2) for i in range(1, 30)]
-    todo, _ = run(FakeDB(rows, []), limit=5)
+    todo, _, _ = run(FakeDB(rows, []), limit=5)
     assert len(todo) == 5
 
 
@@ -186,3 +186,45 @@ def test_the_feed_is_only_asked_about_fixtures_in_the_window():
     run(db)
     assert db.odds_feed.queries, "the feed was never consulted"
     assert "fixture_id" in db.odds_feed.queries[0]
+
+
+# --- aiming the budget ----------------------------------------------------------------
+#
+# A run on 23 Nov 2026 spent all 120 calls, priced 48, reported `capped: true` — and left
+# every one of that weekend's twenty streak picks without a price, because the ceiling was
+# spent in date order on games nobody had an angle on.
+
+def test_a_fixture_the_board_recommends_is_reached_before_a_sooner_one():
+    rows = [fx("ger-bl-soon", 2), fx("ger-bl-later", 5)]
+    todo, _, preferred = run(FakeDB(rows, []), limit=1, prefer={"ger-bl-later"})
+    assert [f["fixture_id"] for f, _ in todo] == ["ger-bl-later"]
+    assert preferred == 1
+
+
+def test_the_preferred_ones_keep_their_own_date_order():
+    rows = [fx("ger-bl-a", 5), fx("ger-bl-b", 3), fx("ger-bl-c", 2)]
+    todo, _, _ = run(FakeDB(rows, []), prefer={"ger-bl-a", "ger-bl-b"})
+    assert [f["fixture_id"] for f, _ in todo] == ["ger-bl-b", "ger-bl-a", "ger-bl-c"]
+
+
+def test_nothing_is_dropped_by_preferring_it_is_only_reordered():
+    rows = [fx(f"ger-bl-{i}", 2 + i) for i in range(5)]
+    plain = {f["fixture_id"] for f, _ in run(FakeDB(rows, []))[0]}
+    aimed = {f["fixture_id"] for f, _ in run(FakeDB(rows, []), prefer={"ger-bl-3"})[0]}
+    assert plain == aimed
+
+
+def test_no_preference_leaves_the_order_exactly_as_it_was():
+    rows = [fx("ger-bl-late", 6), fx("ger-bl-soon", 2), fx("ger-bl-mid", 4)]
+    for p in (None, set()):
+        todo, _, preferred = run(FakeDB(rows, []), prefer=p)
+        assert [f["fixture_id"] for f, _ in todo] == ["ger-bl-soon", "ger-bl-mid", "ger-bl-late"]
+        assert preferred == 0
+
+
+def test_a_preferred_fixture_that_already_has_a_price_is_still_skipped():
+    # Aiming decides the ORDER, never whether a fixture is paid for twice.
+    rows = [fx("ger-bl-1", 3)]
+    db = FakeDB(rows, [{"fixture_id": "ger-bl-1", "odds": {"total_over_9.5": 1.9}}])
+    todo, already, preferred = run(db, prefer={"ger-bl-1"})
+    assert todo == [] and already == 1 and preferred == 0

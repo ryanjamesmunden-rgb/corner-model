@@ -121,7 +121,8 @@ async def fetch_one(hc, db, fx, api_fid, write=True):
             "keys": sorted(doc["odds"])}
 
 
-async def unpriced_ahead(db, days: int, from_days: int, leagues, limit: int):
+async def unpriced_ahead(db, days: int, from_days: int, leagues, limit: int,
+                         prefer=None):
     """Fixtures further out than the hourly pass reaches that have NO price yet.
 
     THE FILTER IS WHAT MAKES THIS AFFORDABLE. `upcoming` takes the soonest N whatever
@@ -139,6 +140,16 @@ async def unpriced_ahead(db, days: int, from_days: int, leagues, limit: int):
     quotes the fixture, but a quote carrying no usable corner line does write a doc with
     an empty `odds` map. Treating that as "done" would mean never looking again at exactly
     the fixtures whose market had not opened yet, which is the thing this exists to catch.
+
+    `prefer` IS WHAT THE BUDGET IS FOR. Sorted by date alone the call ceiling is spent on
+    whatever kicks off soonest, which on a Monday is Tuesday's card — and the Saturday
+    fixtures carrying the week's best runs are never reached at all. A run on 23 Nov 2026
+    made 120 calls, priced 48, found 72 markets not open, reported `capped: true`, and
+    left every one of that weekend's twenty streak picks without a price.
+
+    So fixtures the board would actually recommend go first. It costs nothing: the same
+    ceiling, aimed at the games somebody is going to want a price for. Everything else
+    follows in date order exactly as before.
     """
     now = _now()
     lo = (now + timedelta(days=from_days)).isoformat()
@@ -149,13 +160,17 @@ async def unpriced_ahead(db, days: int, from_days: int, leagues, limit: int):
     rows = await db.fixtures.find(q, {"_id": 0}).sort("date", 1).to_list(limit * 6)
     if not rows:
         return [], 0
+    wanted = set(prefer or ())
+    if wanted:
+        # Stable: the preferred fixtures keep their own date order, and so does the rest.
+        rows.sort(key=lambda fx: 0 if fx.get("fixture_id") in wanted else 1)
     ids = [fx["fixture_id"] for fx in rows]
     have = set()
     async for doc in db.odds_feed.find({"fixture_id": {"$in": ids}},
                                        {"_id": 0, "fixture_id": 1, "odds": 1}):
         if doc.get("odds"):
             have.add(doc["fixture_id"])
-    out = []
+    out, taken_preferred = [], 0
     for fx in rows:
         if fx["fixture_id"] in have:
             continue
@@ -163,13 +178,15 @@ async def unpriced_ahead(db, days: int, from_days: int, leagues, limit: int):
         if not str(api_fid).isdigit():
             continue
         out.append((fx, int(api_fid)))
+        if fx["fixture_id"] in wanted:
+            taken_preferred += 1
         if len(out) >= limit:
             break
-    return out, len(have)
+    return out, len(have), taken_preferred
 
 
 async def fetch_ahead(db, days: int = AHEAD_DAYS, from_days: int = AHEAD_FROM_DAYS,
-                      limit: int = AHEAD_LIMIT, leagues=None) -> dict:
+                      limit: int = AHEAD_LIMIT, leagues=None, prefer=None) -> dict:
     """Price the week ahead, once, as each market opens.
 
     WHAT THIS BUYS. Until it existed the board could not show a weekend game until the
@@ -179,9 +196,13 @@ async def fetch_ahead(db, days: int = AHEAD_DAYS, from_days: int = AHEAD_FROM_DA
     `skipped_priced` is reported because it is the number that says the rule is working:
     it should climb through the week while `calls` falls towards nothing.
     """
-    todo, already = await unpriced_ahead(db, days, from_days, leagues, limit)
+    todo, already, preferred = await unpriced_ahead(db, days, from_days, leagues, limit,
+                                                   prefer)
     out = {"fixtures": len(todo), "calls": 0, "priced": 0, "unpriced": 0, "errors": 0,
            "lines": 0, "capped": len(todo) >= limit, "skipped_priced": already,
+           # HOW MANY OF THE CALLS WENT TO A GAME THE BOARD WOULD RECOMMEND. With a ceiling
+           # that is being hit, this is the number that says the budget is aimed.
+           "preferred": preferred, "preferred_offered": len(prefer or ()),
            "from_days": from_days, "days": days}
     if not todo:
         return out

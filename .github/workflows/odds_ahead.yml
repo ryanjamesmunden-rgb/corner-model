@@ -105,6 +105,11 @@ jobs:
               bits.append(f"{d['unpriced']} market(s) not open yet")
           # THE NUMBER THAT SAYS THE RULE IS WORKING.
           bits.append(f"{d.get('skipped_priced', 0)} already had a price")
+          if d.get("preferred_offered"):
+              # WHERE THE BUDGET WENT. With a ceiling that is being hit, the only question
+              # that matters is whether the calls reached the games the board recommends.
+              bits.append(f"{d.get('preferred', 0)}/{d['preferred_offered']}"
+                          + " on games with a run")
           if d.get("capped"):
               bits.append("⚠️ hit the call ceiling — more left unpriced")
           if d.get("errors"):

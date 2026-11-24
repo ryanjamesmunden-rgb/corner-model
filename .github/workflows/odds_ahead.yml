@@ -20,10 +20,25 @@ name: Price the week ahead
 
 on:
   schedule:
-    # Once a day, early enough that a market opening overnight is caught the same morning.
-    # 07:23 rather than on the hour: a job on :00 queues behind everything else that runs
+    # FOUR TIMES A DAY, so a corner market that opens at lunchtime is on the board by the
+    # afternoon rather than the following morning. It was once a day, and the weekend's
+    # twenty best runs went unpriced all week behind the call ceiling.
+    #
+    # WHAT MAKES THIS AFFORDABLE is the stamp, not the ceiling. An unopened market used to
+    # leave no trace, so every run re-asked every one of them at a call apiece — 72 of 120
+    # calls on 23 Nov 2026 — and four runs a day would simply have paid that four times.
+    # fetch_odds now records every attempt and re-asks on a gap that tightens towards
+    # kick-off (24h out at a week, 2h out on the day), backing off after four empty looks
+    # at a fixture nobody quotes. Read `skipped_recent` in the summary: it is the calls
+    # this saved.
+    #
+    # THE PER-RUN CEILING COMES DOWN TO MATCH, 120 -> 60, so the daily worst case is 240
+    # against the old 120 rather than 480. In practice it should sit far below that: after
+    # the first run of a week most fixtures are either priced or not yet due.
+    #
+    # :23 rather than on the hour: a job on :00 queues behind everything else that runs
     # on :00, and this one has nothing waiting on it.
-    - cron: "23 7 * * *"
+    - cron: "23 1,7,13,19 * * *"
   workflow_dispatch:
     inputs:
       days:
@@ -39,9 +54,9 @@ on:
         default: "1"
         type: string
       limit:
-        description: "Ceiling on API calls for this run (blank = 120)"
+        description: "Ceiling on API calls for this run (blank = 60)"
         required: false
-        default: "120"
+        default: "60"
         type: string
 
 concurrency:
@@ -76,7 +91,7 @@ jobs:
         run: |
           DAYS="${{ inputs.days || '6' }}"
           FROM="${{ inputs.from_days || '1' }}"
-          LIMIT="${{ inputs.limit || '120' }}"
+          LIMIT="${{ inputs.limit || '60' }}"
           echo "Reaching $FROM-$DAYS days ahead, at most $LIMIT API call(s)."
           code=$(curl -s -o ahead.json -w '%{http_code}' --max-time 900 -X POST \
             "$BACKEND/api/odds/ahead?token=$TOOLS_TOKEN&days=$DAYS&from_days=$FROM&limit=$LIMIT" \
@@ -110,6 +125,10 @@ jobs:
               # that matters is whether the calls reached the games the board recommends.
               bits.append(f"{d.get('preferred', 0)}/{d['preferred_offered']}"
                           + " on games with a run")
+          if d.get("skipped_recent"):
+              # THE CALLS THE STAMP SAVED. Asked recently, market still shut — the reason
+              # four runs a day costs little more than one.
+              bits.append(f"{d['skipped_recent']} asked recently, not due again")
           if d.get("capped"):
               bits.append("⚠️ hit the call ceiling — more left unpriced")
           if d.get("errors"):

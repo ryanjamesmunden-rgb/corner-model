@@ -25,18 +25,37 @@ HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 def _sliced():
     """fetch_odds imports httpx, which is absent in this container, so the selector is
     exercised through a slice of the source — the technique test_price_provenance and
-    test_stat_picks use."""
+    test_stat_picks use.
+
+    THE SLICE STARTS AT THE BACK-OFF, not at the selector, because unpriced_ahead calls
+    recheck_after_hours. Started lower it compiled fine and raised NameError only on the
+    first test that happened to have a stored timestamp — a fake that is silently missing
+    half of what it is faking.
+    """
     with open(os.path.join(HERE, "fetch_odds.py")) as fh:
         src = fh.read()
-    start = src.index("async def unpriced_ahead(")
+    start = src.index("RECHECK_GIVE_UP = ")
     end = src.index("async def fetch_ahead(")
-    ns = {"timedelta": timedelta,
-          "_now": lambda: datetime(2026, 11, 17, 12, 0, tzinfo=timezone.utc)}
+    ns = {"timedelta": timedelta, "datetime": datetime, "timezone": timezone,
+          "_now": lambda: datetime(2026, 11, 17, 12, 0, tzinfo=timezone.utc),
+          "_iso": _iso}
     exec(compile(src[start:end], "sliced", "exec"), ns)
-    return ns["unpriced_ahead"]
+    return ns
 
 
-unpriced_ahead = _sliced()
+def _iso(value):
+    """The module's own parser, copied rather than sliced: it lives above the slice."""
+    try:
+        dt = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    return dt.replace(tzinfo=timezone.utc) if dt.tzinfo is None else dt
+
+
+_NS = _sliced()
+unpriced_ahead = _NS["unpriced_ahead"]
+recheck_after_hours = _NS["recheck_after_hours"]
+RECHECK_GIVE_UP = _NS["RECHECK_GIVE_UP"]
 NOW = datetime(2026, 11, 17, 12, 0, tzinfo=timezone.utc)
 
 
@@ -106,7 +125,7 @@ def test_a_fixture_that_already_has_a_price_is_not_fetched_again():
     # a price that has not moved, and a six-day reach is unaffordable.
     db = FakeDB([fx("ger-bl-1", 3), fx("ger-bl-2", 4)],
                 [{"fixture_id": "ger-bl-1", "odds": {"home_over_4.5": 2.1}}])
-    todo, already, _ = run(db)
+    todo, already, _, _ = run(db)
     assert [f["fixture_id"] for f, _ in todo] == ["ger-bl-2"]
     assert already == 1
 
@@ -117,7 +136,7 @@ def test_an_empty_price_document_still_counts_as_unpriced():
     # done would mean never looking again at exactly the fixtures whose market has not
     # opened — which is the thing this pass exists to catch.
     db = FakeDB([fx("ger-bl-1", 3)], [{"fixture_id": "ger-bl-1", "odds": {}}])
-    todo, already, _ = run(db)
+    todo, already, _, _ = run(db)
     assert [f["fixture_id"] for f, _ in todo] == ["ger-bl-1"]
     assert already == 0
 
@@ -125,7 +144,7 @@ def test_an_empty_price_document_still_counts_as_unpriced():
 def test_the_whole_week_priced_costs_nothing():
     rows = [fx(f"ger-bl-{i}", 2 + i % 4) for i in range(1, 9)]
     feed = [{"fixture_id": r["fixture_id"], "odds": {"home_over_4.5": 2.0}} for r in rows]
-    todo, already, _ = run(FakeDB(rows, feed))
+    todo, already, _, _ = run(FakeDB(rows, feed))
     assert todo == []
     assert already == 8
 
@@ -148,13 +167,13 @@ def test_it_does_not_reach_past_the_window():
 
 def test_soonest_first_so_a_cap_keeps_what_kicks_off_next():
     rows = [fx("ger-bl-late", 6), fx("ger-bl-soon", 2), fx("ger-bl-mid", 4)]
-    todo, _, _ = run(FakeDB(rows, []), limit=2)
+    todo, _, _, _ = run(FakeDB(rows, []), limit=2)
     assert [f["fixture_id"] for f, _ in todo] == ["ger-bl-soon", "ger-bl-mid"]
 
 
 def test_the_limit_is_a_ceiling_on_calls():
     rows = [fx(f"ger-bl-{i}", 2) for i in range(1, 30)]
-    todo, _, _ = run(FakeDB(rows, []), limit=5)
+    todo, _, _, _ = run(FakeDB(rows, []), limit=5)
     assert len(todo) == 5
 
 
@@ -196,14 +215,14 @@ def test_the_feed_is_only_asked_about_fixtures_in_the_window():
 
 def test_a_fixture_the_board_recommends_is_reached_before_a_sooner_one():
     rows = [fx("ger-bl-soon", 2), fx("ger-bl-later", 5)]
-    todo, _, preferred = run(FakeDB(rows, []), limit=1, prefer={"ger-bl-later"})
+    todo, _, preferred, _ = run(FakeDB(rows, []), limit=1, prefer={"ger-bl-later"})
     assert [f["fixture_id"] for f, _ in todo] == ["ger-bl-later"]
     assert preferred == 1
 
 
 def test_the_preferred_ones_keep_their_own_date_order():
     rows = [fx("ger-bl-a", 5), fx("ger-bl-b", 3), fx("ger-bl-c", 2)]
-    todo, _, _ = run(FakeDB(rows, []), prefer={"ger-bl-a", "ger-bl-b"})
+    todo, _, _, _ = run(FakeDB(rows, []), prefer={"ger-bl-a", "ger-bl-b"})
     assert [f["fixture_id"] for f, _ in todo] == ["ger-bl-b", "ger-bl-a", "ger-bl-c"]
 
 
@@ -217,7 +236,7 @@ def test_nothing_is_dropped_by_preferring_it_is_only_reordered():
 def test_no_preference_leaves_the_order_exactly_as_it_was():
     rows = [fx("ger-bl-late", 6), fx("ger-bl-soon", 2), fx("ger-bl-mid", 4)]
     for p in (None, set()):
-        todo, _, preferred = run(FakeDB(rows, []), prefer=p)
+        todo, _, preferred, _ = run(FakeDB(rows, []), prefer=p)
         assert [f["fixture_id"] for f, _ in todo] == ["ger-bl-soon", "ger-bl-mid", "ger-bl-late"]
         assert preferred == 0
 
@@ -226,5 +245,80 @@ def test_a_preferred_fixture_that_already_has_a_price_is_still_skipped():
     # Aiming decides the ORDER, never whether a fixture is paid for twice.
     rows = [fx("ger-bl-1", 3)]
     db = FakeDB(rows, [{"fixture_id": "ger-bl-1", "odds": {"total_over_9.5": 1.9}}])
-    todo, already, preferred = run(db, prefer={"ger-bl-1"})
+    todo, already, preferred, _ = run(db, prefer={"ger-bl-1"})
     assert todo == [] and already == 1 and preferred == 0
+
+
+# --- scanning often without paying for it every time ----------------------------------
+#
+# An unopened corner market used to leave no trace, so every run re-asked every one of
+# them at a call apiece: 72 of 120 calls on 23 Nov 2026 went on markets that were not
+# open. Running four times a day would have spent that four times over. The stamp is what
+# makes "scan as soon as it opens" affordable.
+
+def ago(hours):
+    return (NOW - timedelta(hours=hours)).isoformat()
+
+
+def checked(fid, hours_ago, checks=1):
+    return {"fixture_id": fid, "odds": {}, "checked_at": ago(hours_ago), "checks": checks}
+
+
+def test_a_market_asked_about_an_hour_ago_is_not_asked_again():
+    db = FakeDB([fx("ger-bl-1", 3)], [checked("ger-bl-1", 1)])
+    todo, _, _, recent = run(db)
+    assert todo == [] and recent == 1
+
+
+def test_once_it_is_due_it_is_asked_again():
+    # Three days out the gap is twelve hours; thirteen hours ago is due.
+    db = FakeDB([fx("ger-bl-1", 3)], [checked("ger-bl-1", 13)])
+    todo, _, _, recent = run(db)
+    assert [f["fixture_id"] for f, _ in todo] == ["ger-bl-1"] and recent == 0
+
+
+def test_a_fixture_nobody_has_ever_asked_about_goes_straight_in():
+    db = FakeDB([fx("ger-bl-1", 3)], [])
+    todo, _, _, recent = run(db)
+    assert len(todo) == 1 and recent == 0
+
+
+def test_the_gap_tightens_as_kick_off_approaches():
+    # Books open corner markets late, so a game tomorrow is worth asking about often and
+    # one next week is not.
+    assert recheck_after_hours(12) < recheck_after_hours(36)
+    assert recheck_after_hours(36) < recheck_after_hours(72)
+    assert recheck_after_hours(72) <= recheck_after_hours(200)
+
+
+def test_a_fixture_asked_repeatedly_with_nothing_to_show_backs_off():
+    # Some competitions are never quoted at all. Without this they burn a call every run
+    # for a week.
+    assert recheck_after_hours(72, checks=RECHECK_GIVE_UP) == 24
+    db = FakeDB([fx("ger-bl-1", 3)], [checked("ger-bl-1", 13, checks=RECHECK_GIVE_UP)])
+    assert run(db)[0] == []
+
+
+def test_backing_off_stops_once_the_game_is_close():
+    # Whatever it has answered before, a game tomorrow gets asked again: that is when the
+    # market actually opens.
+    assert recheck_after_hours(12, checks=99) == 2
+    db = FakeDB([fx("ger-bl-1", 0.5)], [checked("ger-bl-1", 3, checks=99)])
+    assert [f["fixture_id"] for f, _ in run(db, from_days=0)[0]] == ["ger-bl-1"]
+
+
+def test_a_priced_fixture_is_skipped_by_price_not_by_the_stamp():
+    # The two reasons must stay distinguishable: one says "done", the other "not yet".
+    db = FakeDB([fx("ger-bl-1", 3)],
+                [{"fixture_id": "ger-bl-1", "odds": {"total_over_9.5": 1.9},
+                  "checked_at": ago(99), "checks": 9}])
+    todo, already, _, recent = run(db)
+    assert todo == [] and already == 1 and recent == 0
+
+
+def test_unreadable_stamps_do_not_strand_a_fixture_forever():
+    # Stored junk must mean "ask", never "never ask again".
+    for bad in (None, "", "not a date", 12345):
+        db = FakeDB([fx("ger-bl-1", 3)],
+                    [{"fixture_id": "ger-bl-1", "odds": {}, "checked_at": bad}])
+        assert len(run(db)[0]) == 1, bad

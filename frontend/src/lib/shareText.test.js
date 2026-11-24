@@ -8,7 +8,8 @@
 import { CONCEDED_MARK, MISMATCH_MARK, mismatchShare,
   streakShare, fixtureShare, bestTeamsShare, streakResultShare,
          fixtureStreakShare, telegramPick, wonLadder, openGameCase, postHeader,
-         pickGame, pickGameDetailed, pickGamesValue, rungRecord, GAME_MIN_RUN, gameShare, pricedRung, dayWord, shortTime, runSince, cardPost, picksReview, moreVia,
+         pickGame, pickGameDetailed, pickGamesValue, rungRecord, GAME_MIN_RUN,
+         POSTABLE_SUBJECTS, gameShare, pricedRung, dayWord, shortTime, runSince, cardPost, picksReview, moreVia,
          postDate, postTime, postDayTime, POST_TZ, pickLabel, angleMenu,
          BEST_TEAMS_MARK, AVG_MARK } from "./shareText";
 import { xWeight } from "./xLimit";
@@ -854,6 +855,96 @@ describe("the game post, in the account's format", () => {
     expect(rungRecord(row, 6, 2)).toEqual({ hits: 1, of: 2 });
     expect(rungRecord({ recent: [] }, 6)).toBeNull();
     expect(rungRecord(row, null)).toBeNull();
+  });
+
+  // --- more than one angle on the same game ------------------------------------------
+  //
+  // THE COMPLAINT THIS ANSWERS: "each game just has the team corner EV+ line and nothing
+  // else". Three team lines lost on a night when the games themselves were full of
+  // corners, and the totals would have landed — but the ladder held two rungs, both of
+  // them the streaking side's own corners, so there was never a total to pick.
+
+  const wide = (over = {}) => bodo({
+    recent: [{ corners: 8, total: 15 }, { corners: 7, total: 13 }, { corners: 3, total: 14 },
+             { corners: 9, total: 11 }, { corners: 2, total: 16 }],
+    projection: {
+      odds_source: "api", prob: 90, ev: -2,
+      ladder: [
+        { subject: "team", line: 6, label: "6+", market_key: "away_over_5.5",
+          book_odds: 1.91, book_name: "Sky Bet", prob: 58, fair_odds: 1.72, ev: 2.0 },
+        { subject: "opponent", line: 6, label: "6+", market_key: "home_over_5.5",
+          book_odds: 3.40, book_name: "Betano", prob: 40, fair_odds: 2.50, ev: 36.0 },
+        { subject: "match", line: 11, label: "11+", market_key: "total_over_10.5",
+          book_odds: 2.10, book_name: "Bet365", prob: 62, fair_odds: 1.61, ev: 30.2 },
+        { subject: "both", line: 4, label: "4+", market_key: "both_over_3.5",
+          book_odds: 2.50, book_name: "1xBet", prob: 48, fair_odds: 2.08, ev: 20.0 },
+      ],
+    },
+    ...over,
+  });
+
+  test("the best angle on the game wins, even when it is not the team's own line", () => {
+    // The team's 6+ pays +2%. The match total pays +30%. The old ladder could not see it.
+    expect(pricedRung(wide()).subject).toBe("match");
+  });
+
+  test("the opponent's own line is priced but never posted", () => {
+    // +36% is the biggest edge on the game, and the row holds no record of the OPPONENT's
+    // games — so a post quoting it would have a price and nothing behind it.
+    expect(pricedRung(wide()).subject).not.toBe("opponent");
+    expect(POSTABLE_SUBJECTS).not.toContain("opponent");
+  });
+
+  test("a match total is worded as the match, not as the team", () => {
+    const out = gameShare({ row: wide(), site: SITE, now: NOW })();
+    expect(out).toContain("11+ corners in the match is priced");
+    expect(out).not.toContain("to get 11+ corners");
+  });
+
+  test("a match total is evidenced by the match totals, not the team's own corners", () => {
+    // Totals 15, 13, 14, 11, 16 — all five clear 11+. The team's own counts (8,7,3,9,2)
+    // would have said two.
+    const out = gameShare({ row: wide(), site: SITE, now: NOW })();
+    expect(out).toContain("Bodo/Glimt's games have had 11+ corners in 5 of their last 5.");
+  });
+
+  test("a both-teams line is counted by the weaker side of each game", () => {
+    // corners/total: 8/15 -> other 7; 7/13 -> 6; 3/14 -> 11; 9/11 -> 2; 2/16 -> 14.
+    // Weaker side: 7, 6, 3, 2, 2 — so 4+ by BOTH happened twice.
+    expect(rungRecord(wide(), 4, 5, "both")).toEqual({ hits: 2, of: 5 });
+  });
+
+  test("a both-teams line says both teams", () => {
+    const only = wide();
+    only.projection.ladder = only.projection.ladder.filter((r) => r.subject === "both");
+    const out = gameShare({ row: only, site: SITE, now: NOW })();
+    expect(out).toContain("Both teams 4+ corners is priced");
+    expect(out).toContain("Both teams have won 4+ corners in 2 of Bodo/Glimt's last 5.");
+  });
+
+  test("the match record is read off the total, and is nothing without one", () => {
+    expect(rungRecord(wide(), 11, 5, "match")).toEqual({ hits: 5, of: 5 });
+    expect(rungRecord(wide(), 14, 5, "match")).toEqual({ hits: 3, of: 5 });  // 15, 14, 16
+    // A row from before totals were carried: no claim rather than the team's count.
+    expect(rungRecord(bodo(), 11, 5, "match")).toBeNull();
+  });
+
+  test("an untagged ladder still behaves exactly as it used to", () => {
+    // Rows in flight when this shipped carry no `subject` at all.
+    const old = bodo();
+    expect(pricedRung(old).line).toBe(6);
+    expect(gameShare({ row: old, site: SITE, now: NOW })())
+      .toContain("to get 6+ corners");
+  });
+
+  test("with no edge anywhere it falls back within the team's own lines", () => {
+    // Sorting every subject together by line would rank a 12+ total over a 6+ team line
+    // as though they were one ladder.
+    const flat = wide();
+    flat.projection.ladder = flat.projection.ladder.map((r) => ({ ...r, ev: -4 }));
+    flat.projection.ladder.push({ subject: "match", line: 12, label: "12+",
+      market_key: "total_over_11.5", book_odds: 3.0, prob: 40, fair_odds: 2.5, ev: -4 });
+    expect(pricedRung(flat).subject).toBe("team");
   });
 
   // --- several games at once ---------------------------------------------------------

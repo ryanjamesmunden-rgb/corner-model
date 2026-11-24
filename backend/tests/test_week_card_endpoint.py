@@ -328,3 +328,19 @@ def test_with_runs_counts_the_cards_that_have_evidence(monkeypatch):
 def test_a_run_from_a_different_fixture_does_not_attach(monkeypatch):
     install(monkeypatch, combined_rows=[streak_row(fixture_id="some-other-game")])
     assert board()["cards"][0]["home"]["run"] is None
+
+
+# --- route order ----------------------------------------------------------------------
+
+def test_a_literal_fixtures_route_is_registered_before_the_parameterised_one():
+    """/api/fixtures/played must not resolve as fixture_id="played".
+
+    FastAPI matches in registration order. With /fixtures/{fixture_id} first, the played
+    endpoint answered 404 "Fixture not found" in production — unreachable, and the 404
+    read like a bad id rather than a route that could never be hit. This pins the order so
+    the next literal /fixtures/<word> route cannot reintroduce it silently.
+    """
+    paths = [r.path for r in server.app.routes
+             if getattr(r, "path", "").startswith("/api/fixtures")]
+    assert "/api/fixtures/played" in paths
+    assert paths.index("/api/fixtures/played") < paths.index("/api/fixtures/{fixture_id}")

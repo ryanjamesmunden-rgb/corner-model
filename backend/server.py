@@ -5956,6 +5956,64 @@ def _card_factors(team, opp, venue, team_name, opp_name, league_teams=None) -> L
     return out
 
 
+# BEFORE /fixtures/{fixture_id}, AND THAT IS THE WHOLE REASON IT LIVES UP HERE.
+# FastAPI matches routes in the order they are registered, so the parameterised route
+# below swallowed this one: /api/fixtures/played resolved with fixture_id="played"
+# and answered 404 "Fixture not found". The endpoint was unreachable in production —
+# not broken, not slow, just never called, and a 404 that names a fixture reads like a
+# bad id rather than a route that cannot be hit. Any further literal /fixtures/<word>
+# route has to go above that decorator too.
+@api_router.get("/fixtures/played")
+async def fixtures_played(days: Optional[int] = None, league_id: Optional[str] = None,
+                          limit: int = 200, user: dict = Depends(get_current_user)):
+    """Games that have been played, with the score and the corner count.
+
+    WHY THIS IS A SEPARATE STORE AND NOT A STATUS ON db.fixtures. Twenty-two call sites
+    read db.fixtures and only five of them test `status`: the one that sorts ascending on
+    date to find each team's NEXT game would have returned a game from last week, the
+    boards that walk every row would have handed a finished fixture a projection, and the
+    league yardsticks would have counted it twice. Keeping results in their own collection
+    means a results view cannot leak into a board that means "what is on" — the same
+    reasoning that keeps db.odds_feed out of db.odds.
+
+    THE RETENTION WINDOW LIVES IN THE SYNC, not here. sync_real rebuilds this collection
+    from the provider's own fixture list on every run and simply does not re-insert a game
+    older than PLAYED_KEEP_DAYS, so there is nothing to prune and no way for the store and
+    the stated window to disagree. `days` here only narrows what a caller wants to see
+    inside that window; asking for more than the sync keeps cannot conjure older games.
+
+    `corners_known` IS NOT DECORATION. A fixture whose statistics were never fetched comes
+    back with null corners rather than zero, because 0-0 corners is a real result and
+    "nobody asked the provider" is not. A caller must not render the second as the first.
+    """
+    # Annotated `dict` and not Dict[str, Any]: `Any` is not in this file's typing import,
+    # and naming it there is a NameError at import time that takes the whole backend down
+    # on deploy rather than failing this one endpoint. That has happened twice here.
+    q: dict = {}
+    if league_id and league_id != "all":
+        q["league_id"] = league_id
+    if days:
+        cutoff = datetime.now(timezone.utc) - timedelta(days=max(1, int(days)))
+        q["date"] = {"$gte": cutoff.isoformat()}
+    rows = await db.fixtures_played.find(q, {"_id": 0}).to_list(PLAYED_SCAN)
+    # Newest first: a results view is read from the top, and the most recent round is the
+    # one anybody opening it is looking for.
+    rows.sort(key=lambda r: str(r.get("date") or ""), reverse=True)
+    rows = rows[:max(1, min(limit, 500))]
+    leagues = {l["league_id"]: l.get("name", "")
+               for l in await db.leagues.find({}, {"_id": 0}).to_list(200)}
+    for r in rows:
+        r["league_name"] = leagues.get(r.get("league_id"), "")
+    return {"fixtures": rows, "count": len(rows),
+            # Stated rather than assumed, so a caller can say "last 30 days" without
+            # hardcoding a number that only the sync actually controls.
+            "keep_days": PLAYED_KEEP_DAYS,
+            "with_corners": sum(1 for r in rows if r.get("corners_known"))}
+
+
+NEXT_FIXTURE_SCAN = 6000
+
+
 @api_router.get("/fixtures/{fixture_id}")
 async def fixture_detail(fixture_id: str, token: Optional[str] = None,
                          user: dict = Depends(get_current_user)):
@@ -6857,55 +6915,6 @@ PLAYED_SCAN = 3000
 PLAYED_KEEP_DAYS = 30
 
 
-@api_router.get("/fixtures/played")
-async def fixtures_played(days: Optional[int] = None, league_id: Optional[str] = None,
-                          limit: int = 200, user: dict = Depends(get_current_user)):
-    """Games that have been played, with the score and the corner count.
-
-    WHY THIS IS A SEPARATE STORE AND NOT A STATUS ON db.fixtures. Twenty-two call sites
-    read db.fixtures and only five of them test `status`: the one that sorts ascending on
-    date to find each team's NEXT game would have returned a game from last week, the
-    boards that walk every row would have handed a finished fixture a projection, and the
-    league yardsticks would have counted it twice. Keeping results in their own collection
-    means a results view cannot leak into a board that means "what is on" — the same
-    reasoning that keeps db.odds_feed out of db.odds.
-
-    THE RETENTION WINDOW LIVES IN THE SYNC, not here. sync_real rebuilds this collection
-    from the provider's own fixture list on every run and simply does not re-insert a game
-    older than PLAYED_KEEP_DAYS, so there is nothing to prune and no way for the store and
-    the stated window to disagree. `days` here only narrows what a caller wants to see
-    inside that window; asking for more than the sync keeps cannot conjure older games.
-
-    `corners_known` IS NOT DECORATION. A fixture whose statistics were never fetched comes
-    back with null corners rather than zero, because 0-0 corners is a real result and
-    "nobody asked the provider" is not. A caller must not render the second as the first.
-    """
-    # Annotated `dict` and not Dict[str, Any]: `Any` is not in this file's typing import,
-    # and naming it there is a NameError at import time that takes the whole backend down
-    # on deploy rather than failing this one endpoint. That has happened twice here.
-    q: dict = {}
-    if league_id and league_id != "all":
-        q["league_id"] = league_id
-    if days:
-        cutoff = datetime.now(timezone.utc) - timedelta(days=max(1, int(days)))
-        q["date"] = {"$gte": cutoff.isoformat()}
-    rows = await db.fixtures_played.find(q, {"_id": 0}).to_list(PLAYED_SCAN)
-    # Newest first: a results view is read from the top, and the most recent round is the
-    # one anybody opening it is looking for.
-    rows.sort(key=lambda r: str(r.get("date") or ""), reverse=True)
-    rows = rows[:max(1, min(limit, 500))]
-    leagues = {l["league_id"]: l.get("name", "")
-               for l in await db.leagues.find({}, {"_id": 0}).to_list(200)}
-    for r in rows:
-        r["league_name"] = leagues.get(r.get("league_id"), "")
-    return {"fixtures": rows, "count": len(rows),
-            # Stated rather than assumed, so a caller can say "last 30 days" without
-            # hardcoding a number that only the sync actually controls.
-            "keep_days": PLAYED_KEEP_DAYS,
-            "with_corners": sum(1 for r in rows if r.get("corners_known"))}
-
-
-NEXT_FIXTURE_SCAN = 6000
 
 
 async def _next_fixtures(q):
@@ -7732,6 +7741,89 @@ async def _league_changes(teams: Optional[list] = None) -> Dict[str, dict]:
 # The team-corner lines a post actually quotes a price at.
 LADDER_LINES = (5, 6)
 
+# THE REST OF THE FIXTURE. A streak row used to carry two rungs — the streaking side's own
+# 5+ and 6+ — and nothing else, so every board and every post built from one could only
+# ever offer that side's corners. A game where the backed team was quiet but the match was
+# frantic had no angle to offer at all, even though the total landed comfortably: the
+# ladder had never been shown a total to pick from.
+#
+# These are the other three things a corner bet can be on the same game:
+TOTAL_LADDER_LINES = (9, 10, 11, 12)    # the match total; below 9 is near-certain, above 12 a lottery
+BOTH_LADDER_LINES = (4, 5)              # both teams over, which is where "4 corners each" lives
+
+
+def fixture_price_ladder(team: dict, opp: Optional[dict], team_venue: str, opp_venue: str,
+                         league_shots: float, league_blocked: float,
+                         odds: Dict[str, float], books: Dict[str, str],
+                         lam_team: Optional[float] = None) -> List[dict]:
+    """Every corner angle on this fixture, tagged with what each one is about.
+
+    FOUR SUBJECTS, and a reader has to be able to tell them apart, because "6+" means a
+    different bet in each: the streaking side's own corners, the OPPONENT's corners, the
+    match total, and both teams clearing a line. A rung that did not say which would be
+    worded wrong by whatever posts it — and "6+ corners" attached to the wrong subject is
+    not a rounding error, it is a different bet at a different price.
+
+    THE TEAM RUNGS COME FIRST and are identical to what team_price_ladder produced, so a
+    caller that takes the ladder in order sees what it always saw.
+
+    Returns [] rather than guessing when the opponent's record is missing: three of the
+    four subjects need the opponent's lambda, and inventing one would price the match
+    total off a single side.
+    """
+    out: List[dict] = []
+    if lam_team is None:
+        t_for = _real_avg(team, team_venue, "corners_for")
+        o_against = _real_avg(opp, opp_venue, "corners_against") if opp else None
+        if t_for is None or o_against is None:
+            return []
+        lam_team = live_lambda((t_for + o_against) / 2, team, team_venue,
+                               league_shots, league_blocked)
+
+    def rung(subject, line, label, key, p, about):
+        book = odds.get(key)
+        return {"subject": subject, "line": line, "label": label, "market_key": key,
+                "about": about,
+                "prob": round(p * 100, 1), "fair_odds": fair_odds(p),
+                "book_odds": book, "book_name": books.get(key) if book else None,
+                "ev": round((book * p - 1) * 100, 2) if book else None}
+
+    team_name = (team or {}).get("name") or ""
+    opp_name = (opp or {}).get("name") or ""
+    for line in LADDER_LINES:
+        out.append(rung("team", line, f"{line}+", f"{team_venue}_over_{line - 0.5}",
+                        nb_ge(line, lam_team), team_name))
+
+    # The opponent's own corners, the match total and both-teams all need the other side.
+    o_for = _real_avg(opp, opp_venue, "corners_for") if opp else None
+    t_against = _real_avg(team, team_venue, "corners_against")
+    if o_for is None or t_against is None:
+        return out
+    lam_opp = live_lambda((o_for + t_against) / 2, opp, opp_venue,
+                          league_shots, league_blocked)
+
+    for line in LADDER_LINES:
+        out.append(rung("opponent", line, f"{line}+", f"{opp_venue}_over_{line - 0.5}",
+                        nb_ge(line, lam_opp), opp_name))
+
+    # POISSON FOR THE TOTAL, negative binomial for a side — the same split the model uses
+    # everywhere else. Pricing a match total with nb_ge is the mistake that put a 13+ line
+    # fifteen points out once already.
+    lam_total = lam_team + lam_opp
+    for line in TOTAL_LADDER_LINES:
+        out.append(rung("match", line, f"{line}+", f"total_over_{line - 0.5}",
+                        poisson_ge(line, lam_total), "the match"))
+
+    pairs = markets.pair_counts(team, opp)
+    for line in BOTH_LADDER_LINES:
+        dep = markets.dependence(pairs, line)
+        p = markets.both_over_prob(line, lam_team, lam_opp, nb_ge,
+                                   (dep or {}).get("factor", 1.0))
+        r = rung("both", line, f"{line}+", f"both_over_{line - 0.5}", p, "both teams")
+        r["dependence"] = dep
+        out.append(r)
+    return out
+
 
 def team_price_ladder(lam, venue: str, odds: Dict[str, float], books: Dict[str, str],
                       lines=LADDER_LINES) -> List[dict]:
@@ -7855,7 +7947,14 @@ async def streaks(league_id: Optional[str] = None, side: str = "overall", window
         if not streak_qualifies(hits, voids, runs["current"]["length"], min_hits, floor):
             continue
         spread = streak_spread(values)
+        # `total` IS THE MATCH TOTAL OF THAT GAME, and it is here so a claim about the
+        # match has evidence of its own. The ladder can now quote a total, and "11+ in the
+        # game" backed by this side's own corner count would be the same mismatch the post
+        # format was just fixed for — a record of one thing printed under a bet on another.
         recent = [{"corners": lg["value"], "value": lg["value"], "result": lg["result"],
+                   "total": (m.get("corners_for", 0) + m.get("corners_against", 0))
+                            if m.get("corners_for") is not None
+                            and m.get("corners_against") is not None else None,
                    "opponent": m["opponent"], "home": m["home"], "date": m["date"]}
                   for m, lg in zip(reversed(pool), reversed(legs))]
         nf = next_fx.get(t["team_id"])
@@ -7882,10 +7981,17 @@ async def streaks(league_id: Optional[str] = None, side: str = "overall", window
             if projection is not None:
                 projection["odds_source"] = odds_src.get(nf["fixture_id"])
                 if direction == "over" and subject == "team":
-                    projection["ladder"] = team_price_ladder(
-                        projection.get("lambda"), team_venue,
+                    # THE WHOLE FIXTURE, not just this side's own corners. The row used to
+                    # carry two rungs and a post built from it could only ever offer those
+                    # two; a quiet team in a frantic game had no angle at all. The team
+                    # rungs are still first and unchanged.
+                    projection["ladder"] = fixture_price_ladder(
+                        t, opp, team_venue, opp_venue,
+                        ls_map.get(t["league_id"], REF_SHOTS),
+                        bl_map.get(t["league_id"], 0.0),
                         odds_map.get(nf["fixture_id"], {}),
-                        books_map.get(nf["fixture_id"], {}))
+                        books_map.get(nf["fixture_id"], {}),
+                        lam_team=projection.get("lambda"))
         results.append({
             "team_id": t["team_id"], "name": t["name"], "league_id": t["league_id"],
             "league_name": leagues.get(t["league_id"], ""),

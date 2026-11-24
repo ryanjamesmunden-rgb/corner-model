@@ -600,16 +600,29 @@ export const pickGame = (rows = [], minProb = GAME_MIN_PROB, minRun = GAME_MIN_R
  *
  * Returns `{ hits, of }`, or null when there is nothing to count.
  */
-export const rungRecord = (row = {}, line = null, games = 5) => {
+export const rungRecord = (row = {}, line = null, games = 5, subject = "team") => {
   // `Number(null)` is 0 and 0 is finite, so a missing line counted every game as clearing
   // it and reported a perfect record. A line that is not a number is no line.
   if (line === null || line === undefined || line === "") return null;
   const want = Number(line);
   if (!Number.isFinite(want)) return null;
-  const counts = (row?.recent || [])
-    .slice(0, Math.max(1, games))
-    .map((g) => Number(g?.corners ?? g?.value))
-    .filter(Number.isFinite);
+
+  // EACH SUBJECT COUNTS A DIFFERENT NUMBER OUT OF THE SAME GAMES, and counting the wrong
+  // one is the mismatch this function exists to prevent, one level further in. `total` is
+  // the match total of that game; the opponent's own count is the total minus ours, which
+  // is why a both-teams record needs no extra data.
+  const rows = (row?.recent || []).slice(0, Math.max(1, games));
+  const value = (g) => {
+    const mine = Number(g?.corners ?? g?.value);
+    const total = Number(g?.total);
+    if (subject === "match") return total;
+    if (subject === "both") {
+      if (!Number.isFinite(mine) || !Number.isFinite(total)) return NaN;
+      return Math.min(mine, total - mine);     // the weaker side decides "both"
+    }
+    return mine;
+  };
+  const counts = rows.map(value).filter(Number.isFinite);
   if (!counts.length) return null;
   return { hits: counts.filter((c) => c >= want).length, of: counts.length };
 };
@@ -740,10 +753,21 @@ export const gameShare = ({ row = {}, site = "", now = new Date() } = {}) => () 
       ? `${head} at least ${run} in a row. Our record of them starts there, so it may well be longer...`
       : `${head} ${run} in a row.`).replace(/\s+/g, " ").trim());
   } else if (rung) {
-    const rec = rungRecord(row, rung.line);
+    // THE SENTENCE HAS TO BE ABOUT THE SUBJECT THE PRICE IS ON. "Bodo have won 11+
+    // corners" is not what an 11+ MATCH TOTAL means, and a reader cannot tell the two
+    // apart from a number alone.
+    const subject = rung.subject || "team";
+    const rec = rungRecord(row, rung.line, 5, subject);
     if (rec) {
-      lines.push(`${flag} ${row.name} have won ${rung.label} corners in `
-        + `${rec.hits} of their last ${rec.of}.`.trimEnd());
+      const said = subject === "match"
+        ? `${flag} ${row.name}'s games have had ${rung.label} corners in `
+          + `${rec.hits} of their last ${rec.of}.`
+        : subject === "both"
+        ? `${flag} Both teams have won ${rung.label} corners in `
+          + `${rec.hits} of ${row.name}'s last ${rec.of}.`
+        : `${flag} ${row.name} have won ${rung.label} corners in `
+          + `${rec.hits} of their last ${rec.of}.`;
+      lines.push(said.trimEnd());
     }
   }
 
@@ -752,9 +776,17 @@ export const gameShare = ({ row = {}, site = "", now = new Date() } = {}) => () 
   const where = fx.is_home ? `at home to ${fx.opponent}` : `away to ${fx.opponent}`;
   const when = dayWord(fx.date, now);
   if (rung) {
-    lines.push(`📈 They're priced @ ${rung.book_odds.toFixed(2)}`
-      + (rung.book_name ? ` via ${rung.book_name}` : "")
-      + ` to get ${rung.label} corners ${where} ${when}`.trimEnd());
+    // ONE SENTENCE PER SUBJECT, because "priced @ 2.10 to get 11+ corners" reads as the
+    // team's own eleven. The venue clause only belongs on the team's line: a match total
+    // and a both-teams line are not "away to" anybody.
+    const at = `@ ${rung.book_odds.toFixed(2)}`
+      + (rung.book_name ? ` via ${rung.book_name}` : "");
+    const subject = rung.subject || "team";
+    lines.push(subject === "match"
+      ? `📈 ${rung.label} corners in the match is priced ${at} — ${where} ${when}`.trimEnd()
+      : subject === "both"
+      ? `📈 Both teams ${rung.label} corners is priced ${at} — ${where} ${when}`.trimEnd()
+      : `📈 They're priced ${at} to get ${rung.label} corners ${where} ${when}`.trimEnd());
   }
 
   // 3. THE GAME AND THE LINK.
@@ -773,13 +805,29 @@ export const gameShare = ({ row = {}, site = "", now = new Date() } = {}) => () 
  * line people click and "@ 1.25 to get 5+" is not. Only real prices: a demo price is the
  * model's own number with noise on it, and quoting one as a bookmaker's would be false.
  */
-export const pricedRung = (row = {}) => {
+/**
+ * The subjects a post can both WORD and EVIDENCE.
+ *
+ * The ladder now carries the opponent's own corners too, which is a real bet and belongs
+ * on the site — but not in a post built around "X have won N+ corners". The row holds no
+ * record of the OPPONENT's games, so a post quoting their line would have a price and
+ * nothing behind it, which is exactly the shape that has just been taken out of here.
+ */
+export const POSTABLE_SUBJECTS = ["team", "match", "both"];
+
+export const pricedRung = (row = {}, subjects = POSTABLE_SUBJECTS) => {
   if (!isRealPrice(row?.projection?.odds_source)) return null;
-  const priced = (row?.projection?.ladder || []).filter((r) => Number(r?.book_odds) > 1);
+  const ok = (r) => !r?.subject || subjects.includes(r.subject);
+  const priced = (row?.projection?.ladder || [])
+    .filter((r) => Number(r?.book_odds) > 1 && ok(r));
   if (!priced.length) return null;
   const value = priced.filter((r) => Number(r.ev) > 0);
   if (value.length) return [...value].sort((a, b) => b.ev - a.ev)[0];
-  return [...priced].sort((a, b) => b.line - a.line)[0];
+  // NO EDGE ANYWHERE: fall back to the longest line the post can carry, but within the
+  // team's own corners first. Sorting every subject together by `line` would rank a
+  // 12+ match total above a 6+ team line as though they were the same ladder.
+  const own = priced.filter((r) => !r.subject || r.subject === "team");
+  return [...(own.length ? own : priced)].sort((a, b) => b.line - a.line)[0];
 };
 
 /** "4 May", or "4 May 2025" when the run began in an earlier year. UK calendar. */

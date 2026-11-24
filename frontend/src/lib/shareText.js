@@ -497,6 +497,24 @@ export const GAME_FIRE_RUN = 8;
 export const GAME_MIN_PROB = 50;
 
 /**
+ * The shortest run a game post will carry: five straight.
+ *
+ * IT WAS TWO, and two is not a run — it is two games, which any side in the database has
+ * had at some point this season at some line. On the board of 23 Nov 2026 the shortest
+ * runs were exactly the posts with nothing behind them: a "3+ in every game, 2 in a row"
+ * recommending a 6+ bet that had landed twice in five.
+ *
+ * A FLOOR ON THE RUN, NOT ON THE LINE, and the two are different filters. The line's
+ * record is a separate question the board answers elsewhere (5+/6+ is +48.5u over 90 and
+ * 4+ and below is -12.9u over 29); this one is about whether the sentence "N in a row"
+ * is worth printing at all. Five is where it starts being a claim.
+ *
+ * Passed through rather than read directly by the pickers, so a caller can relax it
+ * deliberately — social_draft takes --min-run — rather than by editing a constant.
+ */
+export const GAME_MIN_RUN = 5;
+
+/**
  * The one row worth posting today.
  *
  * Prefers lines the model gives an even chance or better, ranked by how long the run is.
@@ -528,7 +546,8 @@ export const GAME_MIN_PROB = 50;
  * least likely to exist. The `basis` is returned so a caller can say which of the two it
  * is looking at rather than guess.
  */
-export const pickGameDetailed = (rows = [], minProb = GAME_MIN_PROB) => {
+export const pickGameDetailed = (rows = [], minProb = GAME_MIN_PROB,
+                                 minRun = GAME_MIN_RUN) => {
   const run = (r) => Number(r?.streak?.length) || 0;
   const prob = (r) => Number(r?.projection?.prob ?? 0);
   // The best edge on the row: its own line, or the 5+/6+ rung the post will quote.
@@ -543,7 +562,7 @@ export const pickGameDetailed = (rows = [], minProb = GAME_MIN_PROB) => {
   // NO PROMOTED OR RELEGATED SIDE, on either team. Their numbers come from a different
   // division or a thin new one, so the model's price on the game is the weakest it
   // makes, and the public post is the last place to lead with it.
-  const live = (rows || []).filter((r) => r?.next_fixture?.date && run(r) >= 2
+  const live = (rows || []).filter((r) => r?.next_fixture?.date && run(r) >= minRun
     && !r.league_change && !r.opponent_league_change);
   if (!live.length) return { row: null, basis: "none" };
 
@@ -565,8 +584,8 @@ export const pickGameDetailed = (rows = [], minProb = GAME_MIN_PROB) => {
 };
 
 /** The row alone, for callers that do not care how it was chosen. */
-export const pickGame = (rows = [], minProb = GAME_MIN_PROB) =>
-  pickGameDetailed(rows, minProb).row;
+export const pickGame = (rows = [], minProb = GAME_MIN_PROB, minRun = GAME_MIN_RUN) =>
+  pickGameDetailed(rows, minProb, minRun).row;
 
 /**
  * How often this side has actually cleared the line a post is about to QUOTE.
@@ -608,7 +627,7 @@ export const rungRecord = (row = {}, line = null, games = 5) => {
  * a value list would be indistinguishable from it once posted. Fewer than asked for is
  * the honest answer, so the count returned may be short.
  */
-export const pickGamesValue = (rows = [], count = 3) => {
+export const pickGamesValue = (rows = [], count = 3, minRun = GAME_MIN_RUN) => {
   const ev = (r) => {
     const own = Number(r?.projection?.ev);
     const rung = Number(pricedRung(r)?.ev);
@@ -616,7 +635,7 @@ export const pickGamesValue = (rows = [], count = 3) => {
     return both.length ? Math.max(...both) : NaN;
   };
   const live = (rows || []).filter(
-    (r) => r?.next_fixture?.date && (Number(r?.streak?.length) || 0) >= 2
+    (r) => r?.next_fixture?.date && (Number(r?.streak?.length) || 0) >= minRun
       && !r.league_change && !r.opponent_league_change
       && isRealPrice(r?.projection?.odds_source) && ev(r) > 0);
 

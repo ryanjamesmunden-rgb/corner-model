@@ -8,7 +8,7 @@
 import { CONCEDED_MARK, MISMATCH_MARK, mismatchShare,
   streakShare, fixtureShare, bestTeamsShare, streakResultShare,
          fixtureStreakShare, telegramPick, wonLadder, openGameCase, postHeader,
-         pickGame, pickGameDetailed, pickGamesValue, rungRecord, gameShare, pricedRung, dayWord, shortTime, runSince, cardPost, picksReview, moreVia,
+         pickGame, pickGameDetailed, pickGamesValue, rungRecord, GAME_MIN_RUN, gameShare, pricedRung, dayWord, shortTime, runSince, cardPost, picksReview, moreVia,
          postDate, postTime, postDayTime, POST_TZ, pickLabel, angleMenu,
          BEST_TEAMS_MARK, AVG_MARK } from "./shareText";
 import { xWeight } from "./xLimit";
@@ -702,7 +702,7 @@ describe("the game of the day", () => {
     // with the longest shot on the board would be the opposite of the intent.
     const pick = pickGame([
       row("LongAndUnlikely", "ita-sa", "Serie A", "7+", 12, 18.0, "X", true, 9.0),
-      row("ShortAndLessBad", "nor-el", "Eliteserien", "5+", 3, 44.0, "Y", true, 7.0),
+      row("ShortAndLessBad", "nor-el", "Eliteserien", "5+", 5, 44.0, "Y", true, 7.0),
     ]);
     expect(pick.name).toBe("ShortAndLessBad");
   });
@@ -859,7 +859,7 @@ describe("the game post, in the account's format", () => {
   // --- several games at once ---------------------------------------------------------
 
   describe("picking several games", () => {
-    const G = (name, fid, ev, run = 3) => ({
+    const G = (name, fid, ev, run = 6) => ({
       name, league_id: "nor-el", line: 6, line_label: "6+",
       streak: { length: run }, recent: [{ corners: 7 }],
       projection: { odds_source: "api", prob: 60, ev,
@@ -890,6 +890,24 @@ describe("the game post, in the account's format", () => {
     test("a promoted or relegated side stays out, as it does for one game", () => {
       const moved = { ...G("Moved", "f2", 99), league_change: { label: "promoted" } };
       expect(pickGamesValue([G("A", "f1", 5), moved], 3).map((r) => r.name)).toEqual(["A"]);
+    });
+
+    test("a run shorter than five is not a run, and never posts", () => {
+      // Two games is not a streak; it is two games, which every side has had at some
+      // line this season. See GAME_MIN_RUN.
+      expect(pickGamesValue([G("Short", "f1", 40, 4)], 3)).toEqual([]);
+      expect(pickGamesValue([G("Short", "f1", 40, 2)], 3)).toEqual([]);
+      expect(pickGamesValue([G("Just", "f1", 5, 5)], 3).map((r) => r.name)).toEqual(["Just"]);
+    });
+
+    test("a huge edge does not buy its way past the floor", () => {
+      const got = pickGamesValue([G("Massive", "f1", 300, 3), G("Honest", "f2", 6, 7)], 3);
+      expect(got.map((r) => r.name)).toEqual(["Honest"]);
+    });
+
+    test("the floor can be relaxed on purpose, by the caller", () => {
+      expect(pickGamesValue([G("Short", "f1", 40, 3)], 3, 2).map((r) => r.name))
+        .toEqual(["Short"]);
     });
 
     test("fewer than asked for is the answer when that is the truth", () => {
@@ -1079,7 +1097,7 @@ describe("picking on value rather than form", () => {
   test("a real priced edge beats a longer run with no price", () => {
     const got = pickGameDetailed([
       R("LongRunNoPrice", 11, 70, null, null),
-      R("SmallerRunRealEdge", 4, 58, 8.4, "manual"),
+      R("SmallerRunRealEdge", 6, 58, 8.4, "manual"),
     ]);
     expect(got.row.name).toBe("SmallerRunRealEdge");
     expect(got.basis).toBe("value");
@@ -1088,7 +1106,7 @@ describe("picking on value rather than form", () => {
   test("the biggest edge wins, not the longest run among the priced", () => {
     const got = pickGameDetailed([
       R("BigRunSmallEdge", 12, 75, 1.2, "manual"),
-      R("SmallRunBigEdge", 3, 52, 14.0, "manual"),
+      R("SmallRunBigEdge", 5, 52, 14.0, "manual"),
     ]);
     expect(got.row.name).toBe("SmallRunBigEdge");
   });
@@ -1097,7 +1115,7 @@ describe("picking on value rather than form", () => {
     // seed_team_odds writes fair_odds * rng.uniform(0.90, 1.15). An EV against that is the
     // model finding value in its own jitter, and it looks exactly like a real edge.
     const got = pickGameDetailed([
-      R("SeededFakeEdge", 3, 52, 22.0, "demo"),
+      R("SeededFakeEdge", 5, 52, 22.0, "demo"),
       R("HonestForm", 9, 71, null, null),
     ]);
     expect(got.row.name).toBe("HonestForm");
@@ -1108,7 +1126,7 @@ describe("picking on value rather than form", () => {
     // Documents written before the stamp existed. Treating them as real would quietly
     // re-open the exact hole the stamp closes.
     const got = pickGameDetailed([
-      R("UnstampedEdge", 3, 52, 19.0, undefined),
+      R("UnstampedEdge", 5, 52, 19.0, undefined),
       R("HonestForm", 9, 71, null, null),
     ]);
     expect(got.row.name).toBe("HonestForm");
@@ -1119,7 +1137,7 @@ describe("picking on value rather than form", () => {
     // The best of a bad set is still a bad bet, and posting the least negative EV on the
     // board is worse than posting form.
     const got = pickGameDetailed([
-      R("PricedButBad", 3, 52, -6.0, "manual"),
+      R("PricedButBad", 5, 52, -6.0, "manual"),
       R("GoodForm", 9, 71, null, null),
     ]);
     expect(got.row.name).toBe("GoodForm");
@@ -1127,9 +1145,19 @@ describe("picking on value rather than form", () => {
   });
 
   test("with no prices at all it says so rather than implying value", () => {
-    const got = pickGameDetailed([R("A", 9, 71, null, null), R("B", 4, 60, null, null)]);
+    const got = pickGameDetailed([R("A", 9, 71, null, null), R("B", 6, 60, null, null)]);
     expect(got.basis).toBe("confidence");
     expect(got.row.name).toBe("A");
+  });
+
+  test("the single pick obeys the same floor, form or value", () => {
+    // The confidence fallback was the way round it: no price, long-looking odds, and a
+    // two-game run posted as "in a row".
+    expect(pickGameDetailed([R("ShortForm", 3, 95, null, null)]))
+      .toEqual({ row: null, basis: "none" });
+    expect(pickGameDetailed([R("ShortValue", 4, 60, 30.0, "manual")]))
+      .toEqual({ row: null, basis: "none" });
+    expect(pickGameDetailed([R("Fine", 5, 60, 8.0, "manual")]).row.name).toBe("Fine");
   });
 
   test("an empty board reports neither a row nor a basis to trust", () => {

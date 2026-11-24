@@ -30,6 +30,7 @@ const LIB = resolve(HERE, "..", "frontend", "src", "lib");
 // The lib modules import each other by relative path and use no bundler features, so
 // they load as-is. `shareText.js` pulls in countryFlag and kickoff itself.
 const { streakShare, fixtureShare, streakResultShare, pickGame, pickGameDetailed, pickGamesValue, rungRecord, gameShare, pricedRung, cardPost,
+        GAME_MIN_PROB, GAME_MIN_RUN,
         picksReview, angleMenu, PUBLIC_STREAK_ROWS } = await import(resolve(LIB, "shareText.js"));
 const { fixtureStoryMarkets } = await import(resolve(LIB, "storyImage.js"));
 const { kickoffLabel } = await import(resolve(LIB, "kickoff.js"));
@@ -801,14 +802,21 @@ if (BOARD === "game") {
   // rest once it has been posted. So `--count 3` returns up to three VALUE picks and
   // fewer when that is the truth. See pickGamesValue.
   const COUNT = Math.max(1, Number(arg("count", "1")) || 1);
+  // THE SHORTEST RUN WORTH POSTING. Five by default — see GAME_MIN_RUN, and the board it
+  // came from. A flag rather than a constant so a quiet week can be loosened on purpose
+  // and the log says it was, instead of someone editing the floor and leaving it there.
+  const MIN_RUN = Math.max(1, Number(arg("min-run", String(GAME_MIN_RUN))) || GAME_MIN_RUN);
   const rows = data.streaks || [];
   const picks = COUNT === 1
-    ? (() => { const { row, basis } = pickGameDetailed(rows);
+    ? (() => { const { row, basis } = pickGameDetailed(rows, GAME_MIN_PROB, MIN_RUN);
                return row ? [{ row, basis }] : []; })()
-    : pickGamesValue(rows, COUNT).map((row) => ({ row, basis: "value" }));
+    : pickGamesValue(rows, COUNT, MIN_RUN).map((row) => ({ row, basis: "value" }));
   if (!picks.length) {
-    skip(COUNT === 1 ? "no game today carries a run worth posting on its own"
-      : `no game today carries a run with a real price and a positive edge`);
+    // NAMES THE FLOOR. "Nothing worth posting" and "nothing cleared a bar I set" read the
+    // same in a log, and only one of them is a reason to look at the bar.
+    const longest = Math.max(0, ...rows.map((r) => Number(r?.streak?.length) || 0));
+    skip(`no game carries a run of ${MIN_RUN}+ with ${COUNT === 1 ? "something" : "a real price and a positive edge"}`
+      + ` worth posting — the longest run on the board is ${longest}`);
   }
 
   // THE PICTURE, built from the same fixture the text is about.

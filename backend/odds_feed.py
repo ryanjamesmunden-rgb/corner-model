@@ -80,12 +80,12 @@ TOTAL_FEED_LINES = frozenset({6.5, 7.5, 8.5, 9.5, 10.5, 11.5, 12.5, 13.5})
 GROUP_LINES = {"home": TEAM_FEED_LINES, "away": TEAM_FEED_LINES,
                "total": TOTAL_FEED_LINES}
 
-_OVER_HALF = re.compile(r"^over\s+(\d+)\.5$", re.I)
-_OVER_INT = re.compile(r"^over\s+(\d+)$", re.I)
+_SIDE_HALF = re.compile(r"^(over|under)\s+(\d+)\.5$", re.I)
+_SIDE_INT = re.compile(r"^(over|under)\s+(\d+)$", re.I)
 
 
-def parse_line(label: str) -> Tuple[Optional[float], Optional[str]]:
-    """"Over 4.5" -> (4.5, None). Anything else -> (None, why not).
+def parse_line(label: str) -> Tuple[Optional[float], Optional[str], Optional[str]]:
+    """"Over 4.5" -> (4.5, "over", None). "Under 9.5" -> (9.5, "under", None).
 
     THE .5 IS KEPT BECAUSE THE KEY KEEPS IT. server.py's TEAM_LINES and TOTAL_LINES are
     lists of floats, so build_markets writes `home_over_4.5` — not `home_over_4` — and
@@ -94,17 +94,23 @@ def parse_line(label: str) -> Tuple[Optional[float], Optional[str]]:
     stored cleanly, merged cleanly, and silently never matched a market. A mapping that
     fails by doing nothing is worse than one that throws.
 
-    The key prices P(X >= int(line) + 1), which is the same event the feed means by
-    "Over N.5"."""
+    THE UNDER SIDE IS NOW KEPT, and it was never a question of the feed. Every over/under
+    bet in the response carries both halves; this function discarded one of them because
+    build_markets only ever made `_over_` keys, so an under price had nothing to be
+    compared against. markets.build_extra_markets prices `{group}_under_{line}` from the
+    same distribution — Under 9.5 is exactly 1 - P(X >= 10) — so the price now has a fair
+    price to sit beside, at no extra request and no extra API credit.
+
+    An over key prices P(X >= int(line) + 1); an under key prices P(X <= int(line)). The
+    integer lines stay refused on both sides, for the push reason in the header."""
     s = str(label or "").strip()
-    m = _OVER_HALF.match(s)
+    m = _SIDE_HALF.match(s)
     if m:
-        return float(m.group(1)) + 0.5, None
-    if _OVER_INT.match(s):
-        return None, "integer line — exactly N is a push, which this model cannot price"
-    if s.lower().startswith("under"):
-        return None, "under side — the board prices overs"
-    return None, f"unrecognised line {s!r}"
+        return float(m.group(2)) + 0.5, m.group(1).lower(), None
+    m = _SIDE_INT.match(s)
+    if m:
+        return None, None, "integer line — exactly N is a push, which this model cannot price"
+    return None, None, f"unrecognised line {s!r}"
 
 
 def _price(v) -> Optional[float]:
@@ -147,7 +153,7 @@ def extract(entry: dict) -> dict:
                     skipped.append({"market": name, "book": book, "why": why})
                 continue
             for val in (bet.get("values") or []):
-                line, why = parse_line(val.get("value"))
+                line, direction, why = parse_line(val.get("value"))
                 if line is None:
                     skipped.append({"market": name, "book": book,
                                     "line": str(val.get("value")), "why": why})
@@ -164,9 +170,10 @@ def extract(entry: dict) -> dict:
                                     "line": str(val.get("value")),
                                     "why": f"unusable price {val.get('odd')!r}"})
                     continue
-                # SPELLED EXACTLY AS build_markets SPELLS IT — "home_over_4.5". See
-                # parse_line: a key with the .5 dropped matches nothing and fails silently.
-                key = f"{group}_over_{line}"
+                # SPELLED EXACTLY AS build_markets SPELLS IT — "home_over_4.5" and now
+                # "home_under_4.5". See parse_line: a key with the .5 dropped matches
+                # nothing and fails silently.
+                key = f"{group}_{direction}_{line}"
                 cur = taken.get(key)
                 if cur is None:
                     taken[key] = {"price": price, "book": book, "quotes": 1,
@@ -261,13 +268,13 @@ def market_key(subject: str, is_home, line, direction: str = "over") -> Tuple[Op
     on. Subtracting the 0.5 in one place and forgetting it in another is how a price gets
     compared against the wrong line.
 
-    UNDERS COME BACK REFUSED, and honestly. build_markets only ever creates `_over_` keys,
-    and this module refuses the feed's under side, so no fetched price exists for an under
-    at all — answering with a key that nothing will ever hold would turn "we cannot
-    measure this" into "this had no closing price", which are different facts.
+    BOTH SIDES NOW HAVE KEYS. The under side used to come back refused because nothing
+    stored it; markets.build_extra_markets prices `{group}_under_{line}` and extract keeps
+    the feed's under half, so an under claim resolves to a real key with a real price.
     """
-    if str(direction or "over").lower() != "over":
-        return None, "unders have no fetched price — the feed's under side is not stored"
+    want = str(direction or "over").lower()
+    if want not in ("over", "under"):
+        return None, f"unknown direction {direction!r}"
     n = None
     try:
         n = float(line)
@@ -277,8 +284,19 @@ def market_key(subject: str, is_home, line, direction: str = "over") -> Tuple[Op
         ("home" if is_home else "away" if is_home is False else None)
     if group is None:
         return None, "which side's corners this was about was never recorded"
-    # "5+" is the bet; 4.5 is the line it is struck on.
-    return f"{group}_over_{n - 0.5}", None
+    # "5+" is the bet; 4.5 is the line it is struck on, so an over claim shifts by half.
+    #
+    # AN UNDER CLAIM DOES NOT, and its line keeps the spelling the projection already
+    # uses. _streak_projection reads `f"{group}_under_{line}"` with the INTEGER line and
+    # prices it with a push on exactly that number ("under 10" voids on ten) — a different
+    # event from the feed's "Under 9.5", which cannot push. Writing 10 as "10.0" here
+    # would produce a key nothing holds and nothing ever would: the lookup would fail
+    # silently, which is the failure this function's header is about.
+    if want == "under":
+        line = int(n) if float(n).is_integer() else n
+    else:
+        line = n - 0.5
+    return f"{group}_{want}_{line}", None
 
 
 def clv_percent(taken, closing) -> Optional[float]:

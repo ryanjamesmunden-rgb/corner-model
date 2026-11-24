@@ -79,22 +79,30 @@ class TestTheKeyIsSpelledTheWayTheAppSpellsIt:
 class TestAHalfLineIsNotAnIntegerLine:
     def test_the_half_line_maps_to_the_key_that_prices_the_same_event(self):
         # "Over 4.5" is five or more: the key home_over_4.5 prices nb_ge(4+1) = P(X>=5).
-        assert parse_line("Over 4.5") == (4.5, None)
-        assert parse_line("over 10.5") == (10.5, None)
+        assert parse_line("Over 4.5") == (4.5, "over", None)
+        assert parse_line("over 10.5") == (10.5, "over", None)
 
     def test_an_integer_line_is_refused_and_says_why(self):
-        line, why = parse_line("Over 10")
-        assert line is None
+        line, direction, why = parse_line("Over 10")
+        assert line is None and direction is None
         assert "push" in why
 
-    def test_the_under_side_is_refused(self):
-        line, why = parse_line("Under 4.5")
-        assert line is None and "under" in why.lower()
+    def test_the_under_side_is_kept_now_that_there_is_a_price_to_compare_it_to(self):
+        # It was refused because build_markets made no under keys, so a stored under price
+        # had nothing to sit beside. markets.build_extra_markets prices Under 9.5 as
+        # 1 - P(X >= 10) off the same distribution, and the feed was already sending this
+        # half of every over/under bet — so keeping it costs no request and no credit.
+        assert parse_line("Under 4.5") == (4.5, "under", None)
+        assert parse_line("under 10.5") == (10.5, "under", None)
+
+    def test_an_integer_under_pushes_too_and_is_refused_the_same_way(self):
+        line, direction, why = parse_line("Under 10")
+        assert line is None and direction is None and "push" in why
 
     def test_nonsense_is_refused_rather_than_guessed(self):
-        for label in ("", None, "Exactly 4", "Yes", "Over", "4.5"):
-            line, why = parse_line(label)
-            assert line is None and why
+        for label in ("", None, "Exactly 4", "Yes", "Over", "4.5", "Over under 3.5"):
+            line, direction, why = parse_line(label)
+            assert line is None and direction is None and why
 
     def test_both_lines_on_one_market_keep_only_the_half(self):
         # This is exactly what the feed sends: Over 10 and Over 10.5 side by side.
@@ -243,12 +251,21 @@ class TestFromAPostToAPrice:
     def test_a_match_total_goes_to_the_total_ladder(self):
         assert market_key("match", True, 10) == ("total_over_9.5", None)
 
-    def test_an_under_is_refused_and_says_no_price_exists_for_it(self):
-        # Not "no closing price was found" — no fetched under price can exist at all,
-        # because this module refuses the feed's under side and build_markets makes no
-        # under keys. The two would otherwise be indistinguishable in a report.
-        key, why = market_key("team", True, 5, direction="under")
-        assert key is None and "under" in why
+    def test_an_under_claim_keeps_the_spelling_the_projection_already_uses(self):
+        # _streak_projection reads f"{group}_under_{line}" with the INTEGER line, and
+        # prices a push on exactly that number. Writing "10.0" here would be a key
+        # nothing holds — the lookup would fail silently, which is the one failure this
+        # function exists to prevent.
+        assert market_key("team", True, 10, direction="under") == ("home_under_10", None)
+        assert market_key("match", None, 10, direction="under") == ("total_under_10", None)
+
+    def test_the_feeds_own_half_line_under_resolves_to_the_fed_key(self):
+        # A different event from "under 10": 9.5 cannot push.
+        assert market_key("match", None, 9.5, direction="under") == ("total_under_9.5", None)
+
+    def test_a_direction_that_is_neither_is_refused_rather_than_assumed_over(self):
+        key, why = market_key("team", True, 5, direction="sideways")
+        assert key is None and "direction" in why
 
     def test_a_claim_that_never_recorded_its_side_is_refused(self):
         key, why = market_key("team", None, 5)

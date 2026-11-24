@@ -33,6 +33,7 @@ import log_redact
 import record_view
 import calibration
 import combined
+import markets
 import week_card
 import league_change
 import oddities
@@ -733,7 +734,20 @@ def corner_distribution(lam: float, group: str, max_k: int = 30) -> List[dict]:
     return rows[lo:hi + 1]
 
 
-def build_markets(lambdas: dict, odds: Dict[str, float]) -> List[dict]:
+def build_markets(lambdas: dict, odds: Dict[str, float],
+                  home: Optional[dict] = None, away: Optional[dict] = None) -> List[dict]:
+    """Every market this model can price for one fixture.
+
+    THE OVERS COME FIRST AND UNCHANGED. Everything downstream — the value board's ladder,
+    the week card, the bot's quoted rung, the spreadsheet — reads these rows by shape, and
+    the single-side overs are the ones with a betting record behind them. The extra
+    markets are appended, never interleaved, so an existing caller that takes rows in
+    order sees exactly what it saw before.
+
+    `home` and `away` are the team documents, needed only for the both-teams lines: their
+    stored matches are what the dependence between the two sides is measured from. Without
+    them those lines are still priced, under independence, and say so.
+    """
     rows = []
     specs = [("total", "Total", lambdas["total"], TOTAL_LINES),
              ("home", "Home Team", lambdas["home"], TEAM_LINES),
@@ -749,6 +763,11 @@ def build_markets(lambdas: dict, odds: Dict[str, float]) -> List[dict]:
             rows.append({"key": key, "group": group, "group_label": label, "line": line,
                          "label": f"Over {line}", "prob": round(p * 100, 1), "fair_odds": fo,
                          "book_odds": book, "ev": ev, "tier": tier_for_ev(ev) if ev is not None else None})
+    rows.extend(markets.build_extra_markets(
+        lambdas, odds, team_ge=nb_ge, total_ge=poisson_ge, fair_odds=fair_odds,
+        ev_percent=ev_percent, tier_for_ev=tier_for_ev,
+        team_lines=TEAM_LINES, total_lines=TOTAL_LINES,
+        pairs=markets.pair_counts(home, away) if (home or away) else None))
     return rows
 
 
@@ -772,7 +791,7 @@ def fixture_model_from(home: dict, away: dict, league: dict, odds: Dict[str, flo
     lambdas = expected_lambdas(home, away, ls, lb,
                                away_league.get("avg_shots") or REF_SHOTS,
                                away_league.get("avg_blocked") or 0.0)
-    out = {"lambdas": lambdas, "markets": build_markets(lambdas, odds),
+    out = {"lambdas": lambdas, "markets": build_markets(lambdas, odds, home, away),
            "confidence": confidence_for(home, away)}
     # OPT-IN, because it is ~60 rows per fixture and the boards price dozens at a time.
     # Only the single-fixture screens draw the curve, so only they ask for it.

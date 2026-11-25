@@ -142,6 +142,10 @@ def build_card(row: dict, board_rows: Dict[str, dict],
         "fixture_id": row.get("fixture_id"),
         "date": row.get("date"),
         "round": row.get("round"),
+        # WHAT HAPPENED, on a card for a day that has been played. None while the game is
+        # still to come. A card that vanished at kick-off was the complaint this answers:
+        # the day you most want to look at a card is the day after.
+        "result": row.get("result"),
         "league_id": row.get("league_id"),
         "league_name": row.get("league_name"),
         "tier": row.get("tier"),
@@ -156,6 +160,41 @@ def build_card(row: dict, board_rows: Dict[str, dict],
         "pick_count": picks,
         "boards": sorted({b for s in sides.values() for b in s["boards"]}),
     }
+
+
+def settle_card(card: dict, settle) -> dict:
+    """Attach what happened to each priced pick on a card whose game has been played.
+
+    `settle(market_key)` returns the settlement for that key, or None — passed in so this
+    module still needs no database and no second copy of the grading rules.
+
+    THE MATCH LINE IS SETTLED TOO, and so is a side whose pick was never priced: the
+    model's fair price on an unquoted rung is still a claim about the game, and whether it
+    would have landed is exactly what a week's review is for. What it cannot have is a
+    return, because there was no price to return at.
+    """
+    if not card.get("result"):
+        return card
+    for slot in ("home", "away"):
+        side = card.get(slot) or {}
+        pick = side.get("pick")
+        if pick and pick.get("key"):
+            got = settle(pick["key"])
+            if got:
+                pick["result"] = got["result"]
+                pick["actual"] = got["value"]
+    total = card.get("total")
+    if total and total.get("key"):
+        got = settle(total["key"])
+        if got:
+            total["result"] = got["result"]
+            total["actual"] = got["value"]
+    picks = [p for p in (((card.get("home") or {}).get("pick")),
+                         ((card.get("away") or {}).get("pick")),
+                         card.get("total")) if p and p.get("result")]
+    card["settled"] = len(picks)
+    card["landed"] = sum(1 for p in picks if p["result"] == "won")
+    return card
 
 
 def card_sort_key(card: dict) -> tuple:

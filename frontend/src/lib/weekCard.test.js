@@ -1,5 +1,5 @@
-import { boardLabel, cardNote, dayStrip, lineLabel, priceOf, recordOf, recordText,
-         slotsOf, warningsOf } from "./weekCard";
+import { boardLabel, cardNote, dayStrip, lineLabel, PICK_RESULT, priceOf, recordOf,
+         recordText, resultText, slotsOf, warningsOf } from "./weekCard";
 
 const pick = (over = {}) => ({ line: 6, label: "6+", book_odds: 1.73, fair_odds: 1.58,
                                prob: 63.2, ev: 9.4, credibility: "credible", ...over });
@@ -119,7 +119,7 @@ describe("the card as a whole", () => {
 
 describe("the day strip", () => {
   it("starts at today and runs forward", () => {
-    const days = dayStrip(new Date("2026-11-23T10:00:00Z"), 7);
+    const days = dayStrip(new Date("2026-11-23T10:00:00Z"), 7, 0);
     expect(days).toHaveLength(7);
     expect(days[0].short).toBe("Today");
     expect(days[1].short).toBe("Tomorrow");
@@ -129,12 +129,87 @@ describe("the day strip", () => {
   it("uses UK days, so a late kick-off is filed where the reader expects it", () => {
     // 23:30 UTC in June is 00:30 the next day in London. The strip must agree with the
     // backend, which buckets by London date.
-    const days = dayStrip(new Date("2026-06-10T23:30:00Z"), 2);
+    const days = dayStrip(new Date("2026-06-10T23:30:00Z"), 2, 0);
     expect(days[0].value).toBe("2026-06-11");
   });
 
   it("labels each day in full for the heading", () => {
-    expect(dayStrip(new Date("2026-11-23T10:00:00Z"), 1)[0].label)
+    expect(dayStrip(new Date("2026-11-23T10:00:00Z"), 1, 0)[0].label)
       .toBe("Mon 23 Nov");
+  });
+});
+
+// --- a day that has been played ------------------------------------------------------
+//
+// The card was a forecast that vanished at kick-off. The day you most want to look at one
+// is the day after: the same games, the same lines, the same prices, with the corner count
+// beside each.
+
+describe("a played card", () => {
+  const done = (over = {}) => ({
+    fixture_id: "p1", status: "played", settled: 3, landed: 2,
+    result: { home_goals: 2, away_goals: 1, home_corners: 7, away_corners: 4,
+              total_corners: 11, corners_known: true, finished_as: "FT" },
+    home: side({ pick: pick({ result: "won", actual: 7 }) }),
+    away: side({ name: "Barnsley", pick: pick({ result: "lost", actual: 4 }) }),
+    ...over,
+  });
+
+  it("leads with the corners, then the goals", () => {
+    expect(resultText(done())).toBe("7-4 corners · 2-1");
+  });
+
+  it("says the corner count never arrived rather than printing nil-nil", () => {
+    // 0-0 corners is a real result; "nobody fetched it" is not.
+    const r = { ...done().result, corners_known: false, home_corners: null,
+                away_corners: null };
+    expect(resultText(done({ result: r }))).toBe("played — corner count not in yet");
+  });
+
+  it("prints the goals only when both are known", () => {
+    const r = { ...done().result, home_goals: null, away_goals: null };
+    expect(resultText(done({ result: r }))).toBe("7-4 corners");
+  });
+
+  it("is null for a game still to come", () => {
+    expect(resultText({ home: side() })).toBeNull();
+    expect(resultText(null)).toBeNull();
+  });
+
+  it("leads its note with the score, not with what it once suggested", () => {
+    expect(cardNote(done())).toBe("2 of 3 landed");
+    expect(cardNote(done({ settled: 0, landed: 0 }))).toBe("played");
+  });
+
+  it("still reads as a forecast before kick-off", () => {
+    expect(cardNote({ run_count: 2 })).toBe("Both sides on a run");
+  });
+
+  it("gives each outcome a word, not just a colour", () => {
+    // The site's tones are close enough under colour blindness that none may carry a
+    // meaning on its own.
+    expect(PICK_RESULT.won.word).toBe("landed");
+    expect(PICK_RESULT.lost.word).toBe("missed");
+    expect(PICK_RESULT.void.word).toBe("push");
+  });
+});
+
+describe("the day strip reaching backwards", () => {
+  it("offers yesterday as well as tomorrow", () => {
+    const days = dayStrip(new Date("2026-11-25T10:00:00Z"), 7, 3);
+    expect(days).toHaveLength(10);
+    const today = days.findIndex((d) => d.short === "Today");
+    expect(days[today - 1].short).toBe("Yesterday");
+    expect(days[today + 1].short).toBe("Tomorrow");
+  });
+
+  it("marks which days are behind, so the page can say they are results", () => {
+    const days = dayStrip(new Date("2026-11-25T10:00:00Z"), 7, 3);
+    expect(days.filter((d) => d.past)).toHaveLength(3);
+    expect(days.find((d) => d.short === "Today").past).toBe(false);
+  });
+
+  it("still starts at today when nothing is asked for behind", () => {
+    expect(dayStrip(new Date("2026-11-25T10:00:00Z"), 7, 0)[0].short).toBe("Today");
   });
 });

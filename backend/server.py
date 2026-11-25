@@ -8654,6 +8654,91 @@ def _week_card_states(home: dict, away: dict, lg: dict, match_odds: Optional[dic
     return states_for
 
 
+async def _played_cards(want_day: str, league_id: Optional[str],
+                        board_rows: List[dict]) -> List[dict]:
+    """Cards for the games on `want_day` that have already been played.
+
+    Same shape as an upcoming card, plus `result` and a settled pick on each side, so one
+    renderer draws both and a reader does not have to learn a second layout to find out
+    what happened.
+
+    THE LADDER IS REBUILT FROM THE STORED PRICES, not remembered. The prices survive
+    kick-off; the model does not freeze, so the fair price beside a result is today's
+    opinion of a line that was offered then. That is the right number for "does the model
+    spot these" and the wrong one for "what did the board show" — the frozen snapshots
+    answer that, and /results grades them.
+    """
+    now = datetime.now(timezone.utc)
+    try:
+        anchor = datetime.fromisoformat(want_day).replace(tzinfo=timezone.utc)
+    except (TypeError, ValueError):
+        return []
+    # A two-day window either side, then filtered on the LONDON day: a 23:30Z kick-off in
+    # summer belongs to the next day in London and a UTC-prefix match would miss it.
+    q: Dict[str, object] = {"date": {"$gte": (anchor - timedelta(days=2)).isoformat(),
+                                     "$lte": (anchor + timedelta(days=2)).isoformat()}}
+    if league_id and league_id != "all":
+        q["league_id"] = league_id
+    rows = [r for r in await db.fixtures_played.find(q, {"_id": 0}).to_list(PLAYED_SCAN)
+            if local_day(r.get("date")) == want_day]
+    if not rows:
+        return []
+
+    odds = await _odds_by_fixture([r["fixture_id"] for r in rows if r.get("fixture_id")])
+    teams, leagues_by_id = {}, {}
+    ids = {t for r in rows for t in (r.get("home_team_id"), r.get("away_team_id")) if t}
+    if ids:
+        for t in await db.teams.find({"team_id": {"$in": list(ids)}}, {"_id": 0}) \
+                               .to_list(len(ids) + 100):
+            teams[t["team_id"]] = t
+    lids = {r.get("league_id") for r in rows if r.get("league_id")}
+    if lids:
+        for lg in await db.leagues.find({"league_id": {"$in": list(lids)}},
+                                        {"_id": 0}).to_list(len(lids) + 100):
+            leagues_by_id[lg["league_id"]] = lg
+
+    out = []
+    for r in rows:
+        fid = r.get("fixture_id")
+        home, away = teams.get(r.get("home_team_id")), teams.get(r.get("away_team_id"))
+        ladder = []
+        if home and away:
+            try:
+                built = fixture_model_from(home, away,
+                                           leagues_by_id.get(r.get("league_id")) or {},
+                                           odds.get(fid) or {})
+                ladder = [{"key": m["key"], "group": m["group"],
+                           "label": f"{m['group_label']} {m['label']}", "line": m["line"],
+                           "book_odds": m.get("book_odds"), "fair_odds": m.get("fair_odds"),
+                           "prob": m.get("prob"), "ev": m.get("ev"), "tier": m.get("tier")}
+                          for m in built["markets"]]
+            except Exception as e:        # one unplayable game must not take the day down
+                logger.warning(f"week card could not price played {fid}: {e}")
+        row = {"fixture_id": fid, "date": r.get("date"), "round": r.get("round"),
+               "league_id": r.get("league_id"),
+               "league_name": (leagues_by_id.get(r.get("league_id")) or {}).get("name", ""),
+               "tier": (LEAGUE_META.get(r.get("league_id")) or {}).get("tier"),
+               "home_name": r.get("home_name"), "away_name": r.get("away_name"),
+               "home_team_id": r.get("home_team_id"), "away_team_id": r.get("away_team_id"),
+               "status": "played", "note": "", "best": None, "ladder": ladder,
+               "lambda_total": None, "confidence": None,
+               "result": {
+                   "home_goals": r.get("home_goals"), "away_goals": r.get("away_goals"),
+                   "home_corners": r.get("home_corners"),
+                   "away_corners": r.get("away_corners"),
+                   "total_corners": r.get("total_corners"),
+                   # NOT DECORATION: a fixture whose statistics were never fetched has no
+                   # corner count, and 0-0 corners is a real result. The two must not
+                   # render the same way.
+                   "corners_known": bool(r.get("corners_known")),
+                   "finished_as": r.get("finished_as")}}
+        card = week_card.build_cards([row], board_rows, None, CREDIBILITY_ORDER)[0]
+        hc, ac = r.get("home_corners"), r.get("away_corners")
+        out.append(week_card.settle_card(
+            card, lambda key, h=hc, a=ac: price_review.settle_key(key, h, a)))
+    return out
+
+
 @api_router.get("/week-card")
 async def week_card_board(day: Optional[str] = None, league_id: Optional[str] = None,
                           min_run: int = 0, priced_only: bool = False,
@@ -8683,8 +8768,15 @@ async def week_card_board(day: Optional[str] = None, league_id: Optional[str] = 
     except (TypeError, ValueError):
         raise HTTPException(status_code=400,
                             detail="day must be a date, as YYYY-MM-DD")
-    if ahead < 0:
-        raise HTTPException(status_code=400, detail="that day has already been played")
+    # A DAY THAT HAS BEEN PLAYED IS STILL A CARD, and it used to be a 400. The day you
+    # most want to look at a card is the day after it: the same games, the same lines, the
+    # same prices, with the corner count beside each one. Reaching back as far as the
+    # played store keeps, which is the furthest a result can be shown at all.
+    if ahead < -PLAYED_KEEP_DAYS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"{want_day} is further back than the {PLAYED_KEEP_DAYS} days of "
+                   "results kept")
     if ahead > WEEK_CARD_MAX_AHEAD:
         raise HTTPException(
             status_code=400,
@@ -8701,7 +8793,7 @@ async def week_card_board(day: Optional[str] = None, league_id: Optional[str] = 
     # alone is still a side with a run behind it — the two-board bar is what makes the
     # COMBINED board a shortlist, and this is a diary, not a shortlist.
     board_rows = await _combined_rows(within_days=max(1, ahead + 1), min_boards=1,
-                                      user=user)
+                                      user=user) if ahead >= 0 else []
     board_rows = [b for b in board_rows
                   if local_day((b.get("next_fixture") or {}).get("date")) == want_day]
 
@@ -8809,6 +8901,16 @@ async def week_card_board(day: Optional[str] = None, league_id: Optional[str] = 
         cards.extend(week_card.build_cards([row], board_rows, states_for,
                                            CREDIBILITY_ORDER))
 
+    # --- the games that have been played, kept with what happened ----------------------
+    #
+    # A card used to be a forecast that vanished at kick-off. These rows come from the
+    # played store, carry the final score and the corner count, and have every pick on
+    # them settled — so the same page answers "what is on" and "what did it do", and a
+    # week can be read back without a second screen.
+    played_cards = await _played_cards(want_day, league_id, board_rows)
+    have_ids = {c.get("fixture_id") for c in cards}
+    cards.extend(c for c in played_cards if c.get("fixture_id") not in have_ids)
+
     cards.sort(key=week_card.card_sort_key)
     total = len(cards)
     if min_run > 0:
@@ -8821,12 +8923,19 @@ async def week_card_board(day: Optional[str] = None, league_id: Optional[str] = 
                  if any((c[s].get("pick") or {}).get("book_odds")
                         for s in ("home", "away")) or (c.get("total") or {}).get("book_odds")]
 
+    settled = [c for c in cards if c.get("settled")]
     out = {"day": want_day, "cards": cards, "fixtures": len(cards),
            # WHAT WAS LEFT OUT, because a short list after a filter and a quiet day look
            # identical otherwise — the same reason the fixture board reports `scanned`.
            "considered": total,
            "with_runs": sum(1 for c in cards if c["run_count"]),
-           "max_ahead": WEEK_CARD_MAX_AHEAD}
+           # THE DAY'S OWN SCORE, once it has been played. Counted over picks that
+           # settled, not over cards: a game with a result and no priced pick is a result
+           # nobody could have backed.
+           "played": sum(1 for c in cards if c.get("result")),
+           "picks_settled": sum(c.get("settled") or 0 for c in settled),
+           "picks_landed": sum(c.get("landed") or 0 for c in settled),
+           "max_ahead": WEEK_CARD_MAX_AHEAD, "keep_days": PLAYED_KEEP_DAYS}
     if response is not None:
         response.headers["X-Week-Cards"] = str(len(cards))
     return out

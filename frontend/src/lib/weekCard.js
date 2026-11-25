@@ -78,6 +78,78 @@ export const priceOf = (pick) => {
   return { odds: fair, ev: null, fair, quoted: false };
 };
 
+/** A record this strong over the window is what "it keeps landing" means here. */
+export const BACKED_RATE = 0.8;
+
+/**
+ * Whether the evidence on this side argues FOR the price beside it, against it, or
+ * neither — the traffic light the price is drawn in.
+ *
+ * WHY THE PRICE AND NOT A BADGE. The price is the thing the eye lands on, so it is the
+ * thing that has to carry whether the bet is backed. A card that prints 13.00 in the
+ * same weight as 1.73 is telling you the two are the same kind of claim, and they are
+ * not: one is a line this side has cleared four times in five, the other is a line its
+ * record never reaches.
+ *
+ * Returns `{ tone, why }`. `tone` is "backed", "warning" or "plain".
+ *
+ * BACKED needs the record to cover THIS bet and to be a record worth the name: the run's
+ * line at or above the one priced (a side that got 5+ four times in five also got 4+
+ * four times in five — a record reaches down, never up), and at least four of its last
+ * five.
+ *
+ * WARNING is the louder half and the reason this exists. Either:
+ *   - the bet sits ABOVE the run's line, so the record printed under it is a record of a
+ *     different bet — the "8+ at 13.00 under a 4+ run" case
+ *   - the opponent gives up fewer corners than the line asks for, which no amount of
+ *     this team's form can answer: the run is five games against five other opponents
+ *
+ * A SIDE WITH NO RUN IS PLAIN, NOT RED. Red has to mean the evidence points the other
+ * way, and no evidence is not evidence against — most sides on a card have no run, so
+ * colouring them all would put the board back where it started, with red everywhere and
+ * meaning nothing. It simply does not earn green.
+ *
+ * PLAIN is everything else, and most rows are plain. If a third colour meant something
+ * too, the two that do mean something would stop being noticeable.
+ */
+export const priceTone = (side) => {
+  const pick = side?.pick;
+  const line = num(pick?.line);
+  if (!pick || line === null || num(pick.book_odds) === null) {
+    return { tone: "plain", why: "" };
+  }
+  const run = side?.run;
+  const runLine = num(run?.line);
+  const hits = num(run?.hits);
+  const settled = num(run?.settled);
+  const opp = num(side?.opp_conceded);
+
+  if (opp !== null && opp < line && runLine !== null && runLine < line) {
+    return { tone: "warning",
+             why: `The run is at ${runLine}+ and the opponent concedes ${opp} a game — `
+                  + `neither reaches the ${line} this bet needs` };
+  }
+  if (runLine === null || hits === null || !settled) {
+    return opp !== null && opp < line
+      ? { tone: "warning",
+          why: `Opponent concedes ${opp} a game, under the ${line} this bet needs` }
+      : { tone: "plain", why: "" };
+  }
+  if (runLine < line) {
+    return { tone: "warning",
+             why: `The run is at ${runLine}+. This bet is ${line}+ — the record below `
+                  + "does not reach it" };
+  }
+  if (opp !== null && opp < line) {
+    return { tone: "warning",
+             why: `Opponent concedes ${opp} a game, under the ${line} this bet needs` };
+  }
+  if (hits / settled >= BACKED_RATE) {
+    return { tone: "backed", why: `${hits} of the last ${settled} at ${runLine}+` };
+  }
+  return { tone: "plain", why: "" };
+};
+
 /**
  * How many settled instances a line needs before "it has landed consistently" is a
  * sentence worth printing. Two is already a thin claim and is printed WITH its

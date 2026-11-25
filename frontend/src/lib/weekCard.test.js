@@ -1,5 +1,5 @@
 import { boardLabel, cardNote, dayStrip, lineLabel, PICK_RESULT, priceOf, priceValue,
-         recordOf, recordText, resultText, slotsOf, valueShort, valueText,
+         priceTone, recordOf, recordText, resultText, slotsOf, valueShort, valueText,
          warningsOf } from "./weekCard";
 
 const pick = (over = {}) => ({ line: 6, label: "6+", book_odds: 1.73, fair_odds: 1.58,
@@ -275,5 +275,79 @@ describe("the day strip reaching backwards", () => {
 
   it("still starts at today when nothing is asked for behind", () => {
     expect(dayStrip(new Date("2026-11-25T10:00:00Z"), 7, 0)[0].short).toBe("Today");
+  });
+});
+
+// --- the price as a traffic light -----------------------------------------------------
+//
+// A real card led with "VfB Stuttgart 8+ at 13.00" over a 4+ record, because +34% on a
+// 10% shot beat +13% on a 59% one. The backend no longer picks that rung; the colour is
+// the second line of defence, for every case where the only price on a side is one its
+// record cannot reach.
+
+describe("what colour the price is drawn in", () => {
+  const sided = (over = {}) => ({
+    name: "Bradford", pick: pick({ line: 4, book_odds: 1.94 }),
+    run: { line: 4, line_label: "4+", hits: 4, settled: 5, floor: 3 },
+    opp_conceded: 5.4, ...over,
+  });
+
+  it("is green when the run covers the line and it keeps landing", () => {
+    expect(priceTone(sided()).tone).toBe("backed");
+    expect(priceTone(sided()).why).toBe("4 of the last 5 at 4+");
+  });
+
+  it("is green for a bet UNDER the run's line, because a record reaches down", () => {
+    // A side that got 5+ four times in five also got 4+ four times in five.
+    expect(priceTone(sided({ run: { line: 5, hits: 4, settled: 5 } })).tone)
+      .toBe("backed");
+  });
+
+  it("warns when the bet sits above the run — the Stuttgart case", () => {
+    const t = priceTone(sided({ pick: pick({ line: 8, book_odds: 13 }),
+                                opp_conceded: 5.4 }));
+    expect(t.tone).toBe("warning");
+    expect(t.why).toContain("The run is at 4+");
+  });
+
+  it("warns when the opponent does not give up that many", () => {
+    // Inter concede 3.1 at home. No amount of the other side's form answers that.
+    const t = priceTone(sided({ opp_conceded: 3.1, pick: pick({ line: 4 }) }));
+    expect(t.tone).toBe("warning");
+    expect(t.why).toContain("concedes 3.1");
+  });
+
+  it("says so once when both legs fail, not twice", () => {
+    const t = priceTone(sided({ pick: pick({ line: 8, book_odds: 13 }),
+                                opp_conceded: 3.1 }));
+    expect(t.tone).toBe("warning");
+    expect(t.why).toContain("neither reaches");
+  });
+
+  it("leaves a side with no run plain rather than red", () => {
+    // Most sides on a card have no run. No evidence is not evidence against, and red on
+    // every row is where this started.
+    expect(priceTone(sided({ run: null })).tone).toBe("plain");
+  });
+
+  it("still warns a side with no run when the opponent is the problem", () => {
+    expect(priceTone(sided({ run: null, opp_conceded: 3.1 })).tone).toBe("warning");
+  });
+
+  it("is plain for a thin run rather than green", () => {
+    // 3 of 5 is a record. It is not "it keeps landing".
+    expect(priceTone(sided({ run: { line: 4, hits: 3, settled: 5 } })).tone).toBe("plain");
+  });
+
+  it("judges nothing without a quoted price", () => {
+    // A model fair price is an opinion; colouring it would dress one up as the other.
+    expect(priceTone(sided({ pick: pick({ line: 8, book_odds: null }) })).tone)
+      .toBe("plain");
+    expect(priceTone(null).tone).toBe("plain");
+    expect(priceTone({}).tone).toBe("plain");
+  });
+
+  it("does not warn on an opponent nobody measured", () => {
+    expect(priceTone(sided({ opp_conceded: null })).tone).toBe("backed");
   });
 });

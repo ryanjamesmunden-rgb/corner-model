@@ -7,7 +7,8 @@ import { kickoffTime } from "@/lib/kickoff";
 import { historyLines, lastTimeShort, lastTimeText } from "@/lib/review";
 import {
   boardLabel, cardNote, dayStrip, lineLabel, PICK_RESULT, priceOf, recordOf,
-  recordText, resultText, STATE_LABEL, STATE_TONE, valueShort, valueText, warningsOf,
+  recordText, resultText, priceTone, STATE_LABEL, STATE_TONE, valueShort, valueText,
+  warningsOf,
 } from "@/lib/weekCard";
 
 /**
@@ -58,18 +59,32 @@ const MIN_RUNS = [
 // it makes the day scannable DOWN rather than across.
 const LAYOUTS = [["rows", "Rows"], ["table", "Table"]];
 
+/** The price's three states. Plain is the common one and says nothing either way. */
+const TONE = {
+  backed: "text-emerald-500",
+  warning: "text-rose-500",
+  plain: "text-foreground",
+};
+
 /**
  * The biggest number on the row, and nothing else at this size.
  *
- * NOT RED ANY MORE. Red means "missed" and "avoid" everywhere else on this site, so a
- * red price above a game that has not kicked off read as a loss that had already
- * happened. Size is what makes the price the headline; colour is left to mean an outcome.
+ * IT WAS RED FOR EVERY ROW ONCE, which taught the eye that red was decoration and made a
+ * game nobody had played look like a loss. Red now means one thing: the evidence on this
+ * side argues AGAINST the bet printed beside it — the run does not reach this line, or
+ * there is no run, or the opponent does not give up this many. Green means the record
+ * covers this exact bet and keeps landing. Most rows are neither, and are plain.
+ *
+ * `priceTone` decides; the reason goes on the title so it can be read rather than
+ * guessed. See its note — the colours carry the warning because the price is the thing
+ * the eye lands on, and a 13.00 drawn like a 1.73 says the two are the same kind of
+ * claim.
  *
  * A model price is NEVER drawn like a book price. They are different kinds of thing —
  * one is an offer, the other is an opinion — and on a screen people bet from they must
  * not be able to be mistaken for each other, so an unquoted line is muted and prefixed.
  */
-function Price({ pick, big = false }) {
+function Price({ pick, side, big = false }) {
   const price = priceOf(pick);
   if (!price) return <span className="text-sm text-muted-foreground">—</span>;
   const size = big ? "text-2xl" : "text-lg";
@@ -80,8 +95,12 @@ function Price({ pick, big = false }) {
       </span>
     );
   }
+  // NO SIDE MEANS NO EVIDENCE TO JUDGE BY — the match line is not a team's run — so the
+  // price is drawn plain rather than warned about for something it was never asked.
+  const { tone, why } = side ? priceTone(side) : { tone: "plain", why: "" };
   return (
-    <span className={`${size} font-bold tabular-nums leading-none text-foreground`}>
+    <span className={`${size} font-bold tabular-nums leading-none ${TONE[tone]}`}
+      title={why}>
       {price.odds.toFixed(2)}
     </span>
   );
@@ -234,7 +253,7 @@ function RowSide({ side, leagueId }) {
       <div className="flex shrink-0 flex-col items-end gap-0.5">
         <span className="flex items-baseline gap-1.5">
           <Line pick={side.pick} />
-          <Price pick={side.pick} big />
+          <Price pick={side.pick} side={side} big />
         </span>
         <Outcome pick={side.pick} />
       </div>
@@ -311,7 +330,7 @@ function TableLayout({ cards, navigate }) {
                       <LastTime pick={s?.pick} short />
                     </td>
                     <td className={`${cell} whitespace-nowrap text-right`}>
-                      <Line pick={s?.pick} /> <Price pick={s?.pick} />
+                      <Line pick={s?.pick} /> <Price pick={s?.pick} side={s} />
                     </td>
                   </Fragment>
                 ))}
@@ -400,8 +419,9 @@ export default function WeekCard() {
           The week card
         </h1>
         <p className="text-sm text-muted-foreground">
-          Every game with a run or a price on it, both sides, in kick-off order. The price
-          is the big number; green is what has actually happened. Nothing here is ranked.
+          Every game with a run or a price on it, both sides, in kick-off order. A green
+          price means the record covers that exact bet; a red one is a warning. Nothing
+          here is ranked.
         </p>
       </header>
 
@@ -473,6 +493,11 @@ export default function WeekCard() {
         A figure in green is that side's record <em>at the line priced beside it</em>. A
         grey one names its own line first — it is the side's form, not evidence for this
         bet. A grey <em>fair</em> price is the model's number, not one a book is offering.
+        The price itself is <span className="font-medium text-emerald-500">green</span>
+        {" "}when this side's run covers that exact line and it landed at least four of
+        the last five, and <span className="font-medium text-rose-500">red</span> as a
+        warning — the run is at a lower line than the bet, or the opponent gives up fewer
+        corners than it needs. Hover the price for which. Most are neither.
         A <em>Last</em> line is what this same bet did the last few times it was priced on
         this team — hover it for the games. It turns green only when that line came in
         every time AND today's price is longer than any price it came in at. Game state

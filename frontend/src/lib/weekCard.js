@@ -82,6 +82,57 @@ export const priceOf = (pick) => {
 export const BACKED_RATE = 0.8;
 
 /**
+ * The side's last games as a row of chips, each graded against the line on the card.
+ *
+ * WHY THE CARD GRADES THEM AND THE BACKEND DOES NOT. The streak row arrives with its
+ * games already marked won or lost against the line the RUN is measured at. The card
+ * does not always lead with that line — it leads with whichever rung the price and the
+ * evidence agree on — so a pre-graded list would print green for a game that cleared 3+
+ * beside a bet on 5+. The raw corner counts travel and the line they are drawn beside
+ * does the grading, which is the only way the colours can mean what they appear to.
+ *
+ * TEN RATHER THAN FIVE, because five is the window the record is measured over and the
+ * question you ask next is whether those five were a fair sample. A side that went 5/5
+ * after 0/5 is not the side that has done it ten times running, and on the old card
+ * those two were the same row.
+ *
+ * `take` trims from the NEWEST end, so asking for five gives the five most recent.
+ */
+export const lastGames = (side, take) => {
+  const line = num(side?.pick?.line);
+  const games = side?.run?.last_games || [];
+  const rows = take ? games.slice(0, take) : games;
+  return rows.map((g) => {
+    const value = num(g?.value);
+    return {
+      value,
+      opponent: g?.opponent || "",
+      home: g?.home === true,
+      // Null, not false, when the count is missing: "we have no figure for this game"
+      // and "they got none" are different, and a red chip would say the second.
+      hit: value === null || line === null ? null : value >= line,
+    };
+  }).filter((g) => g.value !== null);
+};
+
+/** How a chip is drawn. Unknown is never red — see `lastGames`. */
+export const CHIP = {
+  hit: "bg-emerald-500/20 text-emerald-400",
+  miss: "bg-rose-500/15 text-rose-400",
+  unknown: "bg-zinc-500/20 text-zinc-400",
+};
+
+/** "6 of the last 10 at 5+" — what the chips add up to, with its denominator. */
+export const lastGamesText = (side, take) => {
+  const games = lastGames(side, take);
+  const graded = games.filter((g) => g.hit !== null);
+  const line = num(side?.pick?.line);
+  if (!graded.length || line === null) return "";
+  const hit = graded.filter((g) => g.hit).length;
+  return `${hit} of the last ${graded.length} at ${line}+`;
+};
+
+/**
  * Whether the evidence on this side argues FOR the price beside it, against it, or
  * neither — the traffic light the price is drawn in.
  *

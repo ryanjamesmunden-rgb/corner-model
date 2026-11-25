@@ -59,7 +59,11 @@ def _streak_summary(run: Optional[dict]) -> Optional[dict]:
             "settled": run.get("settled"), "avg": run.get("avg"),
             "floor": run.get("min_won"),
             "length": (run.get("streak") or {}).get("length", 0),
-            "recent": [g.get("corners") for g in (run.get("recent") or [])]}
+            "recent": [g.get("corners") for g in (run.get("recent") or [])],
+            # UNGRADED AND LONGER THAN THE WINDOW — see the note where this is built.
+            # The card grades them against whichever line it ends up leading with, which
+            # is not always the line this run is measured at.
+            "last_games": list(run.get("last_games") or [])}
 
 
 def _angle(line: int, lam: Optional[float], venue: str, odds: Dict[str, float],

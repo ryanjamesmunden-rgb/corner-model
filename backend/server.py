@@ -7163,6 +7163,11 @@ STREAK_LADDERS = {"team": list(range(1, 16)), "match": list(range(1, 31)),
 # Both are the same complaint: the row claims a pattern the sample cannot support.
 MIN_STREAK_LEN = 2
 
+#: How many of a side's most recent games travel with a streak row, ungraded, for a
+#: reader to see the window in context. Ten, because five is the window the record is
+#: measured over and the useful question is whether those five were a fair sample.
+STREAK_LAST_GAMES = 10
+
 
 # How much of a paid board somebody who has not paid gets to see.
 #
@@ -8129,6 +8134,23 @@ async def streaks(league_id: Optional[str] = None, side: str = "overall", window
                             and m.get("corners_against") is not None else None,
                    "opponent": m["opponent"], "home": m["home"], "date": m["date"]}
                   for m, lg in zip(reversed(pool), reversed(legs))]
+        # THE SAME GAMES WITHOUT A VERDICT ATTACHED, and reaching further back than the
+        # window the run is measured over.
+        #
+        # `recent` above is graded: each game already carries win or loss against THIS
+        # row's line, which is right for a board about this line. A card is not about
+        # this line — it leads with whichever rung the price and the evidence agree on,
+        # and that is often a different one. Handing it a pre-graded list would make it
+        # print green for a game that cleared 3+ beside a bet on 5+.
+        #
+        # So the raw counts travel, and whoever draws them grades against the line they
+        # are drawn beside. Ten of them rather than five, because the window is what the
+        # record is measured over and ten is what you look at to see whether five was a
+        # fair sample — a side that went 5/5 after 0/5 is a different proposition from
+        # one that has done it ten times.
+        last = history[-STREAK_LAST_GAMES:]
+        last_games = [{"value": streak_value(m, subject), "opponent": m["opponent"],
+                       "home": m["home"]} for m in reversed(last)]
         nf = next_fx.get(t["team_id"])
         if within_days is not None:
             if not nf:
@@ -8182,6 +8204,7 @@ async def streaks(league_id: Optional[str] = None, side: str = "overall", window
             "real_samples": t.get("real_samples", 0),
             "history_samples": t.get("history_samples") or t.get("real_samples", 0),
             "recent": recent,
+            "last_games": last_games,
             "next_fixture": nf, "projection": projection,
         })
     league_change.annotate(results, league_change.change_map(

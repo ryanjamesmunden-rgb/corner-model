@@ -6,9 +6,9 @@ import { withFlag } from "@/lib/countryFlag";
 import { kickoffTime } from "@/lib/kickoff";
 import { historyLines, lastTimeShort, lastTimeText } from "@/lib/review";
 import {
-  boardLabel, cardNote, dayStrip, lineLabel, PICK_RESULT, priceOf, recordOf,
-  recordText, resultText, priceTone, STATE_LABEL, STATE_TONE, valueShort, valueText,
-  warningsOf,
+  boardLabel, cardNote, CHIP, dayStrip, lastGames, lastGamesText, lineLabel,
+  PICK_RESULT, priceOf, priceTone, recordOf, recordText, resultText, STATE_LABEL,
+  STATE_TONE, valueShort, valueText, warningsOf,
 } from "@/lib/weekCard";
 
 /**
@@ -180,6 +180,36 @@ function LastTime({ pick, short = false }) {
   );
 }
 
+/**
+ * The last ten games as a row of corner counts, the way the Streaks board draws them.
+ *
+ * THE CHIPS ARE GRADED AGAINST THE LINE ON THIS CARD, not against the line the run was
+ * measured at — see `lastGames`. So on a 5+ bet, green is a game that reached 5, and you
+ * can see at a glance whether "4 of 5" was four comfortable ones or four that scraped it.
+ *
+ * TEN, BECAUSE FIVE IS THE WINDOW. The record above is measured over five; the question
+ * it invites is whether those five were a fair sample, and only the games before them
+ * answer it. A side that went 5/5 after 0/5 and a side that has done it ten times
+ * running were the same row until now.
+ */
+function LastGames({ side, take, className = "flex" }) {
+  const games = lastGames(side, take);
+  if (!games.length) return null;
+  return (
+    <div className={`${className} flex-wrap gap-1`} title={lastGamesText(side, take)}>
+      {games.map((g, i) => (
+        <span key={i}
+          title={`${g.value} corners ${g.home ? "vs" : "at"} ${g.opponent}`}
+          className={`inline-flex h-5 min-w-[1.25rem] items-center justify-center rounded
+            px-1 text-[10px] tabular-nums ${
+              g.hit === null ? CHIP.unknown : g.hit ? CHIP.hit : CHIP.miss}`}>
+          {g.value}
+        </span>
+      ))}
+    </div>
+  );
+}
+
 /** Everything that is not the bet: boards, game state, warnings. Folded away by default. */
 function Detail({ card }) {
   const warnings = warningsOf(card);
@@ -248,6 +278,11 @@ function RowSide({ side, leagueId }) {
           {withFlag(leagueId, side.name)}
         </div>
         <Record side={side} />
+        {/* TEN WHERE TEN FIT. At phone width the left column is about 230px, which is
+            eight chips — so ten wrapped to a ragged second row of one. Five below sm,
+            ten above, rather than a tidy row on the desktop and a mess on the phone. */}
+        <LastGames side={side} take={5} className="flex sm:hidden" />
+        <LastGames side={side} className="hidden sm:flex" />
         <LastTime pick={side.pick} />
       </div>
       <div className="flex shrink-0 flex-col items-end gap-0.5">
@@ -327,6 +362,7 @@ function TableLayout({ cards, navigate }) {
                     <td className={cell}>
                       <div className="font-medium">{withFlag(c.league_id, s?.name)}</div>
                       <Record side={s} />
+                      <LastGames side={s} take={5} />
                       <LastTime pick={s?.pick} short />
                     </td>
                     <td className={`${cell} whitespace-nowrap text-right`}>

@@ -1,4 +1,5 @@
-import { gameRow, gameRows, headline, keyLabel, lastTimeText, lineText,
+import { gameRow, gameRows, headline, historyLines, keyLabel, lastTimeShort,
+         lastTimeText, lineText,
          RESULT_WORD, scoreline } from "./review";
 
 const line = (over = {}) => ({ key: "home_over_4.5", group: "home", direction: "over",
@@ -140,5 +141,58 @@ describe("what the line did last time", () => {
   it("handles a stored result with no price attached", () => {
     expect(lastTimeText({ last: { result: "won", book_odds: null }, found: 1, landed: 1 }))
       .toBe("Last time landed");
+  });
+});
+
+describe("the same fact at column width", () => {
+  it("keeps the price and the outcome and drops the run", () => {
+    expect(lastTimeShort({ last: { result: "won", book_odds: 1.62 }, found: 3, landed: 2 }))
+      .toBe("Last 1.62 landed");
+  });
+
+  it("still says what happened when no price was stored", () => {
+    expect(lastTimeShort({ last: { result: "lost", book_odds: null }, found: 1, landed: 0 }))
+      .toBe("Last missed");
+  });
+
+  it("is null, not an empty string, when there is nothing to say", () => {
+    expect(lastTimeShort({ last: null })).toBeNull();
+    expect(lastTimeShort(null)).toBeNull();
+  });
+});
+
+describe("the games behind that phrase", () => {
+  const hist = (games) => ({ games, found: games.length, landed: 0 });
+
+  it("gives each game its date, venue, the figure it settled on and the price", () => {
+    expect(historyLines(hist([
+      { date: "2026-11-22T15:00:00Z", was_home: true, value: 7, book_odds: 1.62,
+        result: "won" },
+    ]))).toEqual(["22 Nov H · 7 · 1.62 · landed"]);
+  });
+
+  it("marks an away game as one, because a home line's run is a run of home games", () => {
+    expect(historyLines(hist([
+      { date: "2026-11-08T15:00:00Z", was_home: false, value: 3, book_odds: 1.8,
+        result: "lost" },
+    ]))).toEqual(["8 Nov A · 3 · 1.80 · missed"]);
+  });
+
+  it("keeps a figure of zero, which is the one most worth seeing", () => {
+    const [line] = historyLines(hist([
+      { date: "2026-11-08T15:00:00Z", was_home: true, value: 0, book_odds: 2.1,
+        result: "lost" },
+    ]));
+    expect(line).toContain("· 0 ·");
+  });
+
+  it("drops a part it does not have rather than printing a gap", () => {
+    expect(historyLines(hist([{ was_home: null, value: null, book_odds: null,
+                                result: "void" }]))).toEqual(["push"]);
+  });
+
+  it("is an empty list, not a crash, when there is no history", () => {
+    expect(historyLines(null)).toEqual([]);
+    expect(historyLines({ found: 0 })).toEqual([]);
   });
 });

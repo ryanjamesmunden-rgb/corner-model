@@ -8663,6 +8663,17 @@ def _week_card_states(home: dict, away: dict, lg: dict, match_odds: Optional[dic
 #: How many previous priced instances of a line to carry onto a card.
 WEEK_CARD_HISTORY = 5
 
+#: How many of each team's played games the WEEK CARD looks through, as against the 40
+#: /line-history reads for one team.
+#:
+#: THE DIFFERENCE IS SIXTY TEAMS. /line-history answers about one, so 40 games costs 40
+#: odds documents. The card asks about every side of every game on a day, so the same
+#: depth is up to 2,400 — and an odds document carries every market on the fixture, so
+#: that is tens of megabytes pulled into one request on a single-worker instance. The
+#: walk stops after WEEK_CARD_HISTORY matches, so the only thing the extra depth buys is
+#: a rarer history on a team whose line is seldom priced, at a cost paid on every load.
+WEEK_CARD_HISTORY_SCAN = 12
+
 
 def _history_targets(card: dict) -> List[tuple]:
     """Every pick on a card that can be given a history, paired with the team to ask about.
@@ -8724,12 +8735,12 @@ async def _attach_line_history(cards: List[dict]) -> int:
 
     # NEWEST FEW PER TEAM, not every game ever played by sixty teams. The walk stops at
     # WEEK_CARD_HISTORY matches, so the only thing a longer list buys is a bigger odds
-    # query — and that query is the expensive half of this. The same depth /line-history
-    # reads, so the two cannot disagree about what "last time" was.
+    # query — and that query is the expensive half of this, on the one endpoint that asks
+    # it for sixty teams at once. See WEEK_CARD_HISTORY_SCAN.
     by_team: Dict[str, List[dict]] = {}
     for r in played:
         for tid in (r.get("home_team_id"), r.get("away_team_id")):
-            if tid in wanted and len(by_team.setdefault(tid, [])) < LINE_HISTORY_SCAN:
+            if tid in wanted and len(by_team.setdefault(tid, [])) < WEEK_CARD_HISTORY_SCAN:
                 by_team[tid].append(r)
 
     odds = await _odds_by_fixture(

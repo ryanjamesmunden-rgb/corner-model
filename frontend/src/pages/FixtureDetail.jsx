@@ -25,6 +25,8 @@ import {
   MIN_WINDOW,
   thisSeasonOnly,
 } from "@/lib/consistency";
+import { emptyText as compEmptyText, gameRows as compGameRows, hasForm as hasCompForm,
+         summaryText as compSummaryText } from "@/lib/competitionForm";
 import { claimLine, hasMismatch, headline as mismatchHeadline, mismatches } from "@/lib/mismatch";
 import {
   CONTEXT_FOOTNOTE, contextView, defaultSide as defaultContextSide, thinNote,
@@ -303,6 +305,12 @@ export default function FixtureDetail() {
           </p>
         </div>
       )}
+
+      {/* AND THEN WHAT THEY HAVE ACTUALLY DONE IN IT. The caveat above says the form
+          below was earned elsewhere; this says what little was earned here. Directly
+          under the caveat because the two are one thought, and absent entirely when
+          neither side has a game on file. */}
+      <CompetitionForm data={data} />
 
       {/* The headline answer, drawn. This leads the page on purpose: it is the one thing a
           visitor who has never used the site can read, and everything below is the detail
@@ -626,6 +634,83 @@ const modelNum = (v, render, blurred) => {
   if (v != null) return render(v);
   return blurred ? <Locked /> : "\u2014";
 };
+
+/**
+ * Each side's games in the competition this tie is actually being played in.
+ *
+ * THE PAGE'S OLDEST COMPLAINT, and it was never a bug. A cup has no teams of its own, so
+ * a Champions League fixture points at the two domestic team rows and everything below —
+ * the splits, the traits, the ladders — is Serie A and Bundesliga. That is what the model
+ * should price from: twenty league games beats four European ones. It is not what
+ * somebody who opened a European page is asking, and the European results were sitting in
+ * the results store the whole time, keyed by these same team ids.
+ *
+ * ABOVE THE DOMESTIC FORM, NOT INSTEAD OF IT. A league phase is eight games a side over
+ * four months and the store keeps a window of them, so most sides have one or two. Both
+ * records are true at once — one is the larger sample, the other the closer match — and
+ * the count beside each is what lets a reader weigh them. Nothing here feeds a price.
+ */
+function CompetitionForm({ data }) {
+  const comp = data?.competition;
+  if (!comp?.is_cup) return null;
+  const sides = [
+    { key: "home", name: data.home_team?.name, form: data.home_team?.competition_form },
+    { key: "away", name: data.away_team?.name, form: data.away_team?.competition_form },
+  ];
+  if (!sides.some((s) => hasCompForm(s.form))) return null;
+  return (
+    <div className="bg-card border border-border rounded-lg p-3.5 space-y-3"
+      data-testid="competition-form">
+      <div>
+        <h3 className="font-head font-semibold text-sm">In the {comp.name}</h3>
+        <p className="text-xs text-muted-foreground mt-0.5">
+          These two sides&apos; games in this competition. Everything below is their league
+          season, which is what the model prices from.
+        </p>
+      </div>
+      <div className="grid gap-3 sm:grid-cols-2">
+        {sides.map(({ key, name, form }) => (
+          <div key={key} className="min-w-0 space-y-1.5">
+            <div className="text-sm font-medium truncate">{name}</div>
+            {hasCompForm(form) ? (
+              <>
+                <div className="text-xs text-emerald-600 dark:text-emerald-400">
+                  {compSummaryText(form)}
+                </div>
+                <ul className="space-y-1">
+                  {compGameRows(form).map((g) => (
+                    <li key={g.key}
+                      className="flex items-baseline gap-2 text-xs text-muted-foreground">
+                      <span className="w-12 shrink-0 tabular-nums">{g.when}</span>
+                      <span className="w-4 shrink-0">{g.venue}</span>
+                      <span className="min-w-0 flex-1 truncate text-foreground">
+                        {g.opponent}
+                      </span>
+                      <span className="shrink-0 font-medium tabular-nums text-foreground">
+                        {g.corners}
+                      </span>
+                      <span className="w-10 shrink-0 text-right tabular-nums">
+                        {g.score || ""}{g.extra ? ` ${g.extra}` : ""}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              </>
+            ) : (
+              <p className="text-xs text-muted-foreground">
+                {compEmptyText(name, comp.name)}
+              </p>
+            )}
+          </div>
+        ))}
+      </div>
+      <p className="text-[11px] text-muted-foreground">
+        Corners are this side&apos;s, then its opponent&apos;s. Results are kept for a
+        window, so this is the competition games on file rather than every one played.
+      </p>
+    </div>
+  );
+}
 
 function BandKey({ note }) {
   return (

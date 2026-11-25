@@ -123,7 +123,8 @@ class FakeCollection:
 
 
 class FakeDB:
-    def __init__(self, teams, fixtures, leagues=LEAGUES, fixture_stats=()):
+    def __init__(self, teams, fixtures, leagues=LEAGUES, fixture_stats=(),
+                 fixtures_played=()):
         self.teams = FakeCollection(teams)
         self.fixtures = FakeCollection(fixtures)
         self.leagues = FakeCollection(leagues)
@@ -137,6 +138,10 @@ class FakeDB:
         # meetings: most of this file is about which league prices a cup tie, and a
         # pairing with no stored history is the ordinary case anyway.
         self.fixture_stats = FakeCollection(fixture_stats)
+        # The results store. A cup tie's page now reads it for the two sides' games in
+        # THIS competition — see cup_form — and a double without it raises on every cup
+        # fixture whose document carries `cup: True`.
+        self.fixtures_played = FakeCollection(fixtures_played)
 
 
 def run(coro):
@@ -391,8 +396,8 @@ class TestTheFixturePage:
     both sides disappears. No error, no empty state: a fixture page that mysteriously has
     nothing to say about either team."""
 
-    def detail(self, monkeypatch, teams, fixtures, fid, member=True):
-        monkeypatch.setattr(server, "db", FakeDB(teams, fixtures))
+    def detail(self, monkeypatch, teams, fixtures, fid, member=True, played=()):
+        monkeypatch.setattr(server, "db", FakeDB(teams, fixtures, fixtures_played=played))
         # A MEMBER, BECAUSE THESE TESTS ARE ABOUT THE MODEL. The page now withholds the
         # model's own numbers from anyone who has not paid — see _blur_model — so reading
         # `lambdas` off a non-member's payload asserts the gating rather than the pricing.
@@ -608,3 +613,62 @@ class TestTheGuardsThatWereAlreadyThere:
         rows = projections(monkeypatch, [BUSY, QUIET],
                            [fixture(CUP_TIE, "ucl", BUSY, QUIET, hours=-2)], days=7)
         assert rows == {}
+
+
+class TestTheCompetitionsOwnGames:
+    """Open a Champions League tie and every game listed was Serie A.
+
+    That is the cup design working as written — a cup has no teams of its own, so the
+    fixture points at the domestic rows and the model prices off twenty league games
+    rather than four European ones. It is also not what somebody opening a European page
+    is asking. The European results were in db.fixtures_played the whole time, stored by
+    the cup sync against these same domestic team ids.
+    """
+
+    def detail(self, monkeypatch, fixtures, fid, played=()):
+        monkeypatch.setattr(server, "db",
+                            FakeDB([BUSY, QUIET], fixtures, fixtures_played=played))
+        return run(server.fixture_detail(fid, user={"user_id": "u1", "member": True}))
+
+    def tie(self, fid, home, away, hc, ac, date, **over):
+        return {"fixture_id": fid, "league_id": "ucl", "round": "League Stage - 4",
+                "home_team_id": home["team_id"], "away_team_id": away["team_id"],
+                "home_name": home["team_id"], "away_name": away["team_id"],
+                "date": date, "status": "played", "cup": True,
+                "home_corners": hc, "away_corners": ac, "total_corners": hc + ac,
+                "home_goals": 1, "away_goals": 0,
+                "corners_known": True, "finished_as": "FT", **over}
+
+    def test_a_cup_tie_carries_each_side_s_games_in_that_competition(self, monkeypatch):
+        d = self.detail(monkeypatch,
+                        [fixture(CUP_TIE, "ucl", BUSY, QUIET, cup=True)], CUP_TIE,
+                        played=[self.tie("ucl-9", BUSY, QUIET, 8, 2,
+                                         "2026-11-03T20:00:00Z")])
+        home = d["home_team"]["competition_form"]
+        assert home["summary"]["games"] == 1
+        assert home["games"][0]["won"] == 8
+        assert d["away_team"]["competition_form"]["games"][0]["won"] == 2
+
+    def test_a_league_fixture_does_not_grow_the_field_or_the_query(self, monkeypatch):
+        # Nothing to add on a domestic page, and no read of the played store either —
+        # this runs on every fixture page on the site.
+        d = self.detail(monkeypatch, [fixture(DOMESTIC, "eng-pl", BUSY, QUIET)], DOMESTIC)
+        assert d["home_team"]["competition_form"] is None
+        assert d["away_team"]["competition_form"] is None
+
+    def test_a_side_with_no_european_game_on_file_says_nothing(self, monkeypatch):
+        # An empty panel reads as "they have played none in this competition", which on a
+        # store that only keeps a window of results is a claim we cannot make.
+        d = self.detail(monkeypatch,
+                        [fixture(CUP_TIE, "ucl", BUSY, QUIET, cup=True)], CUP_TIE)
+        assert d["home_team"]["competition_form"] is None
+
+    def test_the_domestic_form_is_still_there_underneath(self, monkeypatch):
+        # ADDED, NOT SWAPPED. A European league phase is eight games a side and the store
+        # holds a window of them; replacing forty domestic games with one would answer
+        # the question asked and leave a worse page.
+        d = self.detail(monkeypatch,
+                        [fixture(CUP_TIE, "ucl", BUSY, QUIET, cup=True)], CUP_TIE,
+                        played=[self.tie("ucl-9", BUSY, QUIET, 8, 2,
+                                         "2026-11-03T20:00:00Z")])
+        assert d["home_team"]["recent"], "the domestic games were dropped"

@@ -5,8 +5,8 @@ import { api } from "@/lib/api";
 import { withFlag } from "@/lib/countryFlag";
 import { kickoffTime } from "@/lib/kickoff";
 import {
-  boardLabel, cardNote, dayStrip, lineLabel, priceOf, recordOf, recordText,
-  STATE_LABEL, STATE_TONE, warningsOf,
+  boardLabel, cardNote, dayStrip, lineLabel, PICK_RESULT, priceOf, recordOf,
+  recordText, resultText, STATE_LABEL, STATE_TONE, warningsOf,
 } from "@/lib/weekCard";
 
 /**
@@ -74,6 +74,25 @@ const Line = ({ pick }) =>
   pick ? <span className="font-semibold tabular-nums">{lineLabel(pick)}</span> : null;
 
 /**
+ * What a pick did, once the game has been played.
+ *
+ * THE PRICE STAYS WHERE IT WAS. A result that replaced the number would answer "did it
+ * land" and lose "at what" — and the second is the half you need to judge the first.
+ */
+function Outcome({ pick }) {
+  const r = pick?.result && PICK_RESULT[pick.result];
+  if (!r) return null;
+  return (
+    <span className={`whitespace-nowrap text-xs font-medium ${r.cls}`}>
+      {r.word}
+      {typeof pick.actual === "number" && (
+        <span className="ml-1 text-muted-foreground">({pick.actual})</span>
+      )}
+    </span>
+  );
+}
+
+/**
  * The green half: what has actually happened, never without its denominator.
  *
  * GREEN MEANS IT BACKS THE BET BESIDE IT, and nothing else. A run at a different line is
@@ -137,6 +156,9 @@ function Meta({ card, open, setOpen, navigate }) {
         {kickoffTime(card.date)}
       </span>
       <span>{card.league_name || card.league_id}</span>
+      {resultText(card) && (
+        <span className="font-medium text-foreground">· {resultText(card)}</span>
+      )}
       <span className="hidden sm:inline">· {cardNote(card)}</span>
       <button type="button" onClick={() => setOpen(!open)}
         className="ml-auto hover:text-foreground">
@@ -161,9 +183,12 @@ function RowSide({ side, leagueId }) {
         </div>
         <Record side={side} />
       </div>
-      <div className="flex shrink-0 items-baseline gap-1.5">
-        <Line pick={side.pick} />
-        <Price pick={side.pick} big />
+      <div className="flex shrink-0 flex-col items-end gap-0.5">
+        <span className="flex items-baseline gap-1.5">
+          <Line pick={side.pick} />
+          <Price pick={side.pick} big />
+        </span>
+        <Outcome pick={side.pick} />
       </div>
     </div>
   );
@@ -186,6 +211,7 @@ function RowsLayout({ cards, navigate }) {
               <span>Match</span>
               <Line pick={c.total} />
               <Price pick={c.total} />
+              <Outcome pick={c.total} />
             </div>
           )}
           {open[c.fixture_id] && <Detail card={c} />}
@@ -269,7 +295,10 @@ export default function WeekCard() {
   const navigate = useNavigate();
   const [params, setParams] = useSearchParams();
   const days = useMemo(() => dayStrip(new Date(), 7), []);
-  const day = params.get("day") || days[0].value;
+  // TODAY, NOT THE FIRST CHIP. The strip reaches backwards now, so days[0] is three days
+  // ago — opening the page on a day of results nobody asked for.
+  const todayValue = useMemo(() => (days.find((d) => !d.past) || days[0]).value, [days]);
+  const day = params.get("day") || todayValue;
   const layout = params.get("layout") === "table" ? "table" : "rows";
   const [minRun, setMinRun] = useState("0");
   const [pricedOnly, setPricedOnly] = useState(false);
@@ -322,6 +351,7 @@ export default function WeekCard() {
           <button key={d.value} type="button" onClick={() => setParam("day", d.value)}
             className={`rounded-full border px-3 py-1 text-sm transition ${
               d.value === day ? "border-primary bg-primary/10 font-medium text-foreground"
+                : d.past ? "border-border/60 text-muted-foreground/70 hover:border-primary/50"
                 : "border-border text-muted-foreground hover:border-primary/50"}`}>
             {d.short}
           </button>

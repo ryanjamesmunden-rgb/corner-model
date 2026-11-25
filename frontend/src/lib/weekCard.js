@@ -124,8 +124,38 @@ export const recordText = (side) => {
  * edge on it is not a better card — it is a card with a bigger number on it, which the
  * boards already rank by.
  */
+/**
+ * The result on a played card: "7-4 corners · 2-1".
+ *
+ * Null while the game is still to come, and a distinct sentence when the statistics never
+ * arrived — 0-0 corners is a real result and "nobody fetched it" is not, and they must not
+ * render the same way.
+ */
+export const resultText = (card) => {
+  const r = card?.result;
+  if (!r) return null;
+  if (!r.corners_known) return "played — corner count not in yet";
+  const goals = (num(r.home_goals) !== null && num(r.away_goals) !== null)
+    ? ` · ${r.home_goals}-${r.away_goals}` : "";
+  return `${r.home_corners}-${r.away_corners} corners${goals}`;
+};
+
+/** How a settled pick is drawn. Word and sign, never the colour alone. */
+export const PICK_RESULT = {
+  won: { word: "landed", cls: "text-emerald-600 dark:text-emerald-400" },
+  lost: { word: "missed", cls: "text-rose-600 dark:text-rose-400" },
+  void: { word: "push", cls: "text-muted-foreground" },
+  half_won: { word: "half", cls: "text-emerald-600 dark:text-emerald-400" },
+  half_lost: { word: "half", cls: "text-rose-600 dark:text-rose-400" },
+};
+
 export const cardNote = (card) => {
   if (!card) return "";
+  // A PLAYED CARD LEADS WITH ITS SCORE, not with what it once suggested.
+  if (card.result) {
+    const n = num(card.settled) || 0;
+    return n ? `${num(card.landed) || 0} of ${n} landed` : "played";
+  }
   if (card.status === "no_price") return "No price yet — research game";
   const runs = num(card.run_count) || 0;
   if (runs === 2) return "Both sides on a run";
@@ -160,10 +190,16 @@ export const warningsOf = (card) => {
   return out;
 };
 
-/** The next `count` UK days, as { value, label, short } — the strip above the card. */
-export const dayStrip = (now = new Date(), count = 7) => {
+/**
+ * The strip above the card: `back` days behind, today, then `count - 1` ahead.
+ *
+ * IT REACHES BACKWARDS NOW. The card used to start at today, because a played day was a
+ * 400 — and the day you most want to look at a card is the day after it, with the corner
+ * count beside each line you were offered.
+ */
+export const dayStrip = (now = new Date(), count = 7, back = 3) => {
   const out = [];
-  for (let i = 0; i < count; i += 1) {
+  for (let i = -back; i < count; i += 1) {
     const d = new Date(now.getTime() + i * 86400000);
     const value = new Intl.DateTimeFormat("en-CA", {
       timeZone: "Europe/London", year: "numeric", month: "2-digit", day: "2-digit",
@@ -174,7 +210,9 @@ export const dayStrip = (now = new Date(), count = 7) => {
     const get = (t) => parts.find((p) => p.type === t)?.value || "";
     out.push({
       value,
-      short: i === 0 ? "Today" : i === 1 ? "Tomorrow" : get("weekday"),
+      past: i < 0,
+      short: i === 0 ? "Today" : i === 1 ? "Tomorrow" : i === -1 ? "Yesterday"
+        : get("weekday"),
       label: `${get("weekday")} ${get("day")} ${get("month")}`,
     });
   }

@@ -1,6 +1,7 @@
 import "@/App.css";
 import ErrorBoundary from "@/components/ErrorBoundary";
-import { lazy, Suspense } from "react";
+import { Suspense, useEffect } from "react";
+import { clearChunkReloadFlag, lazyRoute } from "@/lib/lazyRoute";
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { Toaster } from "sonner";
 import Layout from "@/components/Layout";
@@ -9,26 +10,31 @@ import { Analytics } from "@vercel/analytics/react";
 
 // Each route is its own chunk: landing on the Scanner shouldn't download and parse
 // Streaks and the fixture detail page before it can paint.
-const Browse = lazy(() => import("@/pages/Browse"));
-const Evidence = lazy(() => import("@/pages/Evidence"));
-const Dashboard = lazy(() => import("@/pages/Dashboard"));
-const Scanner = lazy(() => import("@/pages/Scanner"));
-const Streaks = lazy(() => import("@/pages/Streaks"));
-const QuickScan = lazy(() => import("@/pages/QuickScan"));
-const Combined = lazy(() => import("@/pages/Combined"));
-const FixtureDetail = lazy(() => import("@/pages/FixtureDetail"));
-const Join = lazy(() => import("@/pages/Join"));
-const Account = lazy(() => import("@/pages/Account"));
-const FaqPage = lazy(() => import("@/pages/FaqPage"));
-const Saved = lazy(() => import("@/pages/Saved"));
-const FormGraph = lazy(() => import("@/pages/FormGraph"));
-const MyTeams = lazy(() => import("@/pages/MyTeams"));
-const Calendar = lazy(() => import("@/pages/Calendar"));
-const WeekCardPage = lazy(() => import("@/pages/WeekCard"));
-const ReviewPage = lazy(() => import("@/pages/Review"));
-const Bets = lazy(() => import("@/pages/Bets"));
-const Results = lazy(() => import("@/pages/Results"));
-const Projections = lazy(() => import("@/pages/Projections"));
+//
+// lazyRoute, not React's lazy: a tab left open across a deploy asks for chunk names that
+// no longer exist, gets the SPA's index.html back as a 404 body, and throws trying to
+// parse HTML as JavaScript. That looks like the whole site being down when it is working
+// for everyone who arrives fresh. lazyRoute reloads once, which is the entire fix.
+const Browse = lazyRoute(() => import("@/pages/Browse"));
+const Evidence = lazyRoute(() => import("@/pages/Evidence"));
+const Dashboard = lazyRoute(() => import("@/pages/Dashboard"));
+const Scanner = lazyRoute(() => import("@/pages/Scanner"));
+const Streaks = lazyRoute(() => import("@/pages/Streaks"));
+const QuickScan = lazyRoute(() => import("@/pages/QuickScan"));
+const Combined = lazyRoute(() => import("@/pages/Combined"));
+const FixtureDetail = lazyRoute(() => import("@/pages/FixtureDetail"));
+const Join = lazyRoute(() => import("@/pages/Join"));
+const Account = lazyRoute(() => import("@/pages/Account"));
+const FaqPage = lazyRoute(() => import("@/pages/FaqPage"));
+const Saved = lazyRoute(() => import("@/pages/Saved"));
+const FormGraph = lazyRoute(() => import("@/pages/FormGraph"));
+const MyTeams = lazyRoute(() => import("@/pages/MyTeams"));
+const Calendar = lazyRoute(() => import("@/pages/Calendar"));
+const WeekCardPage = lazyRoute(() => import("@/pages/WeekCard"));
+const ReviewPage = lazyRoute(() => import("@/pages/Review"));
+const Bets = lazyRoute(() => import("@/pages/Bets"));
+const Results = lazyRoute(() => import("@/pages/Results"));
+const Projections = lazyRoute(() => import("@/pages/Projections"));
 
 const RouteFallback = () => (
   <div className="py-20 text-center text-muted-foreground animate-pulse font-mono-data text-sm">
@@ -101,6 +107,11 @@ function AppRouter() {
 }
 
 function App() {
+  // THE GUARD IS SPENT ONCE THE APP IS RUNNING. lazyRoute records a reload so a chunk
+  // that keeps failing cannot spin the tab; getting this far means the reload worked, so
+  // the NEXT deploy that lands under this tab gets its own attempt rather than being
+  // shown a broken panel because an earlier one used the single try.
+  useEffect(() => { clearChunkReloadFlag(); }, []);
   return (
     <div className="App">
       <AuthProvider>

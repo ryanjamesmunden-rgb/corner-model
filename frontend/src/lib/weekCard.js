@@ -54,7 +54,14 @@ export const lineLabel = (pick) => {
 };
 
 /**
- * The red half: the price and what it is worth.
+ * The price and what it is worth.
+ *
+ * IT USED TO BE DRAWN RED, which was wrong on this site specifically. Red already means
+ * one thing here and means it everywhere else — `PICK_RESULT.lost` is "missed",
+ * `RESULT_TONE.lost` is "missed", `STATE_TONE.avoid` is "avoid" — so a red number above
+ * a game that has not kicked off read as a loss that had already happened. The price is
+ * now the plain foreground at a size nothing else on the row has: weight carries the
+ * headline, and colour is left to mean an outcome and nothing else.
  *
  * Returns `{ odds, ev, fair, quoted }`. `quoted` false means no bookmaker has priced it
  * and `odds` is the MODEL's number — which is a different kind of thing and has to be
@@ -69,6 +76,55 @@ export const priceOf = (pick) => {
   }
   if (fair === null) return null;
   return { odds: fair, ev: null, fair, quoted: false };
+};
+
+/**
+ * How many settled instances a line needs before "it has landed consistently" is a
+ * sentence worth printing. Two is already a thin claim and is printed WITH its
+ * denominator for exactly that reason — "all 2" cannot be mistaken for a long record.
+ */
+export const VALUE_MIN_GAMES = 2;
+
+/**
+ * The case for taking a price: this same line has come in every time it was priced, and
+ * what you are being offered now is longer than any price it came in at.
+ *
+ * WHY THIS AND NOT THE MODEL'S EDGE. The edge is an opinion — a probability the model
+ * worked out, multiplied by a price — and the biggest edge on a board is very often the
+ * model's worst error. This is two facts and a subtraction: the line was offered at
+ * 1.62 and 1.70 and landed both times, and today it is 1.73. Nothing is predicted. A
+ * reader can check every number in it against the games.
+ *
+ * EVERY TIME, NOT MOST. "Landed consistently" is the thing being claimed, so one miss in
+ * the window ends it; a 2-of-3 record is still printed, just as the ordinary history
+ * sentence rather than as an argument for the bet. A push is left out of the count
+ * entirely — it is neither a hit nor a miss and would quietly pad the denominator.
+ *
+ * Returns null unless the whole case holds, so the caller has one thing to test.
+ */
+export const priceValue = (pick) => {
+  const now = num(pick?.book_odds);
+  const settled = (pick?.history?.games || [])
+    .filter((g) => g?.result && g.result !== "void");
+  if (now === null || settled.length < VALUE_MIN_GAMES) return null;
+  if (settled.some((g) => g.result !== "won")) return null;
+  const prices = settled.map((g) => num(g.book_odds)).filter((p) => p !== null);
+  if (prices.length !== settled.length) return null;
+  const best = Math.max(...prices);
+  return now > best ? { games: settled.length, best, now } : null;
+};
+
+/** "Landed all 3 · best was 1.70, now 1.73" — the case above, in one line. */
+export const valueText = (pick) => {
+  const v = priceValue(pick);
+  return v ? `Landed all ${v.games} · best was ${v.best.toFixed(2)}, now ${v.now.toFixed(2)}`
+    : null;
+};
+
+/** The same case at column width, for the table layout. */
+export const valueShort = (pick) => {
+  const v = priceValue(pick);
+  return v ? `All ${v.games} landed, best ${v.best.toFixed(2)}` : null;
 };
 
 /**

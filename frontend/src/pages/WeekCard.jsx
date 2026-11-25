@@ -7,7 +7,7 @@ import { kickoffTime } from "@/lib/kickoff";
 import { historyLines, lastTimeShort, lastTimeText } from "@/lib/review";
 import {
   boardLabel, cardNote, dayStrip, lineLabel, PICK_RESULT, priceOf, recordOf,
-  recordText, resultText, STATE_LABEL, STATE_TONE, warningsOf,
+  recordText, resultText, STATE_LABEL, STATE_TONE, valueShort, valueText, warningsOf,
 } from "@/lib/weekCard";
 
 /**
@@ -29,6 +29,12 @@ import {
  * nested borders, and the one number you are actually being offered lost in the middle.
  * Now the price is the headline, the record sits under it in green, and everything else
  * is either small or behind the detail toggle.
+ *
+ * IT IS THE HEADLINE BY SIZE, NOT BY COLOUR. It was red for one version, which was a
+ * straight collision with the rest of the site: red is "missed" on a settled pick,
+ * "missed" in the review, "avoid" in a game-state verdict. A red number over a game
+ * nobody had played yet read as a loss that had already happened. Colour on this page
+ * now means an outcome or an argument, never just "this is a number".
  *
  * AND EVERY PRICE NOW CARRIES ITS OWN MEMORY. "6+ at 1.73" with a record beside it still
  * left the first question anybody asks — did this line land last time, and at what —
@@ -53,7 +59,11 @@ const MIN_RUNS = [
 const LAYOUTS = [["rows", "Rows"], ["table", "Table"]];
 
 /**
- * The red number, and nothing else at this size.
+ * The biggest number on the row, and nothing else at this size.
+ *
+ * NOT RED ANY MORE. Red means "missed" and "avoid" everywhere else on this site, so a
+ * red price above a game that has not kicked off read as a loss that had already
+ * happened. Size is what makes the price the headline; colour is left to mean an outcome.
  *
  * A model price is NEVER drawn like a book price. They are different kinds of thing —
  * one is an offer, the other is an opinion — and on a screen people bet from they must
@@ -71,7 +81,7 @@ function Price({ pick, big = false }) {
     );
   }
   return (
-    <span className={`${size} font-bold tabular-nums leading-none text-rose-500`}>
+    <span className={`${size} font-bold tabular-nums leading-none text-foreground`}>
       {price.odds.toFixed(2)}
     </span>
   );
@@ -128,18 +138,23 @@ function Record({ side }) {
  * memory. The board held the answer the whole time: the line was priced on this team's
  * last games and those games have since been played and settled.
  *
- * DRAWN MUTED, NOT GREEN, even though it IS a record of this exact bet. Green on this
- * screen means one thing — the run above backs the price beside it — and a second green
- * sentence under it halves the meaning of both. The word carries the result instead.
+ * MUTED, EXCEPT WHEN IT MAKES THE CASE. Ordinarily this is background — a mixed record
+ * is information, not an argument — so it is drawn grey and the word carries the result.
+ * The one time it goes green is `priceValue`: the line came in EVERY time it was priced
+ * and today's price is longer than any price it came in at. That is the thing this page
+ * exists to find, it is two facts and a subtraction rather than a forecast, and it is
+ * rare enough that green still means something when it appears.
  *
  * NOTHING AT ALL when the line has never been priced on this team: never priced and never
  * landed are different facts, and a blank is read as the second.
  */
 function LastTime({ pick, short = false }) {
-  const text = short ? lastTimeShort(pick?.history) : lastTimeText(pick?.history);
+  const value = short ? valueShort(pick) : valueText(pick);
+  const text = value || (short ? lastTimeShort(pick?.history) : lastTimeText(pick?.history));
   if (!text) return null;
   return (
-    <div className="max-w-[15rem] truncate text-xs text-muted-foreground"
+    <div className={`max-w-[15rem] truncate text-xs ${value
+      ? "font-medium text-emerald-600 dark:text-emerald-400" : "text-muted-foreground"}`}
       title={historyLines(pick.history).join("\n")}>
       {text}
     </div>
@@ -385,8 +400,8 @@ export default function WeekCard() {
           The week card
         </h1>
         <p className="text-sm text-muted-foreground">
-          Every game with a run or a price on it, both sides, in kick-off order. Price in
-          red, what has actually happened in green. Nothing here is ranked.
+          Every game with a run or a price on it, both sides, in kick-off order. The price
+          is the big number; green is what has actually happened. Nothing here is ranked.
         </p>
       </header>
 
@@ -459,8 +474,9 @@ export default function WeekCard() {
         grey one names its own line first — it is the side's form, not evidence for this
         bet. A grey <em>fair</em> price is the model's number, not one a book is offering.
         A <em>Last</em> line is what this same bet did the last few times it was priced on
-        this team — hover it for the games. Game state is a label to read beside the
-        price, not a measured edge.
+        this team — hover it for the games. It turns green only when that line came in
+        every time AND today's price is longer than any price it came in at. Game state
+        is a label to read beside the price, not a measured edge.
       </p>
     </div>
   );

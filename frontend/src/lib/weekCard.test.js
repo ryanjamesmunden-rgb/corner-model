@@ -1,5 +1,6 @@
-import { boardLabel, cardNote, dayStrip, lineLabel, PICK_RESULT, priceOf, recordOf,
-         recordText, resultText, slotsOf, warningsOf } from "./weekCard";
+import { boardLabel, cardNote, dayStrip, lineLabel, PICK_RESULT, priceOf, priceValue,
+         recordOf, recordText, resultText, slotsOf, valueShort, valueText,
+         warningsOf } from "./weekCard";
 
 const pick = (over = {}) => ({ line: 6, label: "6+", book_odds: 1.73, fair_odds: 1.58,
                                prob: 63.2, ev: 9.4, credibility: "credible", ...over });
@@ -191,6 +192,69 @@ describe("a played card", () => {
     expect(PICK_RESULT.won.word).toBe("landed");
     expect(PICK_RESULT.lost.word).toBe("missed");
     expect(PICK_RESULT.void.word).toBe("push");
+  });
+});
+
+// --- the case for taking a price -----------------------------------------------------
+//
+// The thing the page exists to find: a line that has come in every time it was priced,
+// being offered at more than it came in at. Two facts and a subtraction — nothing here
+// forecasts anything, and every number in it can be checked against the games.
+
+describe("a price longer than the line has landed at", () => {
+  const h = (...games) => ({ games, found: games.length,
+                             landed: games.filter((g) => g.result === "won").length,
+                             last: games[0] });
+  const won = (odds) => ({ result: "won", book_odds: odds, value: 7 });
+
+  it("makes the case when every priced game landed and the price has grown", () => {
+    expect(valueText(pick({ book_odds: 1.73, history: h(won(1.62), won(1.7)) })))
+      .toBe("Landed all 2 · best was 1.70, now 1.73");
+  });
+
+  it("says nothing when the price is no longer than before", () => {
+    // Same record, worse price. That is not an argument for anything.
+    expect(valueText(pick({ book_odds: 1.65, history: h(won(1.62), won(1.7)) })))
+      .toBeNull();
+    expect(valueText(pick({ book_odds: 1.7, history: h(won(1.62), won(1.7)) })))
+      .toBeNull();
+  });
+
+  it("ends at one miss, because the claim is that it lands every time", () => {
+    expect(valueText(pick({ book_odds: 2.5,
+                            history: h(won(1.62), { result: "lost", book_odds: 1.7 }) })))
+      .toBeNull();
+  });
+
+  it("refuses to argue from a single game", () => {
+    // One instance is an anecdote; it still shows as the ordinary history sentence.
+    expect(valueText(pick({ book_odds: 1.9, history: h(won(1.62)) }))).toBeNull();
+  });
+
+  it("leaves a push out of the count rather than letting it pad the record", () => {
+    // A push is neither a hit nor a miss, and counting it would make "all 3" of two.
+    const v = priceValue(pick({ book_odds: 1.9,
+      history: h(won(1.62), { result: "void", book_odds: 1.8 }, won(1.7)) }));
+    expect(v).toMatchObject({ games: 2, best: 1.7 });
+  });
+
+  it("will not compare against a game whose price was never stored", () => {
+    // "Longer than before" needs a before. A missing price is not a small one.
+    expect(valueText(pick({ book_odds: 1.9,
+      history: h(won(1.62), { result: "won", book_odds: null }) }))).toBeNull();
+  });
+
+  it("says nothing at all for a line with no history and no price", () => {
+    expect(valueText(pick({ history: undefined }))).toBeNull();
+    expect(valueText(null)).toBeNull();
+    expect(priceValue({ book_odds: null, history: h(won(1.62), won(1.7)) })).toBeNull();
+  });
+
+  it("fits a column in the table layout without losing either fact", () => {
+    expect(valueShort(pick({ book_odds: 1.73, history: h(won(1.62), won(1.7)) })))
+      .toBe("All 2 landed, best 1.70");
+    expect(valueShort(pick({ book_odds: 1.6, history: h(won(1.62), won(1.7)) })))
+      .toBeNull();
   });
 });
 

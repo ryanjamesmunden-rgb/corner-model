@@ -165,6 +165,23 @@ PLAYED_KEEP_DAYS = 30
 # is read from the top and the most recent round is the one anyone is looking for.
 PLAYED_STATS_CAP = 40
 
+# How far back a CUP keeps its results, separately from the leagues above.
+#
+# WHY IT IS ITS OWN NUMBER. A league team's record lives in db.teams and is twenty-odd
+# games deep whatever this window says; fixtures_played is only the results VIEW. A cup
+# side has no such record anywhere — its competition games exist in fixtures_played and
+# nowhere else — so for a cup this window is not a view, it is the entire history. At 30
+# days that is one game a side in a European league phase, which is a fixture page that
+# answers "how have they done in this competition" with a sample of one.
+#
+# RAISING IT COSTS CALLS, ONCE. Each newly covered tie needs one /fixtures/statistics
+# call, capped at PLAYED_STATS_CAP per competition per sync and cached permanently by the
+# provider's fixture id afterwards. So a longer window is a one-off backfill spread over
+# a few syncs, then free. Left equal to the league window until somebody decides to spend
+# that; the only thing this constant changes today is that the decision is one edit in
+# one place rather than a shared number that cannot be moved for cups alone.
+CUP_KEEP_DAYS = PLAYED_KEEP_DAYS
+
 
 def is_recently_played(f, now=None, days=PLAYED_KEEP_DAYS) -> bool:
     """Has this fixture been played, and recently enough to still be worth showing?
@@ -751,7 +768,8 @@ async def sync_cup(hc, cup_id):
     # Newest first and capped: a results view is read from the top, and the cap is what
     # stops a first run on a competition with a long season turning into a backfill
     # nobody asked for.
-    recent_played = sorted((f for f in fixtures if is_recently_played(f)),
+    recent_played = sorted((f for f in fixtures
+                            if is_recently_played(f, days=CUP_KEEP_DAYS)),
                            key=lambda f: f["fixture"]["date"], reverse=True)
     pdocs, pskip = cup_fixture_docs(cup_id, recent_played[:PLAYED_STATS_CAP], by_api,
                                     status="played")

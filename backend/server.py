@@ -27,6 +27,7 @@ from collections import Counter, defaultdict, deque
 import settlement
 import angle_of_day
 import bot_cards
+import cup_form
 import cups
 import h2h
 import log_redact
@@ -6257,6 +6258,23 @@ async def fixture_detail(fixture_id: str, token: Optional[str] = None,
     lg_vals = [m["corners_for"] for t in lg_teams for m in _src(t)]
     lg_avg = (sum(lg_vals) / len(lg_vals)) if lg_vals else 0.0
 
+    # THE COMPETITION'S OWN GAMES, on a cup tie.
+    #
+    # `recent` below is the side's DOMESTIC season, which is right for the model — a cup
+    # has no teams of its own, so every projection here is computed off the twenty-odd
+    # league games rather than the four European ones (cups.py has the reasoning). It is
+    # wrong for the reader, who opened a Champions League page and got Serie A.
+    #
+    # The European results were already in db.fixtures_played, stored by the cup sync
+    # against these same domestic team ids. Nothing was reading them for this. No API
+    # call, no new collection, and nothing on this query for the 27 leagues, where
+    # `cup` is false and the fetch is skipped entirely.
+    comp_form = {"home": None, "away": None}
+    if fx.get("cup"):
+        comp_played = await db.fixtures_played.find(
+            {"league_id": fx["league_id"]}, {"_id": 0}).to_list(PLAYED_SCAN)
+        comp_form = cup_form.for_fixture(fx, comp_played)
+
     def recent(team):
         # THE LONG HISTORY (up to 40 games) so the fixture page's slider and charts can
         # reach back further. Prices on this page still come off the model's 20.
@@ -6406,6 +6424,9 @@ async def fixture_detail(fixture_id: str, token: Optional[str] = None,
                                              ).get("season"),
                           "state_splits": states(home), "goal_profile": goals(home),
                           "intent": intent(home), "recent": recent(home),
+                          # THIS COMPETITION'S games, on a cup tie, with their count.
+                          # None on a league fixture and on a side with none on file.
+                          "competition_form": comp_form["home"],
                           "profile": team_profile(home, "home", lg_avg),
                           "real_samples": home.get("real_samples", 0)},
             "away_team": {"name": away["name"], "splits": splits(away), "features": features(away),
@@ -6413,6 +6434,7 @@ async def fixture_detail(fixture_id: str, token: Optional[str] = None,
                                              ).get("season"),
                           "state_splits": states(away), "goal_profile": goals(away),
                           "intent": intent(away), "recent": recent(away),
+                          "competition_form": comp_form["away"],
                           "profile": team_profile(away, "away", lg_avg),
                           "real_samples": away.get("real_samples", 0)}}
 

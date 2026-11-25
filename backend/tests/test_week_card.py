@@ -208,3 +208,69 @@ def test_no_game_state_source_leaves_the_field_empty_rather_than_guessing():
 def test_nothing_in_means_nothing_out():
     assert week_card.build_cards([], []) == []
     assert week_card.build_cards(None, None) == []
+
+
+# --- a line the run cannot reach ------------------------------------------------------
+#
+# A real card led with "VfB Stuttgart 8+ at 13.00" under a 4+ record. Nothing was broken:
+# the model gave 8+ a 10.3% chance, 13.00 x 0.103 is +34%, and +34% beat the 4+ rung's
+# +13%. But the whole of that +34% sits inside two points of model error at a price that
+# long, and the run — the one measured thing on the card — reached 4+ and no further.
+
+def test_the_card_will_not_lead_with_a_line_the_run_cannot_reach():
+    # The Stuttgart card, with its own numbers.
+    ladder = [rung("home", 3, ev=3.2, book=1.37), rung("home", 4, ev=13.4, book=1.94),
+              rung("home", 8, ev=34.2, book=13.0)]
+    assert week_card.pick_rung(ladder, "home", run_line=4)["line"] == 4
+
+
+def test_a_rung_below_the_run_outranks_a_long_shot_above_it():
+    # The run's line is not priced at all. A record of 4+ in nine of ten is also a record
+    # of 3+ in nine of ten; it is no record of 8+, so the short one leads.
+    ladder = [rung("home", 3, ev=3.2, book=1.37), rung("home", 8, ev=34.2, book=13.0)]
+    assert week_card.pick_rung(ladder, "home", run_line=4)["line"] == 3
+
+
+def test_the_edge_still_decides_between_rungs_the_run_reaches():
+    # Both are at or under the run, so neither is a stretch and the bigger edge wins.
+    ladder = [rung("home", 3, ev=3.0, book=1.37), rung("home", 4, ev=13.0, book=1.94)]
+    assert week_card.pick_rung(ladder, "home", run_line=5)["line"] == 4
+
+
+def test_credibility_still_comes_before_reach():
+    # A credible rung two lines above the run beats an OUTLIER one line above it. The
+    # reach rule reorders rungs the card is willing to lead with; it does not promote one
+    # it already distrusts.
+    ladder = [rung("home", 5, ev=70.0, book=3.0, cred="outlier"),
+              rung("home", 6, ev=9.0, book=1.9)]
+    assert week_card.pick_rung(ladder, "home", run_line=4)["line"] == 6
+
+
+def test_with_no_run_the_biggest_edge_still_leads():
+    # Nothing measured to correct against, so the sort is unchanged.
+    ladder = [rung("home", 4, ev=13.4, book=1.94), rung("home", 8, ev=34.2, book=13.0)]
+    assert week_card.pick_rung(ladder, "home", run_line=None)["line"] == 8
+
+
+def test_a_long_shot_still_shows_when_it_is_the_only_price():
+    # "No price at the line your record covers" is a fact about the book. Hiding the one
+    # quote there is would leave the side blank and say nothing at all.
+    ladder = [rung("home", 8, ev=34.2, book=13.0)]
+    assert week_card.pick_rung(ladder, "home", run_line=4)["line"] == 8
+
+
+def test_a_side_carries_what_its_opponent_gives_up():
+    # The half a run cannot see: five games against five other opponents say nothing
+    # about the one in front of it.
+    row = board_row()
+    row["quick_scan"] = {"opp_conceded": 3.1, "lambda": 4.3}
+    side = week_card.side_card("Bradford", "t1", "home",
+                               [rung("home", 5, ev=8.0, book=1.73)], row)
+    assert side["opp_conceded"] == 3.1
+
+
+def test_an_opponent_with_no_measured_leak_is_none_rather_than_zero():
+    # Zero conceded is a real number and "we never measured it" is not.
+    side = week_card.side_card("Bradford", "t1", "home",
+                               [rung("home", 5, ev=8.0, book=1.73)], board_row())
+    assert side["opp_conceded"] is None

@@ -55,13 +55,39 @@ def _rank(rung: dict, order: Dict[str, int]) -> tuple:
             -(rung["ev"] if rung.get("ev") is not None else -999))
 
 
+def _reach(rung: dict, run_line: Optional[float]) -> float:
+    """How far ABOVE the run's own line this rung sits. Zero at or below it.
+
+    THE BIGGEST EDGE ON A LADDER IS USUALLY ITS LONGEST SHOT, and that is arithmetic
+    rather than a finding. EV is `price * probability - 1`, so at 13.00 a model
+    probability of 10% is +30% and 8% is +4%: the whole answer sits inside two points of
+    model error, which the model does not have. At 1.94 and 59% the same two points move
+    the edge by four. So a ladder sorted on edge alone puts the line the model can say
+    LEAST about at the top of the card, under a price somebody might take.
+
+    The run is the correction, because it is the one thing on the card measured rather
+    than modelled. A side on a 4+ run has a record that reaches 4+ and says nothing
+    whatever about 8+. Distance above it therefore outranks the edge — a shorter, duller
+    rung the evidence actually covers leads over a long shot it does not.
+
+    Going BELOW the run's line costs nothing: a side that got 4+ in nine of ten also got
+    3+ in nine of ten, so the record reaches down but never up.
+    """
+    if run_line is None:
+        return 0.0
+    line = rung.get("line")
+    return max(0.0, float(line) - float(run_line)) if line is not None else 0.0
+
+
 def pick_rung(ladder: Iterable[dict], group: str, run_line: Optional[float] = None,
               order: Optional[Dict[str, int]] = None) -> Optional[dict]:
     """The rung to lead with for one side of a fixture.
 
     In order of preference:
       1. a priced, leadable rung AT THE RUN'S OWN LINE — the stat and the bet agree
-      2. the best priced leadable rung, by credibility then edge
+      2. the best priced leadable rung, ranked by credibility, then by how far ABOVE the
+         run it sits, and only then by edge — see `_reach`, which is the whole reason a
+         card stopped leading with "8+ at 13.00" under a 4+ record
       3. the best priced rung at all, even an implausible one, so a broken price is
          visible on the card rather than silently swapped for a quieter one
       4. an unpriced rung, which carries the model's fair price and no edge
@@ -81,7 +107,8 @@ def pick_rung(ladder: Iterable[dict], group: str, run_line: Optional[float] = No
             return sorted(at_run, key=lambda r: _rank(r, order))[0]
     for pool in (leadable, priced):
         if pool:
-            return sorted(pool, key=lambda r: _rank(r, order))[0]
+            return sorted(pool, key=lambda r: (_rank(r, order)[0], _reach(r, run_line),
+                                               _rank(r, order)[1]))[0]
     # Nothing quoted. The fair price is still worth printing — it is what the model
     # thinks the bet is worth, and "no price yet" is a fact about the book, not the bet.
     unpriced = [r for r in rungs if r.get("fair_odds")]
@@ -108,6 +135,12 @@ def side_card(name: str, team_id: Optional[str], group: str, ladder: Iterable[di
         "venue": group,
         "pick": pick,
         "run": run,
+        # THE OTHER HALF OF THE MATCHUP, and the half a run cannot see. A side can be on
+        # a 4+ run and still be walking into an opponent who gives up three a game — the
+        # run is about this team's last five games, against five other opponents. Carried
+        # onto the card so the price can be marked as arguing against the matchup rather
+        # than leaving a reader to open the numbers page to find out.
+        "opp_conceded": ((board_row or {}).get("quick_scan") or {}).get("opp_conceded"),
         # SAID OUT LOUD, never left to the reader to notice. False means the run printed
         # on this card is a record at a DIFFERENT line from the bet printed above it.
         "run_matches_pick": bool(run and pick and run.get("line") == pick.get("line")),

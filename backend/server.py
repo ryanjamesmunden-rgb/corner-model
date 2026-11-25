@@ -5986,6 +5986,12 @@ def _card_factors(team, opp, venue, team_name, opp_name, league_teams=None) -> L
 #: is a review and a month is the whole archive.
 REVIEW_DAYS = 7
 
+#: How many of a team's most recent played games a line's history looks through. The
+#: store keeps 30 days, so this is deeper than the archive and the cap never bites on one
+#: team — it exists so the week card, which asks for sixty teams at once, cannot turn a
+#: price lookup into a scan of everything ever played.
+LINE_HISTORY_SCAN = 40
+
 
 async def _odds_by_fixture(fixture_ids: List[str]) -> Dict[str, Dict[str, float]]:
     """Every stored price for these fixtures, hand-typed and fetched merged.
@@ -6023,7 +6029,7 @@ async def line_history(team_id: str, key: str, limit: int = 6,
         {"$or": [{"home_team_id": team_id}, {"away_team_id": team_id}]},
         {"_id": 0}).to_list(PLAYED_SCAN)
     rows.sort(key=lambda r: str(r.get("date") or ""), reverse=True)
-    rows = rows[:40]
+    rows = rows[:LINE_HISTORY_SCAN]
     odds = await _odds_by_fixture([r["fixture_id"] for r in rows if r.get("fixture_id")])
     games = [{**r, "odds": odds.get(r.get("fixture_id")) or {}} for r in rows]
 
@@ -8654,6 +8660,114 @@ def _week_card_states(home: dict, away: dict, lg: dict, match_odds: Optional[dic
     return states_for
 
 
+#: How many previous priced instances of a line to carry onto a card.
+WEEK_CARD_HISTORY = 5
+
+
+def _history_targets(card: dict) -> List[tuple]:
+    """Every pick on a card that can be given a history, paired with the team to ask about.
+
+    Each side is asked about its own team; the match line is asked about the HOME team,
+    because the history is a walk back through one team's played games and a fixture
+    offers two. Picked here rather than at both call sites so the answer cannot differ
+    between the query and the matching.
+    """
+    out = []
+    home_id = (card.get("home") or {}).get("team_id")
+    for slot in ("home", "away"):
+        side = card.get(slot) or {}
+        pick, tid = side.get("pick"), side.get("team_id")
+        if pick and pick.get("key") and tid:
+            out.append((pick, tid))
+    total = card.get("total")
+    if total and total.get("key") and home_id:
+        out.append((total, home_id))
+    return out
+
+
+async def _attach_line_history(cards: List[dict]) -> int:
+    """What each card's pick did the last few times that same line was priced.
+
+    WHY THIS IS DONE HERE AND NOT PER ROW IN THE BROWSER. /line-history answers for one
+    team and one key; a day is thirty cards and sixty sides, which is sixty requests to
+    draw one line of text each. This is the same join in two queries — the played games
+    for every team on the card, and the stored prices for those games — and then pure
+    matching.
+
+    THE EXACT KEY, NOT A SIMILAR ONE. home_over_4.5 and away_over_4.5 are different bets
+    and a team is not always at home, so each side is asked about the key ITS OWN pick is
+    on. A side whose pick is a match total or a both-teams line is asked about that key,
+    which is right: the question is what this line has done, not what this team has done.
+
+    THE MATCH LINE IS ASKED ABOUT THE HOME TEAM'S GAMES, because a history has to be
+    scoped to somebody and the fixture gives two candidates. That makes "Match 11+ landed
+    last time at 1.83" a fact about the home side's last games, which is a narrower claim
+    than it looks — see `_history_targets`, where the choice is made once.
+
+    Mutates the picks in place and returns how many got a history, so the caller can say
+    so rather than a reader having to infer it from the rows.
+    """
+    wanted: Dict[str, set] = {}
+    for c in cards:
+        for pick, tid in _history_targets(c):
+            wanted.setdefault(tid, set()).add(pick["key"])
+    if not wanted:
+        return 0
+
+    ids = list(wanted)
+    played = await db.fixtures_played.find(
+        {"$or": [{"home_team_id": {"$in": ids}}, {"away_team_id": {"$in": ids}}]},
+        {"_id": 0}).to_list(PLAYED_SCAN)
+    if not played:
+        return 0
+    played.sort(key=lambda r: str(r.get("date") or ""), reverse=True)
+
+    # NEWEST FEW PER TEAM, not every game ever played by sixty teams. The walk stops at
+    # WEEK_CARD_HISTORY matches, so the only thing a longer list buys is a bigger odds
+    # query — and that query is the expensive half of this. The same depth /line-history
+    # reads, so the two cannot disagree about what "last time" was.
+    by_team: Dict[str, List[dict]] = {}
+    for r in played:
+        for tid in (r.get("home_team_id"), r.get("away_team_id")):
+            if tid in wanted and len(by_team.setdefault(tid, [])) < LINE_HISTORY_SCAN:
+                by_team[tid].append(r)
+
+    odds = await _odds_by_fixture(
+        sorted({r["fixture_id"] for rows in by_team.values() for r in rows
+                if r.get("fixture_id")}))
+    by_team = {tid: [{**r, "odds": odds.get(r.get("fixture_id")) or {}} for r in rows]
+               for tid, rows in by_team.items()}
+
+    done = 0
+    for c in cards:
+        for pick, tid in _history_targets(c):
+            games = by_team.get(tid) or []
+            found, hits, rest = [], 0, list(games)
+            while rest and len(found) < WEEK_CARD_HISTORY:
+                got = price_review.last_time(pick["key"], rest)
+                if not got:
+                    break
+                # WHICH SIDE OF THAT GAME THIS TEAM WAS ON, the same note /line-history
+                # carries: a run of home_over_4.5 results is a run of HOME games, and a
+                # reader comparing it with an away fixture has to be able to see that.
+                got["was_home"] = next(
+                    (g.get("home_team_id") == tid for g in rest
+                     if g.get("fixture_id") == got["fixture_id"]), None)
+                found.append(got)
+                if got["result"] == price_review.WIN:
+                    hits += 1
+                # Continue from AFTER the game just matched, so the same one cannot be
+                # reported twice and the walk always terminates.
+                at = next((i for i, g in enumerate(rest)
+                           if g.get("fixture_id") == got["fixture_id"]), None)
+                rest = rest[at + 1:] if at is not None else []
+            if found:
+                pick["history"] = {"last": found[0], "games": found,
+                                   "found": len(found), "landed": hits}
+                done += 1
+    return done
+
+
 async def _played_cards(want_day: str, league_id: Optional[str],
                         board_rows: List[dict]) -> List[dict]:
     """Cards for the games on `want_day` that have already been played.
@@ -8923,6 +9037,11 @@ async def week_card_board(day: Optional[str] = None, league_id: Optional[str] = 
                  if any((c[s].get("pick") or {}).get("book_odds")
                         for s in ("home", "away")) or (c.get("total") or {}).get("book_odds")]
 
+    # THE MEMORY ON EACH PRICE. A board showing "5+ @ 1.80" and nothing else has always
+    # left the first question anybody asks — did this land last time, and at what —
+    # answerable only from memory, while the site held the answer all along.
+    with_history = await _attach_line_history(cards)
+
     settled = [c for c in cards if c.get("settled")]
     out = {"day": want_day, "cards": cards, "fixtures": len(cards),
            # WHAT WAS LEFT OUT, because a short list after a filter and a quiet day look
@@ -8935,6 +9054,7 @@ async def week_card_board(day: Optional[str] = None, league_id: Optional[str] = 
            "played": sum(1 for c in cards if c.get("result")),
            "picks_settled": sum(c.get("settled") or 0 for c in settled),
            "picks_landed": sum(c.get("landed") or 0 for c in settled),
+           "with_history": with_history,
            "max_ahead": WEEK_CARD_MAX_AHEAD, "keep_days": PLAYED_KEEP_DAYS}
     if response is not None:
         response.headers["X-Week-Cards"] = str(len(cards))

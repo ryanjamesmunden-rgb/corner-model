@@ -4,6 +4,7 @@ import { CalendarDays, ChevronRight, Loader2, TriangleAlert } from "lucide-react
 import { api } from "@/lib/api";
 import { withFlag } from "@/lib/countryFlag";
 import { kickoffTime } from "@/lib/kickoff";
+import { historyLines, lastTimeShort, lastTimeText } from "@/lib/review";
 import {
   boardLabel, cardNote, dayStrip, lineLabel, PICK_RESULT, priceOf, recordOf,
   recordText, resultText, STATE_LABEL, STATE_TONE, warningsOf,
@@ -28,6 +29,12 @@ import {
  * nested borders, and the one number you are actually being offered lost in the middle.
  * Now the price is the headline, the record sits under it in green, and everything else
  * is either small or behind the detail toggle.
+ *
+ * AND EVERY PRICE NOW CARRIES ITS OWN MEMORY. "6+ at 1.73" with a record beside it still
+ * left the first question anybody asks — did this line land last time, and at what —
+ * answerable only from memory, while the site held the answer all along: the same key was
+ * priced on this team's last games and those games have been played and settled. The
+ * backend joins it on; the card prints one muted sentence per bet.
  *
  * TWO LAYOUTS, chosen with `?layout=`. They are the same data and the same components;
  * only the arrangement differs. See the note above LAYOUTS.
@@ -114,6 +121,31 @@ function Record({ side }) {
   );
 }
 
+/**
+ * What this same line did the last few times it was priced.
+ *
+ * THE FIRST QUESTION ANYBODY ASKS of a price, and until now the only place to ask it was
+ * memory. The board held the answer the whole time: the line was priced on this team's
+ * last games and those games have since been played and settled.
+ *
+ * DRAWN MUTED, NOT GREEN, even though it IS a record of this exact bet. Green on this
+ * screen means one thing — the run above backs the price beside it — and a second green
+ * sentence under it halves the meaning of both. The word carries the result instead.
+ *
+ * NOTHING AT ALL when the line has never been priced on this team: never priced and never
+ * landed are different facts, and a blank is read as the second.
+ */
+function LastTime({ pick, short = false }) {
+  const text = short ? lastTimeShort(pick?.history) : lastTimeText(pick?.history);
+  if (!text) return null;
+  return (
+    <div className="max-w-[15rem] truncate text-xs text-muted-foreground"
+      title={historyLines(pick.history).join("\n")}>
+      {text}
+    </div>
+  );
+}
+
 /** Everything that is not the bet: boards, game state, warnings. Folded away by default. */
 function Detail({ card }) {
   const warnings = warningsOf(card);
@@ -182,6 +214,7 @@ function RowSide({ side, leagueId }) {
           {withFlag(leagueId, side.name)}
         </div>
         <Record side={side} />
+        <LastTime pick={side.pick} />
       </div>
       <div className="flex shrink-0 flex-col items-end gap-0.5">
         <span className="flex items-baseline gap-1.5">
@@ -207,11 +240,13 @@ function RowsLayout({ cards, navigate }) {
             <RowSide side={c.away} leagueId={c.league_id} />
           </div>
           {c.total && (
-            <div className="flex items-baseline gap-1.5 text-xs text-muted-foreground">
+            <div className="flex flex-wrap items-baseline gap-x-1.5 text-xs
+              text-muted-foreground">
               <span>Match</span>
               <Line pick={c.total} />
               <Price pick={c.total} />
               <Outcome pick={c.total} />
+              <LastTime pick={c.total} />
             </div>
           )}
           {open[c.fixture_id] && <Detail card={c} />}
@@ -258,15 +293,24 @@ function TableLayout({ cards, navigate }) {
                     <td className={cell}>
                       <div className="font-medium">{withFlag(c.league_id, s?.name)}</div>
                       <Record side={s} />
+                      <LastTime pick={s?.pick} short />
                     </td>
                     <td className={`${cell} whitespace-nowrap text-right`}>
                       <Line pick={s?.pick} /> <Price pick={s?.pick} />
                     </td>
                   </Fragment>
                 ))}
-                <td className={`${cell} whitespace-nowrap text-right`}>
-                  {c.total ? <><Line pick={c.total} /> <Price pick={c.total} /></>
-                    : <span className="text-muted-foreground">—</span>}
+                <td className={`${cell} text-right`}>
+                  {c.total ? (
+                    <>
+                      <div className="whitespace-nowrap">
+                        <Line pick={c.total} /> <Price pick={c.total} />
+                      </div>
+                      <div className="flex justify-end">
+                        <LastTime pick={c.total} short />
+                      </div>
+                    </>
+                  ) : <span className="text-muted-foreground">—</span>}
                 </td>
                 <td className={`${cell} whitespace-nowrap text-right text-xs`}>
                   <button type="button"
@@ -414,7 +458,9 @@ export default function WeekCard() {
         A figure in green is that side's record <em>at the line priced beside it</em>. A
         grey one names its own line first — it is the side's form, not evidence for this
         bet. A grey <em>fair</em> price is the model's number, not one a book is offering.
-        Game state is a label to read beside the price, not a measured edge.
+        A <em>Last</em> line is what this same bet did the last few times it was priced on
+        this team — hover it for the games. Game state is a label to read beside the
+        price, not a measured edge.
       </p>
     </div>
   );

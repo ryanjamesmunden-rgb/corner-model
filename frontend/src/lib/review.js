@@ -137,3 +137,44 @@ export const lastTimeText = (hist) => {
   const run = found > 1 ? ` · ${landed} of the last ${found}` : "";
   return `Last time ${word}${odds === null ? "" : ` at ${odds.toFixed(2)}`}${run}`;
 };
+
+/**
+ * The same fact in a column's worth of space: "Last 1.62 landed".
+ *
+ * FOR THE TABLE LAYOUT, where the long form is not a style choice. A table shares column
+ * widths down the page, so one extra sentence in the team column widens every row and
+ * pushes the controls off the right edge — the sentence that explains the price ends up
+ * hiding the buttons. This keeps the two facts that matter (the price it was offered at
+ * and whether it came in) at the width of the record line above it; the run and the
+ * individual games are in the tooltip, which the long form also relies on.
+ */
+export const lastTimeShort = (hist) => {
+  const last = hist?.last;
+  if (!last) return null;
+  const odds = num(last.book_odds);
+  return `Last ${odds === null ? "" : `${odds.toFixed(2)} `}${RESULT_WORD[last.result]
+    || last.result || ""}`.trim();
+};
+
+/**
+ * Each game behind that phrase, one short line apiece: "22 Nov · 7 · 1.62 landed".
+ *
+ * WHY THE VALUE AND NOT THE SCORELINE. The figure the line was settled on is the only one
+ * that explains the result — a 6+ team line graded on seven corners is a fact a reader can
+ * check, where "7-2" invites them to work out which half of it mattered.
+ *
+ * `was_home` is printed as H or A because a run of home_over_5.5 results is a run of HOME
+ * games, and the card it is shown on may have this team the other way round.
+ */
+export const historyLines = (hist) => (hist?.games || []).map((g) => {
+  const when = g.date
+    ? new Intl.DateTimeFormat("en-GB", { timeZone: "Europe/London", day: "numeric",
+                                         month: "short" }).format(new Date(g.date))
+    : "";
+  const venue = g.was_home === true ? " H" : g.was_home === false ? " A" : "";
+  const value = num(g.value);
+  const odds = num(g.book_odds);
+  return [`${when}${venue}`, value === null ? null : String(value),
+          odds === null ? null : odds.toFixed(2),
+          RESULT_WORD[g.result] || g.result || ""].filter(Boolean).join(" · ");
+});

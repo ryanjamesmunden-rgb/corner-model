@@ -202,7 +202,9 @@ function BoardBreakdown() {
         <p className="text-xs text-muted-foreground mt-1 leading-relaxed max-w-2xl">
           The same frozen claims, split by which board made them. The headline above is
           the streak board alone. Each line counts one claim per fixture, however many
-          mornings it was frozen on.
+          mornings it was frozen on. Combined is not a fourth source — it is the games
+          that sat on two of the other three, so its rows are counted in theirs as well
+          and the lines do not add up to a total.
         </p>
       </div>
       <div className="divide-y divide-border">

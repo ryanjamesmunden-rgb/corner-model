@@ -497,6 +497,24 @@ export const GAME_FIRE_RUN = 8;
 export const GAME_MIN_PROB = 50;
 
 /**
+ * The shortest run a game post will carry: five straight.
+ *
+ * IT WAS TWO, and two is not a run — it is two games, which any side in the database has
+ * had at some point this season at some line. On the board of 23 Nov 2026 the shortest
+ * runs were exactly the posts with nothing behind them: a "3+ in every game, 2 in a row"
+ * recommending a 6+ bet that had landed twice in five.
+ *
+ * A FLOOR ON THE RUN, NOT ON THE LINE, and the two are different filters. The line's
+ * record is a separate question the board answers elsewhere (5+/6+ is +48.5u over 90 and
+ * 4+ and below is -12.9u over 29); this one is about whether the sentence "N in a row"
+ * is worth printing at all. Five is where it starts being a claim.
+ *
+ * Passed through rather than read directly by the pickers, so a caller can relax it
+ * deliberately — social_draft takes --min-run — rather than by editing a constant.
+ */
+export const GAME_MIN_RUN = 5;
+
+/**
  * The one row worth posting today.
  *
  * Prefers lines the model gives an even chance or better, ranked by how long the run is.
@@ -528,7 +546,8 @@ export const GAME_MIN_PROB = 50;
  * least likely to exist. The `basis` is returned so a caller can say which of the two it
  * is looking at rather than guess.
  */
-export const pickGameDetailed = (rows = [], minProb = GAME_MIN_PROB) => {
+export const pickGameDetailed = (rows = [], minProb = GAME_MIN_PROB,
+                                 minRun = GAME_MIN_RUN) => {
   const run = (r) => Number(r?.streak?.length) || 0;
   const prob = (r) => Number(r?.projection?.prob ?? 0);
   // The best edge on the row: its own line, or the 5+/6+ rung the post will quote.
@@ -543,7 +562,7 @@ export const pickGameDetailed = (rows = [], minProb = GAME_MIN_PROB) => {
   // NO PROMOTED OR RELEGATED SIDE, on either team. Their numbers come from a different
   // division or a thin new one, so the model's price on the game is the weakest it
   // makes, and the public post is the last place to lead with it.
-  const live = (rows || []).filter((r) => r?.next_fixture?.date && run(r) >= 2
+  const live = (rows || []).filter((r) => r?.next_fixture?.date && run(r) >= minRun
     && !r.league_change && !r.opponent_league_change);
   if (!live.length) return { row: null, basis: "none" };
 
@@ -565,8 +584,85 @@ export const pickGameDetailed = (rows = [], minProb = GAME_MIN_PROB) => {
 };
 
 /** The row alone, for callers that do not care how it was chosen. */
-export const pickGame = (rows = [], minProb = GAME_MIN_PROB) =>
-  pickGameDetailed(rows, minProb).row;
+export const pickGame = (rows = [], minProb = GAME_MIN_PROB, minRun = GAME_MIN_RUN) =>
+  pickGameDetailed(rows, minProb, minRun).row;
+
+/**
+ * How often this side has actually cleared the line a post is about to QUOTE.
+ *
+ * WHY THIS EXISTS. The run in a row (`line_label`, `streak.length`) and the rung a post
+ * quotes (see pricedRung) are chosen independently, and on a real board they disagree
+ * more often than not: three of five positive-EV candidates on 23 Nov 2026 described a
+ * 3+ run and recommended a 6+ bet, whose records at the quoted line were 2/5, 1/5 and
+ * 2/5. The post read as a run supporting the bet; it was a run at a line nobody was
+ * being asked to back. This counts the right line, from the same `recent` games the
+ * board already carries.
+ *
+ * Returns `{ hits, of }`, or null when there is nothing to count.
+ */
+export const rungRecord = (row = {}, line = null, games = 5, subject = "team") => {
+  // `Number(null)` is 0 and 0 is finite, so a missing line counted every game as clearing
+  // it and reported a perfect record. A line that is not a number is no line.
+  if (line === null || line === undefined || line === "") return null;
+  const want = Number(line);
+  if (!Number.isFinite(want)) return null;
+
+  // EACH SUBJECT COUNTS A DIFFERENT NUMBER OUT OF THE SAME GAMES, and counting the wrong
+  // one is the mismatch this function exists to prevent, one level further in. `total` is
+  // the match total of that game; the opponent's own count is the total minus ours, which
+  // is why a both-teams record needs no extra data.
+  const rows = (row?.recent || []).slice(0, Math.max(1, games));
+  const value = (g) => {
+    const mine = Number(g?.corners ?? g?.value);
+    const total = Number(g?.total);
+    if (subject === "match") return total;
+    if (subject === "both") {
+      if (!Number.isFinite(mine) || !Number.isFinite(total)) return NaN;
+      return Math.min(mine, total - mine);     // the weaker side decides "both"
+    }
+    return mine;
+  };
+  const counts = rows.map(value).filter(Number.isFinite);
+  if (!counts.length) return null;
+  return { hits: counts.filter((c) => c >= want).length, of: counts.length };
+};
+
+/**
+ * The best N games to post, one per fixture.
+ *
+ * ONE PER FIXTURE, because both sides of the same game can carry a run and posting both
+ * is posting the same match twice — and worse, often as two bets that cannot both be the
+ * reason to look at it. The better side by edge wins.
+ *
+ * VALUE ONLY. `pickGameDetailed` falls back to the model's confidence when no real price
+ * exists, which is right for "today's one game" and wrong here: a caller asking for
+ * several is asking for several PRICES, and a confidence ranking padded onto the end of
+ * a value list would be indistinguishable from it once posted. Fewer than asked for is
+ * the honest answer, so the count returned may be short.
+ */
+export const pickGamesValue = (rows = [], count = 3, minRun = GAME_MIN_RUN) => {
+  const ev = (r) => {
+    const own = Number(r?.projection?.ev);
+    const rung = Number(pricedRung(r)?.ev);
+    const both = [own, rung].filter(Number.isFinite);
+    return both.length ? Math.max(...both) : NaN;
+  };
+  const live = (rows || []).filter(
+    (r) => r?.next_fixture?.date && (Number(r?.streak?.length) || 0) >= minRun
+      && !r.league_change && !r.opponent_league_change
+      && isRealPrice(r?.projection?.odds_source) && ev(r) > 0);
+
+  const best = new Map();
+  for (const r of live) {
+    const fid = r.next_fixture.fixture_id || `${r.name}-${r.next_fixture.date}`;
+    const held = best.get(fid);
+    if (!held || ev(r) > ev(held)) best.set(fid, r);
+  }
+  return [...best.values()]
+    .sort((a, b) => (ev(b) - ev(a))
+      || ((Number(b?.streak?.length) || 0) - (Number(a?.streak?.length) || 0)))
+    .slice(0, Math.max(1, count));
+};
 
 /**
  * That game, in three lines:
@@ -620,11 +716,30 @@ export const gameShare = ({ row = {}, site = "", now = new Date() } = {}) => () 
   if (!home || !away || !row.name) return "";
 
   const lines = [];
+  const rung = pricedRung(row);
 
-  // 1. THE RUN, as a sentence somebody would actually say about a team.
+  // 1. THE EVIDENCE, AND IT IS ALWAYS ABOUT THE LINE BEING QUOTED.
+  //
+  // THE BUG THIS REPLACES. The run sentence used `row.line_label` and the price line used
+  // the rung's own label, chosen independently — so a post could read "have won 3+ corners
+  // in every game, 3 in a row" and then recommend 6+ at 4.20, and every reader takes the
+  // first sentence as the reason for the second. On the board of 23 Nov 2026 three of the
+  // five positive-EV candidates were that shape, with records at the line actually being
+  // recommended of 2/5, 1/5 and 2/5.
+  //
+  // So when the quoted rung is the line the run is on, the run sentence stands as it was —
+  // it is the strongest thing this format says and it is true. When it is not, the post
+  // states the side's record AT THE QUOTED LINE instead, which is weaker, shorter and
+  // about the bet. A bet whose own record cannot carry a sentence is a bet not worth
+  // posting, and that now shows rather than being dressed in another line's run.
   const run = Number(row.streak?.length) || 0;
-  if (run >= 2 && row.line_label) {
-    const flag = flagFor(row.league_id) || "";
+  const flag = flagFor(row.league_id) || "";
+  // The row's own line, from the number where there is one and the label otherwise — a
+  // row carrying only "4+" must not read as "no line" and so match every rung.
+  const ownLine = Number.isFinite(Number(row.line))
+    ? Number(row.line) : parseFloat(String(row.line_label || "").replace("+", ""));
+  const sameLine = rung ? Number(rung.line) === ownLine : true;
+  if (sameLine && run >= 2 && row.line_label) {
     const since = runSince(row.streak?.start_date, now);
     const venue = row.side === "home" ? "home game" : row.side === "away" ? "away game" : "game";
     // "AT LEAST" ONLY WHEN IT IS TRUE. When the run covers every game we hold for the
@@ -637,17 +752,41 @@ export const gameShare = ({ row = {}, site = "", now = new Date() } = {}) => () 
     lines.push((capped
       ? `${head} at least ${run} in a row. Our record of them starts there, so it may well be longer...`
       : `${head} ${run} in a row.`).replace(/\s+/g, " ").trim());
+  } else if (rung) {
+    // THE SENTENCE HAS TO BE ABOUT THE SUBJECT THE PRICE IS ON. "Bodo have won 11+
+    // corners" is not what an 11+ MATCH TOTAL means, and a reader cannot tell the two
+    // apart from a number alone.
+    const subject = rung.subject || "team";
+    const rec = rungRecord(row, rung.line, 5, subject);
+    if (rec) {
+      const said = subject === "match"
+        ? `${flag} ${row.name}'s games have had ${rung.label} corners in `
+          + `${rec.hits} of their last ${rec.of}.`
+        : subject === "both"
+        ? `${flag} Both teams have won ${rung.label} corners in `
+          + `${rec.hits} of ${row.name}'s last ${rec.of}.`
+        : `${flag} ${row.name} have won ${rung.label} corners in `
+          + `${rec.hits} of their last ${rec.of}.`;
+      lines.push(said.trimEnd());
+    }
   }
 
   // 2. THE PRICE: the bookmaker's, never the model's. The model's number is the product
   // and stays off the post; a book's price is public and is what makes someone click.
-  const rung = pricedRung(row);
   const where = fx.is_home ? `at home to ${fx.opponent}` : `away to ${fx.opponent}`;
   const when = dayWord(fx.date, now);
   if (rung) {
-    lines.push(`📈 They're priced @ ${rung.book_odds.toFixed(2)}`
-      + (rung.book_name ? ` via ${rung.book_name}` : "")
-      + ` to get ${rung.label} corners ${where} ${when}`.trimEnd());
+    // ONE SENTENCE PER SUBJECT, because "priced @ 2.10 to get 11+ corners" reads as the
+    // team's own eleven. The venue clause only belongs on the team's line: a match total
+    // and a both-teams line are not "away to" anybody.
+    const at = `@ ${rung.book_odds.toFixed(2)}`
+      + (rung.book_name ? ` via ${rung.book_name}` : "");
+    const subject = rung.subject || "team";
+    lines.push(subject === "match"
+      ? `📈 ${rung.label} corners in the match is priced ${at} — ${where} ${when}`.trimEnd()
+      : subject === "both"
+      ? `📈 Both teams ${rung.label} corners is priced ${at} — ${where} ${when}`.trimEnd()
+      : `📈 They're priced ${at} to get ${rung.label} corners ${where} ${when}`.trimEnd());
   }
 
   // 3. THE GAME AND THE LINK.
@@ -666,13 +805,29 @@ export const gameShare = ({ row = {}, site = "", now = new Date() } = {}) => () 
  * line people click and "@ 1.25 to get 5+" is not. Only real prices: a demo price is the
  * model's own number with noise on it, and quoting one as a bookmaker's would be false.
  */
-export const pricedRung = (row = {}) => {
+/**
+ * The subjects a post can both WORD and EVIDENCE.
+ *
+ * The ladder now carries the opponent's own corners too, which is a real bet and belongs
+ * on the site — but not in a post built around "X have won N+ corners". The row holds no
+ * record of the OPPONENT's games, so a post quoting their line would have a price and
+ * nothing behind it, which is exactly the shape that has just been taken out of here.
+ */
+export const POSTABLE_SUBJECTS = ["team", "match", "both"];
+
+export const pricedRung = (row = {}, subjects = POSTABLE_SUBJECTS) => {
   if (!isRealPrice(row?.projection?.odds_source)) return null;
-  const priced = (row?.projection?.ladder || []).filter((r) => Number(r?.book_odds) > 1);
+  const ok = (r) => !r?.subject || subjects.includes(r.subject);
+  const priced = (row?.projection?.ladder || [])
+    .filter((r) => Number(r?.book_odds) > 1 && ok(r));
   if (!priced.length) return null;
   const value = priced.filter((r) => Number(r.ev) > 0);
   if (value.length) return [...value].sort((a, b) => b.ev - a.ev)[0];
-  return [...priced].sort((a, b) => b.line - a.line)[0];
+  // NO EDGE ANYWHERE: fall back to the longest line the post can carry, but within the
+  // team's own corners first. Sorting every subject together by `line` would rank a
+  // 12+ match total above a 6+ team line as though they were the same ladder.
+  const own = priced.filter((r) => !r.subject || r.subject === "team");
+  return [...(own.length ? own : priced)].sort((a, b) => b.line - a.line)[0];
 };
 
 /** "4 May", or "4 May 2025" when the run began in an earlier year. UK calendar. */

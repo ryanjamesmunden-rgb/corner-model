@@ -79,6 +79,15 @@ AHEAD_LIMIT = 120
 STALE_HOURS = 12
 
 
+def _iso(value):
+    """An ISO timestamp as an aware datetime, or None. Never raises on stored junk."""
+    try:
+        dt = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    return dt.replace(tzinfo=timezone.utc) if dt.tzinfo is None else dt
+
+
 def _now():
     return datetime.now(timezone.utc)
 
@@ -106,22 +115,70 @@ async def upcoming(db, days: int, leagues, limit: int):
     return out
 
 
+#: How long to leave a fixture whose corner market has not opened before asking again.
+#:
+#: WITHOUT THIS, SCANNING OFTEN IS UNAFFORDABLE. An unopened market leaves no trace, so
+#: every run re-asks every one of them at a call apiece — 72 of last night's 120 calls
+#: went on markets that were not open, and running four times a day would simply have
+#: spent that four times over.
+#:
+#: TIGHTER NEAR KICK-OFF, because that is when books actually open corner markets. And a
+#: fixture asked repeatedly with nothing to show backs off: some competitions are never
+#: quoted at all, and those would otherwise burn calls every run for a week.
+RECHECK_GIVE_UP = 4
+
+
+def recheck_after_hours(hours_to_kickoff: float, checks: int = 0) -> float:
+    if hours_to_kickoff <= 24:
+        return 2
+    if checks >= RECHECK_GIVE_UP:
+        return 24
+    if hours_to_kickoff <= 48:
+        return 6
+    if hours_to_kickoff <= 96:
+        return 12
+    return 24
+
+
+async def _stamp_checked(db, fx, api_fid):
+    """Record that we looked, even though there was nothing to store.
+
+    An unopened market used to write nothing at all, so the next run could not tell a
+    fixture nobody had asked about from one asked an hour ago. The document stays with an
+    empty `odds` map, which every reader already treats as unpriced — see the note in
+    unpriced_ahead — so this adds a timestamp and changes nothing else.
+    """
+    await db.odds_feed.update_one(
+        {"fixture_id": fx["fixture_id"]},
+        {"$set": {"checked_at": _now().isoformat()},
+         "$inc": {"checks": 1},
+         "$setOnInsert": {"fixture_id": fx["fixture_id"], "api_fixture_id": api_fid,
+                          "odds": {}}},
+        upsert=True)
+
+
 async def fetch_one(hc, db, fx, api_fid, write=True):
     """One fixture: one API call, one upsert. Returns a short result line."""
     entry = first_entry(await af_get(hc, "/odds", {"fixture": api_fid}))
     if entry is None:
+        if write:
+            await _stamp_checked(db, fx, api_fid)
         return {"fixture_id": fx["fixture_id"], "priced": 0, "books": 0,
                 "note": "no bookmaker quotes this fixture yet"}
     doc = feed_doc(fx["fixture_id"], api_fid, entry, _now().isoformat())
+    # The stamp rides along, so a fixture quoted with no USABLE corner line — a doc with
+    # an empty odds map — is on the same back-off as one nobody quoted at all.
+    doc["checked_at"] = _now().isoformat()
     if write:
         await db.odds_feed.update_one({"fixture_id": doc["fixture_id"]},
-                                      {"$set": doc}, upsert=True)
+                                      {"$set": doc, "$inc": {"checks": 1}}, upsert=True)
     return {"fixture_id": fx["fixture_id"], "priced": len(doc["odds"]),
             "books": len(doc["bookmakers"]), "skipped": doc["skipped_total"],
             "keys": sorted(doc["odds"])}
 
 
-async def unpriced_ahead(db, days: int, from_days: int, leagues, limit: int):
+async def unpriced_ahead(db, days: int, from_days: int, leagues, limit: int,
+                         prefer=None):
     """Fixtures further out than the hourly pass reaches that have NO price yet.
 
     THE FILTER IS WHAT MAKES THIS AFFORDABLE. `upcoming` takes the soonest N whatever
@@ -139,6 +196,16 @@ async def unpriced_ahead(db, days: int, from_days: int, leagues, limit: int):
     quotes the fixture, but a quote carrying no usable corner line does write a doc with
     an empty `odds` map. Treating that as "done" would mean never looking again at exactly
     the fixtures whose market had not opened yet, which is the thing this exists to catch.
+
+    `prefer` IS WHAT THE BUDGET IS FOR. Sorted by date alone the call ceiling is spent on
+    whatever kicks off soonest, which on a Monday is Tuesday's card — and the Saturday
+    fixtures carrying the week's best runs are never reached at all. A run on 23 Nov 2026
+    made 120 calls, priced 48, found 72 markets not open, reported `capped: true`, and
+    left every one of that weekend's twenty streak picks without a price.
+
+    So fixtures the board would actually recommend go first. It costs nothing: the same
+    ceiling, aimed at the games somebody is going to want a price for. Everything else
+    follows in date order exactly as before.
     """
     now = _now()
     lo = (now + timedelta(days=from_days)).isoformat()
@@ -149,27 +216,50 @@ async def unpriced_ahead(db, days: int, from_days: int, leagues, limit: int):
     rows = await db.fixtures.find(q, {"_id": 0}).sort("date", 1).to_list(limit * 6)
     if not rows:
         return [], 0
+    wanted = set(prefer or ())
+    if wanted:
+        # Stable: the preferred fixtures keep their own date order, and so does the rest.
+        rows.sort(key=lambda fx: 0 if fx.get("fixture_id") in wanted else 1)
     ids = [fx["fixture_id"] for fx in rows]
-    have = set()
-    async for doc in db.odds_feed.find({"fixture_id": {"$in": ids}},
-                                       {"_id": 0, "fixture_id": 1, "odds": 1}):
+    have, looked = set(), {}
+    async for doc in db.odds_feed.find(
+            {"fixture_id": {"$in": ids}},
+            {"_id": 0, "fixture_id": 1, "odds": 1, "checked_at": 1, "checks": 1}):
         if doc.get("odds"):
             have.add(doc["fixture_id"])
-    out = []
+        elif doc.get("checked_at"):
+            looked[doc["fixture_id"]] = (doc["checked_at"], doc.get("checks") or 0)
+    out, taken_preferred, skipped_recent = [], 0, 0
     for fx in rows:
         if fx["fixture_id"] in have:
             continue
+        # ASKED RECENTLY AND STILL NOTHING: leave it. The market has not opened, and the
+        # whole point of the stamp is that a second look an hour later costs a call and
+        # returns the same empty answer. recheck_after_hours decides when it is due.
+        seen = looked.get(fx["fixture_id"])
+        if seen:
+            when, checks = seen
+            last = _iso(when)
+            ko = _iso(fx.get("date"))
+            if last is not None:
+                hours_out = ((ko - now).total_seconds() / 3600) if ko else 999
+                if (now - last).total_seconds() / 3600 < recheck_after_hours(hours_out,
+                                                                            checks):
+                    skipped_recent += 1
+                    continue
         api_fid = fx.get("api_fixture_id") or str(fx.get("fixture_id", "")).split("-")[-1]
         if not str(api_fid).isdigit():
             continue
         out.append((fx, int(api_fid)))
+        if fx["fixture_id"] in wanted:
+            taken_preferred += 1
         if len(out) >= limit:
             break
-    return out, len(have)
+    return out, len(have), taken_preferred, skipped_recent
 
 
 async def fetch_ahead(db, days: int = AHEAD_DAYS, from_days: int = AHEAD_FROM_DAYS,
-                      limit: int = AHEAD_LIMIT, leagues=None) -> dict:
+                      limit: int = AHEAD_LIMIT, leagues=None, prefer=None) -> dict:
     """Price the week ahead, once, as each market opens.
 
     WHAT THIS BUYS. Until it existed the board could not show a weekend game until the
@@ -179,9 +269,16 @@ async def fetch_ahead(db, days: int = AHEAD_DAYS, from_days: int = AHEAD_FROM_DA
     `skipped_priced` is reported because it is the number that says the rule is working:
     it should climb through the week while `calls` falls towards nothing.
     """
-    todo, already = await unpriced_ahead(db, days, from_days, leagues, limit)
+    todo, already, preferred, recent = await unpriced_ahead(db, days, from_days, leagues,
+                                                           limit, prefer)
     out = {"fixtures": len(todo), "calls": 0, "priced": 0, "unpriced": 0, "errors": 0,
            "lines": 0, "capped": len(todo) >= limit, "skipped_priced": already,
+           # HOW MANY OF THE CALLS WENT TO A GAME THE BOARD WOULD RECOMMEND. With a ceiling
+           # that is being hit, this is the number that says the budget is aimed.
+           "preferred": preferred, "preferred_offered": len(prefer or ()),
+           # NOT A SKIP TO WORRY ABOUT: asked recently, market still shut. This is what
+           # makes running several times a day cost little more than running once.
+           "skipped_recent": recent,
            "from_days": from_days, "days": days}
     if not todo:
         return out

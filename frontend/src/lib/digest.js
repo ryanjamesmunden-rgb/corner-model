@@ -256,6 +256,80 @@ export const digestRow = (row, { site = "", dayTime = null } = {}) => {
 
 const RULE = "━".repeat(3);
 
+/** The boards, named the way the channel names them rather than the way the API keys do. */
+const COMBINED_BOARD_LABEL = { quick_scan: "Quick Scan", streaks: "Streaks",
+                               perfect_games: "Perfect Games" };
+
+/**
+ * How many agreement rows the digest carries. Four, because each is a line and a half and
+ * the message is already twelve streak rows long before this is added.
+ */
+export const DIGEST_COMBINED_CAP = 4;
+
+/** "Cambridge United 6+ v Stockport · Quick Scan + Streaks · 2.10 (+26%)" */
+export const combinedLine = (row, { site = "", dayTime = null } = {}) => {
+  const nf = row?.next_fixture || {};
+  const best = row?.best || {};
+  const name = row?.name || "?";
+  const label = best.label || (best.line ? `${best.line}+` : "");
+  // THE CLAIM ONLY. fixtureOf supplies the opponent, the venue and the kick-off on the
+  // next line, exactly as digestRow does — naming the opponent here too printed it twice.
+  const head = [`${flagBullet(row?.league_id)} ${name}`, label].filter(Boolean).join(" ");
+  const names = (row?.boards || []).map((b) => COMBINED_BOARD_LABEL[b] || b);
+  const bits = [];
+  if (names.length) bits.push(names.join(" + "));
+  const run = row?.streak;
+  if (run && num(run.hits) !== null && num(run.settled)) {
+    bits.push(`${run.hits}/${run.settled}` + (num(run.floor) !== null ? `, floor ${run.floor}` : ""));
+  }
+  const book = num(best.book_odds);
+  const ev = num(best.ev);
+  if (book !== null && ev !== null) bits.push(`${book.toFixed(2)} (${ev > 0 ? "+" : ""}${ev.toFixed(0)}%)`);
+  else if (num(best.fair_odds) !== null) bits.push(`fair ${num(best.fair_odds).toFixed(2)}, no price yet`);
+  const lines = [head];
+  const fx = fixtureOf(row, dayTime);
+  if (fx) lines.push(`   ${fx}`);
+  if (bits.length) lines.push(`   ${bits.join(" · ")}`);
+  // THE FIRST CAVEAT, because the bot's own card prints these and a row that reads as
+  // trustworthy here and flagged there is worse than either. One line, not the two the
+  // card allows: the ones combine_boards raises are ordered worst-first, and the block
+  // is four rows deep already. The missing-price warning is skipped — "no price yet" is
+  // on the line above it, and saying it twice buys nothing.
+  const caveat = (row?.warnings || [])
+    .find((w) => typeof w === "string" && !w.startsWith("no bookmaker price"));
+  if (caveat) lines.push(`   ⚠ ${caveat}`);
+  if (site && nf.fixture_id) lines.push(`   ↳ ${site}/fixture/${nf.fixture_id}`);
+  return lines.join("\n");
+};
+
+/**
+ * The agreement block: teams on two or three boards for the same fixture.
+ *
+ * WHY IT IS A BLOCK AND NOT A BAND. The bands rank the STREAK board by how proven the run
+ * is; these rows come from three boards at once and most of them are not streak rows at
+ * all, so dropping them into a band would be ranking them by a figure half of them do not
+ * have. It sits after the bands as its own short section.
+ *
+ * PRICED ROWS FIRST, and only four of them, because a reader reaching this far has already
+ * read twelve rows. The count of what was left out goes on the end rather than the rows.
+ */
+export function digestCombined(rows = [], { site = "", dayTime = null,
+                                            cap = DIGEST_COMBINED_CAP } = {}) {
+  const all = (rows || []).filter((r) => r && typeof r === "object");
+  if (!all.length) return "";
+  const priced = all.filter((r) => r.value);
+  const shown = (priced.length ? priced : all).slice(0, cap);
+  const out = [`${RULE} TWO BOARDS AGREE ${RULE}`,
+               "The same team and the same fixture on more than one board. A reason to "
+               + "look, NOT two models agreeing — all three read the same corner count.",
+               ""];
+  out.push(shown.map((r) => combinedLine(r, { site, dayTime })).join("\n\n"));
+  const over = all.length - shown.length;
+  if (over > 0) out.push(`+${over} more on the site.`);
+  return out.join("\n");
+}
+
+
 /**
  * The whole message.
  *
@@ -272,7 +346,15 @@ const RULE = "━".repeat(3);
  */
 export function digestPost({ rows = [], site = "", dayLabel = "", dayTime = null,
                              minRun = DIGEST_MIN_RUN, caps = DIGEST_CAPS,
-                             windowLabel = "" } = {}) {
+                             windowLabel = "", combined = [] } = {}) {
+  // Built before the early return, because a day with no qualifying run can still have
+  // boards agreeing — and that is exactly the day the block is most worth having.
+  const agree = digestCombined(combined, { site, dayTime });
+  // THE POST STOPPED BEING STREAKS-ONLY the moment this block could appear, and the line
+  // that said so twice is the kind of promise that quietly becomes false.
+  const scopeNote = agree
+    ? "Streaks, plus where the boards agree. No chase board."
+    : "Streaks only — no chase board, no price list.";
   // `held` is deliberately not read here: each band prints its own overflow, and a second
   // total at the bottom was the same number a third time.
   const { bands, shown, qualified, skippedShort } = digestBands(rows, { minRun, caps });
@@ -286,12 +368,12 @@ export function digestPost({ rows = [], site = "", dayLabel = "", dayTime = null
       ? `No run of ${minRun}+ on the board${scope}. ${skippedShort} shorter `
         + `${skippedShort === 1 ? "run" : "runs"} are running, which is not enough to post.`
       : `Nothing on the streak board${scope}.`);
-    out.push("", "Streaks only — no chase board, no price list.");
+    if (agree) out.push("", agree);
+    out.push("", scopeNote);
     return out.join("\n");
   }
 
-  out.push(`${shown} of ${qualified} runs of ${minRun}+${scope}. `
-         + "Streaks only — no chase board, no price list.");
+  out.push(`${shown} of ${qualified} runs of ${minRun}+${scope}. ` + scopeNote);
 
   bands.forEach(({ band, rows: mine, held: over }) => {
     if (!mine.length && band.id !== "money") return;
@@ -307,6 +389,7 @@ export function digestPost({ rows = [], site = "", dayLabel = "", dayTime = null
     if (over) out.push(`+${over} more in this band on the site.`);
   });
 
+  if (agree) out.push("", agree);
   out.push("", BANDS_SOURCE);
   // THE ONE LINE THAT STOPS THE PRICES BEING MISREAD. `fair` is the model's own number and
   // the database holds a book price only where somebody typed one in, so most rows carry a

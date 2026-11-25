@@ -1,5 +1,6 @@
 import { digestBands, digestPost, digestRow, claimOf, fixtureOf, ratesOf, priceOf, edgeOf,
-         marginOf, runOf, DIGEST_MIN_RUN } from "./digest";
+         marginOf, runOf, DIGEST_MIN_RUN,
+         digestCombined, combinedLine, DIGEST_COMBINED_CAP } from "./digest";
 import { bandOf, LINE_BANDS } from "./lineBands";
 
 const row = (name, line, run, extra = {}) => ({
@@ -336,8 +337,148 @@ describe("the message", () => {
     expect(text).toMatch(/more in this band on the site/);
   });
 
+  it("still fits with a full agreement block on the end", () => {
+    // digest.mjs FAILS THE WHOLE RUN over 4096 rather than sending a truncated post, so an
+    // unbudgeted block does not look like a long message — it looks like a quiet day.
+    const many = Array.from({ length: 80 },
+                            (_, i) => row(`Team ${i}`, 4 + (i % 5), 5 + (i % 6)));
+    const agree = Array.from({ length: DIGEST_COMBINED_CAP + 3 }, (_, i) => ({
+      name: `Wolverhampton Wanderers ${i}`, league_id: "eng-ch", value: true,
+      next_fixture: { opponent: "Sheffield Wednesday", is_home: i % 2 === 0,
+                      fixture_id: `fixture-with-a-long-id-${i}`,
+                      date: "2026-10-13T14:00:00+00:00" },
+      boards: ["quick_scan", "streaks", "perfect_games"],
+      streak: { hits: 9, settled: 10, floor: 4 },
+      best: { label: "6+", prob: 60.1, fair_odds: 1.66, book_odds: 2.10, ev: 26.3 },
+    }));
+    const text = digestPost({ rows: many, combined: agree, ...opts });
+    expect(text).toContain("TWO BOARDS AGREE");
+    expect(text.length).toBeLessThan(4096);
+  });
+
   it("names the window, so a row kicking off tomorrow is not read as tonight", () => {
     expect(digestPost({ rows: [row("A", 6, 7)], ...opts }))
       .toContain("today and tomorrow");
+  });
+});
+
+// --- the agreement block --------------------------------------------------------
+//
+// The daily post said "Streaks only — no chase board, no price list" twice. Adding a
+// block of priced rows from three boards makes both copies false, which is the kind of
+// promise that goes stale silently.
+
+const agreeRow = (over = {}) => ({
+  name: "Cambridge United", league_id: "eng-l1", value: true,
+  next_fixture: { opponent: "Stockport County", is_home: true, fixture_id: "f1" },
+  boards: ["quick_scan", "streaks"],
+  streak: { hits: 9, settled: 10, floor: 4 },
+  best: { label: "6+", prob: 60.1, fair_odds: 1.66, book_odds: 2.10, ev: 26.3 },
+  ...over,
+});
+
+describe("digestCombined", () => {
+  it("is empty rather than a bare heading when nothing agrees", () => {
+    expect(digestCombined([])).toBe("");
+    expect(digestCombined(undefined)).toBe("");
+    expect(digestCombined([null, 3, "no"])).toBe("");
+  });
+
+  it("names the boards in words, not API keys", () => {
+    const text = digestCombined([agreeRow()]);
+    expect(text).toContain("Quick Scan + Streaks");
+    expect(text).not.toContain("quick_scan");
+  });
+
+  it("carries the run, the floor and the price", () => {
+    const text = digestCombined([agreeRow()]);
+    expect(text).toContain("9/10, floor 4");
+    expect(text).toContain("2.10 (+26%)");
+  });
+
+  it("never claims the boards are independent", () => {
+    // All three read the same corner count, so a strong corner side is on all of them
+    // whoever it plays. Reading "2" as two models agreeing is reading one fact twice.
+    expect(digestCombined([agreeRow()])).toContain("NOT two models agreeing");
+  });
+
+  it("says there is no price instead of printing an edge", () => {
+    const text = digestCombined([agreeRow({
+      value: false, best: { label: "6+", prob: 60.4, fair_odds: 1.66, book_odds: null, ev: null },
+    })]);
+    expect(text).toContain("fair 1.66, no price yet");
+    expect(text).not.toMatch(/\(\+?-?\d+%\)/);
+  });
+
+  it("does not print the opponent twice", () => {
+    // The head is the claim; fixtureOf supplies the opponent and venue on the next line.
+    const text = digestCombined([agreeRow()]);
+    expect(text.match(/Stockport County/g)).toHaveLength(1);
+  });
+
+  it("carries the first caveat, the way the bot's card does", () => {
+    const text = digestCombined([agreeRow({
+      warnings: ["opponent has only 9 games", "Reading promoted: price less reliable"],
+    })]);
+    expect(text).toContain("⚠ opponent has only 9 games");
+    // One, not both: these are ordered worst-first and the block is four rows deep.
+    expect(text).not.toContain("promoted");
+  });
+
+  it("does not warn about a missing price under a line that already says so", () => {
+    const text = digestCombined([agreeRow({
+      value: false, warnings: ["no bookmaker price for 5+/6+ yet"],
+      best: { label: "6+", fair_odds: 1.66, book_odds: null, ev: null },
+    })]);
+    expect(text).toContain("no price yet");
+    expect(text).not.toContain("⚠");
+  });
+
+  it("caps the block and counts what it left out", () => {
+    const rows = Array.from({ length: DIGEST_COMBINED_CAP + 2 },
+      (_, i) => agreeRow({ name: `Team ${i}` }));
+    expect(digestCombined(rows)).toContain("+2 more on the site.");
+  });
+
+  it("prefers priced rows over leads", () => {
+    const lead = agreeRow({ name: "No Price", value: false,
+                            best: { label: "6+", fair_odds: 1.66, book_odds: null, ev: null } });
+    const text = digestCombined([lead, agreeRow()], { cap: 1 });
+    expect(text).toContain("Cambridge United");
+    expect(text).not.toContain("No Price");
+  });
+});
+
+describe("digestPost with agreement rows", () => {
+  const streak = () => ({
+    name: "Operário", league_id: "bra-sb", line: 5, line_label: "5+",
+    hits: 9, settled: 10, avg: 6.8, streak: { length: 7 },
+    next_fixture: { opponent: "CRB", is_home: true, fixture_id: "fx" },
+    projection: { prob: 71.4, fair_odds: 1.4, lambda: 6.8 },
+  });
+
+  it("stops promising streaks only once a priced block is on it", () => {
+    const text = digestPost({ rows: [streak()], combined: [agreeRow()] });
+    expect(text).toContain("TWO BOARDS AGREE");
+    expect(text).not.toContain("no price list");
+    expect(text).toContain("No chase board");
+  });
+
+  it("keeps the streaks-only line when nothing agrees", () => {
+    const text = digestPost({ rows: [streak()], combined: [] });
+    expect(text).toContain("Streaks only — no chase board, no price list.");
+    expect(text).not.toContain("TWO BOARDS AGREE");
+  });
+
+  it("still shows the block on a day with no qualifying run", () => {
+    // The day the streak board is empty is the day agreement is most worth having.
+    const text = digestPost({ rows: [], combined: [agreeRow()] });
+    expect(text).toContain("TWO BOARDS AGREE");
+    expect(text).toContain("Cambridge United");
+  });
+
+  it("is unchanged when the backend sends no combined key at all", () => {
+    expect(digestPost({ rows: [streak()] }))
+      .toBe(digestPost({ rows: [streak()], combined: [] }));
   });
 });

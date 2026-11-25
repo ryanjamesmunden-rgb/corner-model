@@ -76,6 +76,29 @@ export const api = {
     axios.get(`${API}/calendar`, {
       params: { source, ...(month ? { month } : {}), ...(leagueId ? { league_id: leagueId } : {}) },
     }).then((r) => r.data),
+  // PLAYED GAMES, WITH THE PRICES STILL ON THEM. A fixture used to vanish at kick-off and
+  // its stored lines went with it, so "which of the edges we published landed, and at what
+  // price" had nothing to read. Members only, like the value board it reviews.
+  review: ({ days = 7, leagueId = "", minEv = 0 } = {}) =>
+    axios.get(`${API}/review`, {
+      params: { days, ...(leagueId ? { league_id: leagueId } : {}),
+                ...(minEv ? { min_ev: minEv } : {}) },
+    }).then((r) => r.data),
+  // WHAT THIS EXACT LINE DID LAST TIME IT WAS PRICED on this team. The key is the market
+  // key — home_over_4.5 — because a team is not always at home and the two sides are
+  // different bets.
+  lineHistory: ({ teamId, key, limit = 6 } = {}) =>
+    axios.get(`${API}/line-history`, { params: { team_id: teamId, key, limit } })
+      .then((r) => r.data),
+  // ONE DAY'S GAMES, both sides of each, with the line, the price and the run behind it.
+  // `day` is a UK calendar date (YYYY-MM-DD) and not a horizon — the backend's own note
+  // says why. Members only, like the value board, because the content is live prices.
+  weekCard: ({ day = "", leagueId = "", minRun = 0, pricedOnly = false } = {}) =>
+    axios.get(`${API}/week-card`, {
+      params: { ...(day ? { day } : {}), ...(leagueId ? { league_id: leagueId } : {}),
+                ...(minRun ? { min_run: minRun } : {}),
+                ...(pricedOnly ? { priced_only: true } : {}) },
+    }).then((r) => r.data),
   // TRACKED teams: a trial list. Keep an eye on a side without following it; promote it
   // to favourites once it has proven itself.
   trackedTeams: () => axios.get(`${API}/tracking/teams`).then((r) => r.data),

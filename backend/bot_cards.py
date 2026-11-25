@@ -178,6 +178,11 @@ def plus_line(line) -> Optional[int]:
 #: so it is named as the fixture rather than given one team's name.
 GROUP_NAME = {"home": "home", "away": "away", "total": "total"}
 
+#: How the three boards are named to a reader. The payload uses the keys the
+#: endpoints use; "quick_scan" is not what the channel calls it.
+BOARD_LABEL = {"quick_scan": "Quick Scan", "streaks": "Streaks",
+               "perfect_games": "Perfect Games"}
+
 
 #: THE POSTING RULE, the one the channel has always been run on by hand: per side, take the
 #: LOWEST line whose price is at least POST_MIN_ODDS, and post it only if that line clears
@@ -626,6 +631,96 @@ def perfect_card(rows: List[dict]) -> str:
             out.append("   " + " · ".join(bits))
     if len(rows) > MAX_ROWS:
         out.append(f"\n…and {len(rows) - MAX_ROWS} more on the site.")
+    return "\n".join(out)
+
+
+#: Rows on the combined card. Shorter than MAX_ROWS because every row here carries three
+#: boards' worth of evidence and runs to two lines; six of them is a wall.
+MAX_COMBINED = 4
+
+
+def combined_card(rows: List[dict]) -> str:
+    """Teams two or three of the boards agree on, with the 5+/6+ price beside them.
+
+    WHAT THIS ADDS TO THE OTHER SECTIONS, because a digest of near-identical lists is
+    worse than a shorter one. The value card is odds-driven: every price stored, ranked by
+    how far it beats the model. Perfect games is one board's three-legged test. This is the
+    AGREEMENT question — the same team and the same fixture turning up on Quick Scan, the
+    streak boards and Perfect Games — and the answer is a shortlist to go and price up
+    rather than a day's bets.
+
+    THE BOARD COUNT IS NOT A CONFIRMATION COUNT, and saying so is the one thing this card
+    must not get wrong. All three lean on how many corners the team wins, so a strong
+    corner side appears on all of them whoever it plays; reading "3" as three independent
+    models agreeing is reading one fact three times. combined.py's own header makes the
+    point and the footer here repeats it, because a Telegram card is read away from it.
+
+    A FLAGGED PRICE NEVER GOES OUT. _combined_rows gives the best angle the same
+    credibility band the value board carries, and an implausible one is dropped here — it
+    would otherwise LEAD the card, since the sort puts the biggest edge on top of the value
+    group. That is the misprice, not the bet.
+    """
+    rows = [r for r in (rows or []) if isinstance(r, dict)]
+    rows = [r for r in rows
+            if (r.get("best") or {}).get("credibility") != "implausible"]
+    if not rows:
+        return ("🧩 Two boards agree\n\n"
+                "No team is on more than one board for the same game right now. That is "
+                "the normal state — the boards are asking different questions and mostly "
+                "answer about different teams.")
+    priced = [r for r in rows if r.get("value")]
+    shown = (priced or rows)[:MAX_COMBINED]
+    out = ["🧩 Two boards agree", ""]
+    for r in shown:
+        nf = r.get("next_fixture") or {}
+        name = str(r.get("name") or "?")
+        opp = str(nf.get("opponent") or "")
+        where = "v" if nf.get("is_home") else "@"
+        best = r.get("best") or {}
+        head = f"• {name}"
+        if best.get("label"):
+            head += f" {best['label']}"
+        if opp:
+            head += f" {where} {opp}"
+        names = [BOARD_LABEL.get(b, b) for b in (r.get("boards") or [])]
+        if names:
+            head += f"  [{' + '.join(names)}]"
+        out.append(head)
+
+        bits = []
+        st = r.get("streak") or {}
+        hits, of = st.get("hits"), st.get("settled")
+        if hits is not None and of:
+            # The FLOOR rides with the run, because it is the whatever-the-score test: a
+            # 6+ run whose worst game was 6 is a different claim from one whose worst was 1.
+            floor = st.get("floor")
+            bits.append(f"won it in {hits}/{of}" + (f", floor {floor}" if floor is not None else ""))
+        qs = r.get("quick_scan") or {}
+        conceded = _pct(qs.get("opp_conceded"))
+        if conceded is not None:
+            bits.append(f"{opp or 'opponent'} ship {conceded:.1f}")
+        p = _pct(best.get("prob"))
+        if p is not None:
+            bits.append(f"{p:.0f}%")
+        book, ev = _pct(best.get("book_odds")), best.get("ev")
+        if book is not None and ev is not None:
+            bits.append(f"{book:.2f} ({ev:+.1f}%)")
+        elif best.get("fair_odds") is not None:
+            bits.append(f"fair {_pct(best['fair_odds']):.2f}, no price yet")
+        if bits:
+            out.append("   " + " · ".join(bits))
+        # WARNINGS ARE THE POINT OF THE ROW, not decoration: a thin opponent record or a
+        # promoted side is exactly why a corroborated-looking row should not be backed.
+        for w in (r.get("warnings") or [])[:2]:
+            out.append(f"   ⚠️ {w}")
+
+    extra = len(rows) - len(shown)
+    if extra > 0:
+        out.append(f"\n…and {extra} more on the site.")
+    if priced and len(priced) < len(rows):
+        out.append(f"{len(rows) - len(priced)} of them have no 5+/6+ price stored yet.")
+    out.append("\nTwo boards is a reason to look, not two models agreeing — all three "
+               "read the same corner count.")
     return "\n".join(out)
 
 

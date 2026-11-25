@@ -8,7 +8,8 @@
 import { CONCEDED_MARK, MISMATCH_MARK, mismatchShare,
   streakShare, fixtureShare, bestTeamsShare, streakResultShare,
          fixtureStreakShare, telegramPick, wonLadder, openGameCase, postHeader,
-         pickGame, pickGameDetailed, gameShare, pricedRung, dayWord, shortTime, runSince, cardPost, picksReview, moreVia,
+         pickGame, pickGameDetailed, pickGamesValue, rungRecord, GAME_MIN_RUN,
+         POSTABLE_SUBJECTS, gameShare, pricedRung, dayWord, shortTime, runSince, cardPost, picksReview, moreVia,
          postDate, postTime, postDayTime, POST_TZ, pickLabel, angleMenu,
          BEST_TEAMS_MARK, AVG_MARK } from "./shareText";
 import { xWeight } from "./xLimit";
@@ -702,7 +703,7 @@ describe("the game of the day", () => {
     // with the longest shot on the board would be the opposite of the intent.
     const pick = pickGame([
       row("LongAndUnlikely", "ita-sa", "Serie A", "7+", 12, 18.0, "X", true, 9.0),
-      row("ShortAndLessBad", "nor-el", "Eliteserien", "5+", 3, 44.0, "Y", true, 7.0),
+      row("ShortAndLessBad", "nor-el", "Eliteserien", "5+", 5, 44.0, "Y", true, 7.0),
     ]);
     expect(pick.name).toBe("ShortAndLessBad");
   });
@@ -718,9 +719,14 @@ describe("the game post, in the account's format", () => {
   const SITE = "https://www.thecornermodel.com";
   // Friday 20 Nov 2026, so a Saturday 18:00 UK kick-off is "tomorrow".
   const NOW = new Date("2026-11-20T12:00:00Z");
+  // THE RUN AND THE QUOTED RUNG ARE THE SAME LINE HERE, which is the shape the canonical
+  // post is for. A row whose run is at another line is a different post now — see the
+  // block below — so it gets its own fixture rather than quietly riding on this one.
   const bodo = (over = {}) => ({
-    name: "Bodo/Glimt", league_id: "nor-el", league_name: "Eliteserien", line_label: "4+",
+    name: "Bodo/Glimt", league_id: "nor-el", league_name: "Eliteserien",
+    line: 6, line_label: "6+",
     side: "overall", real_samples: 20,
+    recent: [{ corners: 8 }, { corners: 7 }, { corners: 6 }, { corners: 9 }, { corners: 6 }],
     streak: { length: 20, start_date: "2026-05-04T00:00:00+00:00" },
     projection: {
       odds_source: "api", prob: 90, ev: -2,
@@ -737,7 +743,7 @@ describe("the game post, in the account's format", () => {
   test("matches the format line for line", () => {
     const out = gameShare({ row: bodo(), site: SITE, now: NOW })();
     expect(out.split("\n\n")).toEqual([
-      "🇳🇴 Bodo/Glimt have won 4+ corners in every game since 4 May. at least 20 in a row. "
+      "🇳🇴 Bodo/Glimt have won 6+ corners in every game since 4 May. at least 20 in a row. "
         + "Our record of them starts there, so it may well be longer...",
       "📈 They're priced @ 1.91 via Sky Bet to get 6+ corners away to Molde tomorrow",
       "🏟️ Molde v Bodo/Glimt @ 6pm: https://www.thecornermodel.com/fixture/nor-el-1494808",
@@ -747,7 +753,7 @@ describe("the game post, in the account's format", () => {
   test("'at least' only when the run is as long as our record", () => {
     const out = gameShare({ row: bodo({ streak: { length: 9, start_date: "2026-09-12T00:00:00Z" } }),
                             site: SITE, now: NOW })();
-    expect(out.split("\n\n")[0]).toBe("🇳🇴 Bodo/Glimt have won 4+ corners in every game since 12 September. 9 in a row.");
+    expect(out.split("\n\n")[0]).toBe("🇳🇴 Bodo/Glimt have won 6+ corners in every game since 12 September. 9 in a row.");
   });
 
   test("a venue run says so, and a home game reads 'at home to'", () => {
@@ -792,11 +798,220 @@ describe("the game post, in the account's format", () => {
     expect(runSince("2025-08-01T00:00:00Z", NOW)).toBe("1 August 2025");
   });
 
+  // --- the evidence has to be about the bet ---------------------------------------
+  //
+  // THE BUG: the run sentence and the price line picked their lines independently, so a
+  // post could read "won 3+ in every game, 3 in a row" and then recommend 6+ at 4.20.
+  // Every reader takes the first sentence as the reason for the second. On the live board
+  // of 23 Nov 2026, three of five positive-EV candidates were that shape, with records at
+  // the line actually recommended of 2/5, 1/5 and 2/5.
+
+  const mismatched = (over = {}) => bodo({
+    line: 3, line_label: "3+",
+    streak: { length: 3, start_date: "2026-11-07T00:00:00Z" },
+    recent: [{ corners: 9 }, { corners: 3 }, { corners: 1 }, { corners: 4 }, { corners: 7 }],
+    ...over,
+  });
+
+  test("a run at another line never stands in as the reason for the bet", () => {
+    const out = gameShare({ row: mismatched(), site: SITE, now: NOW })();
+    expect(out).not.toContain("3+ corners in every game");
+    expect(out).not.toContain("3 in a row");
+  });
+
+  test("it states the side's record AT THE LINE it is quoting", () => {
+    // 9, 3, 1, 4, 7 — two of five clear 6+.
+    const out = gameShare({ row: mismatched(), site: SITE, now: NOW })();
+    expect(out.split("\n\n")[0])
+      .toBe("🇳🇴 Bodo/Glimt have won 6+ corners in 2 of their last 5.");
+    expect(out).toContain("to get 6+ corners");
+  });
+
+  test("the run sentence survives when the quoted rung IS the run's line", () => {
+    expect(gameShare({ row: bodo(), site: SITE, now: NOW })())
+      .toContain("have won 6+ corners in every game");
+  });
+
+  test("a row carrying only a label still matches its own rung", () => {
+    // `line` absent, "6+" present: without parsing the label this read as "no line" and
+    // matched every rung, which put the old behaviour back by accident.
+    const noNumber = bodo({ line: undefined });
+    expect(gameShare({ row: noNumber, site: SITE, now: NOW })())
+      .toContain("have won 6+ corners in every game");
+  });
+
+  test("no games on file means no claim at all, rather than a borrowed one", () => {
+    const out = gameShare({ row: mismatched({ recent: [] }), site: SITE, now: NOW })();
+    expect(out.split("\n\n")).toHaveLength(2);
+    expect(out).toContain("📈");
+    expect(out).not.toContain("in a row");
+  });
+
+  test("rungRecord counts the right line over the games it actually has", () => {
+    const row = mismatched();
+    expect(rungRecord(row, 6)).toEqual({ hits: 2, of: 5 });
+    expect(rungRecord(row, 3)).toEqual({ hits: 4, of: 5 });
+    expect(rungRecord(row, 1)).toEqual({ hits: 5, of: 5 });
+    expect(rungRecord(row, 6, 2)).toEqual({ hits: 1, of: 2 });
+    expect(rungRecord({ recent: [] }, 6)).toBeNull();
+    expect(rungRecord(row, null)).toBeNull();
+  });
+
+  // --- more than one angle on the same game ------------------------------------------
+  //
+  // THE COMPLAINT THIS ANSWERS: "each game just has the team corner EV+ line and nothing
+  // else". Three team lines lost on a night when the games themselves were full of
+  // corners, and the totals would have landed — but the ladder held two rungs, both of
+  // them the streaking side's own corners, so there was never a total to pick.
+
+  const wide = (over = {}) => bodo({
+    recent: [{ corners: 8, total: 15 }, { corners: 7, total: 13 }, { corners: 3, total: 14 },
+             { corners: 9, total: 11 }, { corners: 2, total: 16 }],
+    projection: {
+      odds_source: "api", prob: 90, ev: -2,
+      ladder: [
+        { subject: "team", line: 6, label: "6+", market_key: "away_over_5.5",
+          book_odds: 1.91, book_name: "Sky Bet", prob: 58, fair_odds: 1.72, ev: 2.0 },
+        { subject: "opponent", line: 6, label: "6+", market_key: "home_over_5.5",
+          book_odds: 3.40, book_name: "Betano", prob: 40, fair_odds: 2.50, ev: 36.0 },
+        { subject: "match", line: 11, label: "11+", market_key: "total_over_10.5",
+          book_odds: 2.10, book_name: "Bet365", prob: 62, fair_odds: 1.61, ev: 30.2 },
+        { subject: "both", line: 4, label: "4+", market_key: "both_over_3.5",
+          book_odds: 2.50, book_name: "1xBet", prob: 48, fair_odds: 2.08, ev: 20.0 },
+      ],
+    },
+    ...over,
+  });
+
+  test("the best angle on the game wins, even when it is not the team's own line", () => {
+    // The team's 6+ pays +2%. The match total pays +30%. The old ladder could not see it.
+    expect(pricedRung(wide()).subject).toBe("match");
+  });
+
+  test("the opponent's own line is priced but never posted", () => {
+    // +36% is the biggest edge on the game, and the row holds no record of the OPPONENT's
+    // games — so a post quoting it would have a price and nothing behind it.
+    expect(pricedRung(wide()).subject).not.toBe("opponent");
+    expect(POSTABLE_SUBJECTS).not.toContain("opponent");
+  });
+
+  test("a match total is worded as the match, not as the team", () => {
+    const out = gameShare({ row: wide(), site: SITE, now: NOW })();
+    expect(out).toContain("11+ corners in the match is priced");
+    expect(out).not.toContain("to get 11+ corners");
+  });
+
+  test("a match total is evidenced by the match totals, not the team's own corners", () => {
+    // Totals 15, 13, 14, 11, 16 — all five clear 11+. The team's own counts (8,7,3,9,2)
+    // would have said two.
+    const out = gameShare({ row: wide(), site: SITE, now: NOW })();
+    expect(out).toContain("Bodo/Glimt's games have had 11+ corners in 5 of their last 5.");
+  });
+
+  test("a both-teams line is counted by the weaker side of each game", () => {
+    // corners/total: 8/15 -> other 7; 7/13 -> 6; 3/14 -> 11; 9/11 -> 2; 2/16 -> 14.
+    // Weaker side: 7, 6, 3, 2, 2 — so 4+ by BOTH happened twice.
+    expect(rungRecord(wide(), 4, 5, "both")).toEqual({ hits: 2, of: 5 });
+  });
+
+  test("a both-teams line says both teams", () => {
+    const only = wide();
+    only.projection.ladder = only.projection.ladder.filter((r) => r.subject === "both");
+    const out = gameShare({ row: only, site: SITE, now: NOW })();
+    expect(out).toContain("Both teams 4+ corners is priced");
+    expect(out).toContain("Both teams have won 4+ corners in 2 of Bodo/Glimt's last 5.");
+  });
+
+  test("the match record is read off the total, and is nothing without one", () => {
+    expect(rungRecord(wide(), 11, 5, "match")).toEqual({ hits: 5, of: 5 });
+    expect(rungRecord(wide(), 14, 5, "match")).toEqual({ hits: 3, of: 5 });  // 15, 14, 16
+    // A row from before totals were carried: no claim rather than the team's count.
+    expect(rungRecord(bodo(), 11, 5, "match")).toBeNull();
+  });
+
+  test("an untagged ladder still behaves exactly as it used to", () => {
+    // Rows in flight when this shipped carry no `subject` at all.
+    const old = bodo();
+    expect(pricedRung(old).line).toBe(6);
+    expect(gameShare({ row: old, site: SITE, now: NOW })())
+      .toContain("to get 6+ corners");
+  });
+
+  test("with no edge anywhere it falls back within the team's own lines", () => {
+    // Sorting every subject together by line would rank a 12+ total over a 6+ team line
+    // as though they were one ladder.
+    const flat = wide();
+    flat.projection.ladder = flat.projection.ladder.map((r) => ({ ...r, ev: -4 }));
+    flat.projection.ladder.push({ subject: "match", line: 12, label: "12+",
+      market_key: "total_over_11.5", book_odds: 3.0, prob: 40, fair_odds: 2.5, ev: -4 });
+    expect(pricedRung(flat).subject).toBe("team");
+  });
+
+  // --- several games at once ---------------------------------------------------------
+
+  describe("picking several games", () => {
+    const G = (name, fid, ev, run = 6) => ({
+      name, league_id: "nor-el", line: 6, line_label: "6+",
+      streak: { length: run }, recent: [{ corners: 7 }],
+      projection: { odds_source: "api", prob: 60, ev,
+                    ladder: [{ line: 6, label: "6+", book_odds: 2.0, prob: 55, ev }] },
+      next_fixture: { fixture_id: fid, date: "2026-11-21T18:00:00Z", opponent: "X" },
+    });
+
+    test("returns the biggest edges first, up to the count asked for", () => {
+      const got = pickGamesValue([G("A", "f1", 5), G("B", "f2", 25), G("C", "f3", 12)], 2);
+      expect(got.map((r) => r.name)).toEqual(["B", "C"]);
+    });
+
+    test("one post per fixture — both sides of a game is the same game twice", () => {
+      const got = pickGamesValue([G("Home", "same", 8), G("Away", "same", 19)], 5);
+      expect(got.map((r) => r.name)).toEqual(["Away"]);
+    });
+
+    test("never pads the list with rows that have no real price", () => {
+      // A confidence pick dropped in beside priced ones is indistinguishable once posted.
+      const noPrice = { ...G("Form", "f9", 40), projection: { odds_source: "seed", prob: 95 } };
+      expect(pickGamesValue([G("A", "f1", 5), noPrice], 5).map((r) => r.name)).toEqual(["A"]);
+    });
+
+    test("a negative edge is not the best of a bad set", () => {
+      expect(pickGamesValue([G("A", "f1", -3), G("B", "f2", -1)], 3)).toEqual([]);
+    });
+
+    test("a promoted or relegated side stays out, as it does for one game", () => {
+      const moved = { ...G("Moved", "f2", 99), league_change: { label: "promoted" } };
+      expect(pickGamesValue([G("A", "f1", 5), moved], 3).map((r) => r.name)).toEqual(["A"]);
+    });
+
+    test("a run shorter than five is not a run, and never posts", () => {
+      // Two games is not a streak; it is two games, which every side has had at some
+      // line this season. See GAME_MIN_RUN.
+      expect(pickGamesValue([G("Short", "f1", 40, 4)], 3)).toEqual([]);
+      expect(pickGamesValue([G("Short", "f1", 40, 2)], 3)).toEqual([]);
+      expect(pickGamesValue([G("Just", "f1", 5, 5)], 3).map((r) => r.name)).toEqual(["Just"]);
+    });
+
+    test("a huge edge does not buy its way past the floor", () => {
+      const got = pickGamesValue([G("Massive", "f1", 300, 3), G("Honest", "f2", 6, 7)], 3);
+      expect(got.map((r) => r.name)).toEqual(["Honest"]);
+    });
+
+    test("the floor can be relaxed on purpose, by the caller", () => {
+      expect(pickGamesValue([G("Short", "f1", 40, 3)], 3, 2).map((r) => r.name))
+        .toEqual(["Short"]);
+    });
+
+    test("fewer than asked for is the answer when that is the truth", () => {
+      expect(pickGamesValue([G("A", "f1", 5)], 5)).toHaveLength(1);
+      expect(pickGamesValue([], 3)).toEqual([]);
+    });
+  });
+
   test("'at least' measures against the full history, not the model's 20", () => {
     const long = bodo({ real_samples: 20, history_samples: 40,
                         streak: { length: 31, start_date: "2026-03-01T00:00:00Z" } });
     expect(gameShare({ row: long, site: SITE, now: NOW })().split("\n\n")[0])
-      .toBe("🇳🇴 Bodo/Glimt have won 4+ corners in every game since 1 March. 31 in a row.");
+      .toBe("🇳🇴 Bodo/Glimt have won 6+ corners in every game since 1 March. 31 in a row.");
   });
 
   test("a promoted or relegated side on either team is never the game of the day", () => {
@@ -973,7 +1188,7 @@ describe("picking on value rather than form", () => {
   test("a real priced edge beats a longer run with no price", () => {
     const got = pickGameDetailed([
       R("LongRunNoPrice", 11, 70, null, null),
-      R("SmallerRunRealEdge", 4, 58, 8.4, "manual"),
+      R("SmallerRunRealEdge", 6, 58, 8.4, "manual"),
     ]);
     expect(got.row.name).toBe("SmallerRunRealEdge");
     expect(got.basis).toBe("value");
@@ -982,7 +1197,7 @@ describe("picking on value rather than form", () => {
   test("the biggest edge wins, not the longest run among the priced", () => {
     const got = pickGameDetailed([
       R("BigRunSmallEdge", 12, 75, 1.2, "manual"),
-      R("SmallRunBigEdge", 3, 52, 14.0, "manual"),
+      R("SmallRunBigEdge", 5, 52, 14.0, "manual"),
     ]);
     expect(got.row.name).toBe("SmallRunBigEdge");
   });
@@ -991,7 +1206,7 @@ describe("picking on value rather than form", () => {
     // seed_team_odds writes fair_odds * rng.uniform(0.90, 1.15). An EV against that is the
     // model finding value in its own jitter, and it looks exactly like a real edge.
     const got = pickGameDetailed([
-      R("SeededFakeEdge", 3, 52, 22.0, "demo"),
+      R("SeededFakeEdge", 5, 52, 22.0, "demo"),
       R("HonestForm", 9, 71, null, null),
     ]);
     expect(got.row.name).toBe("HonestForm");
@@ -1002,7 +1217,7 @@ describe("picking on value rather than form", () => {
     // Documents written before the stamp existed. Treating them as real would quietly
     // re-open the exact hole the stamp closes.
     const got = pickGameDetailed([
-      R("UnstampedEdge", 3, 52, 19.0, undefined),
+      R("UnstampedEdge", 5, 52, 19.0, undefined),
       R("HonestForm", 9, 71, null, null),
     ]);
     expect(got.row.name).toBe("HonestForm");
@@ -1013,7 +1228,7 @@ describe("picking on value rather than form", () => {
     // The best of a bad set is still a bad bet, and posting the least negative EV on the
     // board is worse than posting form.
     const got = pickGameDetailed([
-      R("PricedButBad", 3, 52, -6.0, "manual"),
+      R("PricedButBad", 5, 52, -6.0, "manual"),
       R("GoodForm", 9, 71, null, null),
     ]);
     expect(got.row.name).toBe("GoodForm");
@@ -1021,9 +1236,19 @@ describe("picking on value rather than form", () => {
   });
 
   test("with no prices at all it says so rather than implying value", () => {
-    const got = pickGameDetailed([R("A", 9, 71, null, null), R("B", 4, 60, null, null)]);
+    const got = pickGameDetailed([R("A", 9, 71, null, null), R("B", 6, 60, null, null)]);
     expect(got.basis).toBe("confidence");
     expect(got.row.name).toBe("A");
+  });
+
+  test("the single pick obeys the same floor, form or value", () => {
+    // The confidence fallback was the way round it: no price, long-looking odds, and a
+    // two-game run posted as "in a row".
+    expect(pickGameDetailed([R("ShortForm", 3, 95, null, null)]))
+      .toEqual({ row: null, basis: "none" });
+    expect(pickGameDetailed([R("ShortValue", 4, 60, 30.0, "manual")]))
+      .toEqual({ row: null, basis: "none" });
+    expect(pickGameDetailed([R("Fine", 5, 60, 8.0, "manual")]).row.name).toBe("Fine");
   });
 
   test("an empty board reports neither a row nor a basis to trust", () => {

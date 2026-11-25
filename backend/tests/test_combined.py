@@ -128,3 +128,63 @@ def test_snapshot_entries_one_per_line_with_the_boards():
     assert out[0]["book_odds"] == 1.8 and out[1]["book_odds"] is None
     assert all(e["boards"] == ["quick_scan", "streaks"] and e["subject"] == "team"
                for e in out)
+
+
+# --- the record ------------------------------------------------------------------------
+#
+# #373 froze the combined board daily and gave it /combined/history, but the Results page
+# is where "is this worth following" is actually asked, and it listed three boards out of
+# four. The one board nobody could check was the shortlist of the other three.
+
+import server  # noqa: E402
+
+
+def test_the_combined_board_is_on_the_results_breakdown():
+    keys = [k for k, _, _, _ in server.RESULT_BOARDS]
+    assert "combined" in keys
+
+
+def test_it_reads_the_collection_the_daily_freeze_writes():
+    coll = next(c for k, _, c, _ in server.RESULT_BOARDS if k == "combined")
+    assert coll == "combined_snapshots"
+
+
+def test_its_blurb_says_it_is_not_a_fourth_independent_source():
+    """The denominators would otherwise invite adding up.
+
+    A team reaches this board only by appearing on two of the three above it for the same
+    fixture, so every combined row is also a row on two of those — settled again under a
+    different name. A reader summing the four lines is counting the same games twice.
+    """
+    blurb = next(b for k, _, _, b in server.RESULT_BOARDS if k == "combined").lower()
+    assert "subset" in blurb and "not a fourth" in blurb
+
+
+def test_every_board_names_a_distinct_collection():
+    colls = [c for _, _, c, _ in server.RESULT_BOARDS]
+    assert len(colls) == len(set(colls))
+
+
+def test_a_combined_snapshot_entry_carries_what_grading_needs():
+    # claim_key is (fixture, team, line, direction, subject) and _grade_entries needs a
+    # kickoff to know whether the game has been played. A missing one is a row that can
+    # never settle and would sit in `pending` forever.
+    rows = [{
+        "team_id": "t1", "name": "Bradford", "league_id": "eng-l1",
+        "boards": ["quick_scan", "streaks"], "board_count": 2, "value": True,
+        "angles": [{"line": 5, "prob": 70.0, "fair_odds": 1.43, "book_odds": 1.8,
+                    "ev": 26.0},
+                   {"line": 6, "prob": 55.0, "fair_odds": 1.82, "book_odds": None,
+                    "ev": None}],
+        "best": {"line": 5},
+        "next_fixture": {"fixture_id": "fx1", "date": "2026-11-28T15:00:00Z",
+                         "opponent": "Barnsley", "is_home": True},
+    }]
+    entries = combined.snapshot_entries(rows)
+    assert len(entries) == 2                      # 5+ and 6+ settle separately
+    for e in entries:
+        assert e["fixture_id"] and e["team_id"] and e["kickoff"]
+        assert e["direction"] == "over" and e["subject"] == "team"
+    assert {e["line"] for e in entries} == {5, 6}
+    # Two lines on one team are two claims, not one counted twice.
+    assert len({server.claim_key(e) for e in entries}) == 2

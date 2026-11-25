@@ -33,6 +33,9 @@ import log_redact
 import record_view
 import calibration
 import combined
+import markets
+import price_review
+import week_card
 import league_change
 import oddities
 import projection_record
@@ -732,7 +735,20 @@ def corner_distribution(lam: float, group: str, max_k: int = 30) -> List[dict]:
     return rows[lo:hi + 1]
 
 
-def build_markets(lambdas: dict, odds: Dict[str, float]) -> List[dict]:
+def build_markets(lambdas: dict, odds: Dict[str, float],
+                  home: Optional[dict] = None, away: Optional[dict] = None) -> List[dict]:
+    """Every market this model can price for one fixture.
+
+    THE OVERS COME FIRST AND UNCHANGED. Everything downstream — the value board's ladder,
+    the week card, the bot's quoted rung, the spreadsheet — reads these rows by shape, and
+    the single-side overs are the ones with a betting record behind them. The extra
+    markets are appended, never interleaved, so an existing caller that takes rows in
+    order sees exactly what it saw before.
+
+    `home` and `away` are the team documents, needed only for the both-teams lines: their
+    stored matches are what the dependence between the two sides is measured from. Without
+    them those lines are still priced, under independence, and say so.
+    """
     rows = []
     specs = [("total", "Total", lambdas["total"], TOTAL_LINES),
              ("home", "Home Team", lambdas["home"], TEAM_LINES),
@@ -748,6 +764,11 @@ def build_markets(lambdas: dict, odds: Dict[str, float]) -> List[dict]:
             rows.append({"key": key, "group": group, "group_label": label, "line": line,
                          "label": f"Over {line}", "prob": round(p * 100, 1), "fair_odds": fo,
                          "book_odds": book, "ev": ev, "tier": tier_for_ev(ev) if ev is not None else None})
+    rows.extend(markets.build_extra_markets(
+        lambdas, odds, team_ge=nb_ge, total_ge=poisson_ge, fair_odds=fair_odds,
+        ev_percent=ev_percent, tier_for_ev=tier_for_ev,
+        team_lines=TEAM_LINES, total_lines=TOTAL_LINES,
+        pairs=markets.pair_counts(home, away) if (home or away) else None))
     return rows
 
 
@@ -771,7 +792,7 @@ def fixture_model_from(home: dict, away: dict, league: dict, odds: Dict[str, flo
     lambdas = expected_lambdas(home, away, ls, lb,
                                away_league.get("avg_shots") or REF_SHOTS,
                                away_league.get("avg_blocked") or 0.0)
-    out = {"lambdas": lambdas, "markets": build_markets(lambdas, odds),
+    out = {"lambdas": lambdas, "markets": build_markets(lambdas, odds, home, away),
            "confidence": confidence_for(home, away)}
     # OPT-IN, because it is ~60 rows per fixture and the boards price dozens at a time.
     # Only the single-fixture screens draw the curve, so only they ask for it.
@@ -5028,9 +5049,27 @@ async def odds_ahead(days: int = 6, from_days: int = 1, limit: int = 120,
     """
     _check_tools_token(token)
     fetch_ahead = _odds_fetcher("fetch_ahead")
-    got = await fetch_ahead(db, days=max(2, min(days, 10)),
+    days = max(2, min(days, 10))
+    # WHICH GAMES THE BUDGET SHOULD REACH FIRST. The ceiling is being hit — a run on
+    # 23 Nov 2026 spent all 120 calls and reported `capped: true` — and sorted by date
+    # alone it is spent on whatever kicks off soonest, so a weekend carrying twenty
+    # qualifying runs got none of them priced. These are the fixtures the streak board
+    # would actually recommend, so they go first.
+    #
+    # FREE. The three venue tabs are prebuilt screens, so this costs no extra scan, and
+    # it changes the ORDER of the calls rather than their number.
+    prefer = set()
+    try:
+        for name in STREAK_SCREENS.values():
+            for row in (await _screen(name)) or []:
+                fid = (row.get("next_fixture") or {}).get("fixture_id")
+                if fid:
+                    prefer.add(fid)
+    except Exception as e:                   # aiming is an optimisation, never a blocker
+        logger.warning(f"odds ahead could not read the streak boards: {e}")
+    got = await fetch_ahead(db, days=days,
                             from_days=max(0, min(from_days, 5)),
-                            limit=max(1, min(limit, 200)))
+                            limit=max(1, min(limit, 200)), prefer=prefer)
     return {"mode": "ahead", **got}
 
 
@@ -5936,6 +5975,211 @@ def _card_factors(team, opp, venue, team_name, opp_name, league_teams=None) -> L
     return out
 
 
+# BEFORE /fixtures/{fixture_id}, AND THAT IS THE WHOLE REASON IT LIVES UP HERE.
+# FastAPI matches routes in the order they are registered, so the parameterised route
+# below swallowed this one: /api/fixtures/played resolved with fixture_id="played"
+# and answered 404 "Fixture not found". The endpoint was unreachable in production —
+# not broken, not slow, just never called, and a 404 that names a fixture reads like a
+# bad id rather than a route that cannot be hit. Any further literal /fixtures/<word>
+# route has to go above that decorator too.
+#: How far back the review reaches by default. The played store keeps 30 days, so a week
+#: is a review and a month is the whole archive.
+REVIEW_DAYS = 7
+
+
+async def _odds_by_fixture(fixture_ids: List[str]) -> Dict[str, Dict[str, float]]:
+    """Every stored price for these fixtures, hand-typed and fetched merged.
+
+    The same merge the boards use, so a reviewed line is graded against the number the
+    board actually showed — a review computed off a different price than the one that was
+    published is worse than no review.
+    """
+    got = await _odds_for_many(fixture_ids)
+    return {fid: (row.get("odds") or {}) for fid, row in got.items()}
+
+
+@api_router.get("/line-history")
+async def line_history(team_id: str, key: str, limit: int = 6,
+                       token: Optional[str] = None,
+                       user: dict = Depends(get_current_user)):
+    """What this exact market did the last few times it was priced on this team.
+
+    WHY A LINE NEEDS A MEMORY. The board shows "Bradford 5+ @ 1.80, model says 68%" and
+    stops. Whether that same line was offered last week at 1.62 and landed, or has been
+    missed three games running, is a fact the site already holds and has never shown — and
+    it is the first thing anybody asks before taking a price.
+
+    THE SAME KEY, NOT A SIMILAR ONE. `home_over_4.5` and `away_over_4.5` are different
+    bets and a team is not always at home, so the caller passes the key it means. A game
+    is only reported when it had BOTH a stored price and a corner count: "it landed" with
+    no price attached answers half the question and invites the reader to fill in the
+    other half from memory.
+    """
+    if not price_review.parse_key(key):
+        raise HTTPException(status_code=400,
+                            detail=f"{key!r} is not a market this can settle")
+    limit = max(1, min(limit, 20))
+    rows = await db.fixtures_played.find(
+        {"$or": [{"home_team_id": team_id}, {"away_team_id": team_id}]},
+        {"_id": 0}).to_list(PLAYED_SCAN)
+    rows.sort(key=lambda r: str(r.get("date") or ""), reverse=True)
+    rows = rows[:40]
+    odds = await _odds_by_fixture([r["fixture_id"] for r in rows if r.get("fixture_id")])
+    games = [{**r, "odds": odds.get(r.get("fixture_id")) or {}} for r in rows]
+
+    out, seen = [], 0
+    for g in games:
+        got = price_review.last_time(key, [g])
+        if got:
+            # WHICH SIDE OF THE GAME THIS TEAM WAS ON, so a reader can see at a glance
+            # that a run of home_over_4.5 results is a run of HOME games.
+            got["was_home"] = g.get("home_team_id") == team_id
+            out.append(got)
+            seen += 1
+        if seen >= limit:
+            break
+    landed = [g for g in out if g["result"] == price_review.WIN]
+    return {"team_id": team_id, "key": key, "games": out,
+            "found": len(out), "landed": len(landed),
+            # The last one is what the board wants to print beside the price; the rest is
+            # there so a reader can see whether it was a run or a one-off.
+            "last": out[0] if out else None,
+            "prices_seen": sorted({g["book_odds"] for g in out}) if out else []}
+
+
+@api_router.get("/review")
+async def price_review_board(days: int = REVIEW_DAYS, league_id: Optional[str] = None,
+                             limit: int = 120, min_ev: float = 0.0,
+                             user: dict = Depends(require_member)):
+    """Games that have been played, with every price that was stored on them, settled.
+
+    WHY A FIXTURE SHOULD NOT VANISH AT KICK-OFF. Until now it did: the boards drop a game
+    the moment it starts, and its twenty-odd stored lines went with it. So the question
+    behind every week — "which of the edges we published actually landed, and at what
+    price" — had nothing to read, and the model's mistakes were only ever visible one
+    fixture at a time, by memory.
+
+    The prices survive already (the sync stopped deleting them), and fixtures_played keeps
+    the same fixture_id across kick-off. This is the join nobody had written.
+
+    EVERY LINE COMES BACK, WINNERS AND LOSERS. A review listing only the winners is a
+    tipster's results page. The figure to read is `ev_plus_rate`: the whole ladder
+    includes rungs nobody would back, so its hit rate describes the ladder rather than
+    the model.
+
+    MEMBERS ONLY, like the value board it reviews — it is the same prices, after the fact.
+    """
+    days = max(1, min(days, PLAYED_KEEP_DAYS))
+    q: Dict[str, object] = {"date": {"$gte": (datetime.now(timezone.utc)
+                                              - timedelta(days=days)).isoformat()}}
+    if league_id and league_id != "all":
+        q["league_id"] = league_id
+    rows = await db.fixtures_played.find(q, {"_id": 0}).to_list(PLAYED_SCAN)
+    rows.sort(key=lambda r: str(r.get("date") or ""), reverse=True)
+    rows = rows[:max(1, min(limit, 300))]
+    if not rows:
+        return {"days": days, "games": [], "best": [], **price_review.tally([])}
+
+    odds = await _odds_by_fixture([r["fixture_id"] for r in rows if r.get("fixture_id")])
+
+    # THE MODEL AS IT STANDS NOW, not as it stood then, and that is a real limitation
+    # rather than a detail. A team's lambda moves as results come in, so the EV printed
+    # here is this morning's opinion of a price from last week. It is the right number for
+    # "is the model any good at spotting these" and the wrong one for "what did the board
+    # show on the day" — the frozen snapshots answer that, and /results grades them.
+    teams, leagues_by_id = {}, {}
+    ids = {t for r in rows for t in (r.get("home_team_id"), r.get("away_team_id")) if t}
+    if ids:
+        for t in await db.teams.find({"team_id": {"$in": list(ids)}}, {"_id": 0}) \
+                               .to_list(len(ids) + 100):
+            teams[t["team_id"]] = t
+    lids = {r.get("league_id") for r in rows if r.get("league_id")}
+    if lids:
+        for lg in await db.leagues.find({"league_id": {"$in": list(lids)}},
+                                        {"_id": 0}).to_list(len(lids) + 100):
+            leagues_by_id[lg["league_id"]] = lg
+
+    reviews = []
+    for r in rows:
+        fid = r.get("fixture_id")
+        fx_odds = odds.get(fid) or {}
+        model = {}
+        home, away = teams.get(r.get("home_team_id")), teams.get(r.get("away_team_id"))
+        if fx_odds and home and away:
+            try:
+                # home/away are POSITIONAL here. Passing them again by keyword raises
+                # TypeError, which the except below would swallow — leaving every
+                # reviewed line with no EV and a review that looked merely empty.
+                built = fixture_model_from(home, away,
+                                           leagues_by_id.get(r.get("league_id")) or {},
+                                           fx_odds)
+                model = {m["key"]: m for m in built["markets"]}
+            except Exception as e:          # one unpriceable game must not take the week
+                logger.warning(f"review model failed for {fid}: {e}")
+        rv = price_review.review_fixture(r, fx_odds, model)
+        rv["league_name"] = (leagues_by_id.get(r.get("league_id")) or {}).get("name", "")
+        reviews.append(rv)
+
+    # `games`, NOT `fixtures`. tally() spreads a `fixtures` COUNT at the top level — the
+    # same shape /combined/history uses — and naming the list the same thing meant the
+    # count silently replaced it. The list is the point of this endpoint.
+    return {"days": days, "games": reviews,
+            "best": price_review.best_landed(reviews, limit=20, min_ev=min_ev),
+            "keep_days": PLAYED_KEEP_DAYS,
+            **price_review.tally(reviews)}
+
+
+@api_router.get("/fixtures/played")
+async def fixtures_played(days: Optional[int] = None, league_id: Optional[str] = None,
+                          limit: int = 200, user: dict = Depends(get_current_user)):
+    """Games that have been played, with the score and the corner count.
+
+    WHY THIS IS A SEPARATE STORE AND NOT A STATUS ON db.fixtures. Twenty-two call sites
+    read db.fixtures and only five of them test `status`: the one that sorts ascending on
+    date to find each team's NEXT game would have returned a game from last week, the
+    boards that walk every row would have handed a finished fixture a projection, and the
+    league yardsticks would have counted it twice. Keeping results in their own collection
+    means a results view cannot leak into a board that means "what is on" — the same
+    reasoning that keeps db.odds_feed out of db.odds.
+
+    THE RETENTION WINDOW LIVES IN THE SYNC, not here. sync_real rebuilds this collection
+    from the provider's own fixture list on every run and simply does not re-insert a game
+    older than PLAYED_KEEP_DAYS, so there is nothing to prune and no way for the store and
+    the stated window to disagree. `days` here only narrows what a caller wants to see
+    inside that window; asking for more than the sync keeps cannot conjure older games.
+
+    `corners_known` IS NOT DECORATION. A fixture whose statistics were never fetched comes
+    back with null corners rather than zero, because 0-0 corners is a real result and
+    "nobody asked the provider" is not. A caller must not render the second as the first.
+    """
+    # Annotated `dict` and not Dict[str, Any]: `Any` is not in this file's typing import,
+    # and naming it there is a NameError at import time that takes the whole backend down
+    # on deploy rather than failing this one endpoint. That has happened twice here.
+    q: dict = {}
+    if league_id and league_id != "all":
+        q["league_id"] = league_id
+    if days:
+        cutoff = datetime.now(timezone.utc) - timedelta(days=max(1, int(days)))
+        q["date"] = {"$gte": cutoff.isoformat()}
+    rows = await db.fixtures_played.find(q, {"_id": 0}).to_list(PLAYED_SCAN)
+    # Newest first: a results view is read from the top, and the most recent round is the
+    # one anybody opening it is looking for.
+    rows.sort(key=lambda r: str(r.get("date") or ""), reverse=True)
+    rows = rows[:max(1, min(limit, 500))]
+    leagues = {l["league_id"]: l.get("name", "")
+               for l in await db.leagues.find({}, {"_id": 0}).to_list(200)}
+    for r in rows:
+        r["league_name"] = leagues.get(r.get("league_id"), "")
+    return {"fixtures": rows, "count": len(rows),
+            # Stated rather than assumed, so a caller can say "last 30 days" without
+            # hardcoding a number that only the sync actually controls.
+            "keep_days": PLAYED_KEEP_DAYS,
+            "with_corners": sum(1 for r in rows if r.get("corners_known"))}
+
+
+NEXT_FIXTURE_SCAN = 6000
+
+
 @api_router.get("/fixtures/{fixture_id}")
 async def fixture_detail(fixture_id: str, token: Optional[str] = None,
                          user: dict = Depends(get_current_user)):
@@ -6837,55 +7081,6 @@ PLAYED_SCAN = 3000
 PLAYED_KEEP_DAYS = 30
 
 
-@api_router.get("/fixtures/played")
-async def fixtures_played(days: Optional[int] = None, league_id: Optional[str] = None,
-                          limit: int = 200, user: dict = Depends(get_current_user)):
-    """Games that have been played, with the score and the corner count.
-
-    WHY THIS IS A SEPARATE STORE AND NOT A STATUS ON db.fixtures. Twenty-two call sites
-    read db.fixtures and only five of them test `status`: the one that sorts ascending on
-    date to find each team's NEXT game would have returned a game from last week, the
-    boards that walk every row would have handed a finished fixture a projection, and the
-    league yardsticks would have counted it twice. Keeping results in their own collection
-    means a results view cannot leak into a board that means "what is on" — the same
-    reasoning that keeps db.odds_feed out of db.odds.
-
-    THE RETENTION WINDOW LIVES IN THE SYNC, not here. sync_real rebuilds this collection
-    from the provider's own fixture list on every run and simply does not re-insert a game
-    older than PLAYED_KEEP_DAYS, so there is nothing to prune and no way for the store and
-    the stated window to disagree. `days` here only narrows what a caller wants to see
-    inside that window; asking for more than the sync keeps cannot conjure older games.
-
-    `corners_known` IS NOT DECORATION. A fixture whose statistics were never fetched comes
-    back with null corners rather than zero, because 0-0 corners is a real result and
-    "nobody asked the provider" is not. A caller must not render the second as the first.
-    """
-    # Annotated `dict` and not Dict[str, Any]: `Any` is not in this file's typing import,
-    # and naming it there is a NameError at import time that takes the whole backend down
-    # on deploy rather than failing this one endpoint. That has happened twice here.
-    q: dict = {}
-    if league_id and league_id != "all":
-        q["league_id"] = league_id
-    if days:
-        cutoff = datetime.now(timezone.utc) - timedelta(days=max(1, int(days)))
-        q["date"] = {"$gte": cutoff.isoformat()}
-    rows = await db.fixtures_played.find(q, {"_id": 0}).to_list(PLAYED_SCAN)
-    # Newest first: a results view is read from the top, and the most recent round is the
-    # one anybody opening it is looking for.
-    rows.sort(key=lambda r: str(r.get("date") or ""), reverse=True)
-    rows = rows[:max(1, min(limit, 500))]
-    leagues = {l["league_id"]: l.get("name", "")
-               for l in await db.leagues.find({}, {"_id": 0}).to_list(200)}
-    for r in rows:
-        r["league_name"] = leagues.get(r.get("league_id"), "")
-    return {"fixtures": rows, "count": len(rows),
-            # Stated rather than assumed, so a caller can say "last 30 days" without
-            # hardcoding a number that only the sync actually controls.
-            "keep_days": PLAYED_KEEP_DAYS,
-            "with_corners": sum(1 for r in rows if r.get("corners_known"))}
-
-
-NEXT_FIXTURE_SCAN = 6000
 
 
 async def _next_fixtures(q):
@@ -7712,6 +7907,89 @@ async def _league_changes(teams: Optional[list] = None) -> Dict[str, dict]:
 # The team-corner lines a post actually quotes a price at.
 LADDER_LINES = (5, 6)
 
+# THE REST OF THE FIXTURE. A streak row used to carry two rungs — the streaking side's own
+# 5+ and 6+ — and nothing else, so every board and every post built from one could only
+# ever offer that side's corners. A game where the backed team was quiet but the match was
+# frantic had no angle to offer at all, even though the total landed comfortably: the
+# ladder had never been shown a total to pick from.
+#
+# These are the other three things a corner bet can be on the same game:
+TOTAL_LADDER_LINES = (9, 10, 11, 12)    # the match total; below 9 is near-certain, above 12 a lottery
+BOTH_LADDER_LINES = (4, 5)              # both teams over, which is where "4 corners each" lives
+
+
+def fixture_price_ladder(team: dict, opp: Optional[dict], team_venue: str, opp_venue: str,
+                         league_shots: float, league_blocked: float,
+                         odds: Dict[str, float], books: Dict[str, str],
+                         lam_team: Optional[float] = None) -> List[dict]:
+    """Every corner angle on this fixture, tagged with what each one is about.
+
+    FOUR SUBJECTS, and a reader has to be able to tell them apart, because "6+" means a
+    different bet in each: the streaking side's own corners, the OPPONENT's corners, the
+    match total, and both teams clearing a line. A rung that did not say which would be
+    worded wrong by whatever posts it — and "6+ corners" attached to the wrong subject is
+    not a rounding error, it is a different bet at a different price.
+
+    THE TEAM RUNGS COME FIRST and are identical to what team_price_ladder produced, so a
+    caller that takes the ladder in order sees what it always saw.
+
+    Returns [] rather than guessing when the opponent's record is missing: three of the
+    four subjects need the opponent's lambda, and inventing one would price the match
+    total off a single side.
+    """
+    out: List[dict] = []
+    if lam_team is None:
+        t_for = _real_avg(team, team_venue, "corners_for")
+        o_against = _real_avg(opp, opp_venue, "corners_against") if opp else None
+        if t_for is None or o_against is None:
+            return []
+        lam_team = live_lambda((t_for + o_against) / 2, team, team_venue,
+                               league_shots, league_blocked)
+
+    def rung(subject, line, label, key, p, about):
+        book = odds.get(key)
+        return {"subject": subject, "line": line, "label": label, "market_key": key,
+                "about": about,
+                "prob": round(p * 100, 1), "fair_odds": fair_odds(p),
+                "book_odds": book, "book_name": books.get(key) if book else None,
+                "ev": round((book * p - 1) * 100, 2) if book else None}
+
+    team_name = (team or {}).get("name") or ""
+    opp_name = (opp or {}).get("name") or ""
+    for line in LADDER_LINES:
+        out.append(rung("team", line, f"{line}+", f"{team_venue}_over_{line - 0.5}",
+                        nb_ge(line, lam_team), team_name))
+
+    # The opponent's own corners, the match total and both-teams all need the other side.
+    o_for = _real_avg(opp, opp_venue, "corners_for") if opp else None
+    t_against = _real_avg(team, team_venue, "corners_against")
+    if o_for is None or t_against is None:
+        return out
+    lam_opp = live_lambda((o_for + t_against) / 2, opp, opp_venue,
+                          league_shots, league_blocked)
+
+    for line in LADDER_LINES:
+        out.append(rung("opponent", line, f"{line}+", f"{opp_venue}_over_{line - 0.5}",
+                        nb_ge(line, lam_opp), opp_name))
+
+    # POISSON FOR THE TOTAL, negative binomial for a side — the same split the model uses
+    # everywhere else. Pricing a match total with nb_ge is the mistake that put a 13+ line
+    # fifteen points out once already.
+    lam_total = lam_team + lam_opp
+    for line in TOTAL_LADDER_LINES:
+        out.append(rung("match", line, f"{line}+", f"total_over_{line - 0.5}",
+                        poisson_ge(line, lam_total), "the match"))
+
+    pairs = markets.pair_counts(team, opp)
+    for line in BOTH_LADDER_LINES:
+        dep = markets.dependence(pairs, line)
+        p = markets.both_over_prob(line, lam_team, lam_opp, nb_ge,
+                                   (dep or {}).get("factor", 1.0))
+        r = rung("both", line, f"{line}+", f"both_over_{line - 0.5}", p, "both teams")
+        r["dependence"] = dep
+        out.append(r)
+    return out
+
 
 def team_price_ladder(lam, venue: str, odds: Dict[str, float], books: Dict[str, str],
                       lines=LADDER_LINES) -> List[dict]:
@@ -7835,7 +8113,14 @@ async def streaks(league_id: Optional[str] = None, side: str = "overall", window
         if not streak_qualifies(hits, voids, runs["current"]["length"], min_hits, floor):
             continue
         spread = streak_spread(values)
+        # `total` IS THE MATCH TOTAL OF THAT GAME, and it is here so a claim about the
+        # match has evidence of its own. The ladder can now quote a total, and "11+ in the
+        # game" backed by this side's own corner count would be the same mismatch the post
+        # format was just fixed for — a record of one thing printed under a bet on another.
         recent = [{"corners": lg["value"], "value": lg["value"], "result": lg["result"],
+                   "total": (m.get("corners_for", 0) + m.get("corners_against", 0))
+                            if m.get("corners_for") is not None
+                            and m.get("corners_against") is not None else None,
                    "opponent": m["opponent"], "home": m["home"], "date": m["date"]}
                   for m, lg in zip(reversed(pool), reversed(legs))]
         nf = next_fx.get(t["team_id"])
@@ -7862,10 +8147,17 @@ async def streaks(league_id: Optional[str] = None, side: str = "overall", window
             if projection is not None:
                 projection["odds_source"] = odds_src.get(nf["fixture_id"])
                 if direction == "over" and subject == "team":
-                    projection["ladder"] = team_price_ladder(
-                        projection.get("lambda"), team_venue,
+                    # THE WHOLE FIXTURE, not just this side's own corners. The row used to
+                    # carry two rungs and a post built from it could only ever offer those
+                    # two; a quiet team in a frantic game had no angle at all. The team
+                    # rungs are still first and unchanged.
+                    projection["ladder"] = fixture_price_ladder(
+                        t, opp, team_venue, opp_venue,
+                        ls_map.get(t["league_id"], REF_SHOTS),
+                        bl_map.get(t["league_id"], 0.0),
                         odds_map.get(nf["fixture_id"], {}),
-                        books_map.get(nf["fixture_id"], {}))
+                        books_map.get(nf["fixture_id"], {}),
+                        lam_team=projection.get("lambda"))
         results.append({
             "team_id": t["team_id"], "name": t["name"], "league_id": t["league_id"],
             "league_name": leagues.get(t["league_id"], ""),
@@ -8289,9 +8581,28 @@ async def _combined_rows(within_days: int = 7, min_samples: int = combined.DEFAU
                         for r in [*mismatches, *runs, *perfect]} - {None})
     priced = await _odds_for_many(fixture_ids)
     odds_by_fixture = {fid: row["odds"] for fid, row in priced.items()}
-    return combined.combine_boards(mismatches, runs, perfect, teams_by_id, odds_by_fixture,
+    rows = combined.combine_boards(mismatches, runs, perfect, teams_by_id, odds_by_fixture,
                                    prob_ge=nb_ge, min_samples=min_samples,
                                    min_opp_games=min_opp_games, min_boards=min_boards)
+    # THE SAME VERDICT THE VALUE BOARD CARRIES, for the reason ev_credibility exists: the
+    # bot's card, the spreadsheet and the site must not each hold their own opinion about
+    # which edges to believe. This board prices its own 5+/6+ angle from a stored book
+    # price, so it can surface the identical misprice the value board now demotes — and
+    # unflagged it would head this board too, because the sort puts the biggest edge on
+    # top of the value group.
+    #
+    # NO SPREAD HERE, so the note falls back to "nothing to check it against". The other
+    # books' quotes are per market key on the odds document and `combine_boards` is handed
+    # only the merged price map; passing the whole document through a pure merge to reach
+    # them is a bigger change than the flag is worth. The band is the part that gates a
+    # post, and the band only needs the EV.
+    for row in rows:
+        best = row.get("best")
+        cred = ev_credibility((best or {}).get("ev")) if best else None
+        if cred:
+            best["credibility"] = cred["band"]
+            best["credibility_note"] = cred["note"]
+    return rows
 
 
 @api_router.get("/combined")
@@ -8310,6 +8621,215 @@ async def combined_board(within_days: int = 7, min_samples: int = combined.DEFAU
     if value_only:
         rows = [r for r in rows if r.get("value")]
     return _preview(rows, user, response)
+
+
+# ----------------------------- The week card -----------------------------
+# One card per fixture, both sides at once: the line to back, the price, the run behind
+# it and whether that side will be chasing. The merge is in week_card.py; this gathers.
+
+# ONE LONDON DAY PER REQUEST, not a horizon, and that is a deliberate narrowing.
+# A week of fixtures is 300-odd games, the value board caps at 100 rows, and a card is
+# three or four lines tall — a whole week in one response would be truncated by the cap
+# and unreadable if it were not. A day is also the unit the card is actually used in:
+# you sit down on Monday and write out Tuesday.
+WEEK_CARD_MAX_AHEAD = 14
+
+
+def _week_card_states(home: dict, away: dict, lg: dict, match_odds: Optional[dict]):
+    """A `states_for(row, group)` for week_card.build_cards, bound to one fixture.
+
+    _game_state_for takes the headline market and reads the side off its `group`, which
+    is right for a board with one line per row and wrong here: this card shows BOTH
+    sides, so each one needs its own verdict whatever the headline happens to be.
+
+    THE ROW'S OWN VERDICT IS REUSED where it fits. value_board already computed one, for
+    the side its headline line is on; recomputing that side would walk the same forty
+    matches a second time on every card. Only the other side is new work.
+    """
+    def states_for(row, group):
+        theirs = row.get("game_state")
+        if theirs and (row.get("best") or {}).get("group") == group:
+            return theirs
+        return _game_state_for({"group": group}, home, away, lg, match_odds)
+    return states_for
+
+
+@api_router.get("/week-card")
+async def week_card_board(day: Optional[str] = None, league_id: Optional[str] = None,
+                          min_run: int = 0, priced_only: bool = False,
+                          response: Response = None,
+                          user: dict = Depends(require_member)):
+    """Every game on one day, both sides, with the bet and the evidence beside it.
+
+    MEMBERS ONLY, for the reason /value-board is: the card's content is live prices the
+    model disagrees with, on games that have not kicked off. That is the product, and a
+    taste of it is the best three bets on the day rather than a sample of them.
+
+    `day` is a London calendar date (YYYY-MM-DD); omitted, it is today in London. Not a
+    `within_days` horizon — see the note above WEEK_CARD_MAX_AHEAD.
+
+    `min_run` keeps only cards where a side has a run of at least that many settled
+    hits behind it. `priced_only` drops cards where neither side has a bookmaker price.
+
+    COST: this is the expensive board. The value board walks every priced fixture and the
+    merged board walks every team three times over. It is one day's worth and it is not
+    cached, so it is not something to poll.
+    """
+    today = local_day(datetime.now(timezone.utc).isoformat())
+    want_day = (day or today or "")[:10]
+    try:
+        ahead = (datetime.fromisoformat(want_day).date()
+                 - datetime.fromisoformat(today).date()).days
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400,
+                            detail="day must be a date, as YYYY-MM-DD")
+    if ahead < 0:
+        raise HTTPException(status_code=400, detail="that day has already been played")
+    if ahead > WEEK_CARD_MAX_AHEAD:
+        raise HTTPException(
+            status_code=400,
+            detail=f"{want_day} is more than {WEEK_CARD_MAX_AHEAD} days ahead")
+
+    # The value board filtered to exactly this London day, carrying every rung — priced
+    # or not — because a side's line is chosen from the whole ladder and an unquoted rung
+    # still has the model's fair price on it.
+    rows = await value_board(within_days=None, min_ev=0.0, day=want_day,
+                             league_id=league_id, limit=100, ladder=True, user=user)
+    rows = [r for r in rows if r.get("status") in ("ok", "below_floor")]
+
+    # Board membership and the run. min_boards=1, because a side on the streak board
+    # alone is still a side with a run behind it — the two-board bar is what makes the
+    # COMBINED board a shortlist, and this is a diary, not a shortlist.
+    board_rows = await _combined_rows(within_days=max(1, ahead + 1), min_boards=1,
+                                      user=user)
+    board_rows = [b for b in board_rows
+                  if local_day((b.get("next_fixture") or {}).get("date")) == want_day]
+
+    # THE GAMES WITH A RUN BUT NO PRICE, which the value board cannot see at all.
+    #
+    # value_board is ODDS-DRIVEN — it walks stored prices, so a fixture nobody has
+    # quoted produces no row however interesting the sides are. That is right for a
+    # board of live edges and wrong for a card you research FROM: the games you want to
+    # look up are precisely the ones that have a run on them and no price yet. They come
+    # in here with an empty ladder, so every side reads "no price yet" beside its run.
+    #
+    # This is a union, not a widening: a fixture with neither a price nor a side on any
+    # board never appears, which is what keeps a 118-game Saturday down to a card.
+    have = {r.get("fixture_id") for r in rows}
+    want_ids = {(b.get("next_fixture") or {}).get("fixture_id") for b in board_rows} - have
+    want_ids.discard(None)
+    if want_ids:
+        now = datetime.now(timezone.utc)
+        for fx in await db.fixtures.find({"fixture_id": {"$in": list(want_ids)}},
+                                         {"_id": 0}).to_list(len(want_ids) + 100):
+            if league_id and league_id != "all" and fx.get("league_id") != league_id:
+                continue
+            kicked = _iso_to_dt(fx.get("date"))
+            if kicked and kicked < now:
+                continue
+            rows.append({"fixture_id": fx["fixture_id"], "date": fx.get("date"),
+                         "round": fx.get("round"), "league_id": fx.get("league_id"),
+                         "league_name": "", "tier": (LEAGUE_META.get(fx.get("league_id"))
+                                                     or {}).get("tier"),
+                         "home_name": fx.get("home_name"), "away_name": fx.get("away_name"),
+                         "home_team_id": fx.get("home_team_id"),
+                         "away_team_id": fx.get("away_team_id"),
+                         "status": "no_price", "note": "No price stored for this game yet.",
+                         "best": None, "ladder": [], "lambda_total": None,
+                         "confidence": None})
+
+    # BOTH IN BULK, one query each. A card needs the two teams' match history for the
+    # game-state verdict and the league's shot reference to judge a blunt side; asking
+    # per fixture is a few hundred round trips for a day's board.
+    teams, leagues_by_id = {}, {}
+    ids = {t for r in rows for t in (r.get("home_team_id"), r.get("away_team_id")) if t}
+    if ids:
+        for t in await db.teams.find({"team_id": {"$in": list(ids)}}, {"_id": 0}) \
+                               .to_list(len(ids) + 100):
+            teams[t["team_id"]] = t
+    lids = {r.get("league_id") for r in rows if r.get("league_id")}
+    if lids:
+        for lg_doc in await db.leagues.find({"league_id": {"$in": list(lids)}},
+                                            {"_id": 0}).to_list(len(lids) + 100):
+            leagues_by_id[lg_doc["league_id"]] = lg_doc
+    # The unpriced rows came from the fixtures collection, which carries an id and not a
+    # name. Filled in here so every card is labelled the same way, whichever list it
+    # arrived on — an unnamed league on half the cards reads as missing data.
+    for r in rows:
+        if not r.get("league_name"):
+            r["league_name"] = (leagues_by_id.get(r.get("league_id")) or {}).get("name", "")
+
+    # A MODEL LADDER FOR THE UNPRICED GAMES, so a research card says what the bet is
+    # rather than "no line". The model does not need a book price to work one out — it
+    # needs the two sides and the league — and the fair price is the answer to "what is
+    # this worth", which is the question you open the game with. Every rung comes back
+    # with book_odds None, so the card prints it as the model's number and never as one
+    # anybody is offering.
+    for r in rows:
+        if r.get("status") != "no_price":
+            continue
+        home = teams.get(r.get("home_team_id"))
+        away = teams.get(r.get("away_team_id"))
+        if not home or not away:
+            continue
+        try:
+            model = fixture_model_from(home, away,
+                                       leagues_by_id.get(r.get("league_id")) or {}, {})
+        except Exception as e:                   # one unpriceable game must not take the day
+            logger.warning(f"week card model failed for {r.get('fixture_id')}: {e}")
+            continue
+        r["ladder"] = [{"key": m["key"], "group": m["group"],
+                        "label": f"{m['group_label']} {m['label']}", "line": m["line"],
+                        "book_odds": None, "fair_odds": m["fair_odds"],
+                        "prob": m["prob"], "ev": None, "tier": m["tier"]}
+                       for m in model["markets"]]
+        r["lambda_total"] = model["lambdas"]["total"]
+        r["confidence"] = model["confidence"]
+
+    # ONLY the Match Winner consensus, not the whole price document. game_state uses it
+    # for one thing — how short the opponent is — and the corner prices are already on
+    # the rows. _merged_prices would re-merge two collections to hand back what the
+    # ladder is carrying anyway.
+    fids = [r["fixture_id"] for r in rows if r.get("fixture_id")]
+    match_odds = {}
+    if fids:
+        for d in await db.odds_feed.find({"fixture_id": {"$in": fids}},
+                                         {"_id": 0, "fixture_id": 1, "match_odds": 1}) \
+                                   .to_list(len(fids) + 100):
+            if d.get("match_odds"):
+                match_odds[d["fixture_id"]] = d["match_odds"]
+
+    cards = []
+    for row in rows:
+        home = teams.get(row.get("home_team_id")) or {}
+        away = teams.get(row.get("away_team_id")) or {}
+        lg = leagues_by_id.get(row.get("league_id")) or {}
+        states_for = _week_card_states(home, away, lg,
+                                       match_odds.get(row.get("fixture_id")))
+        cards.extend(week_card.build_cards([row], board_rows, states_for,
+                                           CREDIBILITY_ORDER))
+
+    cards.sort(key=week_card.card_sort_key)
+    total = len(cards)
+    if min_run > 0:
+        cards = [c for c in cards
+                 if any((c[s].get("run") or {}).get("settled", 0) and
+                        (c[s]["run"].get("hits") or 0) >= min_run
+                        for s in ("home", "away"))]
+    if priced_only:
+        cards = [c for c in cards
+                 if any((c[s].get("pick") or {}).get("book_odds")
+                        for s in ("home", "away")) or (c.get("total") or {}).get("book_odds")]
+
+    out = {"day": want_day, "cards": cards, "fixtures": len(cards),
+           # WHAT WAS LEFT OUT, because a short list after a filter and a quiet day look
+           # identical otherwise — the same reason the fixture board reports `scanned`.
+           "considered": total,
+           "with_runs": sum(1 for c in cards if c["run_count"]),
+           "max_ahead": WEEK_CARD_MAX_AHEAD}
+    if response is not None:
+        response.headers["X-Week-Cards"] = str(len(cards))
+    return out
 
 
 def _venue_matches(team, venue):
@@ -11279,6 +11799,19 @@ RESULT_BOARDS = (
      "A run, a mismatch and a leaky opponent all agreeing."),
     ("mismatch", "Quick scan", "mismatch_snapshots",
      "This attack against THIS defence — about the fixture, not the form."),
+    # THE ONE BOARD THAT WAS FROZEN AND THEN READ BY NOBODY. #373 gave the combined board
+    # a daily snapshot and /combined/history, but the Results page is where the question
+    # "is this worth following" is actually asked, and it listed three boards out of four.
+    #
+    # ITS DENOMINATOR IS NOT COMPARABLE WITH THE OTHERS AND THE PAGE MUST NOT IMPLY IT IS.
+    # This board is a SHORTLIST of the three above it — a team is on it only by appearing
+    # on two of them for the same fixture — so its rows are a subset of theirs, settled
+    # again under a different name. A reader adding the four denominators together would
+    # be counting the same games twice, which is why the blurb says so rather than a
+    # footnote somewhere else saying it.
+    ("combined", "Combined", "combined_snapshots",
+     "Teams on two of the three boards above for the same game — a subset of them, "
+     "not a fourth independent source."),
 )
 
 
@@ -11432,7 +11965,7 @@ async def angles_card(count: int = angle_of_day.COUNT, token: Optional[str] = No
 # Which boards `/share/rows` will assemble. Named rather than "everything, always",
 # because three of the five walk every team in the database and the daily poster only ever
 # needs the first two — see the `boards` parameter below.
-SHARE_BOARDS = ("streaks", "fixtures", "mismatches", "chase", "value")
+SHARE_BOARDS = ("streaks", "fixtures", "mismatches", "chase", "value", "combined")
 SHARE_BOARDS_DEFAULT = "streaks,fixtures"
 
 
@@ -11561,6 +12094,17 @@ BOT_VALUE_DAYS = 7
 #: The same floor the value board's own default screen uses. A row that clears nothing is
 #: not an edge, and a card listing every priced row would be a card of noise.
 BOT_VALUE_MIN_EV = 5.0
+#: THREE DAYS FOR THE COMBINED CARD, where the value card takes seven.
+#:
+#: They are shortlists of different kinds. The value card is priced bets, and a wide window
+#: is safe there because a stale fetched price drops out of the merge on its own (see
+#: BOT_VALUE_DAYS above) — so a week out either has a live price or shows nothing. The
+#: combined card is a shortlist to go and PRICE UP, most of whose rows have no book price
+#: yet, and nothing expires those. At seven days it becomes the same twenty teams every
+#: morning; at one day it is empty most mornings, because two boards agreeing on a game
+#: tomorrow is rare. Three days is long enough to get a price on and short enough that the
+#: card changes.
+BOT_COMBINED_DAYS = 3
 #: How much better a bet's EV has to get before it is sent A SECOND time.
 #:
 #: The value send runs off the back of the odds fetch, so the same bet is looked at again
@@ -12146,6 +12690,14 @@ async def telegram_digest(token: Optional[str] = None, to: str = "owner",
         sections.append(bot_cards.value_card(bot_cards.value_rows(rows, min_ev=BOT_VALUE_MIN_EV)))
     except Exception:
         logger.exception("digest: value board failed")
+    # AFTER THE VALUE CARD, because it answers a different question and the order says
+    # which. The value card is the day's priced bets; this is the shortlist to go and
+    # price up, so it reads as the follow-on rather than competing with it.
+    try:
+        sections.append(bot_cards.combined_card(
+            await _combined_rows(within_days=BOT_COMBINED_DAYS, user={})))
+    except Exception:
+        logger.exception("digest: combined board failed")
     try:
         sections.append(bot_cards.settled_card(yesterday, await _bot_settled(yesterday)))
     except Exception:
@@ -12728,6 +13280,17 @@ async def share_rows(days: int = 3, limit: int = 12, token: Optional[str] = None
         out["mismatches"] = await timed("mismatches", _all_mismatches(days, limit))
     if "chase" in want:
         out["chase"] = await timed("chase", _chase_board(days, limit))
+    if "combined" in want:
+        # AGREEMENT, which none of the others answer. streaks says a side keeps clearing a
+        # line, mismatches says this attack meets that defence, chase says game state —
+        # this is the same team and the same fixture turning up on more than one of them.
+        #
+        # ALREADY FILTERED FOR THE POSTER, like the value board below: an implausible band
+        # is a price stored against the wrong line, and the daily post is the last place it
+        # should surface. _combined_rows attaches the band; this drops it.
+        rows = await timed("combined", _combined_rows(within_days=days, user={}))
+        out["combined"] = [r for r in rows
+                           if (r.get("best") or {}).get("credibility") != "implausible"][:limit]
     if "value" in want:
         # ONLY THE ROWS THAT ARE ACTUALLY BETS. The board deliberately keeps every price as
         # a row so nothing vanishes unexplained, and those `status` rows are the right

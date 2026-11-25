@@ -29,7 +29,8 @@ const LIB = resolve(HERE, "..", "frontend", "src", "lib");
 
 // The lib modules import each other by relative path and use no bundler features, so
 // they load as-is. `shareText.js` pulls in countryFlag and kickoff itself.
-const { streakShare, fixtureShare, streakResultShare, pickGame, pickGameDetailed, gameShare, pricedRung, cardPost,
+const { streakShare, fixtureShare, streakResultShare, pickGame, pickGameDetailed, pickGamesValue, rungRecord, gameShare, pricedRung, cardPost,
+        GAME_MIN_PROB, GAME_MIN_RUN,
         picksReview, angleMenu, PUBLIC_STREAK_ROWS } = await import(resolve(LIB, "shareText.js"));
 const { fixtureStoryMarkets } = await import(resolve(LIB, "storyImage.js"));
 const { kickoffLabel } = await import(resolve(LIB, "kickoff.js"));
@@ -791,30 +792,48 @@ ${card}
 // ---- one game, posted whole. A board is a list; this is a game, and it gets three lines
 // to say when it is, who is playing and why it is worth a look. See gameShare.
 if (BOARD === "game") {
-  // VALUE FIRST where a real price exists, form only when none does. `basis` says which,
-  // so the note can be honest about it rather than letting a confidence ranking read as a
-  // value one — see pickGameDetailed.
-  const { row, basis } = pickGameDetailed(data.streaks || []);
-  if (!row) skip("no game today carries a run worth posting on its own");
-  const post = gameShare({ row, site: SITE })();
-  const rung = pricedRung(row);
-  if (!post) skip("the best row has no fixture attached — nothing to post about");
+  // HOW MANY GAMES. One by default, so every caller that exists today — the daily step in
+  // social_draft.yml among them — gets byte-identical output and the same JSON shape.
+  //
+  // ASK FOR MORE AND THE RULE CHANGES, deliberately. One game falls back to the model's
+  // confidence when no real price exists, because "today's game" should still exist on a
+  // day nobody has priced. Several games is a request for several PRICES, and a
+  // confidence pick padded onto the end of a value list is indistinguishable from the
+  // rest once it has been posted. So `--count 3` returns up to three VALUE picks and
+  // fewer when that is the truth. See pickGamesValue.
+  const COUNT = Math.max(1, Number(arg("count", "1")) || 1);
+  // THE SHORTEST RUN WORTH POSTING. Five by default — see GAME_MIN_RUN, and the board it
+  // came from. A flag rather than a constant so a quiet week can be loosened on purpose
+  // and the log says it was, instead of someone editing the floor and leaving it there.
+  const MIN_RUN = Math.max(1, Number(arg("min-run", String(GAME_MIN_RUN))) || GAME_MIN_RUN);
+  const rows = data.streaks || [];
+  const picks = COUNT === 1
+    ? (() => { const { row, basis } = pickGameDetailed(rows, GAME_MIN_PROB, MIN_RUN);
+               return row ? [{ row, basis }] : []; })()
+    : pickGamesValue(rows, COUNT, MIN_RUN).map((row) => ({ row, basis: "value" }));
+  if (!picks.length) {
+    // NAMES THE FLOOR. "Nothing worth posting" and "nothing cleared a bar I set" read the
+    // same in a log, and only one of them is a reason to look at the bar.
+    const longest = Math.max(0, ...rows.map((r) => Number(r?.streak?.length) || 0));
+    skip(`no game carries a run of ${MIN_RUN}+ with ${COUNT === 1 ? "something" : "a real price and a positive edge"}`
+      + ` worth posting — the longest run on the board is ${longest}`);
+  }
 
   // THE PICTURE, built from the same fixture the text is about.
   //
-  // A separate call, because the board rows carry no probability CURVE — only the single
-  // number for their own line. The curve is what makes the image worth looking at, and it
-  // lives on the fixture endpoint.
+  // A separate call per game, because the board rows carry no probability CURVE — only
+  // the single number for their own line. The curve is what makes the image worth looking
+  // at, and it lives on the fixture endpoint. At --count 3 that is three calls; the
+  // backend caches them and a failure degrades to text rather than throwing.
   //
-  // WITH THE TOKEN, AND IT USED TO SAY "which is public: no token". That stopped being true
-  // the day the fixture page began withholding the model from non-members: `distribution`
-  // and `lambdas` came back stripped, `story` stayed null, and the job logged "no fixture
-  // curve in today's draft — text only" — which reads like a quiet day rather than a broken
-  // picture. A failure here still degrades to text rather than throwing, so the token is
-  // what makes the difference between a picture and a silent absence of one.
-  let story = null;
-  const fid = row.next_fixture?.fixture_id;
-  if (fid) {
+  // WITH THE TOKEN, AND IT USED TO SAY "which is public: no token". That stopped being
+  // true the day the fixture page began withholding the model from non-members:
+  // `distribution` and `lambdas` came back stripped, `story` stayed null, and the job
+  // logged "no fixture curve in today's draft — text only" — which reads like a quiet day
+  // rather than a broken picture.
+  const storyFor = async (row) => {
+    const fid = row.next_fixture?.fixture_id;
+    if (!fid) return null;
     const detail = await getSoft(`/api/fixtures/${encodeURIComponent(fid)}`
       + `?token=${encodeURIComponent(TOKEN)}`);
     const dists = detail?.model?.distribution;
@@ -822,49 +841,83 @@ if (BOARD === "game") {
     // total's curve underneath it.
     const group = String(row.projection?.market_key || "total").split("_")[0];
     const dist = dists?.[group] || dists?.total;
-    if (dist?.length) {
-      story = {
-        homeName: detail.fixture?.home_name || "",
-        awayName: detail.fixture?.away_name || "",
-        leagueId: detail.fixture?.league_id || row.league_id || "",
-        kickoff: kickoffLabel(detail.fixture?.date || row.next_fixture?.date),
-        dist, group: dists?.[group] ? group : "total",
-        markets: fixtureStoryMarkets(detail.model?.markets || [], detail.model?.lambdas || {},
-          { homeName: detail.fixture?.home_name, awayName: detail.fixture?.away_name }),
-      };
-    }
+    if (!dist?.length) return null;
+    return {
+      homeName: detail.fixture?.home_name || "",
+      awayName: detail.fixture?.away_name || "",
+      leagueId: detail.fixture?.league_id || row.league_id || "",
+      kickoff: kickoffLabel(detail.fixture?.date || row.next_fixture?.date),
+      dist, group: dists?.[group] ? group : "total",
+      markets: fixtureStoryMarkets(detail.model?.markets || [], detail.model?.lambdas || {},
+        { homeName: detail.fixture?.home_name, awayName: detail.fixture?.away_name }),
+    };
+  };
+
+  const drafts = [];
+  for (const { row, basis } of picks) {
+    const post = gameShare({ row, site: SITE })();
+    if (!post) continue;              // no fixture attached — nothing to post about
+    const rung = pricedRung(row);
+    // NO &url= HERE. The post already ends on the link, and the intent parameter would
+    // put a second copy of the same address underneath it.
+    //
+    // xWeight, NOT weightedLength: the latter is a character weigher and charges this
+    // address its full 26, so the figure printed beside a draft came out a few over what
+    // X actually counts — which is the number somebody checks against X's own composer.
+    const intent = `https://x.com/intent/tweet?text=${encodeURIComponent(post)}`;
+    const prob = row.projection?.prob;
+    // THE RECORD AT THE LINE THE POST QUOTES, which is not always the line the run is on
+    // — see gameShare. Printed in the note so whoever posts can see what the claim in the
+    // tweet actually rests on before they send it.
+    const atRung = rung ? rungRecord(row, rung.line) : null;
+    drafts.push({
+      row, basis, post, intent, rung, atRung, weight: xWeight(post),
+      story: await storyFor(row),
+      note: `${row.name} ${row.line_label} · ${row.streak?.length} in a row · model ${prob ?? "—"}%`
+        + (basis === "value"
+            ? ` · picked on VALUE, EV ${row.projection?.ev > 0 ? "+" : ""}${row.projection?.ev}%`
+            : " · picked on form — no real price to measure value against"),
+    });
   }
-  // NO &url= HERE. The post already ends on the link, and the intent parameter would put
-  // a second copy of the same address underneath it.
-  //
-  // xWeight, NOT weightedLength, and the old comment here had it backwards: it claimed
-  // weightedLength "already charges the flat t.co weight", which it does not — it is a
-  // character weigher and charged this address its full 26. The figure printed beside a
-  // draft was a few over what X counts, which is exactly the number somebody checks against
-  // X's own composer before editing.
-  const weight = xWeight(post);
-  const intent = `https://x.com/intent/tweet?text=${encodeURIComponent(post)}`;
-  const prob = row.projection?.prob;
-  emit(`**[Post this on X](${intent})** — opens the composer already filled in. Nothing is posted until you hit Post.
+  if (!drafts.length) skip("the best rows have no fixture attached — nothing to post about");
+
+  const one = (d, i) => `${drafts.length > 1 ? `### ${i + 1}. ${d.row.name}\n\n` : ""}\
+**[Post this on X](${d.intent})** — opens the composer already filled in. Nothing is posted until you hit Post.
 
 \`\`\`
-${post}
+${d.post}
 \`\`\`
 
-${weight} / 280 characters as X counts them.
-Chosen on ${basis === "value" ? "VALUE — the biggest edge over a price you typed in"
+${d.weight} / 280 characters as X counts them.
+Chosen on ${d.basis === "value" ? "VALUE — the biggest edge over a price you typed in"
   : "FORM — no bookmaker price stored, so this is the model's confidence, NOT value"}.
-${row.name} ${row.line_label}: ${row.streak?.length} in a row, model ${prob ?? "—"}%${
-  row.projection?.fair_odds ? ` (fair ${row.projection.fair_odds})` : ""}${
+${d.row.name} ${d.row.line_label}: ${d.row.streak?.length} in a row, model ${d.row.projection?.prob ?? "—"}%${
+  d.row.projection?.fair_odds ? ` (fair ${d.row.projection.fair_odds})` : ""}${
   data.data_age_hours != null ? `, on data ${data.data_age_hours}h old` : ""}.
-${rung ? `Quoting ${rung.label} @ ${rung.book_odds}${rung.book_name ? ` (${rung.book_name})` : ""}: model ${rung.prob}%, fair ${rung.fair_odds}, edge ${rung.ev ?? "—"}%.`
+${d.rung ? `Quoting ${d.rung.label} @ ${d.rung.book_odds}${d.rung.book_name ? ` (${d.rung.book_name})` : ""}: model ${d.rung.prob}%, fair ${d.rung.fair_odds}, edge ${d.rung.ev ?? "—"}%.`
   : "No real bookmaker price at 5+/6+, so the post has no price line."}
+${d.atRung && d.rung && Number(d.rung.line) !== Number(d.row.line)
+  ? `THE RUN IS AT A DIFFERENT LINE from the bet. ${d.row.name} have cleared ${d.rung.label} in ${d.atRung.hits} of their last ${d.atRung.of} — that, and not the ${d.row.line_label} run, is what the post claims.`
+  : ""}
 Only the bookmaker's price is in the post. The model's number stays here — see gameShare.
-`, { empty: false, board: "game", post, intent, weight, full: post, story,
-     note: `${row.name} ${row.line_label} · ${row.streak?.length} in a row · model ${prob ?? "—"}%`
-       + (basis === "value"
-           ? ` · picked on VALUE, EV ${row.projection?.ev > 0 ? "+" : ""}${row.projection?.ev}%`
-           : " · picked on form — no real price to measure value against") });
+`;
+
+  const body = drafts.map(one).join("\n---\n\n");
+  emit(body, {
+    empty: false, board: "game",
+    // THE FIRST PICK AT THE TOP LEVEL, unchanged, so the workflow step that renders one
+    // clip and sends one message keeps working without knowing this flag exists.
+    post: drafts[0].post, intent: drafts[0].intent, weight: drafts[0].weight,
+    full: drafts[0].post, story: drafts[0].story, note: drafts[0].note,
+    // AND ALL OF THEM, for a caller that asked for several.
+    count: drafts.length,
+    posts: drafts.map((d) => ({
+      post: d.post, intent: d.intent, weight: d.weight, note: d.note, story: d.story,
+      name: d.row.name, fixture_id: d.row.next_fixture?.fixture_id,
+      quoted_line: d.rung?.label ?? null, run_line: d.row.line_label ?? null,
+      at_quoted_line: d.atRung,
+    })),
+  });
   process.exit(0);
 }
 

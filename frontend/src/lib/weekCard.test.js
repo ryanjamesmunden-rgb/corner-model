@@ -1,6 +1,6 @@
 import { boardLabel, cardNote, dayStrip, lineLabel, PICK_RESULT, priceOf, priceValue,
-         priceTone, recordOf, recordText, resultText, slotsOf, valueShort, valueText,
-         warningsOf } from "./weekCard";
+         lastGames, lastGamesText, priceTone, recordOf, recordText, resultText,
+         slotsOf, valueShort, valueText, warningsOf } from "./weekCard";
 
 const pick = (over = {}) => ({ line: 6, label: "6+", book_odds: 1.73, fair_odds: 1.58,
                                prob: 63.2, ev: 9.4, credibility: "credible", ...over });
@@ -349,5 +349,68 @@ describe("what colour the price is drawn in", () => {
 
   it("does not warn on an opponent nobody measured", () => {
     expect(priceTone(sided({ opp_conceded: null })).tone).toBe("backed");
+  });
+});
+
+// --- the last ten games, the way the Streaks board draws them -------------------------
+//
+// The record says "4 of 5". What it cannot say is whether those five were a fair sample,
+// and the five before them are the only thing that answers it.
+
+describe("the games behind the record", () => {
+  const g = (value, opponent = "Barnsley", home = true) => ({ value, opponent, home });
+  const withGames = (games, line = 5) => ({
+    name: "Bradford", pick: pick({ line }),
+    run: { line: 5, hits: 4, settled: 5, last_games: games },
+  });
+
+  it("grades each game against the line on the CARD, not the run's line", () => {
+    // The run is measured at 5+; this card leads with 7+. A game of 6 cleared the run's
+    // line and not this bet, and printing it green would be a lie about the bet beside it.
+    const out = lastGames(withGames([g(6), g(8)], 7));
+    expect(out.map((x) => x.hit)).toEqual([false, true]);
+  });
+
+  it("keeps the order it was given, newest first", () => {
+    expect(lastGames(withGames([g(9), g(2), g(7)])).map((x) => x.value))
+      .toEqual([9, 2, 7]);
+  });
+
+  it("trims from the newest end when the table asks for five", () => {
+    const ten = [9, 2, 7, 4, 11, 6, 3, 8, 5, 1].map((v) => g(v));
+    expect(lastGames(withGames(ten), 5).map((x) => x.value)).toEqual([9, 2, 7, 4, 11]);
+  });
+
+  it("counts a game exactly on the line as a hit, because 5+ means five", () => {
+    expect(lastGames(withGames([g(5)], 5))[0].hit).toBe(true);
+  });
+
+  it("keeps a goalless game rather than dropping it", () => {
+    // Zero corners is the most informative game on the row and the easiest to lose to a
+    // falsy check.
+    const out = lastGames(withGames([g(0)]));
+    expect(out).toHaveLength(1);
+    expect(out[0]).toMatchObject({ value: 0, hit: false });
+  });
+
+  it("will not colour a game it has no figure for", () => {
+    // Unknown is not a miss, and a red chip would say it was.
+    expect(lastGames(withGames([g(null), g(7)]))).toHaveLength(1);
+    expect(lastGames({ pick: null, run: { last_games: [g(7)] } })[0].hit).toBeNull();
+  });
+
+  it("is empty rather than a crash for a side with no run", () => {
+    expect(lastGames({ pick: pick() })).toEqual([]);
+    expect(lastGames(null)).toEqual([]);
+  });
+
+  it("sums the chips with their denominator and the line they were graded at", () => {
+    const six = [9, 2, 7, 4, 11, 6].map((v) => g(v));
+    expect(lastGamesText(withGames(six))).toBe("4 of the last 6 at 5+");
+  });
+
+  it("says nothing when there is no line to grade against", () => {
+    expect(lastGamesText({ pick: null, run: { last_games: [g(7)] } })).toBe("");
+    expect(lastGamesText({ pick: pick() })).toBe("");
   });
 });

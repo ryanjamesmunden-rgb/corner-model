@@ -170,17 +170,22 @@ PLAYED_STATS_CAP = 40
 # WHY IT IS ITS OWN NUMBER. A league team's record lives in db.teams and is twenty-odd
 # games deep whatever this window says; fixtures_played is only the results VIEW. A cup
 # side has no such record anywhere — its competition games exist in fixtures_played and
-# nowhere else — so for a cup this window is not a view, it is the entire history. At 30
-# days that is one game a side in a European league phase, which is a fixture page that
-# answers "how have they done in this competition" with a sample of one.
+# nowhere else — so for a cup this window is not a view, it is the entire history. At the
+# leagues' 30 days that was ONE game a side in a European league phase: a fixture page
+# answering "how have they done in this competition" with a sample of one.
 #
-# RAISING IT COSTS CALLS, ONCE. Each newly covered tie needs one /fixtures/statistics
-# call, capped at PLAYED_STATS_CAP per competition per sync and cached permanently by the
-# provider's fixture id afterwards. So a longer window is a one-off backfill spread over
-# a few syncs, then free. Left equal to the league window until somebody decides to spend
-# that; the only thing this constant changes today is that the decision is one edit in
-# one place rather than a shared number that cannot be moved for cups alone.
-CUP_KEEP_DAYS = PLAYED_KEEP_DAYS
+# 240 DAYS IS A SEASON OF IT. A European league phase runs September to late January and
+# the knockout rounds to late May, so this covers the competition from its first matchday
+# to its final wherever in the season it is read. It does not reach last season, which is
+# a different squad and a different competition format and would be padding.
+#
+# WHAT IT COST, ONCE. Each newly covered tie needs one /fixtures/statistics call, capped
+# at PLAYED_STATS_CAP per competition per sync and cached permanently by the provider's
+# fixture id afterwards — so this is a backfill spread over a few nightly syncs (roughly
+# four hundred calls across the three European competitions, at forty per competition per
+# run) and then free forever. Lower it and the pages go thin again; there is no ongoing
+# charge for leaving it high.
+CUP_KEEP_DAYS = 240
 
 
 def is_recently_played(f, now=None, days=PLAYED_KEEP_DAYS) -> bool:

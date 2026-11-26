@@ -3584,10 +3584,35 @@ def _iso_to_dt(value) -> Optional[datetime]:
 
 
 async def _data_version() -> Optional[str]:
-    """Newest league sync timestamp — what a screen's contents actually depend on."""
+    """What a screen's contents actually depend on: the team data AND the prices.
+
+    IT USED TO BE THE LEAGUE SYNC ALONE, and that left every board an hour or more out of
+    date on the one number people act on. A screen is stale only when this string changes,
+    so a board built at 08:15 stayed "fresh" until the next rebuild however many prices
+    arrived in between — and prices arrive hourly, plus every manual fetch. A full scan
+    could price forty fixtures at lunchtime and the Streaks page would still show them
+    unpriced at seven in the evening, which reads as "the site never fetched the odds".
+
+    TRUNCATED TO THE HOUR, because the alternative is a rebuild on every write. The odds
+    passes run hourly, so an hour is the real resolution of the thing being tracked, and
+    at this grain a screen goes stale at most once an hour. The rebuild that follows is
+    the background one — see _screen — so nobody waits for it either way.
+    """
     newest = await db.leagues.find({}, {"_id": 0, "synced_at": 1}) \
         .sort("synced_at", -1).limit(1).to_list(1)
-    return (newest[0].get("synced_at") if newest else None) or None
+    synced = (newest[0].get("synced_at") if newest else None) or ""
+    # BEST EFFORT, because this decides whether a cached page may be served and must
+    # never be the reason one cannot be. A store that is missing or unreachable falls
+    # back to the league version alone — the behaviour before prices were tracked here —
+    # rather than raising out of a function every board calls.
+    at = ""
+    try:
+        priced = await db.odds_feed.find({}, {"_id": 0, "fetched_at": 1}) \
+            .sort("fetched_at", -1).limit(1).to_list(1)
+        at = str((priced[0].get("fetched_at") if priced else "") or "")[:13]  # to the hour
+    except Exception:                                         # noqa: BLE001
+        logger.debug("no odds version available; screens keyed on the sync alone")
+    return f"{synced}|{at}" if (synced or at) else None
 
 
 async def _screen_is_stale(doc: dict) -> bool:

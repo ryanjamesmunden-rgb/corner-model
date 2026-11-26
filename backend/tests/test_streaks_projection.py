@@ -555,3 +555,70 @@ def test_the_value_board_decides_the_window_before_it_builds_a_model():
     model = body.index("fixture_model_from(")
     assert window < model, \
         "the window check fell back below the model build; a one-day board pays for a week"
+
+
+# --- a price fetched at lunchtime has to reach the board before the evening ------------
+#
+# `_data_version` was the league sync timestamp alone, and a screen is stale only when
+# that string changes. So a board built at 08:15 stayed "fresh" for thirteen hours
+# however many prices arrived in between — and prices arrive hourly. A full scan could
+# price forty fixtures at lunchtime and the Streaks page would still show them unpriced
+# at seven, which reads as "the site never fetched the odds".
+
+class _OneDoc:
+    def __init__(self, doc): self._doc = doc
+    def sort(self, *a, **k): return self
+    def limit(self, n): return self
+    async def to_list(self, n): return [self._doc] if self._doc else []
+
+
+def _version_db(monkeypatch, synced, fetched, odds_raises=False):
+    class DB:
+        class leagues:
+            @staticmethod
+            def find(q, proj): return _OneDoc({"synced_at": synced} if synced else None)
+
+        class odds_feed:
+            @staticmethod
+            def find(q, proj):
+                if odds_raises:
+                    raise RuntimeError("no such collection")
+                return _OneDoc({"fetched_at": fetched} if fetched else None)
+    monkeypatch.setattr(server, "db", DB())
+
+
+def test_a_price_fetched_this_hour_changes_the_version(monkeypatch):
+    _version_db(monkeypatch, "2026-11-26T07:00:00Z", "2026-11-26T08:15:00Z")
+    before = run(server._data_version())
+    _version_db(monkeypatch, "2026-11-26T07:00:00Z", "2026-11-26T14:47:00Z")
+    assert run(server._data_version()) != before, "the board would still show 08:15 prices"
+
+
+def test_two_fetches_in_the_same_hour_do_not_rebuild_twice(monkeypatch):
+    """Truncated to the hour on purpose: the alternative is a rebuild on every write, and
+    the odds passes run hourly, so an hour is the real resolution of what is tracked."""
+    _version_db(monkeypatch, "2026-11-26T07:00:00Z", "2026-11-26T14:02:00Z")
+    a = run(server._data_version())
+    _version_db(monkeypatch, "2026-11-26T07:00:00Z", "2026-11-26T14:58:00Z")
+    assert run(server._data_version()) == a
+
+
+def test_a_league_sync_still_changes_it(monkeypatch):
+    _version_db(monkeypatch, "2026-11-26T07:00:00Z", "2026-11-26T14:00:00Z")
+    a = run(server._data_version())
+    _version_db(monkeypatch, "2026-11-26T19:00:00Z", "2026-11-26T14:00:00Z")
+    assert run(server._data_version()) != a
+
+
+def test_an_unreachable_odds_store_falls_back_rather_than_raising(monkeypatch):
+    """This decides whether a cached page may be served and must never be the reason one
+    cannot be."""
+    _version_db(monkeypatch, "2026-11-26T07:00:00Z", None, odds_raises=True)
+    v = run(server._data_version())
+    assert v and "2026-11-26T07:00:00Z" in v
+
+
+def test_nothing_at_all_is_none_rather_than_a_version_of_two_empties(monkeypatch):
+    # None means "cannot tell", which _screen_is_stale already treats as not-a-reason.
+    _version_db(monkeypatch, None, None)
+    assert run(server._data_version()) is None

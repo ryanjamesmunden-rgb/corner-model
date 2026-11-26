@@ -417,3 +417,88 @@ class TestOneBadRowCannotTakeThePanelDown:
         res = pick_context({"name": "A"}, {"name": "B"}, "home")
         assert res["lines"] == [] and res["all"] == []
         assert res["games_on_file"] == 0
+
+
+import pick_context as pc  # the module; `pick_context` above is its function
+
+
+# --- a fair statement, not an argument for the bet ------------------------------------
+#
+# The panel could only ever say reasons TO back something. `_ratio_effect` was
+# `max(0.0, ...)`, so a side thirty per cent below its usual rate scored zero and was
+# unsayable; and both averages used `ref = league_avg or avg`, which compares a number
+# with itself and scores every one of them at zero whenever no league figure is passed.
+
+def _games(vals, against=None):
+    against = against or [4] * len(vals)
+    return [{"date": f"2026-{1 + i // 28:02d}-{1 + i % 28:02d}", "opponent": f"O{i}",
+             "home": i % 2 == 0, "corners_for": v, "corners_against": a}
+            for i, (v, a) in enumerate(zip(vals, against))]
+
+
+def test_a_side_dropping_off_is_as_big_a_finding_as_one_on_the_rise():
+    """THE BUG THIS PINS. A decline argues AGAINST the bet, which is exactly why it has
+    to be able to outrank the form line that argues for it."""
+    down = pc.a_corner_avg({}, _games([8, 9, 7, 8, 9, 8, 7, 9, 4, 4, 5, 3, 4]),
+                                     "Bradford")
+    up = pc.a_corner_avg({}, _games([4, 4, 5, 3, 4, 4, 5, 4, 9, 8, 10, 9, 9]),
+                                   "Bradford")
+    assert down["direction"] == "down" and up["direction"] == "up"
+    assert down["strength"] > 0
+    assert down["strength"] == up["strength"], "a decline scored less than a rise"
+    assert "down on their season" in down["text"]
+
+
+def test_an_average_never_stands_alone_as_though_it_were_a_verdict():
+    # 6.6 is good in one league and poor in another, and the sentence gave the reader no
+    # way to tell which.
+    c = pc.a_corner_avg({}, _games([5] * 8 + [8, 8, 9, 8, 8]), "Bradford")
+    assert "up on their season" in c["text"] and "(5.0)" in c["text"]
+
+
+def test_a_side_at_its_usual_rate_says_so_rather_than_picking_a_side():
+    c = pc.a_corner_avg({}, _games([6] * 13), "Bradford")
+    assert "about their season" in c["text"]
+    assert c["direction"] is None
+
+
+def test_it_measures_against_their_own_season_before_the_league():
+    """"More than usual" is a statement about this side. The league average answers a
+    different question and is true of some good sides every week."""
+    c = pc.a_corner_avg({}, _games([4] * 8 + [8, 8, 8, 8, 8]), "Bradford",
+                                  league_avg=8.0)
+    assert "their season" in c["text"], "it reached for the league with a season available"
+
+
+def test_with_too_little_season_it_falls_back_to_the_league():
+    c = pc.a_corner_avg({}, _games([9, 8, 10, 9, 9]), "Bradford", league_avg=5.0)
+    assert "the league" in c["text"] and c["strength"] > 0
+
+
+def test_an_opponent_who_does_not_leak_is_a_finding_too():
+    """The leg the pick often rests on. Scored at zero it vanished, so the panel could
+    print the team's form and never the matchup that contradicts it."""
+    tight = pc.d_opp_concedes(
+        {}, [], "Bradford", opp_pool=_games([1] * 8, against=[3, 2, 3, 3, 2, 3, 3, 2]),
+        opp_name="Wycombe", opp_venue=None, league_avg=5.0)
+    assert tight["strength"] > 0
+    assert tight["direction"] == "down"
+    assert "down on the league" in tight["text"]
+
+
+def test_an_opponent_with_no_league_to_compare_with_claims_no_effect():
+    # Rather than comparing the number with itself and reporting zero as though it were
+    # a measured non-finding.
+    none = pc.d_opp_concedes(
+        {}, [], "Bradford", opp_pool=_games([1] * 8, against=[8] * 8),
+        opp_name="Wycombe", opp_venue=None, league_avg=None)
+    assert none["strength"] == 0.0
+    assert none["reference"] is None
+
+
+def test_the_effect_is_a_magnitude_and_carries_no_sign():
+    # Strength is a rank weight. Which way it went belongs on the sentence.
+    # approx, not ==: 8/6-1 and |4/6-1| are the same third and not the same float.
+    assert pc._ratio_effect(8.0, 6.0) == pytest.approx(pc._ratio_effect(4.0, 6.0))
+    assert pc._ratio_effect(6.0, None) == 0.0
+    assert pc._ratio_effect(None, 6.0) == 0.0

@@ -154,10 +154,39 @@ def _rate_effect(hits: int, of: int, base: float) -> float:
 
 
 def _ratio_effect(value: Optional[float], ref: Optional[float]) -> float:
-    """How far an average clears its yardstick. No yardstick means no claimed effect."""
+    """How far an average sits from its yardstick, in EITHER direction.
+
+    THIS USED TO BE ONE-SIDED, and that was the module quietly refusing to notice bad
+    news. `max(0.0, ...)` meant a side thirty per cent BELOW its usual rate scored zero
+    and could never be said at all, so "they are dropping off" — which is the same size
+    of finding as "they are up on their usual", and the one that argues against the bet —
+    was unsayable by construction. A context panel that can only report reasons to back
+    something is advertising, not evidence.
+
+    Magnitude only, because strength is a rank weight and has no sign. Which way it went
+    is a fact about the sentence, not about how interesting it is, so the generators
+    carry the direction themselves.
+    """
     if not value or not ref:
         return 0.0
-    return max(0.0, min((value / ref - 1.0) / FULL_RATIO, 1.0))
+    return max(0.0, min(abs(value / ref - 1.0) / FULL_RATIO, 1.0))
+
+
+def _against(value: Optional[float], ref: Optional[float], what: str) -> str:
+    """"6.6, against 5.2 for the league" — the comparison, said out loud.
+
+    A BARE AVERAGE IS NOT A STATEMENT ABOUT A TEAM. "Inter are averaging 6.6 corners a
+    game" reads as a finding and is not one: 6.6 is good in one league and poor in
+    another, and the reader has no way to tell which from the sentence. Every average
+    here now names what it is being measured against, or says nothing extra when there is
+    nothing to measure it against — never a number on its own pretending to be a verdict.
+    """
+    if not value or not ref:
+        return ""
+    gap = value / ref - 1.0
+    if abs(gap) < 0.05:                      # within a twentieth: the same, in practice
+        return f", about {what}"
+    return f", {'up on' if gap > 0 else 'down on'} {what} ({ref:.1f})"
 
 
 def _strength(group: str, tier: str, effect: float, n: int) -> float:
@@ -250,18 +279,40 @@ def a_corner_rate(team, pool, name, **_):
 
 
 def a_corner_avg(team, pool, name, league_avg=None, **_):
+    """What they are winning lately, against what they usually win.
+
+    MEASURED AGAINST THEIR OWN SEASON FIRST, and the league only when there is not enough
+    season to compare with. "Averaging more than usual" is a statement about this side,
+    and the league average answers a different question — whether they are busy for the
+    division, which is true of some good sides every week and tells a reader nothing
+    about whether anything has changed.
+
+    AND IT USED TO COMPARE THE NUMBER WITH ITSELF. `ref = league_avg or avg` meant that
+    with no league figure the yardstick was the very average being measured, so the
+    effect was exactly zero and this line could never rank however far the side had moved
+    — while still printing a bare "averaging 6.6 corners a game", which reads as a
+    finding and is not one. 6.6 is good in one league and poor in another.
+    """
     recent = pool[-RECENT:]
     if len(recent) < MIN_WINDOW:
         return None
     avg = _avg([m["corners_for"] for m in recent])
-    ref = league_avg or avg
-    return _claim("corner_avg", "corners", EVIDENCE,
-                  _sentence(name, f"are averaging {avg:.1f} corners a game across their "
-                            f"last {len(recent)}"), len(recent),
+    # Their own rate over everything EXCEPT the recent window, so the window is not
+    # being compared against a season it is a fifth of.
+    older = pool[:-RECENT]
+    season = _avg([m["corners_for"] for m in older]) if len(older) >= MIN_WINDOW else None
+    ref, what = (season, "their season") if season else (league_avg, "the league")
+    pred = (f"are averaging {avg:.1f} corners a game across their last {len(recent)}"
+            + _against(avg, ref, what))
+    return _claim("corner_avg", "corners", EVIDENCE, _sentence(name, pred), len(recent),
                   _strength("corners", EVIDENCE, _ratio_effect(avg, ref), len(recent)),
-                  predicate=f"are averaging {avg:.1f} corners a game across their last "
-                            f"{len(recent)}",
-                  value=round(avg, 2))
+                  predicate=pred, value=round(avg, 2),
+                  # Which way it moved, for a caller that wants to colour or filter it. A
+                  # side dropping off is as real a finding as one on the rise and must
+                  # not be presentable as the same thing.
+                  reference=round(ref, 2) if ref else None,
+                  direction=(None if not ref or abs(avg / ref - 1.0) < 0.05
+                             else "up" if avg > ref else "down"))
 
 
 def a_corner_string(team, pool, name, **_):
@@ -539,14 +590,20 @@ def d_opp_concedes(team, pool, name, opp_pool=None, opp_name=None, opp_venue=Non
     avg = _avg([m["corners_against"] for m in vp])
     where = ("per home game" if opp_venue == "home"
              else "per away game" if opp_venue == "away" else "per game")
-    ref = league_avg or avg
+    # Against the league, because what matters is whether this defence is leakier than
+    # the ones a side normally meets. Comparing it with itself — which `league_avg or avg`
+    # did whenever no league figure was passed — scored every opponent at exactly zero,
+    # so the leg the whole pick often rests on could never outrank the team's own form.
+    ref = league_avg
+    pred = (f"have conceded {avg:.1f} corners {where} over {len(vp)} games"
+            + _against(avg, ref, "the league"))
     return _claim("opp_concedes", "opponent", EVIDENCE,
-                  f"{opp_name} have conceded {avg:.1f} corners {where} "
-                  f"({len(vp)} games).", len(vp),
+                  f"{opp_name} {pred}.", len(vp),
                   _strength("opponent", EVIDENCE, _ratio_effect(avg, ref), len(vp)),
-                  subject="opponent",
-                  predicate=f"have conceded {avg:.1f} corners {where} over {len(vp)} games",
-                  value=round(avg, 2))
+                  subject="opponent", predicate=pred, value=round(avg, 2),
+                  reference=round(ref, 2) if ref else None,
+                  direction=(None if not ref or abs(avg / ref - 1.0) < 0.05
+                             else "up" if avg > ref else "down"))
 
 
 def d_opp_concedes_run(team, pool, name, opp_pool=None, opp_name=None, opp_venue=None,

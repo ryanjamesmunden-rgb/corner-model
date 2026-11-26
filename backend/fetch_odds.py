@@ -177,6 +177,31 @@ async def fetch_one(hc, db, fx, api_fid, write=True):
             "keys": sorted(doc["odds"])}
 
 
+
+def has_team_market(odds) -> bool:
+    """Does this document carry a price the TEAM boards can actually read?
+
+    WHY `if doc.get("odds")` WAS NOT THE SAME QUESTION. Any non-empty map counted as
+    priced, so a fixture quoted with match totals and nothing else was marked done and
+    never asked again — while every board that recommends a team line showed no price on
+    it, for ever. Measured on a real weekend: the job reported 254 fixtures already
+    priced, and 9% of the side-lines on the streak boards had a number against them. The
+    two figures were about different things and only one of them was the one anybody
+    reads.
+
+    The docstring above already allowed for the empty case — a quote with no usable
+    corner line writes an empty map — and the partially useful case is the same mistake
+    one step along: a document that is not empty but holds nothing the caller wants.
+
+    A TEAM MARKET, NOT BOTH TEAMS' MARKETS. Requiring a price on each side would be
+    closer to what a board needs and would keep re-asking every fixture whose book quotes
+    only one end, which some do all season. One side is the minimum that makes any board
+    row possible, and the recheck back-off above is what stops the rest from being asked
+    for ever.
+    """
+    return any(str(k).startswith(("home_", "away_")) for k in (odds or {}))
+
+
 async def unpriced_ahead(db, days: int, from_days: int, leagues, limit: int,
                          prefer=None):
     """Fixtures further out than the hourly pass reaches that have NO price yet.
@@ -225,7 +250,7 @@ async def unpriced_ahead(db, days: int, from_days: int, leagues, limit: int,
     async for doc in db.odds_feed.find(
             {"fixture_id": {"$in": ids}},
             {"_id": 0, "fixture_id": 1, "odds": 1, "checked_at": 1, "checks": 1}):
-        if doc.get("odds"):
+        if has_team_market(doc.get("odds")):
             have.add(doc["fixture_id"])
         elif doc.get("checked_at"):
             looked[doc["fixture_id"]] = (doc["checked_at"], doc.get("checks") or 0)

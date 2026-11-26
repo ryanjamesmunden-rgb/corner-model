@@ -8,6 +8,7 @@ import { withFlag } from "@/lib/countryFlag";
 import { kickoffLabel } from "@/lib/kickoff";
 import { streakShare } from "@/lib/shareText";
 import { COMFORT, comfortFilter, tightestWin, lastMargin } from "@/lib/cushion";
+import { bestRung, ladderOf, rungText } from "@/lib/ladder";
 import TierBadge from "@/components/TierBadge";
 import PreviewWall from "@/components/PreviewWall";
 import { lockClass, lockCounts } from "@/lib/locked";
@@ -51,6 +52,51 @@ const presetLabelOf = (v) => PRESETS.find((p) => p.v === v)?.l || v;
 const fmtDate = (d) => (d ? new Date(d).toLocaleDateString(undefined, { month: "short", day: "numeric" }) : "");
 
 // Global cross-league corner streak finder: overs and unders, team corners or match totals.
+/**
+ * The rung above the run: its price, and this side's own record at it.
+ *
+ * WHAT IT IS ARGUING. The run's own line is the one the market prices most easily, so
+ * the row beside this one is usually a short price on something everybody can see. The
+ * same ten games say how far clear the side actually lands, and the rung above is where
+ * that is worth money.
+ *
+ * GREEN MEANS THE PRICE BEATS THE SIDE'S OWN RECORD, with the record shrunk before it is
+ * turned into a price — ten from ten is not a certainty and must not price at 1.00. See
+ * lib/ladder. Everything else is drawn plain: a rung is information, and only the one
+ * the side's own games pay for is an argument.
+ *
+ * THE TOOLTIP CARRIES THE HALF THAT MATTERS. "9 of 10" where five of those nine are the
+ * games that DEFINED the run is a different claim from one that holds either side of it,
+ * so the five before the run are counted separately and said out loud.
+ */
+function LadderCell({ row }) {
+  const best = bestRung(row);
+  const rungs = ladderOf(row);
+  if (!rungs.length) return <span className="text-muted-foreground">—</span>;
+  const show = best || rungs[0];
+  if (show.book === null) {
+    return (
+      <span className="text-muted-foreground text-xs"
+        title={`No book price at ${show.label} yet — the model makes it ${show.fair?.toFixed(2)}`}>
+        {show.label} —
+      </span>
+    );
+  }
+  return (
+    <span className={best ? "font-semibold text-emerald-400" : "text-foreground"}
+      title={rungs.map(rungText).join("\n")
+        + (best ? `\n\nGreen: ${best.book.toFixed(2)} beats the ${best.implied.toFixed(2)} `
+                  + "this side's own record implies (shrunk for the sample)" : "")}>
+      {show.label} {show.book.toFixed(2)}
+      {show.whole && (
+        <span className="ml-1 text-[10px] font-normal text-muted-foreground">
+          {show.whole.hits}/{show.whole.games}
+        </span>
+      )}
+    </span>
+  );
+}
+
 export default function StreakFinder({ leagueId }) {
   const navigate = useNavigate();
   const [scope, setScope] = useState("all");
@@ -253,6 +299,17 @@ export default function StreakFinder({ leagueId }) {
             <tr className="border-b border-border text-muted-foreground text-xs uppercase tracking-wider">
               <th className="text-left font-medium px-2 py-1.5 sm:px-4 sm:py-2.5 sticky left-0 bg-card z-20">Team</th>
               <th className="text-left font-medium px-2 py-1.5 sm:px-4 sm:py-2.5">Line</th>
+              {/* NEXT TO THE LINE, BECAUSE IT IS A COMPARISON WITH IT. A run is measured
+                  at the lowest line it never missed, so the line to its left is the one
+                  the market prices most easily — 3+ at 1.27, which nobody backs.
+                  Measured over 683 runs and the five games BEFORE each one, a side
+                  clears its line by one in 61% of games. This is where that is priced.
+                  It was the fifteenth column for one version and fell off the right of
+                  a table nobody scrolls, which is the same as not building it. */}
+              <th className="text-left font-medium px-2 py-1.5 sm:px-4 sm:py-2.5"
+                  title="The line above the run, at the book's price, with this side's own record at it over their last ten">
+                Ladder
+              </th>
               <th className="text-left font-medium px-2 py-1.5 sm:px-4 sm:py-2.5">Hit rate</th>
               <th className="text-left font-medium px-2 py-1.5 sm:px-4 sm:py-2.5">Streak</th>
               <th className="text-left font-medium px-2 py-1.5 sm:px-4 sm:py-2.5">Longest</th>
@@ -280,9 +337,9 @@ export default function StreakFinder({ leagueId }) {
           </thead>
           <tbody className="font-mono-data text-sm">
             {loading ? (
-              <tr><td colSpan={13} className="px-4 py-12 text-center text-muted-foreground animate-pulse">Scanning corner streaks…</td></tr>
+              <tr><td colSpan={14} className="px-4 py-12 text-center text-muted-foreground animate-pulse">Scanning corner streaks…</td></tr>
             ) : shown.length === 0 ? (
-              <tr><td colSpan={13} className="px-4 py-12 text-center text-muted-foreground">
+              <tr><td colSpan={14} className="px-4 py-12 text-center text-muted-foreground">
                 {rows.length > 0
                   // Blaming the line when the margin filter did the cutting sends people
                   // to change the wrong control.
@@ -315,6 +372,9 @@ export default function StreakFinder({ leagueId }) {
                                  : "thin: under 4 in 5, so treat it as a lead rather than a signal"}`}>
                     {isUnder ? <TrendingDown className="h-3 w-3" /> : <Target className="h-3 w-3" />} {lineLabel(r.line, r.direction, wire)}
                   </span>
+                </td>
+                <td className="px-2 py-1.5 sm:px-4 sm:py-2.5 whitespace-nowrap">
+                  <LadderCell row={r} />
                 </td>
                 <td className="px-2 py-1.5 sm:px-4 sm:py-2.5 whitespace-nowrap">
                   <span className={isSolid(r) ? "text-emerald-400 font-semibold" : "text-muted-foreground/70 font-semibold"}>

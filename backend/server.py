@@ -7968,7 +7968,36 @@ def _streak_projection(team: dict, opp: Optional[dict], team_venue: str, opp_ven
     # `attacker` names whose corners are actually being priced, so the board can label it.
     if subject == "conceded":
         t_for, o_against = extra["opp_for"], extra["team_conceded"]
+    # THE RUNGS ABOVE THE RUN'S OWN LINE, which is where the value usually is.
+    #
+    # A run is measured at the LOWEST line it never missed, so the line it is named for
+    # is the one the market has least trouble pricing — a 3+ run gets quoted at 1.27 and
+    # nobody posts that. What the run does not say, and what is sitting in the same
+    # numbers, is how far clear the side actually lands: measured over 683 active runs
+    # and the five games BEFORE each one (so the selection cannot flatter it), a side on
+    # a run clears its line by one in 61% of games and by two in 47%, and that rises with
+    # how far the run's own average already sits above its line — 67% and 53% once the
+    # average is three clear.
+    #
+    # So the rung above travels with the row, priced. Nothing here recommends it: the
+    # board prints the model's chance and the book's number beside the team's own record
+    # at that line, and the reader decides whether the price is worth the drop in hit
+    # rate. Over only — an under ladder would mean tightening the line, which is the
+    # opposite bet and not what this is about.
+    ladder = None
+    if direction == "over":
+        ladder = []
+        for up in (line + 1, line + 2):
+            p_up = ge(up, lam)
+            key_up = f"{group}_over_{up - 0.5}"
+            book_up = odds.get(key_up)
+            ladder.append({
+                "line": up, "label": f"{up}+", "market_key": key_up,
+                "prob": round(p_up * 100, 1), "fair_odds": fair_odds(p_up),
+                "book_odds": book_up,
+                "ev": round((book_up * p_up - 1) * 100, 2) if book_up else None})
     return {"team_for": round(t_for, 2), "opp_conceded": round(o_against, 2), **extra,
+            "ladder": ladder,
             "attacker": "opponent" if subject == "conceded" else "team",
             "lambda": lam, "line": line, "direction": direction, "subject": subject,
             "prob": round(p * 100, 1), "void_prob": round(p_void * 100, 1),

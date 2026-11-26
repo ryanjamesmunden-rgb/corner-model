@@ -539,3 +539,19 @@ def test_every_listed_board_has_a_collection_the_server_writes():
     for key, label, coll, _ in server.RESULT_BOARDS:
         assert f"db.{coll}.insert_one" in src or f"db.{coll}.insert_many" in src, \
             f"{label} is listed but nothing writes {coll}"
+
+
+def test_the_value_board_decides_the_window_before_it_builds_a_model():
+    """A board asked for ONE day used to build a full model for every priced fixture in
+    the whole horizon and then throw most away — on the event loop of a single worker,
+    on the endpoint the week card calls on every load.
+
+    Read off the source, because the cost is in the ORDER and a reordering is exactly the
+    kind of thing a later edit undoes without any test noticing."""
+    import inspect
+    src = inspect.getsource(server.value_board)
+    body = src[src.index('for fid, doc in priced.items():'):]
+    window = body.index('"status": "outside_window"')
+    model = body.index("fixture_model_from(")
+    assert window < model, \
+        "the window check fell back below the model build; a one-day board pays for a week"

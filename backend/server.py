@@ -11277,11 +11277,23 @@ def one_claim_per_fixture(snaps: List[dict]) -> List[tuple]:
 
 
 async def _teams_for(entries: List[dict]) -> Dict[str, dict]:
-    ids = list({e["team_id"] for e in entries})
+    """The played games needed to settle these entries, and nothing else.
+
+    WITHOUT THE OTHER TWO MATCH ARRAYS. A team document holds `history_matches` (forty),
+    `real_matches` (the last twenty of those) and `matches` (a copy of the twenty), so
+    two thirds of it is duplicate — and _grade_entries reads `real_matches` and nothing
+    more. This was fetching all three for every team on every board, which is most of why
+    the Results page answered 502: the one page that says whether a board is worth
+    following could not be opened.
+    """
+    ids = [e.get("team_id") for e in entries if e.get("team_id")]
+    ids = list(set(ids))
     if not ids:
         return {}
     return {t["team_id"]: t for t in
-            await db.teams.find({"team_id": {"$in": ids}}, {"_id": 0}).to_list(2000)}
+            await db.teams.find({"team_id": {"$in": ids}},
+                                {"_id": 0, "team_id": 1,
+                                 "real_matches": 1}).to_list(2000)}
 
 
 class MismatchSnapshotBody(BaseModel):
@@ -12280,6 +12292,19 @@ RESULT_BOARDS = (
     ("combined", "Combined", "combined_snapshots",
      "Teams on two of the three boards above for the same game — a subset of them, "
      "not a fourth independent source."),
+    # FROZEN NIGHTLY SINCE IT WAS BUILT AND SHOWN ON NO PAGE. value_snapshot_entry
+    # freezes a claim in exactly the shape _grade_entries settles, price included, so the
+    # one board that could always report a bank was the one board missing from the page
+    # that compares banks.
+    #
+    # ITS DENOMINATOR IS NOT COMPARABLE WITH THE OTHERS EITHER, and for a different
+    # reason from Combined's. This board is odds-driven: a claim exists only where a
+    # price was stored, so a quiet week on the feed is a small denominator here and says
+    # nothing about the model. The others are team-driven and have a row whether anybody
+    # quoted the market or not.
+    ("value", "Value Finder", "value_snapshots",
+     "Positive-EV lines at a stored price — the only board whose claims all carry one, "
+     "and counted only where a price existed."),
 )
 
 
@@ -12318,12 +12343,20 @@ async def results_by_board(weeks: int = RESULTS_WEEKS, token: Optional[str] = No
         raise HTTPException(status_code=401, detail="Sign in to see the record")
     weeks = max(1, min(weeks, 400))
 
-    out = []
+    # EVERY BOARD'S ENTRIES FIRST, THEN ONE TEAM FETCH. This loaded the teams inside the
+    # loop, so the same sides were fetched once per board — four times over, on a page
+    # whose whole job is to compare the boards against each other and which therefore
+    # always asks for all of them.
+    per_board = []
     for key, label, coll_name, blurb in RESULT_BOARDS:
         snaps = await db[coll_name].find({}, {"_id": 0}).sort("tag", -1).to_list(weeks)
-        pairs = one_claim_per_fixture(snaps)
-        entries = [e for _, e in pairs]
-        graded = _grade_entries(entries, await _teams_for(entries)) if entries else []
+        entries = [e for _, e in one_claim_per_fixture(snaps)]
+        per_board.append((key, label, blurb, entries))
+    teams = await _teams_for([e for _, _, _, es in per_board for e in es])
+
+    out = []
+    for key, label, blurb, entries in per_board:
+        graded = _grade_entries(entries, teams) if entries else []
         t = _tally(graded)
         lo, hi = wilson(t["landed"], t["settled"]) if t["settled"] else (None, None)
         # The board's own stated probability, over the SETTLED rows that carry one. The

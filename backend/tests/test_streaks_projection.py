@@ -468,3 +468,74 @@ def test_all_three_boards_freeze_it():
         i = src.index(f"db.{coll}.insert_one")
         assert "_frozen_price(r)" in src[max(0, i - 3000):i], \
             f"{coll} no longer freezes the bookmaker's price"
+
+
+# --- the page that says whether a board is worth following -----------------------------
+#
+# /api/results/boards answered 502. It fetched every team document — all three match
+# arrays — once PER BOARD, on a page whose whole job is to compare the boards and which
+# therefore always asks for all of them.
+
+def test_the_team_fetch_asks_for_the_games_and_nothing_else(monkeypatch):
+    seen = {}
+
+    class Teams:
+        def find(self, q, proj):
+            seen["proj"] = proj
+            seen["ids"] = sorted(q["team_id"]["$in"])
+            class C:
+                async def to_list(self, n):
+                    return [{"team_id": "t1", "real_matches": []}]
+            return C()
+
+    class DB:
+        teams = Teams()
+    monkeypatch.setattr(server, "db", DB())
+    run(server._teams_for([{"team_id": "t1"}, {"team_id": "t1"}]))
+    assert seen["proj"].get("real_matches") == 1
+    # The two the settlement never reads. Two thirds of the document.
+    assert "history_matches" not in seen["proj"]
+    assert "matches" not in seen["proj"]
+    assert seen["ids"] == ["t1"], "the same side was asked for twice"
+
+
+def test_an_entry_with_no_team_does_not_break_the_fetch(monkeypatch):
+    # Snapshots predate several fields; one malformed row must not take the page down.
+    class DB:
+        class teams:
+            @staticmethod
+            def find(q, proj):
+                raise AssertionError("asked the database for nothing")
+    monkeypatch.setattr(server, "db", DB())
+    assert run(server._teams_for([{"line": 5}, {}])) == {}
+
+
+def test_the_teams_are_fetched_once_for_every_board():
+    """Read off the source: the fetch must sit OUTSIDE the per-board loop. Inside it, the
+    same sides are loaded once per board and the page times out again."""
+    import inspect
+    src = inspect.getsource(server.results_by_board)
+    body = src[src.index("per_board = []"):]
+    loop = body.index("for key, label, blurb, entries in per_board")
+    assert "_teams_for" in body[:loop], "the team fetch fell back inside the loop"
+    assert body.count("_teams_for") == 1
+
+
+def test_value_finder_is_on_the_page_now():
+    """Frozen nightly since it was built and shown nowhere — the one board that can
+    always report a bank was missing from the page that compares banks."""
+    keys = [b[0] for b in server.RESULT_BOARDS]
+    assert keys == ["streaks", "perfect", "mismatch", "combined", "value"]
+    blurb = dict((b[0], b[3]) for b in server.RESULT_BOARDS)["value"]
+    # Its denominator is not comparable either, and for its own reason.
+    assert "price" in blurb
+
+
+def test_every_listed_board_has_a_collection_the_server_writes():
+    """A board on this page whose snapshots nobody writes shows an empty record as though
+    it were a bad one."""
+    import inspect
+    src = inspect.getsource(server)
+    for key, label, coll, _ in server.RESULT_BOARDS:
+        assert f"db.{coll}.insert_one" in src or f"db.{coll}.insert_many" in src, \
+            f"{label} is listed but nothing writes {coll}"

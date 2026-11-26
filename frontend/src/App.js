@@ -1,7 +1,7 @@
 import "@/App.css";
 import ErrorBoundary from "@/components/ErrorBoundary";
-import { Suspense, useEffect } from "react";
-import { clearChunkReloadFlag, lazyRoute } from "@/lib/lazyRoute";
+import { Suspense } from "react";
+import { lazyRoute } from "@/lib/lazyRoute";
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { Toaster } from "sonner";
 import Layout from "@/components/Layout";
@@ -107,11 +107,10 @@ function AppRouter() {
 }
 
 function App() {
-  // THE GUARD IS SPENT ONCE THE APP IS RUNNING. lazyRoute records a reload so a chunk
-  // that keeps failing cannot spin the tab; getting this far means the reload worked, so
-  // the NEXT deploy that lands under this tab gets its own attempt rather than being
-  // shown a broken panel because an earlier one used the single try.
-  useEffect(() => { clearChunkReloadFlag(); }, []);
+  // NOTHING CLEARS lazyRoute's GUARD, and the first version of this clearing it here is
+  // why: App mounts BEFORE a lazy route resolves, so every reload wiped the guard on the
+  // way past and the next failure found it unset — 328 page loads in 20 seconds against
+  // a chunk that never came back. The guard is a timestamp now and expires on its own.
   return (
     <div className="App">
       <AuthProvider>

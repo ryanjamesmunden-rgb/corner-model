@@ -403,3 +403,68 @@ async def _true():
 
 async def _false():
     return False
+
+
+# --- every board graded in the same currency ------------------------------------------
+#
+# Streaks, Quick Scan and Perfect Games froze `prob` and `fair_odds` — the model's own
+# opinion — so their record could say the LINE LANDED and never that the BET WON. Two
+# boards with the same hit rate and different prices are one row in that record and
+# opposite outcomes in a bank, and the price a book offered on a Tuesday cannot be
+# recovered once the market has moved. Value Finder and Combined already froze it, which
+# is the only reason they report units.
+
+def test_the_frozen_price_is_named_what_the_grader_reads():
+    """`_tally` turns a settled row into units off `r.get("price")`. Under any other name
+    the number is stored and silently ignored, which is where this started."""
+    got = server._frozen_price({"projection": {"market_key": "home_over_4.5",
+                                               "book_odds": 1.85, "book_name": "Bet365",
+                                               "ev": 12.4}})
+    assert got["price"] == 1.85
+    assert got["market_key"] == "home_over_4.5"
+    assert got["book_name"] == "Bet365" and got["ev_at_freeze"] == 12.4
+
+
+def test_it_reads_whichever_shape_the_board_hands_over():
+    # Streaks and Perfect Games carry `projection`; the value-shaped rows carry `best`.
+    assert server._frozen_price({"best": {"book_odds": 2.1}})["price"] == 2.1
+
+
+def test_an_unquoted_claim_freezes_a_null_and_never_the_fair_price():
+    # "No book had priced this when we called it" is a fact about the claim and belongs
+    # in the record. Substituting the model's number would turn an unbackable row into a
+    # settled winner.
+    got = server._frozen_price({"projection": {"fair_odds": 1.6, "book_odds": None}})
+    assert got["price"] is None
+    assert "fair_odds" not in got
+
+
+def test_nothing_at_all_still_gives_the_four_keys():
+    # Spread into an entry with **, so a missing shape must not drop the columns and
+    # leave half the snapshot with a different schema from the other half.
+    got = server._frozen_price({})
+    assert set(got) == {"market_key", "price", "book_name", "ev_at_freeze"}
+    assert all(v is None for v in got.values())
+    assert server._frozen_price(None)["price"] is None
+
+
+def test_a_priced_row_now_settles_into_units():
+    """End to end through the real tally: a frozen price is what turns a win into a bank
+    movement. Without it the row counts as settled-but-unpriced and the units stay nil."""
+    entry = {"team_id": "t1", "line": 5, "direction": "over", "subject": "team",
+             **server._frozen_price({"projection": {"book_odds": 1.85}})}
+    won = server._tally([{**entry, "result": "win"}])
+    assert won["units"] > 0 and won["priced"] == 1 and won["unpriced"] == 0
+    bare = server._tally([{"result": "win", "line": 5}])
+    assert bare["unpriced"] == 1
+
+
+def test_all_three_boards_freeze_it():
+    """The point of the change, asserted on the source: a board that stops calling this
+    goes back to a record that cannot be read in units, and nothing else would notice."""
+    import re
+    src = open(server.__file__.replace(".pyc", ".py")).read()
+    for coll in ("streak_snapshots", "mismatch_snapshots", "perfect_snapshots"):
+        i = src.index(f"db.{coll}.insert_one")
+        assert "_frozen_price(r)" in src[max(0, i - 3000):i], \
+            f"{coll} no longer freezes the bookmaker's price"

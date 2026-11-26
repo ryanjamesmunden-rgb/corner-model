@@ -11143,6 +11143,7 @@ async def snapshot_streaks(body: StreakSnapshotBody, token: Optional[str] = None
             # of the snapshot is: a bar re-applied later is a bar applied to different data.
             "support": support,
             "prob": support.get("prob"),
+            **_frozen_price(r),
             # ON THE CARD, which is a stricter question than clearing the bar: a row can
             # qualify and still fall outside the window this card covers, and a pick nobody
             # was shown is not a claim the site made.
@@ -11362,6 +11363,7 @@ async def snapshot_mismatches(body: MismatchSnapshotBody, token: Optional[str] =
             # A mismatch is always a team over; stored so settlement is shared, not forked.
             "line": r["line"], "direction": "over", "subject": "team",
             "lambda": r["lambda"], "prob": r.get("prob"), "fair_odds": r.get("fair_odds"),
+            **_frozen_price(r),
             "team_for": r.get("team_for"), "opp_conceded": r.get("opp_conceded"),
             # The sample each average rested on, and which venue pool it came from. A row
             # whose venue_used fell back to pooled is a weaker claim than one measured at
@@ -11681,6 +11683,7 @@ async def snapshot_perfect(body: PerfectSnapshotBody, token: Optional[str] = Non
             "prob": (r.get("projection") or {}).get("prob"),
             "lambda": (r.get("projection") or {}).get("lambda"),
             "fair_odds": (r.get("projection") or {}).get("fair_odds"),
+            **_frozen_price(r),
             "games": r.get("real_samples") or 0,
             "fixture_id": nf["fixture_id"], "kickoff": nf.get("date"),
             "opponent": nf.get("opponent"), "is_home": nf.get("is_home"),
@@ -12226,6 +12229,37 @@ async def _angle_record(count: int) -> dict:
 # Which frozen collection each board on the site is graded from, and what to call it.
 # The order is the order the Results page shows them in: the two the card is built from
 # first, then the wider boards people browse.
+
+#: The bookmaker's number, frozen with the claim that was made against it.
+#:
+#: WHY THE MODEL'S PRICE WAS NEVER ENOUGH. Streaks, Quick Scan and Perfect Games each
+#: froze `prob` and `fair_odds` — the model's own opinion — so their record could say the
+#: LINE LANDED and could never say the BET WON. Two boards with the same hit rate and
+#: different prices are the same row in that record and opposite outcomes in a bank, and
+#: a year of it cannot be re-derived afterwards: the price a book was offering on a
+#: Tuesday is not in any store once the market has moved.
+#:
+#: Value Finder and Combined already did this, which is why they are the only two that
+#: can report units. This is the same four fields, taken off whichever shape the board
+#: hands over, so the other three stop being graded in a different currency.
+#:
+#: NULLS WHEN NOTHING WAS QUOTED, never a substituted fair price. "No book had priced
+#: this when we called it" is a fact about the claim and belongs in the record; replacing
+#: it with the model's number would turn an unbackable row into a settled winner.
+def _frozen_price(row: dict) -> dict:
+    src = (row or {}).get("projection") or (row or {}).get("best") or {}
+    return {"market_key": src.get("market_key"),
+            # `price`, NOT `book_odds`, and that one word is the whole feature. _tally
+            # reads `r.get("price")` to turn a settled row into units, which is why Value
+            # Finder reports a bank and the others report a hit rate — it was never a
+            # missing calculation, only a missing field under the name the grader looks
+            # for. Named to plug into the settlement that already exists rather than
+            # teaching the settlement a second spelling.
+            "price": src.get("book_odds"),
+            "book_name": src.get("book_name"),
+            "ev_at_freeze": src.get("ev")}
+
+
 RESULT_BOARDS = (
     ("streaks", "Streaks", "streak_snapshots",
      "A run of clearances, and nothing about the opponent."),

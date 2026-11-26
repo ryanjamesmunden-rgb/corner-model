@@ -30,6 +30,7 @@ import bot_cards
 import cup_form
 import cups
 import h2h
+import league_table
 import log_redact
 import record_view
 import calibration
@@ -6328,6 +6329,25 @@ async def fixture_detail(fixture_id: str, token: Optional[str] = None,
     h2h_names = {lid: (await _league_doc(lid)).get("name", "")
                  for lid in {d.get("league_id") for d in h2h_docs if d.get("league_id")}}
 
+    # WHERE EACH SIDE SITS IN ITS OWN LEAGUE, rebuilt from the results cache — league_table
+    # has the reasoning and the coverage caveat. Per side, because on a cup tie the two
+    # tables are different leagues; this season only, from the league document the sync
+    # stamps, so a table in August is not last season's finishing order.
+    tables = {}
+    for lid in set(side_lids.values()):
+        season = (league_docs.get(lid) or {}).get("season")
+        if season is None:
+            continue
+        docs = await db.fixture_stats.find(
+            {"league_id": lid, "season": season},
+            {"_id": 1, "home_id": 1, "away_id": 1, "home_goals": 1, "away_goals": 1}
+        ).to_list(1000)
+        tables[lid] = league_table.build_table(docs)
+
+    def table_row(team):
+        lid = side_lids.get((team or {}).get("team_id"))
+        return league_table.position_of(tables.get(lid), (team or {}).get("api_team_id"))
+
     # THE MODEL'S NUMBERS ARE FOR MEMBERS; EVERYTHING ELSE ON THIS PAGE IS NOT. `user` was
     # a dependency here that nothing read, which is how the priced angle on every fixture
     # went out to anyone with the URL. See _blur_model.
@@ -6427,6 +6447,9 @@ async def fixture_detail(fixture_id: str, token: Optional[str] = None,
                           # THIS COMPETITION'S games, on a cup tie, with their count.
                           # None on a league fixture and on a side with none on file.
                           "competition_form": comp_form["home"],
+                          # League position this season, or None when the side has
+                          # no scored game on file. See league_table.
+                          "table": table_row(home),
                           "profile": team_profile(home, "home", lg_avg),
                           "real_samples": home.get("real_samples", 0)},
             "away_team": {"name": away["name"], "splits": splits(away), "features": features(away),
@@ -6435,6 +6458,9 @@ async def fixture_detail(fixture_id: str, token: Optional[str] = None,
                           "state_splits": states(away), "goal_profile": goals(away),
                           "intent": intent(away), "recent": recent(away),
                           "competition_form": comp_form["away"],
+                          # League position this season, or None when the side has
+                          # no scored game on file. See league_table.
+                          "table": table_row(away),
                           "profile": team_profile(away, "away", lg_avg),
                           "real_samples": away.get("real_samples", 0)}}
 

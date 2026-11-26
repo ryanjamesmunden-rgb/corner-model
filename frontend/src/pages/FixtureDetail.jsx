@@ -35,6 +35,7 @@ import { useAuth } from "@/context/AuthContext";
 import { useLeague } from "@/context/LeagueContext";
 import { canWritePrices } from "@/lib/locked";
 import ProbabilityChart from "@/components/ProbabilityChart";
+import GameStatePanel from "@/components/GameStatePanel";
 import { api, tierMeta, confMeta } from "@/lib/api";
 import { isCrossLeague, transferNote } from "@/lib/cupRow";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
@@ -311,6 +312,11 @@ export default function FixtureDetail() {
           under the caveat because the two are one thought, and absent entirely when
           neither side has a game on file. */}
       <CompetitionForm data={data} />
+
+      {/* GAME STATE BEFORE THE PRICE. Table position, the last five and what each side's
+          corners do when it is behind — the context that says who will have the ball,
+          which the corner averages below cannot. See lib/fixtureContext. */}
+      <GameStatePanel data={data} />
 
       {/* The headline answer, drawn. This leads the page on purpose: it is the one thing a
           visitor who has never used the site can read, and everything below is the detail

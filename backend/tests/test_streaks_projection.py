@@ -281,3 +281,125 @@ def _clean_cache():
     yield
     server._combined_cache.clear()
     server._combined_locks.clear()
+
+
+# --- a stale screen must never be rebuilt on the request path ------------------------
+#
+# The combined screen's build IS _combined_rows. Once it fails the screen stays stale, so
+# the next visitor runs the same doomed rebuild — the outage feeds itself. Measured
+# against production: 300 seconds, dropped connection, every endpoint down with it.
+
+class FakeScreens:
+    def __init__(self, docs):
+        self._docs = {d["_id"]: d for d in docs}
+
+    async def find_one(self, q):
+        return self._docs.get(q["_id"])
+
+
+def _screen_db(monkeypatch, docs):
+    class DB:
+        screens = FakeScreens(docs)
+    monkeypatch.setattr(server, "db", DB())
+
+
+def test_a_stale_screen_is_served_at_once_rather_than_rebuilt(monkeypatch):
+    built = []
+
+    async def never(name):
+        built.append(name)
+        raise AssertionError("the request path rebuilt a stale screen")
+
+    _screen_db(monkeypatch, [{"_id": "combined", "payload": [{"team": "old"}]}])
+    monkeypatch.setattr(server, "_screen_is_stale", lambda doc: _true())
+    monkeypatch.setattr(server, "_build_screen", never)
+    monkeypatch.setattr(server, "_refresh_screen_later", lambda name: built.append(name))
+    assert run(server._screen("combined")) == [{"team": "old"}]
+    assert built == ["combined"], "no background refresh was scheduled"
+
+
+def test_a_fresh_screen_is_not_refreshed_at_all(monkeypatch):
+    scheduled = []
+    _screen_db(monkeypatch, [{"_id": "combined", "payload": [{"team": "new"}]}])
+    monkeypatch.setattr(server, "_screen_is_stale", lambda doc: _false())
+    monkeypatch.setattr(server, "_refresh_screen_later", lambda n: scheduled.append(n))
+    assert run(server._screen("combined")) == [{"team": "new"}]
+    assert scheduled == []
+
+
+def test_only_a_screen_that_has_never_been_built_blocks(monkeypatch):
+    # There is nothing else to send, so this one has to wait.
+    async def build(name):
+        return {"payload": [{"team": "first"}]}
+
+    _screen_db(monkeypatch, [])
+    monkeypatch.setattr(server, "_build_screen", build)
+    server._screen_locks.clear()
+    assert run(server._screen("combined")) == [{"team": "first"}]
+
+
+def test_a_burst_of_visitors_starts_one_refresh_not_fifty(monkeypatch):
+    server._refreshing.clear()
+    starts = []
+
+    async def build(name):
+        starts.append(name)
+        return {"payload": []}
+
+    monkeypatch.setattr(server, "_build_screen", build)
+
+    async def main():
+        for _ in range(50):
+            server._refresh_screen_later("combined")
+        # Let the one scheduled task run.
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+
+    loop = asyncio.new_event_loop()
+    try:
+        loop.run_until_complete(main())
+    finally:
+        loop.close()
+    assert len(starts) <= 1
+    server._refreshing.clear()
+
+
+def test_a_failing_background_rebuild_leaves_the_stale_copy_alone(monkeypatch):
+    # Nobody is waiting on it: the request was already answered from the stale copy, and
+    # a build that dies must not take anything down with it.
+    server._refreshing.clear()
+
+    async def boom(name):
+        raise RuntimeError("out of memory")
+
+    monkeypatch.setattr(server, "_build_screen", boom)
+
+    async def main():
+        server._refresh_screen_later("combined")
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+
+    loop = asyncio.new_event_loop()
+    try:
+        loop.run_until_complete(main())      # must not raise
+    finally:
+        loop.close()
+    assert "combined" not in server._refreshing, "a failed build left the flag stuck"
+
+
+def test_every_day_of_the_card_shares_one_board():
+    """Thursday's card and Friday's card were two different `within_days`, so two
+    different runs of the computation that takes the site down. The rows are filtered to
+    the day asked for regardless, so one wide board serves every day."""
+    import inspect
+    src = inspect.getsource(server.week_card_board)
+    assert "within_days=WEEK_CARD_MAX_AHEAD + 1" in src
+    assert "within_days=max(1, ahead + 1)" not in src
+
+
+async def _true():
+    return True
+
+
+async def _false():
+    return False

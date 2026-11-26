@@ -56,6 +56,7 @@ _NS = _sliced()
 unpriced_ahead = _NS["unpriced_ahead"]
 recheck_after_hours = _NS["recheck_after_hours"]
 RECHECK_GIVE_UP = _NS["RECHECK_GIVE_UP"]
+has_team_market = _NS["has_team_market"]
 NOW = datetime(2026, 11, 17, 12, 0, tzinfo=timezone.utc)
 
 
@@ -244,7 +245,8 @@ def test_no_preference_leaves_the_order_exactly_as_it_was():
 def test_a_preferred_fixture_that_already_has_a_price_is_still_skipped():
     # Aiming decides the ORDER, never whether a fixture is paid for twice.
     rows = [fx("ger-bl-1", 3)]
-    db = FakeDB(rows, [{"fixture_id": "ger-bl-1", "odds": {"total_over_9.5": 1.9}}])
+    # A TEAM market, because that is now what counts as priced — see has_team_market.
+    db = FakeDB(rows, [{"fixture_id": "ger-bl-1", "odds": {"home_over_4.5": 1.9}}])
     todo, already, preferred, _ = run(db, prefer={"ger-bl-1"})
     assert todo == [] and already == 1 and preferred == 0
 
@@ -310,7 +312,7 @@ def test_backing_off_stops_once_the_game_is_close():
 def test_a_priced_fixture_is_skipped_by_price_not_by_the_stamp():
     # The two reasons must stay distinguishable: one says "done", the other "not yet".
     db = FakeDB([fx("ger-bl-1", 3)],
-                [{"fixture_id": "ger-bl-1", "odds": {"total_over_9.5": 1.9},
+                [{"fixture_id": "ger-bl-1", "odds": {"home_over_4.5": 1.9},
                   "checked_at": ago(99), "checks": 9}])
     todo, already, _, recent = run(db)
     assert todo == [] and already == 1 and recent == 0
@@ -322,3 +324,41 @@ def test_unreadable_stamps_do_not_strand_a_fixture_forever():
         db = FakeDB([fx("ger-bl-1", 3)],
                     [{"fixture_id": "ger-bl-1", "odds": {}, "checked_at": bad}])
         assert len(run(db)[0]) == 1, bad
+
+
+# --- "priced" has to mean a price the boards can read ---------------------------------
+#
+# `if doc.get("odds")` counted ANY non-empty map, so a fixture quoted with match totals
+# and nothing else was marked done and never asked again — while every board that
+# recommends a team line showed no price on it, for ever. Measured on a real weekend: the
+# job reported 254 fixtures already priced and 9% of the side-lines on the streak boards
+# had a number against them.
+
+def test_a_fixture_quoted_only_for_the_match_total_is_not_done():
+    db = FakeDB([fx("ger-bl-1", 3)],
+                [{"fixture_id": "ger-bl-1", "odds": {"total_over_9.5": 1.9,
+                                                     "total_under_10": 2.0}}])
+    todo, already, _, _ = run(db)
+    assert [f["fixture_id"] for f, _ in todo] == ["ger-bl-1"]
+    assert already == 0
+
+
+def test_one_side_is_enough_to_count_as_priced():
+    """Requiring BOTH ends would keep re-asking every fixture whose book quotes only one,
+    which some do all season. One side is the minimum that makes a board row possible,
+    and the recheck back-off is what stops the rest being asked for ever."""
+    for key in ("home_over_4.5", "away_over_3.5"):
+        db = FakeDB([fx("ger-bl-1", 3)], [{"fixture_id": "ger-bl-1", "odds": {key: 1.8}}])
+        todo, already, _, _ = run(db)
+        assert todo == [] and already == 1, key
+
+
+def test_the_predicate_itself():
+    assert has_team_market({"home_over_4.5": 1.8})
+    assert has_team_market({"away_under_5": 2.0})
+    assert not has_team_market({"total_over_10.5": 1.9})
+    # `both_` is the two-team parlay, not either side's own corners, and no board prices
+    # a side off it.
+    assert not has_team_market({"both_over_3.5": 2.5})
+    assert not has_team_market({})
+    assert not has_team_market(None)

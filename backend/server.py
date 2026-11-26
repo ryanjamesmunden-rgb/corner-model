@@ -8080,7 +8080,21 @@ async def streaks(league_id: Optional[str] = None, side: str = "overall", window
             and max_line is None and min_streak == MIN_STREAK_LEN):
         return _preview(await _screen(STREAK_SCREENS[side]), user, response)
     q = {} if not league_id or league_id == "all" else {"league_id": league_id}
-    teams = await db.teams.find(q, {"_id": 0}).to_list(5000)
+    # WITHOUT `matches`, WHICH THIS PATH NEVER READS.
+    #
+    # A team document carries THREE match arrays and the sync builds them from one set of
+    # games: `history_matches` is the last forty, `real_matches` the last twenty of those,
+    # and `matches` a copy of `real_matches` (padded with synthetic games only for a side
+    # with fewer than five real ones). So two thirds of the match data on a team is a
+    # duplicate, and this query was pulling all of it for every team in the database.
+    #
+    # The streak walk reads `history_matches`; `_real_avg`, `live_lambda` and the league
+    # shot maps read `real_matches`. Nothing on this path touches `matches` — `_src`, the
+    # one reader that falls back to it, is not called here — so it is excluded rather than
+    # whitelisted, because an exclusion cannot silently drop a field somebody adds later.
+    # test_streaks_projection drives the real handler with and without it and asserts the
+    # two boards are identical, so this stops being true loudly rather than quietly.
+    teams = await db.teams.find(q, {"_id": 0, "matches": 0}).to_list(5000)
     teams_by_id = {t["team_id"]: t for t in teams}
     ls_map = _league_shots_map(teams)
     bl_map = _league_blocked_map(teams)
@@ -8620,11 +8634,60 @@ async def perfect_games(within_days: int = 7, limit: int = 20, min_hits: int = 4
 # Quick Scan, Streaks and Perfect Games read together, one row per team and fixture,
 # priced at 5+ and 6+ team corners. The merge itself lives in combined.py.
 
+#: How long one combined board stands in for the next identical request.
+#:
+#: WHAT THIS IS FOR, AND IT IS NOT MICRO-OPTIMISATION. `_combined_rows` runs the streak
+#: computation THREE times — once per venue — with `min_hits=4`, which is not the value
+#: the screen cache holds, so all three take the slow path: every team document in the
+#: database, all three of its match arrays, and the whole streak walk, on the event loop
+#: of a single uvicorn worker. While that runs nothing else on the site is served, and it
+#: is heavy enough to drop connections outright.
+#:
+#: The week card calls this on EVERY load (min_boards=1, within_days keyed to the day
+#: asked for — never the cached screen's parameters), so opening the card three times in
+#: a minute ran it three times. Measured against production: one such request took the
+#: backend out for several minutes, with 502s and dropped connections across every
+#: endpoint until it finished.
+#:
+#: FIVE MINUTES IS CHOSEN FOR WHAT CHANGES UNDERNEATH. The boards are rebuilt by the
+#: nightly sync and the prices by a job that runs four times a day, so nothing here moves
+#: on a five-minute scale — but a hand-typed price should still appear while somebody is
+#: looking for it, which rules out an hour.
+COMBINED_TTL_SECONDS = 300
+
+#: {params: (built_at, rows)} and one lock per params.
+#:
+#: THE LOCK IS NOT BELT AND BRACES. Two page loads a second apart both miss an empty
+#: cache, and both then run the computation that takes the site down — the failure this
+#: is here to stop, doubled. The second waits and takes the first one's answer.
+_combined_cache: Dict[tuple, tuple] = {}
+_combined_locks: Dict[tuple, asyncio.Lock] = {}
+
+
 async def _combined_rows(within_days: int = 7, min_samples: int = combined.DEFAULT_MIN_SAMPLES,
                          min_opp_games: int = combined.DEFAULT_MIN_OPP_GAMES,
                          min_boards: int = 2, user: dict = None):
     within = max(1, min(within_days, 14))
     user = user or {}
+    # `user` IS NOT PART OF THE KEY, and that is checked rather than assumed: every board
+    # this gathers is fetched with no `response`, and _preview returns the rows untouched
+    # when there is no response to write headers on. So the result does not depend on who
+    # asked, and two members and a guest share one computation.
+    key = (within, min_samples, min_opp_games, min_boards)
+    lock = _combined_locks.setdefault(key, asyncio.Lock())
+    async with lock:
+        hit = _combined_cache.get(key)
+        if hit and (time.time() - hit[0]) < COMBINED_TTL_SECONDS:
+            return hit[1]
+        rows = await _combined_rows_uncached(within, min_samples, min_opp_games,
+                                             min_boards, user)
+        _combined_cache[key] = (time.time(), rows)
+        return rows
+
+
+async def _combined_rows_uncached(within_days: int, min_samples: int, min_opp_games: int,
+                                  min_boards: int, user: dict):
+    within = within_days
     # Internal calls: no `response`, so each board comes back whole rather than trimmed.
     mismatches = await _all_mismatches(within_days=within, limit=10000)
     runs = []

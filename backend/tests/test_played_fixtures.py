@@ -229,6 +229,23 @@ def test_the_window_is_about_a_month():
     assert 28 <= _module_int("sync_real.py", "PLAYED_KEEP_DAYS") <= 31
 
 
+def test_the_cup_window_is_stated_the_same_way_in_both_files():
+    """Same reasoning, separate number. A league team's record lives in db.teams and this
+    store is only a view of results; a cup side has no such row anywhere, so for a cup
+    this store IS its record of the competition and the two windows cannot be one."""
+    assert _module_int("server.py", "CUP_KEEP_DAYS") == \
+        _module_int("sync_real.py", "CUP_KEEP_DAYS")
+
+
+def test_a_cup_keeps_its_whole_season_and_not_last_one():
+    """A European league phase runs September to late January and the knockouts to late
+    May, so the window has to span a season — and must NOT reach back into the previous
+    one, which is a different squad and a different format and would be padding."""
+    days = _module_int("sync_real.py", "CUP_KEEP_DAYS")
+    assert 200 <= days <= 300
+    assert days > _module_int("sync_real.py", "PLAYED_KEEP_DAYS")
+
+
 def test_the_played_store_is_cleaned_up_with_its_competition():
     """A competition removed from CUP_META or LEAGUE_META loses its teams and fixtures on
     boot. Its results have to go too, or a deleted competition stays visible for up to a

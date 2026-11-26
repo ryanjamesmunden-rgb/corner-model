@@ -6179,8 +6179,9 @@ async def fixtures_played(days: Optional[int] = None, league_id: Optional[str] =
         r["league_name"] = leagues.get(r.get("league_id"), "")
     return {"fixtures": rows, "count": len(rows),
             # Stated rather than assumed, so a caller can say "last 30 days" without
-            # hardcoding a number that only the sync actually controls.
-            "keep_days": PLAYED_KEEP_DAYS,
+            # hardcoding a number that only the sync actually controls — and a cup keeps
+            # a season rather than a month, because for a cup this store IS the record.
+            "keep_days": (CUP_KEEP_DAYS if cups.is_cup(league_id) else PLAYED_KEEP_DAYS),
             "with_corners": sum(1 for r in rows if r.get("corners_known"))}
 
 
@@ -7107,6 +7108,14 @@ PLAYED_SCAN = 3000
 # actually enforces the window, so a disagreement here would have the API stating a
 # retention period the data does not have.
 PLAYED_KEEP_DAYS = 30
+
+# MUST MATCH sync_real.CUP_KEEP_DAYS, for the same reason and pinned by the same test.
+#
+# A cup's results ARE its teams' record — there is no db.teams row for a side's European
+# season — so the sync keeps a competition's whole season of them rather than a month.
+# Stated separately here so /fixtures/played can report the window a caller's competition
+# actually has rather than the leagues' one.
+CUP_KEEP_DAYS = 240
 
 
 

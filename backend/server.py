@@ -3616,25 +3616,66 @@ async def _build_screen(name: str) -> dict:
 
 
 async def _screen(name: str):
-    """Cached payload, rebuilt when missing or out of date.
+    """Cached payload. Stale is served at once and refreshed behind the request.
 
-    The per-screen lock matters: without it the first visitors after a sync would all
-    miss together and each kick off the same full scan."""
+    A STALE SCREEN MUST NEVER BE REBUILT ON THE REQUEST PATH, and that is what this
+    function used to do. The combined screen's build IS `_combined_rows`, which loads
+    every team document five times over; measured against production it ran for 300
+    seconds, dropped the connection and took every other endpoint on the site down with
+    it. Once a build fails the screen stays stale, so the NEXT visitor runs the same
+    doomed rebuild, and the next — the outage feeds itself.
+
+    So a cached payload is returned immediately however old it is, and the rebuild is
+    handed to a background task. What the reader loses is at most half a day of movement
+    on a board the sync rebuilds nightly; what they gain is a page that answers. Only a
+    screen that has NEVER been built blocks, because there is nothing else to send.
+
+    The per-screen lock still matters: without it the first visitors after a sync would
+    all miss together and each kick off the same full scan.
+    """
     cached = await db.screens.find_one({"_id": name})
     if cached and not await _screen_is_stale(cached):
+        return cached["payload"]
+    if cached:
+        _refresh_screen_later(name)
         return cached["payload"]
     lock = _screen_locks.setdefault(name, asyncio.Lock())
     async with lock:
         cached = await db.screens.find_one({"_id": name})  # may have been rebuilt while waiting
-        if cached and not await _screen_is_stale(cached):
+        if cached:
             return cached["payload"]
+        return (await _build_screen(name))["payload"]
+
+
+#: Screens with a rebuild already in flight, so a burst of visitors starts one, not fifty.
+_refreshing: set = set()
+
+
+def _refresh_screen_later(name: str) -> None:
+    """Rebuild a stale screen off the request path, at most one at a time.
+
+    FAILURE IS SWALLOWED ON PURPOSE. Nobody is waiting on this: the request it was
+    started from has already been answered from the stale copy, and a build that dies
+    must leave that copy in place rather than take anything down with it. The log line
+    is how it is noticed.
+    """
+    if name in _refreshing:
+        return
+    _refreshing.add(name)
+
+    async def go():
         try:
-            return (await _build_screen(name))["payload"]
+            await _build_screen(name)
+            logger.info("screen refreshed in the background: %s", name)
         except Exception:                                     # noqa: BLE001
-            logger.exception("screen rebuild failed: %s", name)
-            if cached:
-                return cached["payload"]                      # stale beats nothing
-            raise
+            logger.exception("background screen rebuild failed: %s", name)
+        finally:
+            _refreshing.discard(name)
+
+    try:
+        asyncio.get_running_loop().create_task(go())
+    except RuntimeError:                                      # no loop: nothing to do
+        _refreshing.discard(name)
 
 
 async def _rebuild_screens() -> dict:
@@ -9034,7 +9075,14 @@ async def week_card_board(day: Optional[str] = None, league_id: Optional[str] = 
     # Board membership and the run. min_boards=1, because a side on the streak board
     # alone is still a side with a run behind it — the two-board bar is what makes the
     # COMBINED board a shortlist, and this is a diary, not a shortlist.
-    board_rows = await _combined_rows(within_days=max(1, ahead + 1), min_boards=1,
+    # ONE HORIZON FOR EVERY DAY, not one per day asked for.
+    #
+    # This was `max(1, ahead + 1)`, so Thursday's card and Friday's card were two
+    # different `within_days` and therefore two different computations — and that
+    # computation is the one that takes the site down. The rows are filtered to
+    # `want_day` three lines below either way, so a wider board costs nothing and every
+    # day of the card now shares a single memoised answer.
+    board_rows = await _combined_rows(within_days=WEEK_CARD_MAX_AHEAD + 1, min_boards=1,
                                       user=user) if ahead >= 0 else []
     board_rows = [b for b in board_rows
                   if local_day((b.get("next_fixture") or {}).get("date")) == want_day]

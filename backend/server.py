@@ -6959,6 +6959,27 @@ async def value_board(within_days: Optional[int] = 7, min_ev: float = 0.0,
             rows.append({**row, "status": "kicked_off"})
             continue
 
+        # THE WINDOW IS DECIDED HERE, BEFORE A MODEL IS BUILT FOR THE ROW.
+        #
+        # This block used to sit AFTER fixture_model_from, so a board asked for one day
+        # built a full model for every priced fixture in the whole horizon and then threw
+        # most of them away. A model is the expensive thing in this loop — team history,
+        # lambdas, a ladder of markets — and the week card asks for a single day on every
+        # load, so it was paying about seven times what it needed and doing it on the
+        # event loop of a single worker.
+        #
+        # Nothing below needs the model to decide this: the kick-off and the fixture are
+        # both already in hand. Moving it up changes which rows get a model, never which
+        # rows come back — a fixture outside the window produced `outside_window` before
+        # and produces it now, with the same fields on it.
+        if day:
+            if local_day(fx.get("date")) != day:
+                rows.append({**row, "status": "outside_window"})
+                continue
+        elif kickoff and horizon and kickoff > horizon:
+            rows.append({**row, "status": "outside_window"})
+            continue
+
         home, away = teams.get(fx["home_team_id"]), teams.get(fx["away_team_id"])
         if not home or not away:
             rows.append({**row, "status": "no_teams"})
@@ -7033,13 +7054,6 @@ async def value_board(within_days: Optional[int] = 7, min_ev: float = 0.0,
         # local_day, not the first ten characters of the timestamp: a 23:00Z game in
         # summer is 00:30 the next day in London, and filing it under the UTC date puts it
         # in the wrong post. That function's own note has the reasoning.
-        if day:
-            if local_day(fx.get("date")) != day:
-                rows.append({**row, "status": "outside_window"})
-                continue
-        elif kickoff and horizon and kickoff > horizon:
-            rows.append({**row, "status": "outside_window"})
-            continue
         rows.append({**row, "status": "ok" if clearing else "below_floor"})
 
     order = {s: i for i, s in enumerate(VALUE_STATUS_ORDER)}

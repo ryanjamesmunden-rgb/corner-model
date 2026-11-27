@@ -3673,6 +3673,21 @@ async def _data_version() -> Optional[str]:
     return f"{synced}|{at}" if (synced or at) else None
 
 
+async def _newest_price_at() -> Optional[datetime]:
+    """When the most recent price was written, to the second.
+
+    Best effort, for the same reason _data_version's odds half is: this decides whether a
+    cached page may be served and must never be the reason one cannot be.
+    """
+    try:
+        newest = await db.odds_feed.find({}, {"_id": 0, "fetched_at": 1}) \
+            .sort("fetched_at", -1).limit(1).to_list(1)
+    except Exception:                                         # noqa: BLE001
+        logger.debug("no odds clock available; screens aged on the sync alone")
+        return None
+    return _iso_to_dt(newest[0].get("fetched_at")) if newest else None
+
+
 async def _screen_is_stale(doc: dict) -> bool:
     if doc.get("schema") != SCREEN_SCHEMA:
         return True
@@ -3681,6 +3696,19 @@ async def _screen_is_stale(doc: dict) -> bool:
         return True
     built = _iso_to_dt(doc.get("built_at"))
     if not built:
+        return True
+    # A PRICE WRITTEN AFTER THIS WAS BUILT MAKES IT STALE, compared exactly rather than
+    # through the version string.
+    #
+    # _data_version truncates the odds clock to the hour, so a rebuild and a later write
+    # inside the same hour produce the identical version and the screen stays marked
+    # fresh holding pre-fetch prices. Seen directly: a fetch at 23:24 stored 3,922 lines
+    # while all three streak screens, built 23:22-23:24, reported `fresh: true` and went
+    # on serving a weekend with no prices on it. Truncation was chosen to avoid a rebuild
+    # on every write, and this keeps that property for a better reason — a rebuild happens
+    # only when a write genuinely postdates the build, which is exactly when one is owed.
+    newest = await _newest_price_at()
+    if newest and newest > built:
         return True
     return (datetime.now(timezone.utc) - built).total_seconds() > SCREEN_STALE_HOURS * 3600
 

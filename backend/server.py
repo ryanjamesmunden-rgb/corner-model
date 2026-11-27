@@ -6889,8 +6889,24 @@ async def value_board(within_days: Optional[int] = 7, min_ev: float = 0.0,
     # fixture — the whole reason fixture_model_from was split out.
     team_ids = {tid for fx in fixtures.values()
                 for tid in (fx["home_team_id"], fx["away_team_id"])}
+    # THE GAMES THE MODEL PRICES FROM, AND NOTHING ELSE — the same cut _teams_for
+    # documents, for the same reason and the same symptom. A team document holds
+    # `history_matches` (forty games), `real_matches` (the last twenty of those) and
+    # `matches` (a copy of the twenty), so two thirds of it is duplicate. Everything
+    # this board reaches reads `real_matches`, falling back to `matches` where a team
+    # has no real games: expected_lambdas and confidence_for through _src, the intent
+    # helpers, and markets.pair_counts. Nothing on the path touches `history_matches`.
+    #
+    # It was fetching all three for every team on every priced fixture — up to ODDS_SCAN
+    # fixtures, so most of the collection — on one worker, which is why this board
+    # answered 502 while /api/health stayed up.
+    #
+    # `matches` STAYS. It is the _src fallback, so dropping it would silently reprice
+    # every thinly-covered team off an empty history rather than off its stored games.
     teams = {t["team_id"]: t for t in
-             await db.teams.find({"team_id": {"$in": list(team_ids)}}, {"_id": 0}).to_list(10000)}
+             await db.teams.find({"team_id": {"$in": list(team_ids)}},
+                                 {"_id": 0, "team_id": 1,
+                                  "real_matches": 1, "matches": 1}).to_list(10000)}
     leagues = {l["league_id"]: l for l in await db.leagues.find({}, {"_id": 0}).to_list(200)}
 
     now = datetime.now(timezone.utc)

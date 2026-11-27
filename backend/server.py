@@ -587,6 +587,64 @@ def _src(team: dict) -> list:
     return team.get("real_matches") or team.get("matches") or []
 
 
+# ---- one scan of the team collection per composite board -------------------------------
+#
+# WHAT THIS FIXES. `_combined_rows` gathers five boards, and each of them scans the whole
+# team collection for itself: _all_mismatches once, streaks once per venue, and
+# perfect_games — which internally calls streaks AND _all_mismatches again. Counted on the
+# real handler that is eight scans of ~2,000 documents carrying up to sixty match rows
+# each, on one worker, for a single page load. The week card calls it on every visit.
+#
+# The screens were the visible end of it: eleven of thirteen stale, four not rebuilt in two
+# days, because a rebuild heavy enough to exhaust the worker never finishes, so the screen
+# never goes fresh and the next visitor queues the same doomed rebuild.
+#
+# A CONTEXTVAR RATHER THAN A MODULE-LEVEL CACHE, for the reason given above
+# `_building_screen`: it is visible only to the task that opened the scope. Nothing is
+# cached between requests, so a board still reads whatever the database holds now — this
+# collapses the repeats WITHIN one composite build and changes nothing else. Outside a
+# scope the memo is None and every caller queries exactly as it did before, so no endpoint
+# but the ones that opt in can be affected.
+#
+# KEYED ON THE PROJECTION, NOT JUST THE QUERY, because the callers deliberately ask for
+# different fields: streaks excludes `matches` (it never reads it), while _all_mismatches
+# needs it for _src's fallback. Sharing one widest projection would have made the
+# standalone streaks path — the most visited board here — load more than it does today.
+# Two scans serve all eight callers.
+_teams_memo: contextvars.ContextVar = contextvars.ContextVar("teams_memo", default=None)
+
+
+def _teams_scope():
+    """Open a scope in which identical team scans happen once. Use with `async with`."""
+
+    class _Scope:
+        def __enter__(self):
+            self._token = _teams_memo.set({})
+            return self
+
+        def __exit__(self, *exc):
+            _teams_memo.reset(self._token)
+            return False
+
+    return _Scope()
+
+
+async def _teams_scan(q: dict, proj: dict, cap: int) -> list:
+    """The team collection, scanned once per (query, projection) inside a scope.
+
+    THE DOCUMENTS ARE SHARED, NOT COPIED — that is the whole saving. Safe because every
+    caller here only reads them and builds new dicts for its rows; none writes back onto a
+    team document. A caller that needs to mutate one must copy it first.
+    """
+    memo = _teams_memo.get()
+    if memo is None:                       # no scope: exactly the previous behaviour
+        return await db.teams.find(q, proj).to_list(cap)
+    key = (repr(sorted(q.items())), repr(sorted(proj.items())), cap)
+    if key not in memo:
+        memo[key] = await db.teams.find(q, proj).to_list(cap)
+    return memo[key]
+
+
 def expected_lambdas(home: dict, away: dict, league_shots: float = REF_SHOTS,
                      league_blocked: float = 0.0,
                      away_shots: Optional[float] = None,
@@ -3476,7 +3534,7 @@ async def _angle_rows(within_days: int = 2):
                          direction="over", subject="team", user={})
     if not rows:
         return rows
-    teams = await db.teams.find({}, {"_id": 0}).to_list(2000)
+    teams = await _teams_scan({}, {"_id": 0}, 2000)
     by_id = {t["team_id"]: t for t in teams}
     # Corners won per game, by league. In aggregate a league's corners won and corners
     # conceded are the same pool, so this is the right yardstick for "concedes more than
@@ -8219,7 +8277,7 @@ async def streaks(league_id: Optional[str] = None, side: str = "overall", window
     # whitelisted, because an exclusion cannot silently drop a field somebody adds later.
     # test_streaks_projection drives the real handler with and without it and asserts the
     # two boards are identical, so this stops being true loudly rather than quietly.
-    teams = await db.teams.find(q, {"_id": 0, "matches": 0}).to_list(5000)
+    teams = await _teams_scan(q, {"_id": 0, "matches": 0}, 5000)
     teams_by_id = {t["team_id"]: t for t in teams}
     ls_map = _league_shots_map(teams)
     bl_map = _league_blocked_map(teams)
@@ -8562,7 +8620,7 @@ async def trends(league_id: Optional[str] = None, window: int = 5, metric: str =
 
 
 async def _all_mismatches(within_days: Optional[int] = None, limit: int = 20):
-    teams = await db.teams.find({}, {"_id": 0}).to_list(2000)
+    teams = await _teams_scan({}, {"_id": 0}, 2000)
     teams_by_id = {t["team_id"]: t for t in teams}
     ls_map = _league_shots_map(teams)
     bl_map = _league_blocked_map(teams)
@@ -8813,6 +8871,17 @@ async def _combined_rows(within_days: int = 7, min_samples: int = combined.DEFAU
 async def _combined_rows_uncached(within_days: int, min_samples: int, min_opp_games: int,
                                   min_boards: int, user: dict):
     within = within_days
+    # ONE SCAN PER PROJECTION FOR THE WHOLE GATHER. The five boards below scan the team
+    # collection eight times between them — _all_mismatches, streaks once per venue, and
+    # perfect_games, which calls streaks and _all_mismatches again internally. Inside this
+    # scope the repeats are served from the first scan; see _teams_scan.
+    with _teams_scope():
+        return await _combined_rows_gather(within, min_samples, min_opp_games,
+                                           min_boards, user)
+
+
+async def _combined_rows_gather(within: int, min_samples: int, min_opp_games: int,
+                                min_boards: int, user: dict):
     # Internal calls: no `response`, so each board comes back whole rather than trimmed.
     mismatches = await _all_mismatches(within_days=within, limit=10000)
     runs = []
@@ -8823,7 +8892,7 @@ async def _combined_rows_uncached(within_days: int, min_samples: int, min_opp_ga
                                   min_streak=MIN_STREAK_LEN, user=user))
     perfect = await perfect_games(within_days=within, limit=100, min_hits=4, window=5,
                                   side="overall", min_opp_leak=5, user=user)
-    teams = await db.teams.find({}, {"_id": 0, "team_id": 1, "real_samples": 1}).to_list(5000)
+    teams = await _teams_scan({}, {"_id": 0, "team_id": 1, "real_samples": 1}, 5000)
     teams_by_id = {t["team_id"]: t for t in teams}
     fixture_ids = list({(r.get("next_fixture") or {}).get("fixture_id")
                         for r in [*mismatches, *runs, *perfect]} - {None})

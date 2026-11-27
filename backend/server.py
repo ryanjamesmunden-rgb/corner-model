@@ -5630,23 +5630,26 @@ def _merge_one(manual: Optional[dict], feed: Optional[dict]) -> Dict[str, dict]:
     news happen underneath it, while a hand-typed one is left alone at any age because
     somebody chose to put it there and nothing here knows better."""
     feed_odds = (feed or {}).get("odds") or {}
-    if feed_odds and _feed_is_stale((feed or {}).get("fetched_at")):
+    if feed_odds and _feed_is_stale((feed or {}).get("fetched_at"),
+                                    (feed or {}).get("kickoff")):
         feed_odds = {}
     return odds_feed.merge_prices((manual or {}).get("odds"), feed_odds)
 
 
-def _feed_is_stale(fetched_at) -> bool:
+def _feed_is_stale(fetched_at, kickoff=None) -> bool:
     """True when a fetched price is too old to rank on, or carries no readable clock.
 
-    No clock means it cannot be aged, which means it cannot be shown to be current — so it
-    is treated as stale rather than waved through."""
-    try:
-        got = datetime.fromisoformat(str(fetched_at or ""))
-    except Exception:
-        return True
-    if got.tzinfo is None:
-        got = got.replace(tzinfo=timezone.utc)
-    return (datetime.now(timezone.utc) - got).total_seconds() > FEED_PRICE_STALE_HOURS * 3600
+    THE RULE LIVES IN odds_feed SO THE FETCHER OBEYS THE SAME ONE. This function and
+    fetch_odds.unpriced_ahead used to decide separately — twelve hours flat here, "has a
+    price at all" there — and between them a fixture could be priced and invisible
+    simultaneously, permanently, with nothing able to notice. A price this refuses is now
+    a price the fetcher re-asks.
+
+    Judged against the distance to kick-off rather than the clock alone: books post a
+    Saturday corner market on the Monday, and a Monday price for a Saturday game is the
+    market for that game, not a memory of it. See odds_feed.allowed_age_hours.
+    """
+    return odds_feed.price_is_stale(fetched_at, kickoff)
 
 
 async def _odds_for_many(fixture_ids) -> Dict[str, dict]:
@@ -6795,7 +6798,8 @@ async def _merged_prices(manual_docs: Dict[str, dict]) -> Dict[str, dict]:
     # disagreeing about whether a price still counts — the bug this whole merge exists to
     # stop, reintroduced one layer down.
     feed = {d["fixture_id"]: d for d in feed_docs
-            if d.get("odds") and not _feed_is_stale(d.get("fetched_at"))}
+            if d.get("odds") and not _feed_is_stale(d.get("fetched_at"),
+                                                    d.get("kickoff"))}
 
     out: Dict[str, dict] = {}
     for fid in set(manual_docs) | set(feed):

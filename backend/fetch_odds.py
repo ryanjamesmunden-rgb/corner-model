@@ -40,6 +40,7 @@ import httpx
 from dotenv import load_dotenv
 from motor.motor_asyncio import AsyncIOMotorClient
 
+import odds_feed
 from odds_feed import SOURCE, feed_doc, first_entry
 from sync_real import af_get
 
@@ -165,7 +166,8 @@ async def fetch_one(hc, db, fx, api_fid, write=True):
             await _stamp_checked(db, fx, api_fid)
         return {"fixture_id": fx["fixture_id"], "priced": 0, "books": 0,
                 "note": "no bookmaker quotes this fixture yet"}
-    doc = feed_doc(fx["fixture_id"], api_fid, entry, _now().isoformat())
+    doc = feed_doc(fx["fixture_id"], api_fid, entry, _now().isoformat(),
+                   kickoff=fx.get("date"))
     # The stamp rides along, so a fixture quoted with no USABLE corner line — a doc with
     # an empty odds map — is on the same back-off as one nobody quoted at all.
     doc["checked_at"] = _now().isoformat()
@@ -246,14 +248,42 @@ async def unpriced_ahead(db, days: int, from_days: int, leagues, limit: int,
         # Stable: the preferred fixtures keep their own date order, and so does the rest.
         rows.sort(key=lambda fx: 0 if fx.get("fixture_id") in wanted else 1)
     ids = [fx["fixture_id"] for fx in rows]
-    have, looked = set(), {}
+    kick_of = {fx["fixture_id"]: fx.get("date") for fx in rows}
+    have, looked, refresh = set(), {}, 0
     async for doc in db.odds_feed.find(
             {"fixture_id": {"$in": ids}},
-            {"_id": 0, "fixture_id": 1, "odds": 1, "checked_at": 1, "checks": 1}):
+            {"_id": 0, "fixture_id": 1, "odds": 1, "checked_at": 1, "checks": 1,
+             "fetched_at": 1, "kickoff": 1}):
+        fid = doc["fixture_id"]
         if has_team_market(doc.get("odds")):
-            have.add(doc["fixture_id"])
+            # "ALREADY PRICED" NOW MEANS PRICED WITH SOMETHING THE BOARD WILL SHOW.
+            #
+            # It used to mean the document held a team market at any age, and the board
+            # separately discarded anything over twelve hours old, so a fixture could be
+            # priced and invisible at the same time with nothing able to refresh it.
+            # Books post Saturday corner markets on the Monday or Tuesday, this pass
+            # picked them up then and never looked again, and by midweek the board showed
+            # a blank weekend: 239 fixtures reported as priced, 0 of Sunday's 59 with a
+            # price on screen.
+            #
+            # The same function the board uses decides it, so the two cannot drift apart
+            # again — and because the tolerance scales with the distance to kick-off, a
+            # price bought on Monday for Saturday is re-asked a couple of times across the
+            # week rather than daily. That is what makes this affordable: the old rule's
+            # whole purpose was to avoid re-paying for every fixture every day, and it
+            # still does.
+            # `now` IS PASSED, NOT TAKEN INSIDE. This module's clock is `_now()`, which
+            # the tests freeze; a helper reading the wall clock for itself would age every
+            # stored fixture by the gap between the frozen date and today and report the
+            # whole week as due.
+            if odds_feed.price_is_stale(doc.get("fetched_at"),
+                                        doc.get("kickoff") or kick_of.get(fid),
+                                        now=now):
+                refresh += 1
+            else:
+                have.add(fid)
         elif doc.get("checked_at"):
-            looked[doc["fixture_id"]] = (doc["checked_at"], doc.get("checks") or 0)
+            looked[fid] = (doc["checked_at"], doc.get("checks") or 0)
     out, taken_preferred, skipped_recent = [], 0, 0
     for fx in rows:
         if fx["fixture_id"] in have:
@@ -280,7 +310,7 @@ async def unpriced_ahead(db, days: int, from_days: int, leagues, limit: int,
             taken_preferred += 1
         if len(out) >= limit:
             break
-    return out, len(have), taken_preferred, skipped_recent
+    return out, len(have), taken_preferred, skipped_recent, refresh
 
 
 async def fetch_ahead(db, days: int = AHEAD_DAYS, from_days: int = AHEAD_FROM_DAYS,
@@ -294,8 +324,8 @@ async def fetch_ahead(db, days: int = AHEAD_DAYS, from_days: int = AHEAD_FROM_DA
     `skipped_priced` is reported because it is the number that says the rule is working:
     it should climb through the week while `calls` falls towards nothing.
     """
-    todo, already, preferred, recent = await unpriced_ahead(db, days, from_days, leagues,
-                                                           limit, prefer)
+    todo, already, preferred, recent, refresh = await unpriced_ahead(
+        db, days, from_days, leagues, limit, prefer)
     out = {"fixtures": len(todo), "calls": 0, "priced": 0, "unpriced": 0, "errors": 0,
            "lines": 0, "capped": len(todo) >= limit, "skipped_priced": already,
            # HOW MANY OF THE CALLS WENT TO A GAME THE BOARD WOULD RECOMMEND. With a ceiling
@@ -304,6 +334,11 @@ async def fetch_ahead(db, days: int = AHEAD_DAYS, from_days: int = AHEAD_FROM_DA
            # NOT A SKIP TO WORRY ABOUT: asked recently, market still shut. This is what
            # makes running several times a day cost little more than running once.
            "skipped_recent": recent,
+           # PRICES THE BOARD HAD AGED OUT, now re-asked rather than left to rot. Books
+           # post a Saturday corner market on the Monday, so without this the only
+           # prices a weekend ever showed were whatever happened to be fetched in the
+           # last twelve hours. See odds_feed.allowed_age_hours.
+           "stale_refreshed": refresh,
            "from_days": from_days, "days": days}
     if not todo:
         return out

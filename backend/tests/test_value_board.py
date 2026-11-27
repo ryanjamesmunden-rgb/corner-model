@@ -719,3 +719,57 @@ def test_a_team_with_no_real_games_still_prices_off_its_stored_ones(monkeypatch)
     lam = model_of(thin, _project(_full_team("t-away"), proj),
                    league, {"total_over_9.5": 1.8})["lambdas"]
     assert lam["home"] > 0, "a team with only `matches` must still get a lambda"
+
+
+# --- how old is too old depends on when the game is ----------------------------------
+#
+# A flat twelve-hour rule and the fetcher's "never re-ask a fixture that has a price" are
+# each defensible and together made a weekend unbettable. Books post Saturday corner
+# markets on the Monday or Tuesday; the ahead pass took them then and never looked again;
+# by midweek every one was over twelve hours old and the board showed nothing. Measured on
+# a real weekend: 239 fixtures the fetcher called priced, 0 of Sunday's 59 with a price on
+# the board.
+#
+# A Monday price for a Saturday game IS the market for that game — no fresher quote
+# exists, nothing has happened to the teams, and the alternative on screen is a blank. So
+# the tolerance scales with the distance to kick-off and tightens as it closes. The rule
+# lives in odds_feed so fetch_odds obeys the same one.
+
+def fetched_for(fid, hours_ago, kickoff_hours, odds=None):
+    """A fetched price that knows when its game is."""
+    return {"fixture_id": fid, "source": "api",
+            "odds": odds if odds is not None else {"total_over_9.5": 2.10},
+            "books": {"total_over_9.5": "Pinnacle"},
+            "fetched_at": iso(-hours_ago), "kickoff": iso(kickoff_hours)}
+
+
+def test_a_price_older_than_twelve_hours_still_shows_for_a_game_days_away(monkeypatch):
+    # THE WEEKEND FIX. Saturday is five days out and the price was taken a day ago: under
+    # the old flat rule this row vanished, which is why Sunday showed nothing all week.
+    install(monkeypatch, odds=[], fixtures=[fixture("fx1", hours=120)],
+            feed=[fetched_for("fx1", hours_ago=24, kickoff_hours=120)])
+    rows = board()
+    assert rows and rows[0]["best"]["ev"] is not None
+
+
+def test_the_same_price_is_dropped_once_the_game_is_hours_away(monkeypatch):
+    # Inside half a day it is back to the original rule: lineups and team news move a
+    # corner line, and a price from before them is a memory.
+    install(monkeypatch, odds=[], fixtures=[fixture("fx1", hours=6)],
+            feed=[fetched_for("fx1", hours_ago=24, kickoff_hours=6)])
+    assert board() == []
+
+
+def test_a_price_past_the_ceiling_is_dropped_however_distant_the_game(monkeypatch):
+    # Three days is the cap: past that a quote has had a week of nothing happen to it.
+    install(monkeypatch, odds=[], fixtures=[fixture("fx1", hours=240)],
+            feed=[fetched_for("fx1", hours_ago=100, kickoff_hours=240)])
+    assert board() == []
+
+
+def test_a_document_with_no_kickoff_keeps_the_flat_twelve_hour_rule(monkeypatch):
+    """Written before `kickoff` was stored, so it gets no extra rope — and no migration."""
+    doc = fetched("fx1", hours_ago=server.FEED_PRICE_STALE_HOURS + 2)
+    doc.pop("kickoff", None)
+    install(monkeypatch, odds=[], fixtures=[fixture("fx1", hours=120)], feed=[doc])
+    assert board() == []

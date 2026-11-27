@@ -36,9 +36,13 @@ def _sliced():
         src = fh.read()
     start = src.index("RECHECK_GIVE_UP = ")
     end = src.index("async def fetch_ahead(")
+    # odds_feed carries the price-age rule the selector now shares with the board, so
+    # the slice needs the real module rather than a stand-in: the point of the change is
+    # that both sides decide with the SAME function.
+    import odds_feed as _odds_feed
     ns = {"timedelta": timedelta, "datetime": datetime, "timezone": timezone,
           "_now": lambda: datetime(2026, 11, 17, 12, 0, tzinfo=timezone.utc),
-          "_iso": _iso}
+          "_iso": _iso, "odds_feed": _odds_feed}
     exec(compile(src[start:end], "sliced", "exec"), ns)
     return ns
 
@@ -115,8 +119,19 @@ class FakeDB:
         self.odds_feed = FakeColl(feed)
 
 
-def run(db, days=6, from_days=1, leagues=None, limit=120, prefer=None):
+def run_full(db, days=6, from_days=1, leagues=None, limit=120, prefer=None):
+    """The selector's whole answer: (todo, already, preferred, skipped_recent, refresh)."""
     return asyncio.run(unpriced_ahead(db, days, from_days, leagues, limit, prefer))
+
+
+def run(db, days=6, from_days=1, leagues=None, limit=120, prefer=None):
+    """The first four counts, which is what every test below this was written against.
+
+    `refresh` — prices the board had aged out and the selector now re-asks — is read
+    through run_full by the tests that are about it, so adding it did not have to touch
+    twenty unpacking sites.
+    """
+    return run_full(db, days, from_days, leagues, limit, prefer)[:4]
 
 
 # --- not spending twice -------------------------------------------------------------
@@ -125,7 +140,7 @@ def test_a_fixture_that_already_has_a_price_is_not_fetched_again():
     # THE WHOLE ECONOMICS. Without this the pass re-pays for every fixture every day for
     # a price that has not moved, and a six-day reach is unaffordable.
     db = FakeDB([fx("ger-bl-1", 3), fx("ger-bl-2", 4)],
-                [{"fixture_id": "ger-bl-1", "odds": {"home_over_4.5": 2.1}}])
+                [priced("ger-bl-1")])
     todo, already, _, _ = run(db)
     assert [f["fixture_id"] for f, _ in todo] == ["ger-bl-2"]
     assert already == 1
@@ -144,7 +159,7 @@ def test_an_empty_price_document_still_counts_as_unpriced():
 
 def test_the_whole_week_priced_costs_nothing():
     rows = [fx(f"ger-bl-{i}", 2 + i % 4) for i in range(1, 9)]
-    feed = [{"fixture_id": r["fixture_id"], "odds": {"home_over_4.5": 2.0}} for r in rows]
+    feed = [priced(r["fixture_id"], price=2.0) for r in rows]
     todo, already, _, _ = run(FakeDB(rows, feed))
     assert todo == []
     assert already == 8
@@ -246,7 +261,7 @@ def test_a_preferred_fixture_that_already_has_a_price_is_still_skipped():
     # Aiming decides the ORDER, never whether a fixture is paid for twice.
     rows = [fx("ger-bl-1", 3)]
     # A TEAM market, because that is now what counts as priced — see has_team_market.
-    db = FakeDB(rows, [{"fixture_id": "ger-bl-1", "odds": {"home_over_4.5": 1.9}}])
+    db = FakeDB(rows, [priced("ger-bl-1", price=1.9)])
     todo, already, preferred, _ = run(db, prefer={"ger-bl-1"})
     assert todo == [] and already == 1 and preferred == 0
 
@@ -260,6 +275,24 @@ def test_a_preferred_fixture_that_already_has_a_price_is_still_skipped():
 
 def ago(hours):
     return (NOW - timedelta(hours=hours)).isoformat()
+
+
+def priced(fid, key="home_over_4.5", price=2.1, fetched_hours_ago=1, kickoff=None,
+           **extra):
+    """A price document as feed_doc actually writes one.
+
+    WITH `fetched_at`, which the fixtures here used to omit. "Already priced" now means
+    priced with something the board will still show, so a document with no clock on it
+    cannot be aged, counts as stale, and is re-asked — correctly, and the same way the
+    board refuses to rank on it. A fake without the stamp was testing a document the
+    writer never produces.
+    """
+    doc = {"fixture_id": fid, "odds": {key: price},
+           "fetched_at": ago(fetched_hours_ago)}
+    if kickoff is not None:
+        doc["kickoff"] = kickoff
+    doc.update(extra)
+    return doc
 
 
 def checked(fid, hours_ago, checks=1):
@@ -312,8 +345,7 @@ def test_backing_off_stops_once_the_game_is_close():
 def test_a_priced_fixture_is_skipped_by_price_not_by_the_stamp():
     # The two reasons must stay distinguishable: one says "done", the other "not yet".
     db = FakeDB([fx("ger-bl-1", 3)],
-                [{"fixture_id": "ger-bl-1", "odds": {"home_over_4.5": 1.9},
-                  "checked_at": ago(99), "checks": 9}])
+                [priced("ger-bl-1", price=1.9, checked_at=ago(99), checks=9)])
     todo, already, _, recent = run(db)
     assert todo == [] and already == 1 and recent == 0
 
@@ -336,7 +368,8 @@ def test_unreadable_stamps_do_not_strand_a_fixture_forever():
 
 def test_a_fixture_quoted_only_for_the_match_total_is_not_done():
     db = FakeDB([fx("ger-bl-1", 3)],
-                [{"fixture_id": "ger-bl-1", "odds": {"total_over_9.5": 1.9,
+                [{"fixture_id": "ger-bl-1", "fetched_at": ago(1),
+                  "odds": {"total_over_9.5": 1.9,
                                                      "total_under_10": 2.0}}])
     todo, already, _, _ = run(db)
     assert [f["fixture_id"] for f, _ in todo] == ["ger-bl-1"]
@@ -348,7 +381,7 @@ def test_one_side_is_enough_to_count_as_priced():
     which some do all season. One side is the minimum that makes a board row possible,
     and the recheck back-off is what stops the rest being asked for ever."""
     for key in ("home_over_4.5", "away_over_3.5"):
-        db = FakeDB([fx("ger-bl-1", 3)], [{"fixture_id": "ger-bl-1", "odds": {key: 1.8}}])
+        db = FakeDB([fx("ger-bl-1", 3)], [priced("ger-bl-1", key=key, price=1.8)])
         todo, already, _, _ = run(db)
         assert todo == [] and already == 1, key
 
@@ -362,3 +395,79 @@ def test_the_predicate_itself():
     assert not has_team_market({"both_over_3.5": 2.5})
     assert not has_team_market({})
     assert not has_team_market(None)
+
+
+# --- a price the board has aged out is a price to refresh -----------------------------
+#
+# Reported from use: "most games have Saturday odds up for corners by Monday / Tuesday".
+# That is the case this pass was built for and the case it handled worst. It fetched those
+# Monday prices and then never looked at the fixture again, because any team market
+# counted as done — while the board discarded anything over twelve hours old. So a weekend
+# bought on Monday was invisible by Wednesday and nothing could put it right: measured on
+# a real weekend, 239 fixtures reported as already priced and 0 of Sunday's 59 showing a
+# price on the board.
+#
+# Both sides now ask odds_feed.price_is_stale, so what the board will not show is what
+# this re-asks.
+
+def kick_in(hours):
+    return (NOW + timedelta(hours=hours)).isoformat()
+
+
+def test_a_saturday_price_bought_on_monday_is_refreshed_not_abandoned():
+    # Saturday's game is five days out; the price was taken four days ago. Older than the
+    # three-day ceiling, so it is due again rather than left to rot.
+    db = FakeDB([fx("ger-bl-sat", 5)],
+                [priced("ger-bl-sat", fetched_hours_ago=96, kickoff=kick_in(120))])
+    todo, already, _, _, refresh = run_full(db)
+    assert [f["fixture_id"] for f, _ in todo] == ["ger-bl-sat"]
+    assert (already, refresh) == (0, 1)
+
+
+def test_a_price_still_good_for_a_distant_game_is_left_alone():
+    # THE ECONOMICS, which the fix must not spend. Five days out, priced a day ago: the
+    # board will still show it, so there is nothing to buy.
+    db = FakeDB([fx("ger-bl-sat", 5)],
+                [priced("ger-bl-sat", fetched_hours_ago=24, kickoff=kick_in(120))])
+    todo, already, _, _, refresh = run_full(db)
+    assert todo == []
+    assert (already, refresh) == (1, 0)
+
+
+def test_the_same_age_is_due_once_the_game_is_close():
+    # A day-old price is fine for Saturday and not fine an hour before kick-off: that is
+    # the whole reason the rule scales. from_days=0 so the selector reaches today.
+    soon = FakeDB([fx("ger-bl-now", 0)],
+                  [priced("ger-bl-now", fetched_hours_ago=24, kickoff=kick_in(6))])
+    todo, already, _, _, refresh = run_full(soon, from_days=0)
+    assert [f["fixture_id"] for f, _ in todo] == ["ger-bl-now"]
+    assert (already, refresh) == (0, 1)
+
+
+def test_a_price_document_with_no_clock_is_refreshed():
+    # It cannot be aged, so the board refuses to rank on it. Leaving it as "done" is how
+    # a fixture becomes permanently priced and permanently blank.
+    db = FakeDB([fx("ger-bl-1", 3)],
+                [{"fixture_id": "ger-bl-1", "odds": {"home_over_4.5": 2.1}}])
+    todo, already, _, _, refresh = run_full(db)
+    assert [f["fixture_id"] for f, _ in todo] == ["ger-bl-1"]
+    assert (already, refresh) == (0, 1)
+
+
+def test_a_legacy_document_without_a_kickoff_falls_back_to_the_flat_rule():
+    # Documents written before `kickoff` was stored must not get extra rope: judged on the
+    # twelve-hour floor, using the fixture's own date as the fallback the selector passes.
+    fresh = FakeDB([fx("ger-bl-1", 3)], [priced("ger-bl-1", fetched_hours_ago=2)])
+    stale = FakeDB([fx("ger-bl-1", 3)], [priced("ger-bl-1", fetched_hours_ago=200)])
+    assert run_full(fresh)[0] == []
+    assert [f["fixture_id"] for f, _ in run_full(stale)[0]] == ["ger-bl-1"]
+
+
+def test_refreshing_does_not_double_count_as_already_priced():
+    """`skipped_priced` must keep meaning "cost nothing", or the report lies about spend."""
+    rows = [fx("ger-bl-1", 4), fx("ger-bl-2", 4)]
+    db = FakeDB(rows, [priced("ger-bl-1", fetched_hours_ago=1, kickoff=kick_in(96)),
+                       priced("ger-bl-2", fetched_hours_ago=200, kickoff=kick_in(96))])
+    todo, already, _, _, refresh = run_full(db)
+    assert [f["fixture_id"] for f, _ in todo] == ["ger-bl-2"]
+    assert (already, refresh) == (1, 1)

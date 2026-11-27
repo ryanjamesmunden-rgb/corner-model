@@ -6819,7 +6819,20 @@ async def _merged_prices(manual_docs: Dict[str, dict]) -> Dict[str, dict]:
     available yesterday is not an edge; a hand-typed price is left alone because a person
     chose to put it there and nothing here knows better.
     """
-    feed_docs = await db.odds_feed.find({}, {"_id": 0}) \
+    # ONLY THE WINDOW IN WHICH A PRICE CAN STILL BE VALID, and this is lossless rather
+    # than a trim. allowed_age_hours caps at PRICE_MAX_AGE_HOURS, so price_is_stale
+    # rejects EVERY price older than that whatever its kick-off — the documents excluded
+    # here are exactly the ones the loop below would have thrown away a moment later.
+    #
+    # It was `find({})` sorted on `fetched_at` with no index and no projection: an
+    # in-memory sort of every price document ever written, each carrying its `quoted` map
+    # of every book's price for every market, to produce a board that returns forty rows.
+    # The collection only grows, so this got slower every day the feed ran — and it got
+    # slower fastest once the weekend fixes landed and coverage jumped, which is why the
+    # page felt worse after the odds arrived rather than better.
+    cutoff = (datetime.now(timezone.utc)
+              - timedelta(hours=odds_feed.PRICE_MAX_AGE_HOURS)).isoformat()
+    feed_docs = await db.odds_feed.find({"fetched_at": {"$gte": cutoff}}, {"_id": 0}) \
         .sort("fetched_at", -1).to_list(ODDS_SCAN)
     # ONE STALENESS RULE, in _feed_is_stale, shared with _odds_for and _odds_for_many.
     # It was written out twice and that is how the Value page and the fixture page end up
@@ -15256,6 +15269,23 @@ async def on_startup():
     except Exception:
         logger.exception("fixture_stats index creation failed — head-to-head lookups "
                          "will fall back to a collection scan")
+    # THE PRICE STORE HAD NO INDEXES AT ALL, and every board reads it.
+    #
+    # `fetched_at` is what _merged_prices filters and sorts on, so without it the value
+    # board sorted the whole collection in memory on every load. `fixture_id` is how
+    # every other reader looks a price up — _odds_for, _odds_for_many, the fetcher's own
+    # "has this been priced" scan — and that was a collection scan per call.
+    #
+    # Same guard as above: a failure here must never stop the app booting, it only makes
+    # the boards slow, which is the state this is fixing rather than risking.
+    try:
+        await db.odds_feed.create_index([("fetched_at", -1)])
+        await db.odds_feed.create_index([("fixture_id", 1)])
+        await db.odds.create_index([("fixture_id", 1)])
+        await db.odds.create_index([("updated_at", -1)])
+    except Exception:
+        logger.exception("odds index creation failed — price lookups will fall back to "
+                         "collection scans")
     # remove any legacy / non-managed leagues (e.g. old mock leagues from an earlier deploy)
     stale = await db.leagues.find({"league_id": {"$nin": list(MANAGED_LEAGUE_IDS)}}, {"_id": 0, "league_id": 1}).to_list(100)
     stale_ids = [l["league_id"] for l in stale]

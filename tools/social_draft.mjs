@@ -125,7 +125,11 @@ const getOnce = async (path, label, ms, fatal) => {
     const what = err.name === "TimeoutError"
       ? `timed out after ${ms / 1000}s` : err.message;
     if (!fatal) throw new Error(what);
-    fail(`could not reach ${BACKEND} — ${what}`);
+    // NAME THE PATH. This said only "could not reach <host>", so two days of missed
+    // posts left an Actions log that could not distinguish a dead instance from one
+    // slow endpoint — and it was one endpoint, /api/share/rows, running every board in
+    // a single request. The label is what somebody reading the failure needs first.
+    fail(`could not reach ${BACKEND}${path}${label ? ` (${label})` : ""} — ${what}`);
   }
   if (res.status === 404) return null;        // the caller decides whether that is fatal
 

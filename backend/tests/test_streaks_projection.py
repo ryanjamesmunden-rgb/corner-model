@@ -106,9 +106,14 @@ class FakeCollection:
     def __init__(self, docs, key="fixture_id"):
         self._docs, self._key = docs, key
         self.projections = []
+        # The QUERY as well, because "did this scan the whole collection" is a question
+        # about the filter, not the projection: the opponent lookup inside perfect_games
+        # asks for a list of ids under the same `{"_id": 0}` projection as a full scan.
+        self.calls = []
 
     def find(self, q=None, proj=None):
         self.projections.append(dict(proj or {}))
+        self.calls.append((dict(q or {}), dict(proj or {})))
         docs = [copy.deepcopy(d) for d in self._docs]
         lid = (q or {}).get("league_id") if q else None
         if isinstance(lid, str):
@@ -622,3 +627,79 @@ def test_nothing_at_all_is_none_rather_than_a_version_of_two_empties(monkeypatch
     # None means "cannot tell", which _screen_is_stale already treats as not-a-reason.
     _version_db(monkeypatch, None, None)
     assert run(server._data_version()) is None
+
+
+# --- one scan per projection for a composite board -----------------------------------
+#
+# `_combined_rows` gathers five boards and each scanned the team collection for itself:
+# _all_mismatches once, streaks once per venue, and perfect_games — which calls streaks
+# and _all_mismatches again internally. Eight scans of the whole collection for one page
+# load, on one worker, with the week card calling it on every visit.
+#
+# The screens were the visible end of it: eleven of thirteen stale and four not rebuilt in
+# two days, because a rebuild heavy enough to exhaust the worker never finishes, so the
+# screen never goes fresh and the next visitor queues the same doomed rebuild.
+
+def _combined(monkeypatch, teams, scoped=True):
+    """The real composite build, with the scan counter on the fake."""
+    monkeypatch.setattr(server, "db", FakeDB(teams))
+    monkeypatch.setattr(server, "_cache_ok", lambda: False)
+    if not scoped:
+        # The same gather with the memo never opened — i.e. the behaviour before the fix.
+        import contextlib
+        monkeypatch.setattr(server, "_teams_scope", contextlib.nullcontext)
+    rows = run(server._combined_rows_uncached(7, 0, 0, 1, {"user_id": "u1",
+                                                           "member": True}))
+    return rows, server.db.teams.calls
+
+
+def _wide(calls):
+    """Scans with no id filter — the ones that read every team document."""
+    return [proj for q, proj in calls if "team_id" not in q]
+
+
+def test_the_composite_board_scans_the_teams_once_per_projection(monkeypatch):
+    _rows, calls = _combined(monkeypatch, copy.deepcopy(TEAMS))
+    # Whole-collection scans only: the opponent lookup inside perfect_games is keyed on a
+    # list of ids and is not what made this expensive.
+    wide = _wide(calls)
+    shapes = {repr(sorted(p.items())) for p in wide}
+    assert len(wide) == len(shapes), (
+        f"the same scan ran more than once: {len(wide)} scans, {len(shapes)} distinct "
+        f"projections")
+    # Three distinct projections remain, and that is the floor without changing what the
+    # callers ask for: `{"_id": 0}` for _all_mismatches (which needs `matches` for _src's
+    # fallback), the same minus `matches` for the streak walk, and a two-field scan for
+    # `real_samples`. Eight scans became three, and the two heavy ones run once each.
+    assert len(wide) <= 3, f"expected at most three whole-collection scans, got {len(wide)}"
+
+
+def test_without_the_scope_it_really_did_scan_many_times(monkeypatch):
+    """The counter above is only meaningful if it would catch the old behaviour."""
+    _rows, calls = _combined(monkeypatch, copy.deepcopy(TEAMS), scoped=False)
+    wide = _wide(calls)
+    assert len(wide) >= 5, (
+        f"only {len(wide)} wide scans without the memo — if the gather no longer repeats "
+        f"them, the test above is measuring nothing")
+
+
+def test_the_memo_does_not_change_the_board(monkeypatch):
+    """Sharing one scan between callers must produce the identical board.
+
+    The documents are handed to several callers rather than copied, so this is the test
+    that would fail if any of them mutated a team document in place.
+    """
+    scoped, _ = _combined(monkeypatch, copy.deepcopy(TEAMS))
+    plain, _ = _combined(monkeypatch, copy.deepcopy(TEAMS), scoped=False)
+    assert json.dumps(scoped, sort_keys=True) == json.dumps(plain, sort_keys=True)
+
+
+def test_outside_a_scope_a_scan_is_not_memoised(monkeypatch):
+    """The memo must be invisible to ordinary endpoints: no cross-request caching."""
+    monkeypatch.setattr(server, "db", FakeDB(copy.deepcopy(TEAMS)))
+    monkeypatch.setattr(server, "_cache_ok", lambda: False)
+    proj = {"_id": 0, "matches": 0}
+    run(server._teams_scan({}, proj, 5000))
+    run(server._teams_scan({}, proj, 5000))
+    assert len(server.db.teams.projections) == 2, \
+        "two scans outside a scope must hit the database twice"

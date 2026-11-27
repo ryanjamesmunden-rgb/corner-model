@@ -41,12 +41,33 @@ class FakeCursor:
         return self._docs[:n]
 
 
+def _project(doc, proj):
+    """A document as Mongo would return it under `proj`.
+
+    Only the two shapes this codebase uses: `{"_id": 0}` and friends, which drop the
+    named fields, and `{"_id": 0, "a": 1, "b": 1}`, which keeps only the named ones.
+    """
+    if not proj:
+        return dict(doc)
+    keep = {k for k, v in proj.items() if v and k != "_id"}
+    if keep:
+        return {k: v for k, v in doc.items() if k in keep}
+    drop = {k for k, v in proj.items() if not v}
+    return {k: v for k, v in doc.items() if k not in drop}
+
+
 class FakeCollection:
     def __init__(self, docs, key):
         self._docs, self._key = docs, key
 
     def find(self, q=None, proj=None):
-        return FakeCursor(list(self._match(q)))
+        # THE PROJECTION IS APPLIED, because the board's cost is in what it asks Mongo
+        # for and a fake that ignores that cannot test it. The teams query asks for the
+        # match array the model prices from and nothing else; handing back the whole
+        # document here would let a projection that drops a field the model reads pass
+        # every test in this file, which is exactly what happened.
+        self.last_projection = proj
+        return FakeCursor([_project(d, proj) for d in self._match(q)])
 
     async def delete_many(self, q):
         doomed = list(self._match(q))
@@ -618,3 +639,137 @@ def test_the_label_does_not_reorder_the_board(monkeypatch):
     assert [r["fixture_id"] for r in rows] == ["avoid", "chase"]
     assert rows[0]["game_state"]["verdict"] == "avoid"
     assert rows[1]["game_state"]["verdict"] != "avoid"
+
+
+# --- what the board asks Mongo for ---------------------------------------------------
+#
+# The board builds a model for every priced fixture, so the team documents it loads are
+# the largest thing in the request. A team document holds `history_matches` (forty games),
+# `real_matches` (the last twenty of those) and `matches` (a copy of the twenty), and the
+# board was loading all three for every team on every priced fixture — on one worker.
+# That is why /api/value-board answered 502 while /api/health stayed up.
+#
+# The cut is safe only while the model reads nothing outside it, and that is a property of
+# server code far from here: _src, the intent helpers, team_split, confidence_for and
+# markets.pair_counts. So it is tested as a property rather than asserted as a field list —
+# reducing a team document to what the board asks for must not move the price.
+
+def _full_team(tid):
+    """A team document with all three match arrays, as sync_real writes it."""
+    games = history(2, 1, n=20)
+    return {"team_id": tid, "name": f"Team {tid}", "league_id": "eng-pl",
+            "real_matches": games,
+            "matches": history(1, 1, n=20),
+            # Forty games, the biggest array and the one nothing on this path reads.
+            "history_matches": history(2, 1, n=40),
+            "real_samples": 20, "history_samples": 40}
+
+
+def test_the_board_asks_for_the_games_it_prices_from_and_not_the_rest(monkeypatch):
+    install(monkeypatch, odds=[priced("f0")],
+            fixtures=[fixture("f0")], teams=[_full_team("t-home"), _full_team("t-away")])
+    board()
+    proj = server.db.teams.last_projection
+    assert proj, "the teams query must carry a projection, or it loads whole documents"
+    assert proj.get("history_matches") is None, \
+        "history_matches is forty games per team and nothing on this path reads it"
+    # `matches` is the _src fallback for a team with no real games. Dropping it would
+    # silently reprice every thinly-covered team off an empty history.
+    assert proj.get("matches") == 1
+
+
+def test_trimming_a_team_to_that_projection_does_not_move_the_model(monkeypatch):
+    # THE REAL MODEL, captured before `install` stubs it. Called through the stub both
+    # sides of this comparison return the same constant ladder and the test passes
+    # whatever the projection drops — which is how the first version of it passed.
+    model_of = server.fixture_model_from
+    install(monkeypatch, odds=[priced("f0")],
+            fixtures=[fixture("f0")], teams=[_full_team("t-home"), _full_team("t-away")])
+    board()                                   # capture the projection the board uses
+    proj = server.db.teams.last_projection
+
+    league = {"league_id": "eng-pl", "avg_shots": 12.0, "avg_blocked": 3.0}
+    odds = {"total_over_9.5": 1.8, "home_over_4.5": 2.2, "away_over_4.5": 2.2}
+    full_h, full_a = _full_team("t-home"), _full_team("t-away")
+    thin_h, thin_a = _project(full_h, proj), _project(full_a, proj)
+
+    whole = model_of(full_h, full_a, league, odds)
+    trimmed = model_of(thin_h, thin_a, league, odds)
+    assert trimmed["lambdas"] == whole["lambdas"]
+    assert trimmed["confidence"] == whole["confidence"]
+    assert ([(m["key"], m["prob"], m["ev"]) for m in trimmed["markets"]]
+            == [(m["key"], m["prob"], m["ev"]) for m in whole["markets"]])
+
+
+def test_a_team_with_no_real_games_still_prices_off_its_stored_ones(monkeypatch):
+    """The reason `matches` stays in the projection, stated as a test.
+
+    _src prefers `real_matches` and falls back to `matches`. A team mid-backfill has the
+    second and not the first, and must price off it rather than off nothing.
+    """
+    model_of = server.fixture_model_from          # before install stubs it
+    fallback = {"team_id": "t-home", "matches": history(2, 1, n=20)}
+    install(monkeypatch, odds=[priced("f0")],
+            fixtures=[fixture("f0")], teams=[fallback, _full_team("t-away")])
+    board()
+    proj = server.db.teams.last_projection
+    league = {"league_id": "eng-pl", "avg_shots": 12.0, "avg_blocked": 3.0}
+    thin = _project(fallback, proj)
+    assert thin.get("matches"), "the fallback array must survive the projection"
+    lam = model_of(thin, _project(_full_team("t-away"), proj),
+                   league, {"total_over_9.5": 1.8})["lambdas"]
+    assert lam["home"] > 0, "a team with only `matches` must still get a lambda"
+
+
+# --- how old is too old depends on when the game is ----------------------------------
+#
+# A flat twelve-hour rule and the fetcher's "never re-ask a fixture that has a price" are
+# each defensible and together made a weekend unbettable. Books post Saturday corner
+# markets on the Monday or Tuesday; the ahead pass took them then and never looked again;
+# by midweek every one was over twelve hours old and the board showed nothing. Measured on
+# a real weekend: 239 fixtures the fetcher called priced, 0 of Sunday's 59 with a price on
+# the board.
+#
+# A Monday price for a Saturday game IS the market for that game — no fresher quote
+# exists, nothing has happened to the teams, and the alternative on screen is a blank. So
+# the tolerance scales with the distance to kick-off and tightens as it closes. The rule
+# lives in odds_feed so fetch_odds obeys the same one.
+
+def fetched_for(fid, hours_ago, kickoff_hours, odds=None):
+    """A fetched price that knows when its game is."""
+    return {"fixture_id": fid, "source": "api",
+            "odds": odds if odds is not None else {"total_over_9.5": 2.10},
+            "books": {"total_over_9.5": "Pinnacle"},
+            "fetched_at": iso(-hours_ago), "kickoff": iso(kickoff_hours)}
+
+
+def test_a_price_older_than_twelve_hours_still_shows_for_a_game_days_away(monkeypatch):
+    # THE WEEKEND FIX. Saturday is five days out and the price was taken a day ago: under
+    # the old flat rule this row vanished, which is why Sunday showed nothing all week.
+    install(monkeypatch, odds=[], fixtures=[fixture("fx1", hours=120)],
+            feed=[fetched_for("fx1", hours_ago=24, kickoff_hours=120)])
+    rows = board()
+    assert rows and rows[0]["best"]["ev"] is not None
+
+
+def test_the_same_price_is_dropped_once_the_game_is_hours_away(monkeypatch):
+    # Inside half a day it is back to the original rule: lineups and team news move a
+    # corner line, and a price from before them is a memory.
+    install(monkeypatch, odds=[], fixtures=[fixture("fx1", hours=6)],
+            feed=[fetched_for("fx1", hours_ago=24, kickoff_hours=6)])
+    assert board() == []
+
+
+def test_a_price_past_the_ceiling_is_dropped_however_distant_the_game(monkeypatch):
+    # Three days is the cap: past that a quote has had a week of nothing happen to it.
+    install(monkeypatch, odds=[], fixtures=[fixture("fx1", hours=240)],
+            feed=[fetched_for("fx1", hours_ago=100, kickoff_hours=240)])
+    assert board() == []
+
+
+def test_a_document_with_no_kickoff_keeps_the_flat_twelve_hour_rule(monkeypatch):
+    """Written before `kickoff` was stored, so it gets no extra rope — and no migration."""
+    doc = fetched("fx1", hours_ago=server.FEED_PRICE_STALE_HOURS + 2)
+    doc.pop("kickoff", None)
+    install(monkeypatch, odds=[], fixtures=[fixture("fx1", hours=120)], feed=[doc])
+    assert board() == []

@@ -36,6 +36,7 @@ Pinnacle is a tick better would understate the edge and send the reader to the w
 Pure functions, no database and no HTTP, so the mapping is testable without either.
 """
 import re
+from datetime import datetime, timezone
 from typing import Dict, List, Optional, Tuple
 
 from game_state import match_winner
@@ -220,7 +221,8 @@ def first_entry(resp):
     return first if isinstance(first, dict) else None
 
 
-def feed_doc(fixture_id: str, api_fixture_id, entry: dict, fetched_at: str) -> dict:
+def feed_doc(fixture_id: str, api_fixture_id, entry: dict, fetched_at: str,
+             kickoff: Optional[str] = None) -> dict:
     """The document stored per fixture in db.odds_feed.
 
     A SEPARATE COLLECTION FROM db.odds ON PURPOSE. db.odds holds ONE document per fixture
@@ -235,6 +237,13 @@ def feed_doc(fixture_id: str, api_fixture_id, entry: dict, fetched_at: str) -> d
         "api_fixture_id": api_fixture_id,
         "source": SOURCE,
         "fetched_at": fetched_at,
+        # WHEN THE GAME IS, stored beside the price so its age can be judged against the
+        # thing that makes a price go off: how close kick-off is. See allowed_age_hours.
+        # Without it every reader would need the fixture document to decide whether a
+        # price may be shown, which is a join on the hot path of every board. A document
+        # written before this carries no `kickoff` and falls back to the flat twelve-hour
+        # rule, so nothing needs migrating.
+        "kickoff": kickoff,
         "odds": {k: v["price"] for k, v in got["taken"].items()},
         "books": {k: v["book"] for k, v in got["taken"].items()},
         "quotes": {k: v["quotes"] for k, v in got["taken"].items()},
@@ -297,6 +306,80 @@ def market_key(subject: str, is_home, line, direction: str = "over") -> Tuple[Op
     else:
         line = n - 0.5
     return f"{group}_{want}_{line}", None
+
+
+#: The tightest a price is ever allowed to be, and the loosest.
+#:
+#: Twelve hours is the old flat rule and stays as the FLOOR, because inside a day of
+#: kick-off team news moves a corner market and a price from before it is a memory. Three
+#: days is the CEILING: past that a quote has had a full week of nothing happen to it.
+PRICE_MIN_AGE_HOURS = 12
+PRICE_MAX_AGE_HOURS = 72
+
+
+def allowed_age_hours(hours_to_kickoff: Optional[float]) -> float:
+    """How old a fetched price may be, given how far off the game is.
+
+    WHY THIS IS NOT ONE NUMBER. A flat twelve-hour rule and the fetcher's "never re-ask a
+    fixture that has a price" are individually reasonable and together make a weekend
+    unbettable: books post Saturday corner markets on the Monday or Tuesday, the ahead
+    pass picks them up then and never looks again, and by Wednesday every one of those
+    prices is older than twelve hours and the board shows nothing. Measured on a real
+    weekend: 239 fixtures the fetcher reported as already priced, 0 of Sunday's 59 showing
+    a price on the board.
+
+    Discarding them is the wrong half to fix. A price quoted on Monday for Saturday IS the
+    market for that game — nothing has happened to the teams yet, no fresher quote exists,
+    and the alternative on screen is a blank. What a reader needs is the price plus its
+    age, not silence.
+
+    So the tolerance scales with the distance to kick-off and tightens as it closes:
+    roughly `hours_to_kickoff`, floored at twelve hours and capped at three days. A game
+    five days out shows a three-day-old quote; one 36 hours out wants something from the
+    last 36; inside half a day it is back to the original twelve-hour rule, which is when
+    lineups and team news actually move a corner line.
+
+    Unknown distance falls back to the floor — the behaviour before this existed — because
+    a price that cannot be aged against anything must not be given extra rope.
+    """
+    if hours_to_kickoff is None:
+        return float(PRICE_MIN_AGE_HOURS)
+    return float(max(PRICE_MIN_AGE_HOURS, min(PRICE_MAX_AGE_HOURS, hours_to_kickoff)))
+
+
+def price_is_stale(fetched_at, kickoff=None, now=None) -> bool:
+    """True when a fetched price is too old to rank on, or carries no readable clock.
+
+    ONE FUNCTION FOR THE BOARD AND THE FETCHER, and that is the point of it rather than a
+    tidiness. The two used to decide separately: the board dropped anything over twelve
+    hours old, the fetcher skipped any fixture that had a price at all, so a fixture could
+    be "already priced" and "too old to show" at the same time, for ever, with nothing
+    able to report the contradiction. Whatever this returns, both now agree: a price the
+    board will not show is a price the fetcher treats as due.
+
+    No clock means it cannot be aged, which means it cannot be shown to be current — so it
+    is stale rather than waved through.
+    """
+    got, when = _as_dt(fetched_at), _as_dt(kickoff)
+    if got is None:
+        return True
+    now = now or datetime.now(timezone.utc)
+    age_h = (now - got).total_seconds() / 3600.0
+    to_kick = ((when - now).total_seconds() / 3600.0) if when is not None else None
+    # A game already under way or played is judged on the floor: there is no "distance" to
+    # scale by, and a closing price is captured by its own pass.
+    if to_kick is not None and to_kick < 0:
+        to_kick = None
+    return age_h > allowed_age_hours(to_kick)
+
+
+def _as_dt(value):
+    """An ISO timestamp as an aware datetime, or None. Never raises on stored junk."""
+    try:
+        dt = datetime.fromisoformat(str(value or "").replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    return dt.replace(tzinfo=timezone.utc) if dt.tzinfo is None else dt
 
 
 def clv_percent(taken, closing) -> Optional[float]:

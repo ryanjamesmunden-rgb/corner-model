@@ -1,4 +1,4 @@
-import { bestRung, ladderOf, recordAt, rung, rungText } from "./ladder";
+import { bestRung, isOwnRung, ladderOf, recordAt, rung, rungText } from "./ladder";
 
 // A run is measured at the lowest line it never missed, so the line it is named for is
 // the one the market prices most easily — 3+ at 1.27, which nobody backs. The rung above
@@ -129,5 +129,84 @@ describe("how it reads", () => {
 
   it("is empty for nothing", () => {
     expect(rungText(null)).toBe("");
+  });
+});
+
+// --- whose corners is this rung about? -----------------------------------------------
+//
+// Reported from the Stockport row: "showing their streak as 6+ 6.50 but that's the odds
+// for Leyton Orient not Stockport". The backend ladder carries four subjects on the same
+// fixture — the side's own corners, the OPPONENT's, the match total, both teams over a
+// line — and nothing here filtered them. `bestRung` took the LAST qualifying rung, and
+// the team's two come FIRST, so an opponent or total rung won almost every time.
+
+const FIXTURE_LADDER = {
+  line: 5,
+  name: "Stockport County",
+  last_games: games(8, 7, 9, 6, 7, 8, 6, 7, 9, 6),
+  projection: {
+    ladder: [
+      { subject: "team", about: "Stockport County", line: 5, label: "5+",
+        market_key: "home_over_4.5", prob: 70.0, fair_odds: 1.43,
+        book_odds: 1.57, book_name: "Bet365", ev: 9.9 },
+      { subject: "team", about: "Stockport County", line: 6, label: "6+",
+        market_key: "home_over_5.5", prob: 55.0, fair_odds: 1.82,
+        book_odds: 2.10, book_name: "Betano", ev: 15.5 },
+      // Leyton Orient's corners. A longer price because they win far fewer.
+      { subject: "opponent", about: "Leyton Orient", line: 6, label: "6+",
+        market_key: "away_over_5.5", prob: 18.0, fair_odds: 5.56,
+        book_odds: 6.50, book_name: "1xBet", ev: 17.0 },
+      { subject: "match", about: "the match", line: 11, label: "11+",
+        market_key: "total_over_10.5", prob: 60.0, fair_odds: 1.67,
+        book_odds: 1.95, book_name: "Pinnacle", ev: 17.0 },
+      { subject: "both", about: "both teams", line: 5, label: "5+",
+        market_key: "both_over_4.5", prob: 30.0, fair_odds: 3.33,
+        book_odds: 4.00, book_name: "Betfair", ev: 20.0 },
+    ],
+  },
+};
+
+describe("the ladder only offers bets on the row's own side", () => {
+  it("drops the opponent's corners, the match total and both-teams", () => {
+    expect(ladderOf(FIXTURE_LADDER).map((r) => r.line)).toEqual([5, 6]);
+  });
+
+  it("never leads with the opponent's price", () => {
+    // THE REPORTED BUG. 6.50 is Leyton Orient's 6+; Stockport's is 2.10.
+    const best = bestRung(FIXTURE_LADDER);
+    expect(best.book).toBe(2.10);
+    expect(best.book).not.toBe(6.50);
+  });
+
+  it("does not pair one side's record with the other side's quote", () => {
+    // Stockport reached 6 in every one of their last ten. Handed Leyton Orient's 6.50
+    // that record would read as a huge overlay on a bet nobody is making.
+    const rungs = ladderOf(FIXTURE_LADDER);
+    expect(rungs.every((r) => r.whole.games === 10)).toBe(true);
+    expect(rungs.some((r) => r.book === 6.50)).toBe(false);
+  });
+
+  it("keeps a legacy ladder, whose rungs carry no subject at all", () => {
+    // Before the fixture ladder existed a row had two rungs, both the team's own.
+    const legacy = { ...ROW };
+    expect(ladderOf(legacy).map((r) => r.line)).toEqual([4, 5]);
+  });
+
+  it("rejects a rung whose `about` is not this row's team", () => {
+    // Belt and braces: if the subjects are ever reordered or retagged, a price about
+    // another side must still not reach this row.
+    const mislabelled = { ...FIXTURE_LADDER, projection: { ladder: [
+      { subject: "team", about: "Leyton Orient", line: 6, label: "6+",
+        prob: 18.0, fair_odds: 5.56, book_odds: 6.50 }] } };
+    expect(ladderOf(mislabelled)).toEqual([]);
+    expect(bestRung(mislabelled)).toBeNull();
+  });
+
+  it("judges a rung on its own subject", () => {
+    expect(isOwnRung({ subject: "team", about: "Stockport County" }, FIXTURE_LADDER))
+      .toBe(true);
+    expect(isOwnRung({ subject: "opponent", about: "Leyton Orient" }, FIXTURE_LADDER))
+      .toBe(false);
+    expect(isOwnRung({ line: 6 }, FIXTURE_LADDER)).toBe(true);     // legacy, untagged
   });
 });

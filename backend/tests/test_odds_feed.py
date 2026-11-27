@@ -456,3 +456,85 @@ class TestTheFetcherIsHonestAboutItsCost:
         s = self.src()
         assert "cannot be done after the game" in s.lower() \
             or "cannot be fetched after the game" in s.lower()
+
+
+# --- how old a price may be ----------------------------------------------------------
+#
+# ONE RULE, SHARED. server._feed_is_stale decides whether a board may rank on a price and
+# fetch_odds.unpriced_ahead decides whether to buy a fresh one. They used to decide
+# separately — twelve hours flat on one side, "has a price at all" on the other — so a
+# fixture could be priced and invisible at the same time, for ever, with nothing able to
+# report the contradiction. Both now call these.
+
+import odds_feed  # noqa: E402
+from datetime import datetime, timedelta, timezone  # noqa: E402
+
+FIXED = datetime(2026, 11, 27, 12, 0, tzinfo=timezone.utc)
+
+
+def at(hours):
+    return (FIXED + timedelta(hours=hours)).isoformat()
+
+
+class TestAllowedAge:
+    def test_a_distant_game_tolerates_an_older_price(self):
+        # Five days out: nothing has happened to the teams and no fresher quote exists.
+        assert odds_feed.allowed_age_hours(120) == odds_feed.PRICE_MAX_AGE_HOURS
+
+    def test_it_tightens_as_kickoff_approaches(self):
+        # Between the floor and the ceiling the tolerance simply IS the distance to
+        # kick-off: a game 36 hours out wants a price from the last 36 hours.
+        assert odds_feed.allowed_age_hours(36) == 36
+        assert odds_feed.allowed_age_hours(20) == 20
+        # The floor only binds inside twelve hours.
+        assert odds_feed.allowed_age_hours(12) == odds_feed.PRICE_MIN_AGE_HOURS
+        assert odds_feed.allowed_age_hours(4) == odds_feed.PRICE_MIN_AGE_HOURS
+
+    def test_twelve_hours_is_the_floor(self):
+        # The original flat rule, kept for the window where team news moves the market.
+        assert odds_feed.allowed_age_hours(1) == odds_feed.PRICE_MIN_AGE_HOURS
+        assert odds_feed.allowed_age_hours(0) == odds_feed.PRICE_MIN_AGE_HOURS
+
+    def test_three_days_is_the_ceiling(self):
+        assert odds_feed.allowed_age_hours(1000) == odds_feed.PRICE_MAX_AGE_HOURS
+
+    def test_an_unknown_distance_gets_no_extra_rope(self):
+        # A price that cannot be aged against anything falls back to the flat rule.
+        assert odds_feed.allowed_age_hours(None) == odds_feed.PRICE_MIN_AGE_HOURS
+
+    def test_the_tolerance_never_decreases_as_the_game_moves_away(self):
+        got = [odds_feed.allowed_age_hours(h) for h in range(0, 200, 4)]
+        assert got == sorted(got)
+
+
+class TestPriceIsStale:
+    def test_the_monday_price_for_saturday_survives_to_wednesday(self):
+        # THE CASE THIS EXISTS FOR. Taken 48h ago, game 72h away.
+        assert odds_feed.price_is_stale(at(-48), at(72), now=FIXED) is False
+
+    def test_and_is_due_again_by_the_time_it_is_four_days_old(self):
+        assert odds_feed.price_is_stale(at(-100), at(72), now=FIXED) is True
+
+    def test_a_day_old_price_is_stale_an_hour_before_kickoff(self):
+        assert odds_feed.price_is_stale(at(-24), at(1), now=FIXED) is True
+
+    def test_a_fresh_price_is_never_stale(self):
+        assert odds_feed.price_is_stale(at(-1), at(1), now=FIXED) is False
+
+    def test_no_clock_means_stale(self):
+        # It cannot be aged, so it cannot be shown to be current.
+        assert odds_feed.price_is_stale(None, at(72), now=FIXED) is True
+        assert odds_feed.price_is_stale("not a date", at(72), now=FIXED) is True
+
+    def test_an_unreadable_kickoff_falls_back_to_the_flat_rule(self):
+        assert odds_feed.price_is_stale(at(-24), "nonsense", now=FIXED) is True
+        assert odds_feed.price_is_stale(at(-2), "nonsense", now=FIXED) is False
+
+    def test_a_game_already_under_way_is_judged_on_the_floor(self):
+        # No distance left to scale by; a closing price has its own pass.
+        assert odds_feed.price_is_stale(at(-24), at(-2), now=FIXED) is True
+        assert odds_feed.price_is_stale(at(-2), at(-2), now=FIXED) is False
+
+    def test_a_naive_timestamp_is_read_as_utc_rather_than_rejected(self):
+        naive = (FIXED + timedelta(hours=-2)).replace(tzinfo=None).isoformat()
+        assert odds_feed.price_is_stale(naive, at(72), now=FIXED) is False

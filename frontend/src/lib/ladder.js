@@ -77,9 +77,39 @@ export const rung = (step, row) => {
   };
 };
 
-/** Every rung above the run, newest row shape in, drawable rows out. */
+/**
+ * Is this rung a bet on the row's OWN side?
+ *
+ * THE BUG THIS EXISTS TO STOP. The backend ladder carries four subjects on the same
+ * fixture — the streaking side's corners, the OPPONENT's corners, the match total and
+ * both teams over a line — tagged `subject` and `about`. Nothing here filtered them, so
+ * Stockport's row offered "6+ at 6.50" where 6.50 was Leyton Orient's price, next to
+ * Stockport's own record at 6. Two different bets, presented as one.
+ *
+ * It is worse than a wrong price. `rung` measures the record from `row.last_games`, which
+ * is always the ROW TEAM's games, so an opponent rung pairs one side's record with the
+ * other side's quote and the comparison that decides `beatsRecord` is meaningless.
+ *
+ * A LEGACY LADDER HAS NO `subject` AT ALL — it was two rungs, both the team's own — so a
+ * missing tag reads as the team's. `about` is cross-checked where both it and the row's
+ * name are present, so a future reordering of the ladder fails here rather than silently
+ * mislabelling a price again.
+ */
+export const isOwnRung = (step, row) => {
+  const subject = step?.subject;
+  if (subject !== undefined && subject !== null && subject !== "team") return false;
+  const about = step?.about;
+  const name = row?.name;
+  if (about && name && about !== name) return false;
+  return true;
+};
+
+/** Every rung above the run that is a bet on THIS side, drawable rows out. */
 export const ladderOf = (row) =>
-  ((row?.projection?.ladder) || []).map((s) => rung(s, row)).filter(Boolean);
+  ((row?.projection?.ladder) || [])
+    .filter((s) => isOwnRung(s, row))
+    .map((s) => rung(s, row))
+    .filter(Boolean);
 
 /**
  * The one rung worth leading with, or null.

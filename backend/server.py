@@ -613,6 +613,15 @@ def _src(team: dict) -> list:
 # Two scans serve all eight callers.
 _teams_memo: contextvars.ContextVar = contextvars.ContextVar("teams_memo", default=None)
 
+#: One cap for every whole-collection team scan, so they can share one read.
+#:
+#: The callers had drifted to 2000 and 5000 for the same `find({}, {"_id": 0})`, and the
+#: memo keys on the cap — so two scans differing only by a number neither collection comes
+#: near would each have paid for themselves. Set to the LARGEST of the previous values, so
+#: unifying them cannot truncate a result that used to be whole: the collection is the
+#: 27 managed leagues plus their cup entrants, a few hundred documents.
+TEAM_SCAN_CAP = 5000
+
 
 def _teams_scope():
     """Open a scope in which identical team scans happen once. Use with `async with`."""
@@ -3534,7 +3543,7 @@ async def _angle_rows(within_days: int = 2):
                          direction="over", subject="team", user={})
     if not rows:
         return rows
-    teams = await _teams_scan({}, {"_id": 0}, 2000)
+    teams = await _teams_scan({}, {"_id": 0}, TEAM_SCAN_CAP)
     by_id = {t["team_id"]: t for t in teams}
     # Corners won per game, by league. In aggregate a league's corners won and corners
     # conceded are the same pool, so this is the right yardstick for "concedes more than
@@ -6819,7 +6828,20 @@ async def _merged_prices(manual_docs: Dict[str, dict]) -> Dict[str, dict]:
     available yesterday is not an edge; a hand-typed price is left alone because a person
     chose to put it there and nothing here knows better.
     """
-    feed_docs = await db.odds_feed.find({}, {"_id": 0}) \
+    # ONLY THE WINDOW IN WHICH A PRICE CAN STILL BE VALID, and this is lossless rather
+    # than a trim. allowed_age_hours caps at PRICE_MAX_AGE_HOURS, so price_is_stale
+    # rejects EVERY price older than that whatever its kick-off — the documents excluded
+    # here are exactly the ones the loop below would have thrown away a moment later.
+    #
+    # It was `find({})` sorted on `fetched_at` with no index and no projection: an
+    # in-memory sort of every price document ever written, each carrying its `quoted` map
+    # of every book's price for every market, to produce a board that returns forty rows.
+    # The collection only grows, so this got slower every day the feed ran — and it got
+    # slower fastest once the weekend fixes landed and coverage jumped, which is why the
+    # page felt worse after the odds arrived rather than better.
+    cutoff = (datetime.now(timezone.utc)
+              - timedelta(hours=odds_feed.PRICE_MAX_AGE_HOURS)).isoformat()
+    feed_docs = await db.odds_feed.find({"fetched_at": {"$gte": cutoff}}, {"_id": 0}) \
         .sort("fetched_at", -1).to_list(ODDS_SCAN)
     # ONE STALENESS RULE, in _feed_is_stale, shared with _odds_for and _odds_for_many.
     # It was written out twice and that is how the Value page and the fixture page end up
@@ -8309,7 +8331,7 @@ async def streaks(league_id: Optional[str] = None, side: str = "overall", window
     # whitelisted, because an exclusion cannot silently drop a field somebody adds later.
     # test_streaks_projection drives the real handler with and without it and asserts the
     # two boards are identical, so this stops being true loudly rather than quietly.
-    teams = await _teams_scan(q, {"_id": 0, "matches": 0}, 5000)
+    teams = await _teams_scan(q, {"_id": 0, "matches": 0}, TEAM_SCAN_CAP)
     teams_by_id = {t["team_id"]: t for t in teams}
     ls_map = _league_shots_map(teams)
     bl_map = _league_blocked_map(teams)
@@ -8652,7 +8674,7 @@ async def trends(league_id: Optional[str] = None, window: int = 5, metric: str =
 
 
 async def _all_mismatches(within_days: Optional[int] = None, limit: int = 20):
-    teams = await _teams_scan({}, {"_id": 0}, 2000)
+    teams = await _teams_scan({}, {"_id": 0}, TEAM_SCAN_CAP)
     teams_by_id = {t["team_id"]: t for t in teams}
     ls_map = _league_shots_map(teams)
     bl_map = _league_blocked_map(teams)
@@ -8924,7 +8946,7 @@ async def _combined_rows_gather(within: int, min_samples: int, min_opp_games: in
                                   min_streak=MIN_STREAK_LEN, user=user))
     perfect = await perfect_games(within_days=within, limit=100, min_hits=4, window=5,
                                   side="overall", min_opp_leak=5, user=user)
-    teams = await _teams_scan({}, {"_id": 0, "team_id": 1, "real_samples": 1}, 5000)
+    teams = await _teams_scan({}, {"_id": 0, "team_id": 1, "real_samples": 1}, TEAM_SCAN_CAP)
     teams_by_id = {t["team_id"]: t for t in teams}
     fixture_ids = list({(r.get("next_fixture") or {}).get("fixture_id")
                         for r in [*mismatches, *runs, *perfect]} - {None})
@@ -9573,7 +9595,9 @@ async def _chase_board(within_days: int = 7, limit: int = 25, league_id: Optiona
     (opponent scores a first-half goal → our team likely trails and chases), and CONSISTENCY
     (how reliably the team hits the line on this venue). No book odds needed."""
     q = {} if not league_id or league_id == "all" else {"league_id": league_id}
-    teams = await db.teams.find(q, {"_id": 0}).to_list(2000)
+    # Same scan as _all_mismatches asks for, so inside a scope the two share one — see
+    # _teams_scan. /api/share/rows runs both in the same request.
+    teams = await _teams_scan(q, {"_id": 0}, TEAM_SCAN_CAP)
     teams_by_id = {t["team_id"]: t for t in teams}
     ls_map = _league_shots_map(teams)
     bl_map = _league_blocked_map(teams)
@@ -9966,7 +9990,7 @@ async def _fixture_projections(days: int = 7, league_id: Optional[str] = None) -
     # not away` guard below — a board that renders perfectly and shows nothing. Asked for
     # "all", the per-league averages built underneath have to cover both sides' leagues
     # anyway, which is the same requirement arriving from the other direction.
-    teams = await db.teams.find({}, {"_id": 0}).to_list(5000)
+    teams = await _teams_scan({}, {"_id": 0}, TEAM_SCAN_CAP)
     teams_by_id = {t["team_id"]: t for t in teams}
     leagues = {l["league_id"]: l for l in await db.leagues.find({}, {"_id": 0}).to_list(200)}
     # what a normal match in this league actually produces, to judge the projection against
@@ -13896,6 +13920,26 @@ async def share_rows(days: int = 3, limit: int = 12, token: Optional[str] = None
         finally:
             timings[name] = round((time.perf_counter() - t0) * 1000)
 
+    # ONE SCAN OF THE TEAM COLLECTION FOR THE WHOLE ENDPOINT.
+    #
+    # This is the request that stopped the daily post. It gathers every board in one go —
+    # a streak pass per grid entry, the fixture board, the mismatches, the chase board,
+    # the combined board and the value board — and each of them scans the whole team
+    # collection for itself. `_combined_rows` alone accounted for seven of those scans
+    # before its own scope was added; the rest still paid separately.
+    #
+    # Scoped here rather than only inside _combined_rows because this handler is where
+    # the repeats are worst and where the timeout actually bit: the draft job gave up at
+    # 120 seconds on 25 and 26 November and the post simply did not go, two days running.
+    #
+    # Nothing is cached between requests — see _teams_scan — so every board still reads
+    # what the database holds now.
+    with _teams_scope():
+        return await _share_rows_gather(want, days, limit, streak_grid, out, timed,
+                                        timings)
+
+
+async def _share_rows_gather(want, days, limit, streak_grid, out, timed, timings):
     if "streaks" in want and streak_grid:
         # ALL FOUR CUTS, the same grid /export/streaks builds.
         #
@@ -15256,6 +15300,23 @@ async def on_startup():
     except Exception:
         logger.exception("fixture_stats index creation failed — head-to-head lookups "
                          "will fall back to a collection scan")
+    # THE PRICE STORE HAD NO INDEXES AT ALL, and every board reads it.
+    #
+    # `fetched_at` is what _merged_prices filters and sorts on, so without it the value
+    # board sorted the whole collection in memory on every load. `fixture_id` is how
+    # every other reader looks a price up — _odds_for, _odds_for_many, the fetcher's own
+    # "has this been priced" scan — and that was a collection scan per call.
+    #
+    # Same guard as above: a failure here must never stop the app booting, it only makes
+    # the boards slow, which is the state this is fixing rather than risking.
+    try:
+        await db.odds_feed.create_index([("fetched_at", -1)])
+        await db.odds_feed.create_index([("fixture_id", 1)])
+        await db.odds.create_index([("fixture_id", 1)])
+        await db.odds.create_index([("updated_at", -1)])
+    except Exception:
+        logger.exception("odds index creation failed — price lookups will fall back to "
+                         "collection scans")
     # remove any legacy / non-managed leagues (e.g. old mock leagues from an earlier deploy)
     stale = await db.leagues.find({"league_id": {"$nin": list(MANAGED_LEAGUE_IDS)}}, {"_id": 0, "league_id": 1}).to_list(100)
     stale_ids = [l["league_id"] for l in stale]

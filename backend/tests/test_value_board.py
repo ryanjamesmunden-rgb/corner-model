@@ -18,6 +18,7 @@ os.environ.setdefault("MONGO_URL", "mongodb://localhost:27017")
 os.environ.setdefault("DB_NAME", "test_corner_model")
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+import odds_feed  # noqa: E402
 import server  # noqa: E402
 
 
@@ -59,8 +60,12 @@ def _project(doc, proj):
 class FakeCollection:
     def __init__(self, docs, key):
         self._docs, self._key = docs, key
+        # Both halves of every call, so a test can assert what the board ASKED FOR and
+        # not merely what it did with the answer. The cost of this board is in the asking.
+        self.calls = []
 
     def find(self, q=None, proj=None):
+        self.calls.append((dict(q or {}), dict(proj or {})))
         # THE PROJECTION IS APPLIED, because the board's cost is in what it asks Mongo
         # for and a fake that ignores that cannot test it. The teams query asks for the
         # match array the model prices from and nothing else; handing back the whole
@@ -75,8 +80,24 @@ class FakeCollection:
         return type("Result", (), {"deleted_count": len(doomed)})()
 
     def _match(self, q):
+        docs = list(self._docs)
         ids = ((q or {}).get(self._key) or {}).get("$in") if q else None
-        return self._docs if ids is None else [d for d in self._docs if d[self._key] in ids]
+        if ids is not None:
+            docs = [d for d in docs if d[self._key] in ids]
+        # RANGE FILTERS ARE APPLIED, because the value board now asks the price store for
+        # only the window in which a price can still be valid. A fake that ignored
+        # `$gte` would hand back the whole collection and the scoping would be untested —
+        # the same way ignoring projections hid the over-fetch above it.
+        for field, cond in (q or {}).items():
+            if field == self._key or not isinstance(cond, dict):
+                continue
+            if "$gte" in cond:
+                docs = [d for d in docs
+                        if d.get(field) is not None and d[field] >= cond["$gte"]]
+            if "$lte" in cond:
+                docs = [d for d in docs
+                        if d.get(field) is not None and d[field] <= cond["$lte"]]
+        return docs
 
 
 class FakeDB:
@@ -773,3 +794,54 @@ def test_a_document_with_no_kickoff_keeps_the_flat_twelve_hour_rule(monkeypatch)
     doc.pop("kickoff", None)
     install(monkeypatch, odds=[], fixtures=[fixture("fx1", hours=120)], feed=[doc])
     assert board() == []
+
+
+# --- the board asks the price store for the window that can still matter -------------
+#
+# `_merged_prices` was `find({})` sorted on `fetched_at` with no index and no projection:
+# an in-memory sort of every price document ever written, each carrying its `quoted` map
+# of every book's price for every market, to produce a board that returns forty rows. The
+# collection only grows, so it got slower every day the feed ran — and fastest once
+# coverage jumped, which is why the page felt worse AFTER the odds arrived.
+#
+# The scope is lossless rather than a trim, and that is the part worth pinning: a price
+# older than PRICE_MAX_AGE_HOURS is refused by price_is_stale whatever its kick-off, so
+# the documents left out are exactly the ones the merge would have discarded anyway.
+
+def test_the_feed_query_is_scoped_to_the_age_a_price_can_still_be(monkeypatch):
+    install(monkeypatch, odds=[], fixtures=[fixture("fx1", hours=120)],
+            feed=[fetched_for("fx1", hours_ago=1, kickoff_hours=120)])
+    board()
+    calls = [q for q, _ in server.db.odds_feed.calls]
+    assert any("fetched_at" in q and "$gte" in (q.get("fetched_at") or {})
+               for q in calls), \
+        "the board must ask for a window, not the whole price history"
+
+
+def test_a_price_beyond_the_window_is_not_loaded_at_all(monkeypatch):
+    # Before: loaded, sorted, then discarded as stale. Now: never fetched.
+    old = odds_feed.PRICE_MAX_AGE_HOURS + 48
+    install(monkeypatch, odds=[], fixtures=[fixture("fx1", hours=120)],
+            feed=[fetched_for("fx1", hours_ago=old, kickoff_hours=120)])
+    assert board() == []
+
+
+def test_the_window_does_not_drop_a_price_the_board_would_have_shown(monkeypatch):
+    """The scope must not cost a row. Just inside the ceiling, a distant game: shown."""
+    install(monkeypatch, odds=[], fixtures=[fixture("fx1", hours=240)],
+            feed=[fetched_for("fx1", hours_ago=odds_feed.PRICE_MAX_AGE_HOURS - 2,
+                              kickoff_hours=240)])
+    rows = board()
+    assert rows and rows[0]["best"]["ev"] is not None
+
+
+def test_nothing_older_than_the_ceiling_is_ever_usable(monkeypatch):
+    """The invariant the scope rests on, checked directly rather than assumed.
+
+    If any kick-off could make a price older than the ceiling acceptable, the query above
+    would be silently dropping real rows.
+    """
+    for age in (odds_feed.PRICE_MAX_AGE_HOURS + 1, 100, 500, 5000):
+        for kick in (-10, 0, 1, 12, 48, 120, 1000):
+            assert odds_feed.price_is_stale(iso(-age), iso(kick)) is True, \
+                f"age {age}h with kickoff in {kick}h was accepted"

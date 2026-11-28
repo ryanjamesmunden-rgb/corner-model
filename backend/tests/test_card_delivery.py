@@ -141,10 +141,23 @@ class TestTheEndpointSaysWhereItsTimeWent:
     was slow — the two candidates do very different amounts of work, so guessing means
     optimising the wrong one and finding out from a post that did not go."""
 
-    def test_share_rows_reports_a_timing_per_board(self):
+    @staticmethod
+    def _src():
+        """The handler and the gather it delegates to, as one body of source.
+
+        share_rows now opens a single team-scan scope and hands the gathering to
+        _share_rows_gather — the repeats across its boards are what made this endpoint
+        exceed the caller's timeout. Reading only the handler would pass this file while
+        the timings quietly vanished from the half that does the work.
+        """
         import inspect
         import server
-        src = inspect.getsource(server.share_rows)
+        return (inspect.getsource(server.share_rows)
+                + inspect.getsource(server._share_rows_gather))
+
+    def test_share_rows_reports_a_timing_per_board(self):
+        import server
+        src = self._src()
         assert "timings_ms" in src
         # Every board, not just the one that happened to be suspected.
         for board in server.SHARE_BOARDS:
@@ -153,9 +166,7 @@ class TestTheEndpointSaysWhereItsTimeWent:
     def test_the_timings_ride_on_the_response_rather_than_only_the_log(self):
         """A server-side log line is not reachable from the Actions run that failed —
         which is the only place anyone is looking when a post does not arrive."""
-        import inspect
-        import server
-        assert 'out["timings_ms"] = timings' in inspect.getsource(server.share_rows)
+        assert 'out["timings_ms"] = timings' in self._src()
 
     def test_the_caller_prints_them(self):
         src = open(TOOL, encoding="utf-8").read()

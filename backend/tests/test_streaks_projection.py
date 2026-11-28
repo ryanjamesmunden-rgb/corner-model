@@ -93,6 +93,10 @@ class FakeCursor:
         self._docs = present + missing if direction < 0 else missing + present
         return self
 
+    def limit(self, n):
+        self._docs = self._docs[:n]
+        return self
+
     async def to_list(self, n):
         return self._docs[:n]
 
@@ -703,3 +707,36 @@ def test_outside_a_scope_a_scan_is_not_memoised(monkeypatch):
     run(server._teams_scan({}, proj, 5000))
     assert len(server.db.teams.projections) == 2, \
         "two scans outside a scope must hit the database twice"
+
+
+# --- the endpoint that stopped the daily post ----------------------------------------
+#
+# /api/share/rows gathers every board in one request — a streak pass per grid entry, the
+# fixture board, the mismatches, the chase board, the combined board and the value board
+# — and each scanned the team collection for itself. The draft job gave up at 120 seconds
+# on 25 and 26 November and the post did not go, two days running. Last success was the
+# 24th, which is the date on the last post anyone received.
+
+def test_share_rows_scans_the_teams_once_per_projection(monkeypatch):
+    monkeypatch.setattr(server, "db", FakeDB(copy.deepcopy(TEAMS)))
+    monkeypatch.setattr(server, "_cache_ok", lambda: False)
+    monkeypatch.setattr(server, "_check_tools_token", lambda t: None)
+    run(server.share_rows(days=3, limit=5, token="t", streak_grid=False))
+    wide = _wide(server.db.teams.calls)
+    shapes = {repr(sorted(p.items())) for p in wide}
+    assert len(wide) == len(shapes), (
+        f"a scan ran more than once across the endpoint: {len(wide)} scans, "
+        f"{len(shapes)} distinct projections")
+
+
+def test_without_the_scope_share_rows_really_did_repeat_them(monkeypatch):
+    """So the count above is measuring the fix and not a coincidence of this fixture."""
+    import contextlib
+    monkeypatch.setattr(server, "db", FakeDB(copy.deepcopy(TEAMS)))
+    monkeypatch.setattr(server, "_cache_ok", lambda: False)
+    monkeypatch.setattr(server, "_check_tools_token", lambda t: None)
+    monkeypatch.setattr(server, "_teams_scope", contextlib.nullcontext)
+    run(server.share_rows(days=3, limit=5, token="t", streak_grid=False))
+    wide = _wide(server.db.teams.calls)
+    assert len(wide) > len({repr(sorted(p.items())) for p in wide}), \
+        "unscoped, this endpoint must repeat at least one scan"

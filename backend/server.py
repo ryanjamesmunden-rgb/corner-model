@@ -3767,6 +3767,33 @@ async def _screen(name: str):
         return (await _build_screen(name))["payload"]
 
 
+def _rows_within_days(rows: List[dict], within_days: int) -> List[dict]:
+    """Board rows whose next fixture falls inside the window, as the live walk filters.
+
+    THE SAME RULE, IN ONE PLACE, so the cached board can answer a windowed request. The
+    live handler applied this at the end of its loop and the cache therefore could not
+    serve any caller that passed `within_days` — which was every call from
+    /api/share/rows, the request the daily post needs.
+
+    A ROW WITH NO NEXT FIXTURE IS DROPPED, because the live path drops it (`if not nf:
+    continue` under the same condition). Keeping it here would make the cached answer a
+    superset of the live one, which is exactly the kind of near-match that reads as
+    correct until somebody counts.
+    """
+    now = datetime.now(timezone.utc)
+    horizon = now + timedelta(days=within_days)
+    out = []
+    for r in rows or []:
+        nf = r.get("next_fixture")
+        if not nf or not nf.get("date"):
+            continue
+        dt = _iso_to_dt(nf["date"])
+        if dt is None or dt < now or dt > horizon:
+            continue
+        out.append(r)
+    return out
+
+
 #: Screens with a rebuild already in flight, so a burst of visitors starts one, not fifty.
 _refreshing: set = set()
 
@@ -8310,12 +8337,24 @@ async def streaks(league_id: Optional[str] = None, side: str = "overall", window
     # ANY OF THE THREE VENUES, not just home. See STREAK_SCREENS: caching one tab and not
     # the other two meant Away and Overall quietly took the slow path, and so did the
     # endpoint's own default, which is `overall`.
+    # `within_days` NO LONGER MISSES THE CACHE, and that one argument is why the daily
+    # post stopped going.
+    #
+    # /api/share/rows asks for exactly the canonical board except `within_days=1`, so
+    # every call rebuilt the whole walk live — and that request timed out at 120 seconds
+    # on 25, 26, 27 and 28 November. The parameter is NOT part of the computation: the
+    # walk, the records and the projections are identical, and `within_days` is applied
+    # at the very end as a filter on each row's next fixture (see _rows_within_days,
+    # which is that block moved and nothing else). So the cached board answers it.
     if (_cache_ok() and league_id in (None, "all") and side in STREAK_SCREENS
             and window == 5
             and min_hits == 5 and threshold is None and min_line == 3
-            and within_days is None and direction == "over" and subject == "team"
+            and direction == "over" and subject == "team"
             and max_line is None and min_streak == MIN_STREAK_LEN):
-        return _preview(await _screen(STREAK_SCREENS[side]), user, response)
+        rows = await _screen(STREAK_SCREENS[side])
+        if within_days is not None:
+            rows = _rows_within_days(rows, within_days)
+        return _preview(rows, user, response)
     q = {} if not league_id or league_id == "all" else {"league_id": league_id}
     # WITHOUT `matches`, WHICH THIS PATH NEVER READS.
     #

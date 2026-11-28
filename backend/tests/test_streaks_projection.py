@@ -740,3 +740,85 @@ def test_without_the_scope_share_rows_really_did_repeat_them(monkeypatch):
     wide = _wide(server.db.teams.calls)
     assert len(wide) > len({repr(sorted(p.items())) for p in wide}), \
         "unscoped, this endpoint must repeat at least one scan"
+
+
+# --- a windowed request can be served from the cached board --------------------------
+#
+# /api/share/rows asks for exactly the canonical board except `within_days=1`, and that
+# one argument missed the cache, so every call rebuilt the whole walk live. That request
+# timed out at 120 seconds on 25, 26, 27 and 28 November and the daily post did not go.
+#
+# The claim the fix rests on is that `within_days` is not part of the computation — it is
+# a filter on each row's next fixture, applied after the walk. That is checked here
+# against the REAL handler on both sides rather than asserted: the live windowed board
+# must equal the full board put through the same filter.
+
+def _fixtures_at(*day_offsets):
+    out = []
+    for i, d in enumerate(day_offsets):
+        when = (NOW + timedelta(days=d)).isoformat().replace("+00:00", "Z")
+        out.append({"fixture_id": f"fx{i}", "league_id": "eng-l1", "date": when,
+                    "home_team_id": "eng-l1-1", "away_team_id": "eng-l1-2",
+                    "home_name": "Team eng-l1-1", "away_name": "Team eng-l1-2",
+                    "status": "upcoming", "round": f"R{i}"})
+    return out
+
+
+def _board(monkeypatch, fixtures, **kw):
+    """The real handler against a chosen fixture list, off the screen cache."""
+    db = FakeDB(copy.deepcopy(TEAMS))
+    db.fixtures = FakeCollection(fixtures)
+    monkeypatch.setattr(server, "db", db)
+    monkeypatch.setattr(server, "_cache_ok", lambda: False)
+    params = {"league_id": "all", "side": "overall", "window": 5, "min_hits": 5,
+              "threshold": None, "min_line": 3, "direction": "over", "subject": "team",
+              "max_line": None, "min_streak": server.MIN_STREAK_LEN,
+              "user": {"user_id": "u1", "member": True}}
+    params.update(kw)
+    return run(server.streaks(**params))
+
+
+def test_filtering_the_full_board_matches_asking_for_the_window(monkeypatch):
+    """Both directions, because an equality that only ever keeps or only ever drops is
+    half a test. _next_fixtures gives each team its EARLIEST upcoming game, so the way
+    to make a row fall outside the window is to move that game, not to add a later one.
+    """
+    # Inside the window: the filter must keep the rows and change nothing about them.
+    near = _fixtures_at(0.5)
+    windowed = _board(monkeypatch, near, within_days=1)
+    whole = _board(monkeypatch, near, within_days=None)
+    assert windowed, "the fixture produced no rows, so this compared two empty lists"
+    assert json.dumps(windowed, sort_keys=True) == \
+        json.dumps(server._rows_within_days(whole, 1), sort_keys=True)
+
+    # Outside it: the live walk returns nothing, so the filter must remove everything.
+    far = _fixtures_at(7)
+    windowed_far = _board(monkeypatch, far, within_days=1)
+    whole_far = _board(monkeypatch, far, within_days=None)
+    assert whole_far, "the far fixture produced no rows at all, so nothing was dropped"
+    assert windowed_far == []
+    assert server._rows_within_days(whole_far, 1) == []
+
+
+def test_a_row_with_no_next_fixture_is_dropped_by_the_window(monkeypatch):
+    """The live path drops it under the same condition, so the cached answer must too —
+    otherwise the cache returns a superset and reads as correct until somebody counts."""
+    whole = _board(monkeypatch, _fixtures_at(0.5), within_days=None)
+    unplayed = dict(whole[0])
+    unplayed.pop("next_fixture", None)
+    assert server._rows_within_days(whole + [unplayed], 1) == \
+        server._rows_within_days(whole, 1)
+
+
+def test_a_kicked_off_game_is_outside_the_window(monkeypatch):
+    whole = _board(monkeypatch, _fixtures_at(0.5), within_days=None)
+    past = copy.deepcopy(whole[0])
+    past["next_fixture"]["date"] = (NOW - timedelta(hours=3)).isoformat()
+    assert server._rows_within_days([past], 1) == []
+
+
+def test_an_unreadable_date_is_dropped_rather_than_raising(monkeypatch):
+    whole = _board(monkeypatch, _fixtures_at(0.5), within_days=None)
+    bad = copy.deepcopy(whole[0])
+    bad["next_fixture"]["date"] = "not a date"
+    assert server._rows_within_days([bad], 1) == []
